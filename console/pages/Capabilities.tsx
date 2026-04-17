@@ -28,6 +28,7 @@ const STANDARD_PARAMS: Record<string, { name: string; type: string; enumValues?:
     seconds: {name: '时长(秒)', type: 'number'},
     fps: {name: '帧率', type: 'enum', enumValues: ['24', '30', '60']},
     style: {name: '风格', type: 'enum', enumValues: ['realistic', 'anime', 'cartoon']},
+    image_size: {name: '分辨率', type: 'enum', enumValues: ['1K', '2K', '4K']},
     callback_url: {name: '回调地址', type: 'string'},
 };
 

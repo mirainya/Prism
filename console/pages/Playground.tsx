@@ -585,7 +585,7 @@ const ChatTab: React.FC<{ tokenId: string }> = ({ tokenId }) => {
   const [selectedModel, setSelectedModel] = useState('');
   const [systemPrompt, setSystemPrompt] = useState('');
   const [temperature, setTemperature] = useState(0.7);
-  const [maxTokens, setMaxTokens] = useState(2048);
+  const [maxTokens, setMaxTokens] = useState(200000);
   const [topP, setTopP] = useState(1);
   const [presencePenalty, setPresencePenalty] = useState(0);
   const [frequencyPenalty, setFrequencyPenalty] = useState(0);
@@ -1197,7 +1197,7 @@ const ChatTab: React.FC<{ tokenId: string }> = ({ tokenId }) => {
 
           <div>
             <label className="block text-xs font-medium text-gray-500 mb-1">Max Tokens</label>
-            <input type="number" min={1} max={128000} value={maxTokens} onChange={e => setMaxTokens(Number(e.target.value))} className="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500" />
+            <input type="number" min={1} max={200000} value={maxTokens} onChange={e => setMaxTokens(Number(e.target.value))} className="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500" />
           </div>
 
           <div>
