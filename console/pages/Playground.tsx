@@ -1938,9 +1938,9 @@ const CapabilityTab: React.FC<{ tokenId: string }> = ({ tokenId }) => {
   const currentSchemaEntries = useMemo(() => extractCapabilitySchema(currentCap), [currentCap]);
   const hasExplicitSchema = Boolean(currentCap?.standardParams && Object.keys(currentCap.standardParams).length > 0);
   const capabilityTypes = useMemo(() => {
-    const types = new Set(capabilities.map(cap => cap.type || 'other'));
+    const types = new Set<string>(capabilities.map(cap => cap.type || 'other'));
     return CAPABILITY_TYPE_ORDER.filter(type => types.has(type)).concat(
-      Array.from(types).filter(type => !CAPABILITY_TYPE_ORDER.includes(type)).sort(),
+      Array.from(types).filter(type => !CAPABILITY_TYPE_ORDER.includes(type as typeof CAPABILITY_TYPE_ORDER[number])).sort(),
     );
   }, [capabilities]);
   const filteredCapabilities = useMemo(() => {
@@ -2196,13 +2196,14 @@ const CapabilityTab: React.FC<{ tokenId: string }> = ({ tokenId }) => {
         }
 
         const schema = currentCap?.standardParams?.[key] || FALLBACK_STANDARD_PARAMS[key];
+        const stringValue = String(value || '');
         if (!schema) {
-          const trimmed = value.trim();
+          const trimmed = stringValue.trim();
           if (trimmed) acc[key] = trimmed;
           return acc;
         }
 
-        const normalized = normalizeCapabilityValue(schema, value);
+        const normalized = normalizeCapabilityValue(schema, stringValue);
         if (normalized !== undefined) {
           acc[key] = normalized;
         }
