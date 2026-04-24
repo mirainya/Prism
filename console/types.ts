@@ -46,7 +46,9 @@ export interface CapabilityStandardParamSchema {
   type: CapabilityStandardParamType;
   name: string;
   required?: boolean;
+  options?: string[];
   enumValues?: string[];
+  default?: string | number;
 }
 
 export type CapabilityStandardParams = Record<string, CapabilityStandardParamSchema>;

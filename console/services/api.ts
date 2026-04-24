@@ -1394,3 +1394,7 @@ export const playgroundGetTask = async (tokenId: string, taskNo: string): Promis
         completedAt: data.completed_at,
     };
 };
+
+export const playgroundCancelTask = async (tokenId: string, taskNo: string): Promise<void> => {
+    await request(`/playground/${tokenId}/tasks/${taskNo}/cancel`, { method: 'POST' });
+};

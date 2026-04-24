@@ -8,7 +8,6 @@ type Config struct {
 	Server      ServerConfig      `mapstructure:"server"`
 	Database    DatabaseConfig    `mapstructure:"database"`
 	Redis       RedisConfig       `mapstructure:"redis"`
-	Storage     StorageConfig     `mapstructure:"storage"`
 	Worker      WorkerConfig      `mapstructure:"worker"`
 	HTTPClient  HTTPClientConfig  `mapstructure:"http_client"`
 	RateLimit   RateLimitConfig   `mapstructure:"rate_limit"`
@@ -42,19 +41,6 @@ type RedisConfig struct {
 	DialTimeout  int    `mapstructure:"dial_timeout"`
 	ReadTimeout  int    `mapstructure:"read_timeout"`
 	WriteTimeout int    `mapstructure:"write_timeout"`
-}
-
-type StorageConfig struct {
-	Type    string           `mapstructure:"type"`
-	Tencent TencentCOSConfig `mapstructure:"tencent"`
-}
-
-type TencentCOSConfig struct {
-	SecretID  string `mapstructure:"secret_id"`
-	SecretKey string `mapstructure:"secret_key"`
-	Region    string `mapstructure:"region"`
-	Bucket    string `mapstructure:"bucket"`
-	CDN       string `mapstructure:"cdn"`
 }
 
 type WorkerConfig struct {

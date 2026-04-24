@@ -2,6 +2,7 @@ package provider
 
 import (
 	"encoding/json"
+	"strings"
 
 	"github.com/tidwall/gjson"
 )
@@ -27,9 +28,24 @@ func NewDefaultParser() *DefaultParser {
 	return &DefaultParser{}
 }
 
+// normalizeGjsonPath 将 [N] 数组语法转为 gjson 的 .N 语法
+func normalizeGjsonPath(path string) string {
+	for {
+		i := strings.Index(path, "[")
+		if i < 0 {
+			return path
+		}
+		j := strings.Index(path[i:], "]")
+		if j < 0 {
+			return path
+		}
+		path = path[:i] + "." + path[i+1:i+j] + path[i+j+1:]
+	}
+}
+
 // extractURLs 从 gjson 结果中提取 URL 列表，支持单值和数组
 func extractURLs(jsonStr, path string) []string {
-	result := gjson.Get(jsonStr, path)
+	result := gjson.Get(jsonStr, normalizeGjsonPath(path))
 	if !result.Exists() {
 		return nil
 	}
@@ -63,16 +79,16 @@ func (p *DefaultParser) ParseSubmitResponse(body []byte, mapping *ResponseMappin
 	jsonStr := string(body)
 
 	if mapping.TaskID != "" {
-		result.ProviderTaskID = gjson.Get(jsonStr, mapping.TaskID).String()
+		result.ProviderTaskID = gjson.Get(jsonStr, normalizeGjsonPath(mapping.TaskID)).String()
 	}
 
 	if mapping.Status != "" {
-		rawStatus := gjson.Get(jsonStr, mapping.Status).String()
+		rawStatus := gjson.Get(jsonStr, normalizeGjsonPath(mapping.Status)).String()
 		result.Status = p.mapStatus(rawStatus, mapping.StatusMapping)
 	}
 
 	if mapping.Progress != "" {
-		result.Progress = int(gjson.Get(jsonStr, mapping.Progress).Int())
+		result.Progress = int(gjson.Get(jsonStr, normalizeGjsonPath(mapping.Progress)).Int())
 	}
 
 	if mapping.OutputURL != "" {
@@ -92,12 +108,12 @@ func (p *DefaultParser) ParseProgressResponse(body []byte, mapping *ResponseMapp
 	jsonStr := string(body)
 
 	if mapping.Status != "" {
-		rawStatus := gjson.Get(jsonStr, mapping.Status).String()
+		rawStatus := gjson.Get(jsonStr, normalizeGjsonPath(mapping.Status)).String()
 		result.Status = p.mapStatus(rawStatus, mapping.StatusMapping)
 	}
 
 	if mapping.Progress != "" {
-		result.Progress = int(gjson.Get(jsonStr, mapping.Progress).Int())
+		result.Progress = int(gjson.Get(jsonStr, normalizeGjsonPath(mapping.Progress)).Int())
 	}
 
 	if mapping.OutputURL != "" {
@@ -105,7 +121,7 @@ func (p *DefaultParser) ParseProgressResponse(body []byte, mapping *ResponseMapp
 	}
 
 	if mapping.Error != "" {
-		result.Error = gjson.Get(jsonStr, mapping.Error).String()
+		result.Error = gjson.Get(jsonStr, normalizeGjsonPath(mapping.Error)).String()
 	}
 
 	return result, nil
@@ -123,16 +139,16 @@ func (p *DefaultParser) ParseCallbackResponse(body []byte, mapping *ResponseMapp
 	jsonStr := string(body)
 
 	if mapping.TaskID != "" {
-		providerTaskID = gjson.Get(jsonStr, mapping.TaskID).String()
+		providerTaskID = gjson.Get(jsonStr, normalizeGjsonPath(mapping.TaskID)).String()
 	}
 
 	if mapping.Status != "" {
-		rawStatus := gjson.Get(jsonStr, mapping.Status).String()
+		rawStatus := gjson.Get(jsonStr, normalizeGjsonPath(mapping.Status)).String()
 		result.Status = p.mapStatus(rawStatus, mapping.StatusMapping)
 	}
 
 	if mapping.Progress != "" {
-		result.Progress = int(gjson.Get(jsonStr, mapping.Progress).Int())
+		result.Progress = int(gjson.Get(jsonStr, normalizeGjsonPath(mapping.Progress)).Int())
 	}
 
 	if mapping.OutputURL != "" {
@@ -140,7 +156,7 @@ func (p *DefaultParser) ParseCallbackResponse(body []byte, mapping *ResponseMapp
 	}
 
 	if mapping.Error != "" {
-		result.Error = gjson.Get(jsonStr, mapping.Error).String()
+		result.Error = gjson.Get(jsonStr, normalizeGjsonPath(mapping.Error)).String()
 	}
 
 	return result, providerTaskID, nil
@@ -148,12 +164,12 @@ func (p *DefaultParser) ParseCallbackResponse(body []byte, mapping *ResponseMapp
 
 func (p *DefaultParser) mapStatus(raw string, mapping map[string]string) TaskStatus {
 	if mapping == nil {
-		return TaskStatus(raw)
+		return TaskStatus(strings.ToUpper(raw))
 	}
 	if mapped, ok := mapping[raw]; ok {
-		return TaskStatus(mapped)
+		return TaskStatus(strings.ToUpper(mapped))
 	}
-	return TaskStatus(raw)
+	return TaskStatus(strings.ToUpper(raw))
 }
 
 func ParseResponseMapping(data []byte) (*ResponseMapping, error) {
@@ -164,5 +180,35 @@ func ParseResponseMapping(data []byte) (*ResponseMapping, error) {
 	if err := json.Unmarshal(data, &mapping); err != nil {
 		return nil, err
 	}
+
+	// 兼容新格式: {"field_mapping": {"task_id": "xxx", "status": "xxx", ...}, "value_mapping": {"status": {...}}}
+	var raw struct {
+		FieldMapping map[string]string            `json:"field_mapping"`
+		ValueMapping map[string]map[string]string `json:"value_mapping"`
+	}
+	if err := json.Unmarshal(data, &raw); err == nil && len(raw.FieldMapping) > 0 {
+		if v, ok := raw.FieldMapping["task_id"]; ok && mapping.TaskID == "" {
+			mapping.TaskID = v
+		}
+		if v, ok := raw.FieldMapping["status"]; ok && mapping.Status == "" {
+			mapping.Status = v
+		}
+		if v, ok := raw.FieldMapping["progress"]; ok && mapping.Progress == "" {
+			mapping.Progress = v
+		}
+		if v, ok := raw.FieldMapping["url"]; ok && mapping.OutputURL == "" {
+			mapping.OutputURL = v
+		}
+		if v, ok := raw.FieldMapping["urls"]; ok && mapping.OutputURL == "" {
+			mapping.OutputURL = v
+		}
+		if v, ok := raw.FieldMapping["error"]; ok && mapping.Error == "" {
+			mapping.Error = v
+		}
+		if sm, ok := raw.ValueMapping["status"]; ok && mapping.StatusMapping == nil {
+			mapping.StatusMapping = sm
+		}
+	}
+
 	return &mapping, nil
 }

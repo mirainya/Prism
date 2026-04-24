@@ -101,9 +101,11 @@ func HandleTaskPoll(ctx context.Context, t *asynq.Task) error {
 		taskService.UpdateTaskProgress(task.ID, result.Progress)
 		// 继续轮询
 		return requeuePoll(payload.TaskID, payload.PollCount+1, pollInterval)
-	}
 
-	return nil
+	default:
+		// 未知状态，继续轮询
+		return requeuePoll(payload.TaskID, payload.PollCount+1, pollInterval)
+	}
 }
 
 func requeuePoll(taskID uint, pollCount int, intervalSeconds int) error {
@@ -113,7 +115,12 @@ func requeuePoll(taskID uint, pollCount int, intervalSeconds int) error {
 	}
 	payloadBytes, _ := json.Marshal(payload)
 	task := asynq.NewTask(TypeTaskPoll, payloadBytes)
-	_, err := queue.Client.Enqueue(task, asynq.ProcessIn(time.Duration(intervalSeconds)*time.Second), asynq.Queue("default"))
+	info, err := queue.Client.Enqueue(task, asynq.ProcessIn(time.Duration(intervalSeconds)*time.Second), asynq.Queue("default"))
+	if err != nil {
+		logger.Error("requeue poll failed", zap.Uint("task_id", taskID), zap.Error(err))
+	} else {
+		logger.Info("requeue poll ok", zap.Uint("task_id", taskID), zap.Int("poll_count", pollCount), zap.String("queue", info.Queue))
+	}
 	return err
 }
 

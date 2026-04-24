@@ -5,7 +5,7 @@ import {
     createCapability, updateCapability, deleteCapability,
     createChannelCapability, updateChannelCapability, deleteChannelCapability
 } from '../services/api';
-import { Capability, ChannelCapability, Channel } from '../types';
+import { Capability, ChannelCapability, Channel, CapabilityStandardParamSchema } from '../types';
 
 const RESULT_MODES = [
     {value: 'sync', label: '同步'},
@@ -14,22 +14,34 @@ const RESULT_MODES = [
 ];
 
 // 系统标准参数字段定义
-const STANDARD_PARAMS: Record<string, { name: string; type: string; enumValues?: string[] }> = {
-    prompt: {name: '提示词', type: 'string'},
-    negative_prompt: {name: '负向提示词', type: 'string'},
-    aspect_ratio: {name: '宽高比', type: 'enum', enumValues: ['1:1', '16:9', '9:16', '4:3', '3:4', '3:2', '2:3']},
-    width: {name: '宽度', type: 'number'},
-    height: {name: '高度', type: 'number'},
-    seed: {name: '随机种子', type: 'number'},
-    steps: {name: '生成步数', type: 'number'},
-    cfg_scale: {name: 'CFG强度', type: 'number'},
-    image_urls: {name: '图片URL列表', type: 'array'},
-    strength: {name: '变化强度', type: 'number'},
-    seconds: {name: '时长(秒)', type: 'number'},
-    fps: {name: '帧率', type: 'enum', enumValues: ['24', '30', '60']},
-    style: {name: '风格', type: 'enum', enumValues: ['realistic', 'anime', 'cartoon']},
-    image_size: {name: '分辨率', type: 'enum', enumValues: ['1K', '2K', '4K']},
-    callback_url: {name: '回调地址', type: 'string'},
+const STANDARD_PARAMS: Record<string, { name: string; type: string; group?: string; options?: string[] }> = {
+    // 通用
+    prompt: {name: '提示词', type: 'string', group: '通用'},
+    negative_prompt: {name: '负向提示词', type: 'string', group: '通用'},
+    callback_url: {name: '回调地址', type: 'string', group: '通用'},
+    // 图片尺寸
+    aspect_ratio: {name: '宽高比', type: 'enum', group: '尺寸', options: ['1:1', '16:9', '9:16', '4:3', '3:4', '3:2', '2:3']},
+    width: {name: '宽度', type: 'number', group: '尺寸'},
+    height: {name: '高度', type: 'number', group: '尺寸'},
+    size: {name: '尺寸', type: 'enum', group: '尺寸', options: ['1024x1024', '1536x1024', '1024x1536', '1792x1024', '1024x1792', 'auto']},
+    image_size: {name: '分辨率', type: 'enum', group: '尺寸', options: ['1K', '2K', '4K']},
+    // 生成控制
+    seed: {name: '随机种子', type: 'number', group: '生成控制'},
+    steps: {name: '生成步数', type: 'number', group: '生成控制'},
+    cfg_scale: {name: 'CFG强度', type: 'number', group: '生成控制'},
+    strength: {name: '变化强度', type: 'number', group: '生成控制'},
+    n: {name: '生成数量', type: 'number', group: '生成控制'},
+    quality: {name: '图片质量', type: 'enum', group: '生成控制', options: ['auto', 'high', 'medium', 'low']},
+    style: {name: '风格', type: 'enum', group: '生成控制', options: ['realistic', 'anime', 'cartoon']},
+    // 输出格式
+    response_format: {name: '响应格式', type: 'enum', group: '输出', options: ['url', 'b64_json']},
+    output_format: {name: '输出格式', type: 'enum', group: '输出', options: ['png', 'jpeg', 'webp']},
+    background: {name: '背景', type: 'enum', group: '输出', options: ['auto', 'transparent', 'opaque']},
+    // 输入
+    image_urls: {name: '图片URL列表', type: 'array', group: '输入'},
+    // 视频
+    seconds: {name: '时长(秒)', type: 'number', group: '视频'},
+    fps: {name: '帧率', type: 'enum', group: '视频', options: ['24', '30', '60']},
 };
 
 // 系统标准响应字段定义
@@ -38,6 +50,7 @@ const STANDARD_RESPONSE: Record<string, { name: string; type: string; enumValues
     status: {name: '状态', type: 'enum', enumValues: ['pending', 'processing', 'success', 'failed', 'cancelled']},
     progress: {name: '进度', type: 'number'},
     url: {name: '结果URL', type: 'string'},
+    urls: {name: '结果URL列表', type: 'array'},
     data: {name: '结果数据', type: 'string'},
     error: {name: '错误信息', type: 'string'},
 };
@@ -176,6 +189,17 @@ const formatPrice = (price?: number) => {
     return Number.isFinite(numeric) ? numeric.toString() : '0';
 };
 
+interface CustomParam {
+    key: string;
+    name: string;
+    type: string;
+    options: string;
+    default: string;
+    required: boolean;
+}
+
+const PARAM_TYPES = ['string', 'number', 'enum', 'array'];
+
 const CapabilityModal: React.FC<{
     isOpen: boolean;
     capability: Capability | null;
@@ -191,6 +215,7 @@ const CapabilityModal: React.FC<{
     });
     const [selectedStandardParams, setSelectedStandardParams] = useState<string[]>([]);
     const [requiredStandardParams, setRequiredStandardParams] = useState<string[]>([]);
+    const [customParams, setCustomParams] = useState<CustomParam[]>([]);
     const [loading, setLoading] = useState(false);
 
     useEffect(() => {
@@ -202,31 +227,66 @@ const CapabilityModal: React.FC<{
                 description: capability.description || '',
                 status: capability.status,
             });
-            const standardParamKeys = Object.keys(capability.standardParams || {});
-            setSelectedStandardParams(standardParamKeys);
-            setRequiredStandardParams(
-                standardParamKeys.filter(key => capability.standardParams?.[key]?.required)
-            );
+            const allParams = capability.standardParams || {};
+            const presetKeys: string[] = [];
+            const reqKeys: string[] = [];
+            const customs: CustomParam[] = [];
+            for (const [key, schema] of Object.entries(allParams) as [string, CapabilityStandardParamSchema][]) {
+                if (key in STANDARD_PARAMS) {
+                    presetKeys.push(key);
+                    if (schema.required) reqKeys.push(key);
+                } else {
+                    customs.push({
+                        key,
+                        name: schema.name || key,
+                        type: schema.type || 'string',
+                        options: (schema.options || schema.enumValues || []).join(', '),
+                        default: schema.default != null ? String(schema.default) : '',
+                        required: !!schema.required,
+                    });
+                }
+            }
+            setSelectedStandardParams(presetKeys);
+            setRequiredStandardParams(reqKeys);
+            setCustomParams(customs);
         } else {
             setForm({code: '', name: '', type: 'image', description: '', status: 1});
             setSelectedStandardParams([]);
             setRequiredStandardParams([]);
+            setCustomParams([]);
         }
     }, [capability, isOpen]);
 
     if (!isOpen) return null;
 
-    const buildStandardParams = () => selectedStandardParams.reduce<Record<string, any>>((acc, key) => {
-        const def = STANDARD_PARAMS[key];
-        if (!def) return acc;
-        acc[key] = {
-            type: def.type,
-            name: def.name,
-            required: requiredStandardParams.includes(key),
-            ...(def.enumValues ? { enumValues: def.enumValues } : {}),
-        };
-        return acc;
-    }, {});
+    const buildStandardParams = () => {
+        const result: Record<string, any> = {};
+        for (const key of selectedStandardParams) {
+            const def = STANDARD_PARAMS[key];
+            if (!def) continue;
+            result[key] = {
+                type: def.type,
+                name: def.name,
+                required: requiredStandardParams.includes(key),
+                ...(def.options ? {options: def.options} : {}),
+            };
+        }
+        for (const cp of customParams) {
+            if (!cp.key.trim()) continue;
+            const entry: Record<string, any> = {
+                type: cp.type,
+                name: cp.name || cp.key,
+                required: cp.required,
+            };
+            const opts = cp.options.split(/[,，]/).map(s => s.trim()).filter(Boolean);
+            if (opts.length > 0) entry.options = opts;
+            if (cp.default.trim()) {
+                entry.default = cp.type === 'number' ? Number(cp.default) : cp.default;
+            }
+            result[cp.key.trim()] = entry;
+        }
+        return result;
+    };
 
     const toggleStandardParam = (key: string, checked: boolean) => {
         if (checked) {
@@ -269,12 +329,12 @@ const CapabilityModal: React.FC<{
 
     return (
         <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50">
-            <div className="bg-white rounded-2xl w-full max-w-lg p-6 shadow-xl">
+            <div className="bg-white rounded-2xl w-full max-w-lg p-6 shadow-xl max-h-[90vh] overflow-hidden flex flex-col">
                 <div className="flex items-center justify-between mb-6">
                     <h3 className="text-lg font-bold text-gray-900">{capability ? '编辑能力' : '新建能力'}</h3>
                     <button onClick={onClose} className="p-2 hover:bg-gray-100 rounded-lg"><X size={20}/></button>
                 </div>
-                <form onSubmit={handleSubmit} className="space-y-4">
+                <form onSubmit={handleSubmit} className="space-y-4 flex-1 overflow-y-auto">
                     <div>
                         <label className="block text-sm font-medium text-gray-700 mb-1">能力编码 <span
                             className="text-red-500">*</span></label>
@@ -346,8 +406,8 @@ const CapabilityModal: React.FC<{
                                                 <code className="text-xs text-gray-400">{key}</code>
                                                 <span className="px-1.5 py-0.5 rounded bg-white text-[10px] text-gray-500 border border-gray-200">{def.type}</span>
                                             </div>
-                                            {def.enumValues?.length ? (
-                                                <div className="mt-1 text-xs text-gray-500">可选值：{def.enumValues.join(' / ')}</div>
+                                            {def.options?.length ? (
+                                                <div className="mt-1 text-xs text-gray-500">可选值：{def.options.join(' / ')}</div>
                                             ) : null}
                                             <div className="mt-2 flex items-center gap-2">
                                                 <input
@@ -371,6 +431,55 @@ const CapabilityModal: React.FC<{
                             })}
                         </div>
                         <p className="text-xs text-gray-500 mt-2">未配置时，Playground 会走基础 prompt 兜底输入。</p>
+                    </div>
+                    <div>
+                        <div className="flex items-center justify-between mb-2">
+                            <label className="block text-sm font-medium text-gray-700">自定义参数</label>
+                            <button type="button" onClick={() => setCustomParams(prev => [...prev, {key: '', name: '', type: 'string', options: '', default: '', required: false}])}
+                                className="text-xs text-indigo-600 hover:text-indigo-700">+ 添加参数</button>
+                        </div>
+                        {customParams.length > 0 && (
+                            <div className="space-y-2">
+                                {customParams.map((cp, i) => (
+                                    <div key={i} className="rounded-lg border border-gray-200 bg-gray-50 p-3 space-y-2">
+                                        <div className="grid grid-cols-3 gap-2">
+                                            <input type="text" value={cp.key} placeholder="字段名 (key)"
+                                                onChange={e => setCustomParams(prev => prev.map((p, j) => j === i ? {...p, key: e.target.value} : p))}
+                                                className="px-2 py-1.5 border border-gray-200 rounded-lg text-xs focus:outline-none focus:ring-2 focus:ring-indigo-500" />
+                                            <input type="text" value={cp.name} placeholder="显示名称"
+                                                onChange={e => setCustomParams(prev => prev.map((p, j) => j === i ? {...p, name: e.target.value} : p))}
+                                                className="px-2 py-1.5 border border-gray-200 rounded-lg text-xs focus:outline-none focus:ring-2 focus:ring-indigo-500" />
+                                            <select value={cp.type}
+                                                onChange={e => setCustomParams(prev => prev.map((p, j) => j === i ? {...p, type: e.target.value} : p))}
+                                                className="px-2 py-1.5 border border-gray-200 rounded-lg text-xs focus:outline-none focus:ring-2 focus:ring-indigo-500">
+                                                {PARAM_TYPES.map(t => <option key={t} value={t}>{t}</option>)}
+                                            </select>
+                                        </div>
+                                        <div className="grid grid-cols-2 gap-2">
+                                            <input type="text" value={cp.options} placeholder="可选值 (逗号分隔)"
+                                                onChange={e => setCustomParams(prev => prev.map((p, j) => j === i ? {...p, options: e.target.value} : p))}
+                                                className="px-2 py-1.5 border border-gray-200 rounded-lg text-xs focus:outline-none focus:ring-2 focus:ring-indigo-500" />
+                                            <input type="text" value={cp.default} placeholder="默认值"
+                                                onChange={e => setCustomParams(prev => prev.map((p, j) => j === i ? {...p, default: e.target.value} : p))}
+                                                className="px-2 py-1.5 border border-gray-200 rounded-lg text-xs focus:outline-none focus:ring-2 focus:ring-indigo-500" />
+                                        </div>
+                                        <div className="flex items-center justify-between">
+                                            <label className="flex items-center gap-1.5 text-xs text-gray-600">
+                                                <input type="checkbox" checked={cp.required}
+                                                    onChange={e => setCustomParams(prev => prev.map((p, j) => j === i ? {...p, required: e.target.checked} : p))}
+                                                    className="rounded border-gray-300 text-indigo-600 focus:ring-indigo-500" />
+                                                必填
+                                            </label>
+                                            <button type="button" onClick={() => setCustomParams(prev => prev.filter((_, j) => j !== i))}
+                                                className="text-xs text-red-500 hover:text-red-600">删除</button>
+                                        </div>
+                                    </div>
+                                ))}
+                            </div>
+                        )}
+                        {customParams.length === 0 && (
+                            <p className="text-xs text-gray-400">预设列表没有的参数可在此添加（如 output_compression）</p>
+                        )}
                     </div>
                     <div className="flex gap-3 pt-4">
                         <button type="button" onClick={onClose}
@@ -600,6 +709,76 @@ const buildResponseMapping = (fieldMappings: FieldMapping[], valueMappings: Valu
     return result;
 };
 
+// 配置模板
+const CONFIG_TEMPLATES: Record<string, {
+    label: string;
+    description: string;
+    form: Record<string, any>;
+    paramFieldMappings?: FieldMapping[];
+    paramFixedParams?: FixedParam[];
+    respFieldMappings?: FieldMapping[];
+    respSuccessCondition?: SuccessCondition | null;
+}> = {
+    openai_image: {
+        label: 'OpenAI 图片生成',
+        description: 'gpt-image-1 / dall-e-3 透传',
+        form: {
+            result_mode: 'sync',
+            request_path: '/v1/images/generations',
+            content_type: 'application/json',
+            auth_location: 'header',
+            auth_key: 'Authorization',
+            auth_value_prefix: 'Bearer ',
+        },
+        paramFieldMappings: [],
+        respFieldMappings: [
+            {stdField: 'url', vendorField: 'data[0].b64_json'},
+            {stdField: 'urls', vendorField: 'data[].b64_json'},
+        ],
+        respSuccessCondition: {field: 'data[0].b64_json', operator: 'exists'},
+    },
+    midjourney_poll: {
+        label: 'Midjourney (轮询)',
+        description: '提交 + 轮询模式',
+        form: {
+            result_mode: 'poll',
+            request_path: '/mj/submit/imagine',
+            content_type: 'application/json',
+            auth_location: 'header',
+            auth_key: 'mj-api-secret',
+            auth_value_prefix: '',
+            poll_path: '/mj/task/{task_id}/fetch',
+            poll_method: 'GET',
+            poll_interval: 10,
+            poll_max_attempts: 60,
+        },
+        paramFieldMappings: [{stdField: 'prompt', vendorField: 'prompt'}],
+        respFieldMappings: [{stdField: 'task_id', vendorField: 'result'}],
+        respSuccessCondition: {field: 'code', operator: 'eq', value: 1},
+    },
+    flux_sync: {
+        label: 'Flux 图片生成',
+        description: '同步返回模式',
+        form: {
+            result_mode: 'sync',
+            request_path: '/v1/images/generations',
+            content_type: 'application/json',
+            auth_location: 'header',
+            auth_key: 'Authorization',
+            auth_value_prefix: 'Bearer ',
+        },
+        paramFieldMappings: [{stdField: 'prompt', vendorField: 'prompt'}],
+        respFieldMappings: [{stdField: 'url', vendorField: 'data[0].url'}],
+    },
+    custom: {
+        label: '自定义',
+        description: '从空白开始配置',
+        form: {},
+        paramFieldMappings: [],
+        respFieldMappings: [],
+    },
+};
+
 // 渠道能力配置编辑弹窗
 const ChannelCapabilityModal: React.FC<{
     isOpen: boolean;
@@ -610,6 +789,7 @@ const ChannelCapabilityModal: React.FC<{
     onClose: () => void;
     onSave: () => void;
 }> = ({isOpen, capabilityCode, channelCapability, channels, capabilities, onClose, onSave}) => {
+    const [templateSelected, setTemplateSelected] = useState(!!channelCapability);
     const [activeTab, setActiveTab] = useState<'basic' | 'request' | 'param' | 'response' | 'poll_response' | 'callback'>('basic');
     const [form, setForm] = useState({
         channel_id: 0,
@@ -629,6 +809,7 @@ const ChannelCapabilityModal: React.FC<{
         poll_method: 'GET',
         poll_interval: 5,
         poll_max_attempts: 60,
+        transfer_enabled: true,
     });
 
     // 参数映射表单状态
@@ -687,6 +868,7 @@ const ChannelCapabilityModal: React.FC<{
                 poll_method: channelCapability.pollMethod || 'GET',
                 poll_interval: channelCapability.pollInterval || 5,
                 poll_max_attempts: channelCapability.pollMaxAttempts || 60,
+                transfer_enabled: channelCapability.extraConfig?.transfer_enabled !== false,
             });
 
             // 解析参数映射
@@ -784,6 +966,7 @@ const ChannelCapabilityModal: React.FC<{
             setCallbackStatusMappings([]);
         }
         setActiveTab('basic');
+        setTemplateSelected(!!channelCapability);
     }, [channelCapability, capabilityCode, channels, isOpen]);
 
     if (!isOpen) return null;
@@ -831,12 +1014,19 @@ const ChannelCapabilityModal: React.FC<{
                 poll_interval: form.poll_interval,
                 poll_max_attempts: form.poll_max_attempts,
                 param_mapping: paramMapping,
-                response_mapping: responseMapping,
                 callback_mapping: callbackMapping,
+                extra_config: {transfer_enabled: form.transfer_enabled},
             };
 
+            // 仅在有映射配置时才提交，避免覆盖旧格式配置
+            if (Object.keys(responseMapping).length > 0) {
+                data.response_mapping = responseMapping;
+            }
+
             // 轮询响应映射
-            data.poll_response_mapping = pollResponseMapping || {};
+            if (pollResponseMapping && Object.keys(pollResponseMapping).length > 0) {
+                data.poll_response_mapping = pollResponseMapping;
+            }
 
             // 轮询参数映射
             if (form.result_mode === 'poll' && form.poll_method === 'POST') {
@@ -848,7 +1038,7 @@ const ChannelCapabilityModal: React.FC<{
             if (channelCapability) {
                 await updateChannelCapability(channelCapability.id, data);
             } else {
-                await createChannelCapability(data);
+                await createChannelCapability(data as Parameters<typeof createChannelCapability>[0]);
             }
             onSave();
             onClose();
@@ -863,9 +1053,17 @@ const ChannelCapabilityModal: React.FC<{
         {key: 'param', label: '参数映射'},
         {key: 'response', label: '响应映射'},
     ];
-    const tabs = useSeparatePollMapping && form.result_mode === 'poll'
-        ? [...baseTabs, {key: 'poll_response', label: '轮询响应'}, {key: 'callback', label: '回调映射'}]
-        : [...baseTabs, {key: 'callback', label: '回调映射'}];
+    const tabs = (() => {
+        if (form.result_mode === 'sync') return baseTabs;
+        if (form.result_mode === 'poll') {
+            const t = [...baseTabs];
+            if (useSeparatePollMapping) t.push({key: 'poll_response', label: '轮询响应'});
+            t.push({key: 'callback', label: '回调映射'});
+            return t;
+        }
+        // callback
+        return [...baseTabs, {key: 'callback', label: '回调映射'}];
+    })();
 
     // 添加参数字段映射
     const addParamFieldMapping = (stdField: string) => {
@@ -904,6 +1102,32 @@ const ChannelCapabilityModal: React.FC<{
                     <button onClick={onClose} className="p-2 hover:bg-gray-100 rounded-lg"><X size={20}/></button>
                 </div>
 
+                {!templateSelected && !channelCapability ? (
+                    <div className="flex-1 overflow-y-auto">
+                        <p className="text-sm text-gray-500 mb-4">选择一个模板快速开始，或从空白自定义配置</p>
+                        <div className="grid grid-cols-2 gap-3">
+                            {Object.entries(CONFIG_TEMPLATES).map(([key, tpl]) => (
+                                <button
+                                    key={key}
+                                    type="button"
+                                    onClick={() => {
+                                        setForm(prev => ({...prev, ...tpl.form}));
+                                        if (tpl.paramFieldMappings) setParamFieldMappings(tpl.paramFieldMappings);
+                                        if (tpl.respFieldMappings) setRespFieldMappings(tpl.respFieldMappings);
+                                        if (tpl.respSuccessCondition !== undefined) setRespSuccessCondition(tpl.respSuccessCondition);
+                                        if (tpl.paramFixedParams) setParamFixedParams(tpl.paramFixedParams);
+                                        setTemplateSelected(true);
+                                    }}
+                                    className="text-left p-4 rounded-xl border border-gray-200 hover:border-indigo-300 hover:bg-indigo-50 transition-colors"
+                                >
+                                    <div className="font-medium text-sm text-gray-900">{tpl.label}</div>
+                                    <div className="text-xs text-gray-500 mt-1">{tpl.description}</div>
+                                </button>
+                            ))}
+                        </div>
+                    </div>
+                ) : (
+                <>
                 <div className="flex border-b border-gray-200 mb-4 overflow-x-auto">
                     {tabs.map(tab => (
                         <button
@@ -1015,6 +1239,16 @@ const ChannelCapabilityModal: React.FC<{
                                         <option value="image">按图片</option>
                                     </select>
                                 </div>
+                            </div>
+                            <div className="flex items-center gap-2 mt-2">
+                                <input
+                                    type="checkbox"
+                                    id="transfer_enabled"
+                                    checked={form.transfer_enabled}
+                                    onChange={e => setForm({...form, transfer_enabled: e.target.checked})}
+                                    className="h-4 w-4 text-indigo-600 border-gray-300 rounded focus:ring-indigo-500"
+                                />
+                                <label htmlFor="transfer_enabled" className="text-sm text-gray-700">结果文件转存到 OSS</label>
                             </div>
                         </div>
                     )}
@@ -1281,6 +1515,11 @@ const ChannelCapabilityModal: React.FC<{
                     {/* 参数映射 */}
                     {activeTab === 'param' && (
                         <div className="space-y-6">
+                            {paramFieldMappings.length === 0 && paramFixedParams.length === 0 && paramValueMappings.length === 0 && paramTypeConverts.length === 0 && (
+                                <div className="rounded-lg border border-blue-200 bg-blue-50 px-4 py-3 text-sm text-blue-700">
+                                    当前为透传模式：请求参数将原样转发给上游 API，无需配置映射。如需自定义参数转换，请在下方添加。
+                                </div>
+                            )}
                             {/* 字段映射 */}
                             <div>
                                 <div className="flex items-center justify-between mb-3">
@@ -1370,7 +1609,7 @@ const ChannelCapabilityModal: React.FC<{
                                                 disabled={!m.field}
                                             >
                                                 <option value="">系统值</option>
-                                                {m.field && STANDARD_PARAMS[m.field]?.enumValues?.map(v => (
+                                                {m.field && STANDARD_PARAMS[m.field]?.options?.map(v => (
                                                     <option key={v} value={v}>{v}</option>
                                                 ))}
                                             </select>
@@ -1516,6 +1755,11 @@ const ChannelCapabilityModal: React.FC<{
                     {/* 响应映射 */}
                     {activeTab === 'response' && (
                         <div className="space-y-6">
+                            {respFieldMappings.length === 0 && respValueMappings.length === 0 && respTypeConverts.length === 0 && !respSuccessCondition && (
+                                <div className="rounded-lg border border-blue-200 bg-blue-50 px-4 py-3 text-sm text-blue-700">
+                                    当前为透传模式：上游 API 的响应将原样返回，无需配置映射。如需自定义响应转换，请在下方添加。
+                                </div>
+                            )}
                             {/* 字段映射 */}
                             <div>
                                 <div className="flex items-center justify-between mb-3">
@@ -2167,6 +2411,8 @@ const ChannelCapabilityModal: React.FC<{
                         </button>
                     </div>
                 </form>
+                </>
+                )}
             </div>
         </div>
     );

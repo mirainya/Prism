@@ -1,28 +1,16 @@
 package worker
 
+import "github.com/mirainya/Prism/pkg/queue"
+
 const (
-	TypeTaskSubmit       = "task:submit"
-	TypeTaskPoll         = "task:poll"
-	TypeTaskUpload       = "task:upload"
-	TypeTaskNotify       = "task:notify"
-	TypeTaskTimeoutCheck = "task:timeout_check"
+	TypeTaskSubmit       = queue.TypeTaskSubmit
+	TypeTaskPoll         = queue.TypeTaskPoll
+	TypeTaskUpload       = queue.TypeTaskUpload
+	TypeTaskNotify       = queue.TypeTaskNotify
+	TypeTaskTimeoutCheck = queue.TypeTaskTimeoutCheck
 )
 
-type TaskSubmitPayload struct {
-	TaskID uint `json:"task_id"`
-}
-
-type TaskPollPayload struct {
-	TaskID    uint `json:"task_id"`
-	PollCount int  `json:"poll_count"`
-}
-
-type TaskUploadPayload struct {
-	TaskID    uint     `json:"task_id"`
-	OriginURL string   `json:"origin_url"`
-	URLs      []string `json:"urls"`
-}
-
-type TaskNotifyPayload struct {
-	TaskID uint `json:"task_id"`
-}
+type TaskSubmitPayload = queue.TaskSubmitPayload
+type TaskPollPayload = queue.TaskPollPayload
+type TaskUploadPayload = queue.TaskUploadPayload
+type TaskNotifyPayload = queue.TaskNotifyPayload

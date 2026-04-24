@@ -64,7 +64,7 @@ func (s *TokenService) ListTokens(userID uint) ([]gin.H, error) {
 		result[i] = gin.H{
 			"id":                 t.ID,
 			"name":               t.Name,
-			"key":                t.KeyHint,
+			"key":                t.PlainKey,
 			"balance":            t.Balance,
 			"total_used":         t.TotalUsed,
 			"rate_limit":         t.RateLimit,
@@ -87,6 +87,7 @@ func (s *TokenService) CreateToken(userID uint, req *CreateTokenReq) (gin.H, err
 		Name:      req.Name,
 		Key:       keyHash,
 		KeyHint:   keyHint,
+		PlainKey:  plainKey,
 		Balance:   req.Balance,
 		RateLimit: 60,
 		Status:    1,
@@ -135,7 +136,7 @@ func (s *TokenService) GetToken(userID uint, id uint) (gin.H, error) {
 	return gin.H{
 		"id":                 token.ID,
 		"name":               token.Name,
-		"key":                token.KeyHint,
+		"key":                token.PlainKey,
 		"balance":            token.Balance,
 		"total_used":         token.TotalUsed,
 		"rate_limit":         token.RateLimit,

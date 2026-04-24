@@ -4,17 +4,15 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"path/filepath"
-	"strings"
 	"time"
 
-	"github.com/google/uuid"
 	"github.com/mirainya/Prism/internal/model"
+	"github.com/mirainya/Prism/pkg/filestorage"
 	"github.com/mirainya/Prism/pkg/httputil"
 	"github.com/mirainya/Prism/pkg/logger"
-	"github.com/mirainya/Prism/pkg/storage"
 	"github.com/shopspring/decimal"
 	"go.uber.org/zap"
+	"gorm.io/datatypes"
 	"gorm.io/gorm"
 )
 
@@ -87,31 +85,29 @@ func (s *CapabilityService) HandleCallback(ctx context.Context, channelType stri
 func (s *CapabilityService) completeTask(task *model.Task, cc *model.ChannelCapability, result map[string]any) {
 	ctx := context.Background()
 
-	// 尝试转存文件到COS
-	if storage.DefaultStorage != nil {
-		// 获取结果URL（统一使用 url 字段）
-		originURL, _ := result["url"].(string)
-
-		if originURL != "" {
-			// 下载原始文件
-			downloadResult, err := httputil.Download(ctx, originURL)
+	originURLs := extractStringList(result["urls"])
+	if len(originURLs) == 0 {
+		if originURL, _ := result["url"].(string); originURL != "" {
+			originURLs = []string{originURL}
+		}
+	}
+	if len(originURLs) > 0 && isTransferEnabled(cc.ExtraConfig) {
+		finalURLs := make([]string, 0, len(originURLs))
+		for _, originURL := range originURLs {
+			finalURL, err := transferResultFile(ctx, originURL, task.CapabilityCode)
 			if err != nil {
-				logger.Error("download file for transfer failed", zap.String("task_no", task.TaskNo), zap.Error(err))
-			} else {
-				defer downloadResult.Body.Close()
-
-				// 生成存储路径
-				storagePath := s.generateStoragePath(task.CapabilityCode, originURL)
-
-				// 上传到COS
-				finalURL, err := storage.Upload(ctx, downloadResult.Body, storagePath, downloadResult.ContentType)
-				if err != nil {
-					logger.Error("upload to storage failed", zap.String("task_no", task.TaskNo), zap.Error(err))
-				} else {
-					result["url"] = finalURL
-					logger.Info("file transferred to storage", zap.String("task_no", task.TaskNo), zap.String("url", finalURL))
-				}
+				logger.Error("file transfer failed", zap.String("task_no", task.TaskNo), zap.Error(err))
+				finalURL = originURL
+			} else if finalURL != "" {
+				logger.Info("file transferred to storage", zap.String("task_no", task.TaskNo), zap.String("url", finalURL))
 			}
+			if finalURL != "" {
+				finalURLs = append(finalURLs, finalURL)
+			}
+		}
+		if len(finalURLs) > 0 {
+			result["url"] = finalURLs[0]
+			result["urls"] = finalURLs
 		}
 	}
 
@@ -137,22 +133,45 @@ func (s *CapabilityService) completeTask(task *model.Task, cc *model.ChannelCapa
 	}
 }
 
-// generateStoragePath 生成存储路径
-func (s *CapabilityService) generateStoragePath(capabilityCode string, originURL string) string {
-	now := time.Now()
-	ext := filepath.Ext(originURL)
-	if ext == "" || len(ext) > 10 {
-		if strings.Contains(capabilityCode, "video") {
-			ext = ".mp4"
-		} else {
-			ext = ".png"
+// isTransferEnabled 检查 extra_config 中是否启用文件转存（默认启用）
+func isTransferEnabled(extraConfig datatypes.JSON) bool {
+	if len(extraConfig) == 0 {
+		return true
+	}
+	var cfg map[string]any
+	if err := json.Unmarshal(extraConfig, &cfg); err != nil {
+		return true
+	}
+	if v, ok := cfg["transfer_enabled"]; ok {
+		if b, ok := v.(bool); ok {
+			return b
 		}
 	}
-	// 去除ext中可能的查询参数
-	if idx := strings.Index(ext, "?"); idx > 0 {
-		ext = ext[:idx]
+	return true
+}
+
+func extractStringList(value any) []string {
+	switch v := value.(type) {
+	case []string:
+		return v
+	case []any:
+		items := make([]string, 0, len(v))
+		for _, item := range v {
+			if s, ok := item.(string); ok && s != "" {
+				items = append(items, s)
+			}
+		}
+		return items
+	default:
+		return nil
 	}
-	return fmt.Sprintf("%s/%s/%s%s", capabilityCode, now.Format("2006/01/02"), uuid.New().String(), ext)
+}
+
+func transferResultFile(ctx context.Context, originURL string, capabilityCode string) (string, error) {
+	if filestorage.IsBase64Data(originURL) {
+		return filestorage.TransferBase64(ctx, originURL, capabilityCode)
+	}
+	return filestorage.TransferURL(ctx, originURL, capabilityCode)
 }
 
 // failTask 任务失败

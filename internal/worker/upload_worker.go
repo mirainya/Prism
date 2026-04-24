@@ -4,18 +4,14 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"path/filepath"
-	"strings"
-	"time"
 
-	"github.com/google/uuid"
 	"github.com/hibiken/asynq"
 	"github.com/mirainya/Prism/internal/model"
-	"github.com/mirainya/Prism/pkg/httputil"
+	"github.com/mirainya/Prism/pkg/filestorage"
 	"github.com/mirainya/Prism/pkg/logger"
 	"github.com/mirainya/Prism/pkg/queue"
-	"github.com/mirainya/Prism/pkg/storage"
 	"go.uber.org/zap"
+	"gorm.io/datatypes"
 )
 
 func HandleTaskUpload(ctx context.Context, t *asynq.Task) error {
@@ -35,48 +31,35 @@ func HandleTaskUpload(ctx context.Context, t *asynq.Task) error {
 	var cc model.ChannelCapability
 	model.DB().First(&cc, task.ChannelCapabilityID)
 
-	// 获取原始URL
-	originURL := payload.OriginURL
-	if originURL == "" && len(payload.URLs) > 0 {
-		originURL = payload.URLs[0]
+	originURLs := payload.URLs
+	if len(originURLs) == 0 && payload.OriginURL != "" {
+		originURLs = []string{payload.OriginURL}
 	}
 
-	// 如果没有配置存储或没有原始URL，直接使用原始URL
-	if storage.DefaultStorage == nil || originURL == "" {
-		result := buildResult(originURL, payload.URLs)
-		taskService.UpdateTaskSuccess(task.ID, result, cc.Price)
-		strategyService.DecrementAccountTasks(task.AccountID)
-		if task.CallbackURL != "" {
-			enqueueNotify(task.ID)
+	finalURLs := make([]string, 0, len(originURLs))
+	transferEnabled := isTransferEnabled(cc.ExtraConfig)
+	for _, originURL := range originURLs {
+		if originURL == "" {
+			continue
 		}
-		logger.Info("task upload completed (no transfer)", zap.Uint("task_id", task.ID))
-		return nil
+		finalURL := originURL
+		if transferEnabled {
+			if transferred, err := transferResultFile(ctx, originURL, task.CapabilityCode); err != nil {
+				logger.Error("file transfer failed", zap.Uint("task_id", task.ID), zap.Error(err))
+			} else {
+				finalURL = transferred
+			}
+		}
+		if finalURL != "" {
+			finalURLs = append(finalURLs, finalURL)
+		}
 	}
 
-	// 下载原始文件
-	downloadResult, err := httputil.Download(ctx, originURL)
-	if err != nil {
-		logger.Error("download file failed", zap.Uint("task_id", task.ID), zap.Error(err))
-		taskService.UpdateTaskFail(task.ID, "download failed: "+err.Error())
-		strategyService.DecrementAccountTasks(task.AccountID)
-		return nil
+	primaryURL := ""
+	if len(finalURLs) > 0 {
+		primaryURL = finalURLs[0]
 	}
-	defer downloadResult.Body.Close()
-
-	// 生成存储路径
-	storagePath := generateStoragePath(task.CapabilityCode, originURL)
-
-	// 上传到COS
-	finalURL, err := storage.Upload(ctx, downloadResult.Body, storagePath, downloadResult.ContentType)
-	if err != nil {
-		logger.Error("upload to cos failed", zap.Uint("task_id", task.ID), zap.Error(err))
-		taskService.UpdateTaskFail(task.ID, "upload failed: "+err.Error())
-		strategyService.DecrementAccountTasks(task.AccountID)
-		return nil
-	}
-
-	// 更新任务成功状态
-	result := buildResult(finalURL, []string{finalURL})
+	result := buildResult(primaryURL, finalURLs)
 	taskService.UpdateTaskSuccess(task.ID, result, cc.Price)
 	strategyService.DecrementAccountTasks(task.AccountID)
 
@@ -85,9 +68,16 @@ func HandleTaskUpload(ctx context.Context, t *asynq.Task) error {
 		enqueueNotify(task.ID)
 	}
 
-	logger.Info("task upload completed", zap.Uint("task_id", task.ID), zap.String("final_url", finalURL))
+	logger.Info("task upload completed", zap.Uint("task_id", task.ID), zap.String("final_url", primaryURL))
 
 	return nil
+}
+
+func transferResultFile(ctx context.Context, originURL string, capabilityCode string) (string, error) {
+	if filestorage.IsBase64Data(originURL) {
+		return filestorage.TransferBase64(ctx, originURL, capabilityCode)
+	}
+	return filestorage.TransferURL(ctx, originURL, capabilityCode)
 }
 
 // buildResult 构建结果对象
@@ -101,24 +91,20 @@ func buildResult(primaryURL string, urls []string) map[string]any {
 	return result
 }
 
-// generateStoragePath 生成存储路径
-func generateStoragePath(capabilityCode string, originURL string) string {
-	now := time.Now()
-	ext := filepath.Ext(originURL)
-	if ext == "" || len(ext) > 10 {
-		// 根据能力类型判断文件扩展名
-		if strings.Contains(capabilityCode, "video") {
-			ext = ".mp4"
-		} else {
-			ext = ".png"
+func isTransferEnabled(extraConfig datatypes.JSON) bool {
+	if len(extraConfig) == 0 {
+		return true
+	}
+	var cfg map[string]any
+	if err := json.Unmarshal(extraConfig, &cfg); err != nil {
+		return true
+	}
+	if v, ok := cfg["transfer_enabled"]; ok {
+		if b, ok := v.(bool); ok {
+			return b
 		}
 	}
-	// 去除ext中可能的查询参数
-	if idx := strings.Index(ext, "?"); idx > 0 {
-		ext = ext[:idx]
-	}
-
-	return fmt.Sprintf("%s/%s/%s%s", capabilityCode, now.Format("2006/01/02"), uuid.New().String(), ext)
+	return true
 }
 
 func enqueueNotify(taskID uint) error {

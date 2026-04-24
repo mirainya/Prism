@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"strings"
 	"time"
 
@@ -12,28 +13,87 @@ import (
 	"go.uber.org/zap"
 )
 
-// executeTask 执行任务（异步）
-func (s *CapabilityService) executeTask(
+// executeSyncTask 同步执行任务并返回结果
+func (s *CapabilityService) executeSyncTask(
+	ctx context.Context,
 	task *model.Task,
 	channel *model.Channel,
 	cc *model.ChannelCapability,
 	account *model.ChannelAccount,
 	params map[string]any,
-) {
-	ctx := context.Background()
+) (map[string]any, error) {
 	defer s.releaseAccount(account.ID)
 
-	// 更新状态为处理中
 	now := time.Now()
 	model.DB().Model(task).Updates(map[string]any{
 		"status":     model.TaskStatusProcessing,
 		"started_at": now,
 	})
 
-	// 构建请求URL
+	url, headers := s.buildRequest(channel, cc, account, params)
+
+	detail := httputil.PostWithDetail(ctx, url, params, headers, cc.ContentType)
+	s.logRequest(task, model.RequestTypeSubmit, detail)
+	if detail.Error != nil {
+		s.failTask(task, detail.Error.Error())
+		return nil, detail.Error
+	}
+
+	model.DB().Model(task).Update("vendor_response", detail.ResponseBody)
+
+	var respMap map[string]any
+	json.Unmarshal(detail.ResponseBody, &respMap)
+
+	// 透传模式
+	if len(cc.ResponseMapping) == 0 {
+		s.completeTask(task, cc, respMap)
+		return respMap, nil
+	}
+
+	isSuccess, isFailed := s.responseMapper.CheckSuccess(respMap, cc.ResponseMapping)
+	result, err := s.responseMapper.Map(respMap, cc.ResponseMapping)
+	if err != nil {
+		s.failTask(task, err.Error())
+		return nil, err
+	}
+
+	if isFailed {
+		errMsg, _ := result["error"].(string)
+		if errMsg == "" {
+			errMsg = "request failed by success condition"
+		}
+		s.failTask(task, errMsg)
+		return nil, fmt.Errorf("%s", errMsg)
+	}
+
+	if isSuccess {
+		s.completeTask(task, cc, result)
+		return result, nil
+	}
+
+	status, _ := result["status"].(string)
+	if status == "failed" {
+		errMsg, _ := result["error"].(string)
+		if errMsg == "" {
+			errMsg = "request failed"
+		}
+		s.failTask(task, errMsg)
+		return nil, fmt.Errorf("%s", errMsg)
+	}
+
+	s.completeTask(task, cc, result)
+	return result, nil
+}
+
+// buildRequest 构建请求 URL 和认证头
+func (s *CapabilityService) buildRequest(
+	channel *model.Channel,
+	cc *model.ChannelCapability,
+	account *model.ChannelAccount,
+	params map[string]any,
+) (string, map[string]string) {
 	url := channel.BaseURL + cc.RequestPath
 
-	// 处理认证
 	headers := make(map[string]string)
 	authKey := cc.AuthKey
 	if authKey == "" {
@@ -55,6 +115,29 @@ func (s *CapabilityService) executeTask(
 	default:
 		headers["Authorization"] = "Bearer " + account.APIKey
 	}
+
+	return url, headers
+}
+
+// executeTask 执行任务（异步）
+func (s *CapabilityService) executeTask(
+	task *model.Task,
+	channel *model.Channel,
+	cc *model.ChannelCapability,
+	account *model.ChannelAccount,
+	params map[string]any,
+) {
+	ctx := context.Background()
+	defer s.releaseAccount(account.ID)
+
+	// 更新状态为处理中
+	now := time.Now()
+	model.DB().Model(task).Updates(map[string]any{
+		"status":     model.TaskStatusProcessing,
+		"started_at": now,
+	})
+
+	url, headers := s.buildRequest(channel, cc, account, params)
 
 	// 发送请求（根据 ContentType 选择请求格式）
 	detail := httputil.PostWithDetail(ctx, url, params, headers, cc.ContentType)
@@ -85,6 +168,12 @@ func (s *CapabilityService) executeTask(
 
 // handleSyncResult 处理同步结果
 func (s *CapabilityService) handleSyncResult(task *model.Task, cc *model.ChannelCapability, resp map[string]any) {
+	// 透传模式：无响应映射配置，直接以原始响应作为结果
+	if len(cc.ResponseMapping) == 0 {
+		s.completeTask(task, cc, resp)
+		return
+	}
+
 	// 先检查成功条件（基于原始响应）
 	isSuccess, isFailed := s.responseMapper.CheckSuccess(resp, cc.ResponseMapping)
 

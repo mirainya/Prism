@@ -56,20 +56,22 @@ func InitHTTPClient() {
 }
 
 type BaseProvider struct {
-	Name            string
-	BaseURL         string
-	APIKey          string
-	AuthLocation    string // header/body/query
-	AuthKey         string
-	AuthValuePrefix string
-	ContentType     string // application/json / application/x-www-form-urlencoded / multipart/form-data
-	RequestMethod   string // POST / GET
-	SubmitPath      string
-	ProgressPath    string
-	Converter       ParamConverter
-	Parser          ResponseParser
-	ResponseMapping *ResponseMapping
-	CallbackMapping *ResponseMapping
+	Name                string
+	BaseURL             string
+	APIKey              string
+	AuthLocation        string // header/body/query
+	AuthKey             string
+	AuthValuePrefix     string
+	ContentType         string // application/json / application/x-www-form-urlencoded / multipart/form-data
+	RequestMethod       string // POST / GET
+	PollMethod          string // GET / POST
+	SubmitPath          string
+	ProgressPath        string
+	Converter           ParamConverter
+	Parser              ResponseParser
+	ResponseMapping     *ResponseMapping
+	PollResponseMapping *ResponseMapping
+	CallbackMapping     *ResponseMapping
 }
 
 // resolvePath 替换路径中的 {variable} 模板变量
@@ -204,15 +206,33 @@ func (p *BaseProvider) Submit(ctx context.Context, req SubmitRequest) (SubmitRes
 }
 
 func (p *BaseProvider) GetProgress(ctx context.Context, providerTaskID string) (ProgressResult, error) {
-	// 路径模板变量替换
-	progressPath := resolvePath(p.ProgressPath, map[string]any{"task_id": providerTaskID})
-	reqURL := p.appendQueryAuth(fmt.Sprintf("%s%s/%s", p.BaseURL, progressPath, providerTaskID))
+	progressPath := resolvePath(p.ProgressPath, map[string]any{"task_id": providerTaskID, "id": providerTaskID})
+	reqURL := p.appendQueryAuth(p.BaseURL + progressPath)
 
-	httpReq, err := http.NewRequestWithContext(ctx, "GET", reqURL, nil)
+	method := p.PollMethod
+	if method == "" {
+		method = "GET"
+	}
+
+	var body io.Reader
+	contentType := "application/json"
+	if method == "POST" {
+		params := map[string]any{"task_id": providerTaskID}
+		if p.AuthLocation == "body" {
+			params[p.AuthKey] = p.AuthValuePrefix + p.APIKey
+		}
+		bodyBytes, _ := json.Marshal(params)
+		body = bytes.NewReader(bodyBytes)
+	}
+
+	httpReq, err := http.NewRequestWithContext(ctx, method, reqURL, body)
 	if err != nil {
 		return ProgressResult{}, fmt.Errorf("create request: %w", err)
 	}
 
+	if method == "POST" {
+		httpReq.Header.Set("Content-Type", contentType)
+	}
 	p.setAuth(httpReq)
 
 	resp, err := sharedHTTPClient.Do(httpReq)
@@ -230,7 +250,11 @@ func (p *BaseProvider) GetProgress(ctx context.Context, providerTaskID string) (
 		return ProgressResult{Error: string(respBody)}, nil
 	}
 
-	return p.Parser.ParseProgressResponse(respBody, p.ResponseMapping)
+	mapping := p.PollResponseMapping
+	if mapping == nil {
+		mapping = p.ResponseMapping
+	}
+	return p.Parser.ParseProgressResponse(respBody, mapping)
 }
 
 // ParseCallback 使用独立的 CallbackMapping 解析回调

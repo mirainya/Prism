@@ -328,6 +328,21 @@ func PlaygroundGetTask(c *gin.Context) {
 	resp.Success(c, detail)
 }
 
+func PlaygroundCancelTask(c *gin.Context) {
+	token, ok := getPlaygroundToken(c)
+	if !ok {
+		return
+	}
+
+	taskNo := c.Param("task_no")
+	if err := capabilityService.CancelTask(c.Request.Context(), taskNo, token.UserID); err != nil {
+		resp.ErrorMsg(c, http.StatusBadRequest, 400, err.Error())
+		return
+	}
+
+	resp.Success(c, gin.H{"message": "task cancelled"})
+}
+
 // getPlaygroundToken 校验 token 归属当前用户
 func PlaygroundListConversations(c *gin.Context) {
 	token, ok := getPlaygroundToken(c)

@@ -19,6 +19,7 @@ import {
   playgroundGetConversationMessages,
   playgroundGetDebug,
   playgroundUploadFile,
+  playgroundCancelTask,
 } from '../services/api';
 import {
   ApiToken,
@@ -417,6 +418,23 @@ const inferMediaTypeFromContext = (key: string, container?: Record<string, any> 
   return null;
 };
 
+const BASE64_IMAGE_PREFIXES = ['data:image/', '/9j/', 'iVBOR', 'R0lGO', 'UklGR'];
+const BASE64_KEY_HINTS = ['b64', 'base64', 'b64_json'];
+
+const isBase64Image = (key: string, value: string): string | null => {
+  if (value.startsWith('data:image/')) return value;
+  if (value.length < 100) return null;
+  const lowerKey = key.toLowerCase();
+  const keyMatch = BASE64_KEY_HINTS.some(h => lowerKey.includes(h));
+  if (!keyMatch && !BASE64_IMAGE_PREFIXES.some(p => value.startsWith(p))) return null;
+  if (value.startsWith('/9j/')) return `data:image/jpeg;base64,${value}`;
+  if (value.startsWith('iVBOR')) return `data:image/png;base64,${value}`;
+  if (value.startsWith('R0lGO')) return `data:image/gif;base64,${value}`;
+  if (value.startsWith('UklGR')) return `data:image/webp;base64,${value}`;
+  if (keyMatch) return `data:image/png;base64,${value}`;
+  return null;
+};
+
 const extractMediaItems = (value: any, path = 'result', results: MediaItem[] = [], context: MediaContext = {}): MediaItem[] => {
   if (!value) return results;
 
@@ -440,6 +458,12 @@ const extractMediaItems = (value: any, path = 'result', results: MediaItem[] = [
         const mediaType = inferMediaType(item);
         if (mediaType) {
           results.push({ type: mediaType, url: item, label: nextPath });
+          return;
+        }
+        // base64 图片检测
+        const b64Url = isBase64Image(key, item);
+        if (b64Url) {
+          results.push({ type: 'image', url: b64Url, label: nextPath });
           return;
         }
         if (isLikelyMediaKey(key) && /^https?:\/\//i.test(item)) {
@@ -621,6 +645,16 @@ const ChatTab: React.FC<{ tokenId: string }> = ({ tokenId }) => {
   const streamFlushTimerRef = useRef<number | null>(null);
   const lastAutoScrollAtRef = useRef(0);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const attachmentsRef = useRef<Attachment[]>([]);
+
+  const clearChatAttachments = useCallback(() => {
+    setAttachments(prev => {
+      prev.forEach(att => {
+        if (att.preview) URL.revokeObjectURL(att.preview);
+      });
+      return [];
+    });
+  }, []);
 
   const selectedModelInfo = useMemo(() => models.find(model => model.id === selectedModel), [models, selectedModel]);
   const streamDisabled = selectedModelInfo?.supports_stream === false;
@@ -645,6 +679,7 @@ const ChatTab: React.FC<{ tokenId: string }> = ({ tokenId }) => {
 
   useEffect(() => {
     if (!tokenId) return;
+    clearChatAttachments();
     playgroundListModels(tokenId)
       .then(m => {
         setModels(m);
@@ -654,7 +689,7 @@ const ChatTab: React.FC<{ tokenId: string }> = ({ tokenId }) => {
       })
       .catch(() => setModels([]));
     loadHistory();
-  }, [tokenId]);
+  }, [tokenId, clearChatAttachments]);
 
   useEffect(() => {
     if (!selectedModelInfo) return;
@@ -672,13 +707,21 @@ const ChatTab: React.FC<{ tokenId: string }> = ({ tokenId }) => {
     lastAutoScrollAtRef.current = now;
   }, [chat.messages]);
 
+  useEffect(() => {
+    attachmentsRef.current = attachments;
+  }, [attachments]);
+
   useEffect(() => () => {
     if (streamFlushTimerRef.current !== null) {
       window.clearTimeout(streamFlushTimerRef.current);
     }
+    attachmentsRef.current.forEach(att => {
+      if (att.preview) URL.revokeObjectURL(att.preview);
+    });
   }, []);
 
   const applyConversationMessages = async (conversation: PlaygroundConversation) => {
+    clearChatAttachments();
     setSelectedConversationId(conversation.id);
     setConversationId(String(conversation.id));
     setSelectedModel(conversation.model);
@@ -809,9 +852,6 @@ const ChatTab: React.FC<{ tokenId: string }> = ({ tokenId }) => {
       statusText: stream ? '正在流式接收...' : '正在请求...',
     }));
     setInput('');
-    // 清空附件（释放预览 URL）
-    attachments.forEach(a => { if (a.preview) URL.revokeObjectURL(a.preview); });
-    setAttachments([]);
 
     const startTime = Date.now();
     const controller = new AbortController();
@@ -1029,6 +1069,7 @@ const ChatTab: React.FC<{ tokenId: string }> = ({ tokenId }) => {
     setCurrentConversationMeta(null);
     setPendingModel(null);
     setInput('');
+    clearChatAttachments();
     setShowFullDebug(false);
   };
 
@@ -1844,6 +1885,17 @@ const CapabilityTab: React.FC<{ tokenId: string }> = ({ tokenId }) => {
   const capFileInputRef = useRef<HTMLInputElement>(null);
   const [capUploadingField, setCapUploadingField] = useState<string | null>(null);
   const [capAttachments, setCapAttachments] = useState<Record<string, Attachment[]>>({});
+  const capAttachmentsRef = useRef<Record<string, Attachment[]>>({});
+
+  const clearCapabilityAttachments = useCallback(() => {
+    setCapAttachments(prev => {
+      (Object.values(prev) as Attachment[][]).flat().forEach(att => {
+        if (att.preview) URL.revokeObjectURL(att.preview);
+      });
+      return {};
+    });
+    setCapUploadingField(null);
+  }, []);
 
   const handleFieldUpload = useCallback((key: string, file: File) => {
     if (!tokenId) return;
@@ -1923,15 +1975,23 @@ const CapabilityTab: React.FC<{ tokenId: string }> = ({ tokenId }) => {
   }, [tokenId]);
 
   useEffect(() => {
+    capAttachmentsRef.current = capAttachments;
+  }, [capAttachments]);
+
+  useEffect(() => {
     if (!tokenId) return;
+    clearCapabilityAttachments();
     playgroundListCapabilities(tokenId).then(caps => {
       setCapabilities(caps);
       setSelectedCap(prev => prev && caps.some(cap => cap.code === prev) ? prev : (caps[0]?.code || ''));
     }).catch(() => setCapabilities([]));
-  }, [tokenId]);
+  }, [tokenId, clearCapabilityAttachments]);
 
   useEffect(() => () => {
     clearAllPolling();
+    (Object.values(capAttachmentsRef.current) as Attachment[][]).flat().forEach(att => {
+      if (att.preview) URL.revokeObjectURL(att.preview);
+    });
   }, []);
 
   const currentCap = capabilities.find(c => c.code === selectedCap);
@@ -2174,8 +2234,17 @@ const CapabilityTab: React.FC<{ tokenId: string }> = ({ tokenId }) => {
   };
 
   const handleSelectCapability = (capabilityCode: string) => {
+    clearCapabilityAttachments();
     setSelectedCap(capabilityCode);
     setShowCapabilityPicker(false);
+    const cap = capabilities.find(c => c.code === capabilityCode);
+    const defaults: Record<string, string> = { prompt: '' };
+    if (cap?.standardParams) {
+      for (const [key, schema] of Object.entries(cap.standardParams) as [string, CapabilityStandardParamSchema][]) {
+        if (schema.default != null) defaults[key] = String(schema.default);
+      }
+    }
+    setParams(prev => ({ ...defaults, prompt: prev.prompt || '' }));
   };
 
   const handleSubmit = async () => {
@@ -2259,9 +2328,6 @@ const CapabilityTab: React.FC<{ tokenId: string }> = ({ tokenId }) => {
         }));
         setSelectedTaskNo(syncTaskNo);
       }
-      // 清理附件预览
-      (Object.values(capAttachments) as Attachment[][]).flat().forEach(a => { if (a.preview) URL.revokeObjectURL(a.preview); });
-      setCapAttachments({});
     } catch (err: any) {
       setError(err.message || '调用失败');
     } finally {
@@ -2566,9 +2632,25 @@ const CapabilityTab: React.FC<{ tokenId: string }> = ({ tokenId }) => {
                       <div>
                         {isProcessing ? (
                           <div className="rounded-xl bg-gray-50 border border-gray-200 p-4 space-y-3">
-                            <div className="flex items-center gap-2 text-gray-600 text-sm">
-                              <Loader2 size={16} className="animate-spin" />
-                              <span>任务正在处理中，请稍候...</span>
+                            <div className="flex items-center justify-between">
+                              <div className="flex items-center gap-2 text-gray-600 text-sm">
+                                <Loader2 size={16} className="animate-spin" />
+                                <span>任务正在处理中，请稍候...</span>
+                              </div>
+                              <button
+                                type="button"
+                                onClick={e => {
+                                  e.stopPropagation();
+                                  if (tokenId) {
+                                    playgroundCancelTask(tokenId, task.taskNo).then(() => {
+                                      setTasks(prev => prev.map(t => t.taskNo === task.taskNo ? {...t, status: 'cancelled'} : t));
+                                    });
+                                  }
+                                }}
+                                className="px-2 py-1 text-xs text-red-600 hover:bg-red-50 rounded-lg border border-red-200"
+                              >
+                                取消
+                              </button>
                             </div>
                             <div className="w-full bg-white rounded-full h-1.5">
                               <div className="bg-indigo-500 h-1.5 rounded-full transition-all duration-500" style={{ width: `${Math.max(task.progress, 8)}%` }} />
@@ -2722,7 +2804,8 @@ const CapabilityTab: React.FC<{ tokenId: string }> = ({ tokenId }) => {
                       </button>
                     ) : null;
 
-                    if (schema.type === 'enum') {
+                    const selectOptions = schema.options || schema.enumValues;
+                    if (schema.type === 'enum' || (selectOptions && selectOptions.length > 0)) {
                       return (
                         <div key={key}>
                           <label className="block text-[11px] font-medium text-gray-500 mb-1">{label}</label>
@@ -2733,7 +2816,7 @@ const CapabilityTab: React.FC<{ tokenId: string }> = ({ tokenId }) => {
                             disabled={isSubmitting}
                           >
                             <option value="">请选择</option>
-                            {(schema.enumValues || []).map(option => (
+                            {selectOptions!.map(option => (
                               <option key={option} value={option}>{option}</option>
                             ))}
                           </select>

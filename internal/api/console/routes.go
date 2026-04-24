@@ -47,4 +47,5 @@ func RegisterRoutes(group *gin.RouterGroup) {
 	group.POST("/playground/:token_id/capabilities/:capability", PlaygroundInvokeCapability)
 	group.GET("/playground/:token_id/tasks", PlaygroundListTasks)
 	group.GET("/playground/:token_id/tasks/:task_no", PlaygroundGetTask)
+	group.POST("/playground/:token_id/tasks/:task_no/cancel", PlaygroundCancelTask)
 }

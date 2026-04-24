@@ -74,13 +74,23 @@ func HandleTaskSubmit(ctx context.Context, t *asynq.Task) error {
 
 	// 7. 根据 result_mode 入队
 	if channelCapability.ResultMode == model.ResultModePoll {
+		if result.ProviderTaskID == "" {
+			taskService.UpdateTaskFail(task.ID, "upstream returned empty task_id, cannot poll")
+			strategyService.DecrementAccountTasks(task.AccountID)
+			return nil
+		}
 		pollPayload := TaskPollPayload{
 			TaskID:    task.ID,
 			PollCount: 0,
 		}
 		payloadBytes, _ := json.Marshal(pollPayload)
 		pollTask := asynq.NewTask(TypeTaskPoll, payloadBytes)
-		queue.Client.Enqueue(pollTask, asynq.ProcessIn(time.Duration(channelCapability.PollInterval)*time.Second), asynq.Queue("default"))
+		info, enqErr := queue.Client.Enqueue(pollTask, asynq.ProcessIn(time.Duration(channelCapability.PollInterval)*time.Second), asynq.Queue("default"))
+		if enqErr != nil {
+			logger.Error("enqueue poll failed", zap.Uint("task_id", task.ID), zap.Error(enqErr))
+		} else {
+			logger.Info("enqueue poll ok", zap.Uint("task_id", task.ID), zap.String("queue", info.Queue))
+		}
 	}
 
 	logger.Info("task submitted", zap.Uint("task_id", task.ID), zap.String("vendor_task_id", result.ProviderTaskID))

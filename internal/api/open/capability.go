@@ -5,8 +5,8 @@ import (
 	"net/http"
 
 	"github.com/gin-gonic/gin"
-	"github.com/mirainya/Prism/internal/api/resp"
 	"github.com/mirainya/Prism/internal/api/middleware"
+	"github.com/mirainya/Prism/internal/api/resp"
 	"github.com/mirainya/Prism/internal/service"
 	perrors "github.com/mirainya/Prism/pkg/errors"
 )
@@ -27,14 +27,13 @@ func InvokeCapability(c *gin.Context) {
 		return
 	}
 
-	// 从参数中提取可选字段
+	// 从参数中提取路由控制字段
 	channel, _ := params["channel"].(string)
 	model, _ := params["model"].(string)
 	callbackURL, _ := params["callback_url"].(string)
 
-	// 移除非业务参数
+	// 只移除路由控制字段，model 保留在 params 中供透传
 	delete(params, "channel")
-	delete(params, "model")
 	delete(params, "callback_url")
 
 	token := middleware.GetToken(c)

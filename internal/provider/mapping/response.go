@@ -156,35 +156,67 @@ func (m *ResponseMapper) convertType(value any, conv TypeConversion) any {
 	return value
 }
 
-// getValueByPath 根据路径获取值，支持 data.output.images[0] 格式
+// getValueByPath 根据路径获取值，支持 data.output.images[0] 和 data[].url 格式
 func (m *ResponseMapper) getValueByPath(data map[string]any, path string) any {
-	parts := strings.Split(path, ".")
-	var current any = data
+	return m.getValueByParts(data, strings.Split(path, "."))
+}
 
-	for _, part := range parts {
-		// 处理数组索引，如 images[0]
-		if idx := strings.Index(part, "["); idx != -1 {
-			key := part[:idx]
-			indexStr := part[idx+1 : len(part)-1]
-			index, _ := strconv.Atoi(indexStr)
-
-			if m, ok := current.(map[string]any); ok {
-				if arr, ok := m[key].([]any); ok && index < len(arr) {
-					current = arr[index]
-					continue
-				}
-			}
-			return nil
-		}
-
-		if m, ok := current.(map[string]any); ok {
-			current = m[part]
-		} else {
-			return nil
-		}
+func (m *ResponseMapper) getValueByParts(current any, parts []string) any {
+	if len(parts) == 0 {
+		return current
 	}
 
-	return current
+	part := parts[0]
+	if idx := strings.Index(part, "["); idx != -1 && strings.HasSuffix(part, "]") {
+		key := part[:idx]
+		indexStr := part[idx+1 : len(part)-1]
+		arr := m.getArray(current, key)
+		if arr == nil {
+			return nil
+		}
+
+		if indexStr == "" || indexStr == "*" {
+			values := make([]any, 0, len(arr))
+			for _, item := range arr {
+				value := m.getValueByParts(item, parts[1:])
+				switch v := value.(type) {
+				case nil:
+				case []any:
+					values = append(values, v...)
+				default:
+					values = append(values, v)
+				}
+			}
+			if len(values) == 0 {
+				return nil
+			}
+			return values
+		}
+
+		index, err := strconv.Atoi(indexStr)
+		if err != nil || index < 0 || index >= len(arr) {
+			return nil
+		}
+		return m.getValueByParts(arr[index], parts[1:])
+	}
+
+	if obj, ok := current.(map[string]any); ok {
+		return m.getValueByParts(obj[part], parts[1:])
+	}
+	return nil
+}
+
+func (m *ResponseMapper) getArray(current any, key string) []any {
+	if key == "" {
+		arr, _ := current.([]any)
+		return arr
+	}
+	obj, ok := current.(map[string]any)
+	if !ok {
+		return nil
+	}
+	arr, _ := obj[key].([]any)
+	return arr
 }
 
 // ParseResponseMapping 解析响应映射配置

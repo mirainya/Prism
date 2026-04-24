@@ -24,15 +24,6 @@ redis:
   read_timeout: 3           # 读超时(秒)
   write_timeout: 3          # 写超时(秒)
 
-storage:
-  type: ""
-  tencent:
-    secret_id: ""
-    secret_key: ""
-    region: ""
-    bucket: ""
-    cdn: ""
-
 worker:
   concurrency: 10
   poll_interval: 5s

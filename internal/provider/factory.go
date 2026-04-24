@@ -17,6 +17,12 @@ func NewProvider(channel *model.Channel, account *model.ChannelAccount, cc *mode
 		return nil, err
 	}
 
+	// 解析轮询响应映射
+	pollResponseMapping, err := ParseResponseMapping(cc.PollResponseMapping)
+	if err != nil {
+		return nil, err
+	}
+
 	apiKey := account.APIKey
 	baseURL := channel.BaseURL
 
@@ -35,20 +41,22 @@ func NewProvider(channel *model.Channel, account *model.ChannelAccount, cc *mode
 	}
 
 	base := &BaseProvider{
-		Name:            channel.Type,
-		BaseURL:         baseURL,
-		APIKey:          apiKey,
-		AuthLocation:    authLocation,
-		AuthKey:         authKey,
-		AuthValuePrefix: authValuePrefix,
-		ContentType:     cc.ContentType,
-		RequestMethod:   cc.RequestMethod,
-		SubmitPath:      cc.RequestPath,
-		ProgressPath:    cc.PollPath,
-		Converter:       NewDefaultConverter(),
-		Parser:          NewDefaultParser(),
-		ResponseMapping: responseMapping,
-		CallbackMapping: callbackMapping,
+		Name:                channel.Type,
+		BaseURL:             baseURL,
+		APIKey:              apiKey,
+		AuthLocation:        authLocation,
+		AuthKey:             authKey,
+		AuthValuePrefix:     authValuePrefix,
+		ContentType:         cc.ContentType,
+		RequestMethod:       cc.RequestMethod,
+		PollMethod:          cc.PollMethod,
+		SubmitPath:          cc.RequestPath,
+		ProgressPath:        cc.PollPath,
+		Converter:           NewDefaultConverter(),
+		Parser:              NewDefaultParser(),
+		ResponseMapping:     responseMapping,
+		PollResponseMapping: pollResponseMapping,
+		CallbackMapping:     callbackMapping,
 	}
 
 	return base, nil

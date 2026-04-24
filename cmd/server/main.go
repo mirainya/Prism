@@ -21,7 +21,6 @@ import (
 	"github.com/mirainya/Prism/pkg/database"
 	"github.com/mirainya/Prism/pkg/logger"
 	"github.com/mirainya/Prism/pkg/queue"
-	"github.com/mirainya/Prism/pkg/storage"
 )
 
 func main() {
@@ -84,13 +83,6 @@ func main() {
 
 	if err := queue.InitClient(); err != nil {
 		log.Fatalf("failed to init queue client: %v", err)
-	}
-
-	if config.C.Storage.Type != "" {
-		if err := storage.Init(); err != nil {
-			log.Fatalf("failed to init storage: %v", err)
-		}
-		logger.Info("storage initialized: " + config.C.Storage.Type)
 	}
 
 	// 初始化 HTTP Client

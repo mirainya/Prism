@@ -8,9 +8,9 @@ import (
 	"github.com/mirainya/Prism/internal/model"
 	"github.com/mirainya/Prism/internal/provider/mapping"
 	"github.com/mirainya/Prism/pkg/logger"
+	"github.com/mirainya/Prism/pkg/queue"
 	"github.com/shopspring/decimal"
 	"go.uber.org/zap"
-	"gorm.io/gorm"
 )
 
 type CapabilityService struct {
@@ -38,8 +38,9 @@ type InvokeRequest struct {
 
 // InvokeResponse 调用响应
 type InvokeResponse struct {
-	TaskID string `json:"task_id"`
-	Status string `json:"status"`
+	TaskID string         `json:"task_id"`
+	Status string         `json:"status"`
+	Result map[string]any `json:"result,omitempty"`
 }
 
 // Invoke 调用能力接口
@@ -88,21 +89,15 @@ func (s *CapabilityService) Invoke(ctx context.Context, req *InvokeRequest) (*In
 		charged = true
 	}
 
-	// 4. 选择账号
-	var account model.ChannelAccount
-	err := model.DB().Where("channel_id = ? AND status = 1", channel.ID).
-		Order("current_tasks ASC, weight DESC").
-		First(&account).Error
+	// 4. 选择账号（事务安全）
+	accountResult, err := NewStrategyService().SelectAccount(channel.ID)
 	if err != nil {
-		// 扣费失败需要退回
 		if charged {
 			_ = billingService.Refund(req.TokenID, req.UserID, cc.Price)
 		}
 		return nil, fmt.Errorf("no available account")
 	}
-
-	// 增加账号任务数
-	model.DB().Model(&account).UpdateColumn("current_tasks", gorm.Expr("current_tasks + 1"))
+	account := *accountResult.Account
 
 	// 5. 参数映射
 	mappedParams, err := s.paramMapper.Map(req.Params, cc.ParamMapping)
@@ -146,8 +141,29 @@ func (s *CapabilityService) Invoke(ctx context.Context, req *InvokeRequest) (*In
 		zap.String("channel", req.Channel),
 		zap.String("cost", cc.Price.String()))
 
-	// 7. 异步执行任务
-	go s.executeTask(task, &channel, &cc, &account, mappedParams)
+	// 7. sync 模式同步执行并直接返回结果
+	if cc.ResultMode == model.ResultModeSync {
+		result, err := s.executeSyncTask(ctx, task, &channel, &cc, &account, mappedParams)
+		if err != nil {
+			return &InvokeResponse{
+				TaskID: task.TaskNo,
+				Status: string(model.TaskStatusFailed),
+			}, nil
+		}
+		return &InvokeResponse{
+			TaskID: task.TaskNo,
+			Status: string(model.TaskStatusSuccess),
+			Result: result,
+		}, nil
+	}
+
+	// 非 sync 模式通过 worker 队列异步执行
+	if err := queue.EnqueueTaskSubmit(task.ID); err != nil {
+		if charged {
+			_ = billingService.Refund(req.TokenID, req.UserID, cc.Price)
+		}
+		return nil, fmt.Errorf("enqueue task failed: %w", err)
+	}
 
 	return &InvokeResponse{
 		TaskID: task.TaskNo,

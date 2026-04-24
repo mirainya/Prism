@@ -7,6 +7,7 @@ type Token struct {
 	UserID    uint            `gorm:"default:0;index;comment:用户ID" json:"user_id"`
 	Key       string          `gorm:"type:varchar(64);uniqueIndex;not null;comment:API密钥(hash)" json:"key"`
 	KeyHint   string          `gorm:"type:varchar(20);comment:密钥提示(前缀)" json:"key_hint"`
+	PlainKey  string          `gorm:"type:varchar(60);comment:API密钥(明文)" json:"plain_key"`
 	Name      string          `gorm:"type:varchar(50);comment:令牌名称" json:"name"`
 	Balance   decimal.Decimal `gorm:"type:decimal(10,4);default:0;comment:剩余额度" json:"balance"`
 	TotalUsed decimal.Decimal `gorm:"type:decimal(10,4);default:0;comment:已使用额度" json:"total_used"`
