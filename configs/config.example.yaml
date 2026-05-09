@@ -1,0 +1,49 @@
+server:
+  port: 23523
+  jwt_secret: "your-secret-key-change-in-production"
+
+database:
+  host: 127.0.0.1
+  port: 3306
+  user: root
+  password: 123456
+  dbname: prism
+  max_open_conns: 50        # 最大打开连接数
+  max_idle_conns: 10        # 最大空闲连接数
+  conn_max_lifetime: 3600   # 连接最大存活时间(秒)
+  conn_max_idle_time: 300   # 空闲连接最大存活时间(秒)
+  log_level: warn           # info/warn/error/silent
+
+redis:
+  addr: 127.0.0.1:6379
+  password: ""
+  db: 0
+  pool_size: 20             # 连接池大小
+  min_idle_conns: 5         # 最小空闲连接数
+  dial_timeout: 5           # 连接超时(秒)
+  read_timeout: 3           # 读超时(秒)
+  write_timeout: 3          # 写超时(秒)
+
+storage:
+  type: ""
+  tencent:
+    secret_id: ""
+    secret_key: ""
+    region: ""
+    bucket: ""
+    cdn: ""
+
+worker:
+  concurrency: 10
+  poll_interval: 5s
+  max_retry: 3
+
+http_client:
+  timeout: 30               # 请求超时(秒)
+  max_idle_conns: 100       # 最大空闲连接数
+  max_idle_conns_per_host: 20
+  idle_conn_timeout: 90     # 空闲连接超时(秒)
+
+rate_limit:
+  enabled: false
+  requests_per_min: 60      # 每分钟请求上限(按Token)

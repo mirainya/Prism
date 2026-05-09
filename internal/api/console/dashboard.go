@@ -1,0 +1,121 @@
+package console
+
+import (
+	"encoding/json"
+
+	"github.com/gin-gonic/gin"
+	"github.com/mirainya/Prism/internal/api/resp"
+	"github.com/mirainya/Prism/internal/api/middleware"
+	"github.com/mirainya/Prism/internal/model"
+	"github.com/mirainya/Prism/internal/service"
+)
+
+var dashboardService = service.NewDashboardService()
+
+// DashboardStats 仪表盘统计数据
+func DashboardStats(c *gin.Context) {
+	userID := middleware.GetUserID(c)
+	role := middleware.GetUserRole(c)
+	isAdmin := role == string(model.UserRoleAdmin)
+
+	result, err := dashboardService.GetStats(userID, isAdmin)
+	if err != nil {
+		resp.ErrorMsg(c, 500, 500, "failed to get stats")
+		return
+	}
+
+	resp.Success(c, gin.H{
+		"today":           result.Today,
+		"weekly_trend":    result.WeeklyTrend,
+		"capability_dist": result.CapabilityDist,
+	})
+}
+
+// ListTasks 任务列表
+func ListTasks(c *gin.Context) {
+	userID := middleware.GetUserID(c)
+	role := middleware.GetUserRole(c)
+	isAdmin := role == string(model.UserRoleAdmin)
+
+	var req service.ListTasksRequest
+	c.ShouldBindQuery(&req)
+
+	result, err := dashboardService.ListTasks(&req, userID, isAdmin)
+	if err != nil {
+		resp.ErrorMsg(c, 500, 500, "failed to list tasks")
+		return
+	}
+
+	resp.Success(c, gin.H{
+		"items":     result.Items,
+		"total":     result.Total,
+		"page":      result.Page,
+		"page_size": result.PageSize,
+	})
+}
+
+// GetTaskDetail 获取任务详情
+func GetTaskDetail(c *gin.Context) {
+	userID := middleware.GetUserID(c)
+	role := middleware.GetUserRole(c)
+	isAdmin := role == string(model.UserRoleAdmin)
+
+	taskNo := c.Param("task_no")
+
+	task, err := dashboardService.GetTaskDetail(taskNo, userID, isAdmin)
+	if err != nil {
+		resp.ErrorMsg(c, 404, 404, "task not found")
+		return
+	}
+
+	// 解析结果
+	var resultMap map[string]any
+	if len(task.Result) > 0 {
+		json.Unmarshal(task.Result, &resultMap)
+	}
+
+	// 解析原始请求参数
+	var rawParams map[string]any
+	if len(task.RequestParams) > 0 {
+		json.Unmarshal(task.RequestParams, &rawParams)
+	}
+
+	// 解析供应商响应（仅管理员可见）
+	var vendorResponse map[string]any
+	if isAdmin && len(task.VendorResponse) > 0 {
+		json.Unmarshal(task.VendorResponse, &vendorResponse)
+	}
+
+	detail := gin.H{
+		"task_no":        task.TaskNo,
+		"capability":     task.CapabilityCode,
+		"status":         task.Status,
+		"progress":       task.Progress,
+		"cost":           task.Cost,
+		"refunded":       task.Refunded,
+		"error":          task.ErrorMessage,
+		"result":         resultMap,
+		"raw_params":     rawParams,
+		"vendor_task_id": task.VendorTaskID,
+		"created_at":     task.CreatedAt.Format("2006-01-02 15:04:05"),
+	}
+
+	if isAdmin {
+		detail["vendor_response"] = vendorResponse
+	}
+
+	if task.Channel != nil {
+		detail["channel"] = task.Channel.Type
+	}
+	if task.Capability != nil {
+		detail["capability_name"] = task.Capability.Name
+	}
+	if task.StartedAt != nil {
+		detail["started_at"] = task.StartedAt.Format("2006-01-02 15:04:05")
+	}
+	if task.CompletedAt != nil {
+		detail["completed_at"] = task.CompletedAt.Format("2006-01-02 15:04:05")
+	}
+
+	resp.Success(c, detail)
+}
