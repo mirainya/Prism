@@ -11,7 +11,7 @@ import {
     PlusCircle,
     Edit2,
     ChevronUp,
-    ChevronDown
+    ChevronDown,
 } from 'lucide-react';
 import { Modal } from '../components/ui/Modal';
 import {
@@ -24,6 +24,7 @@ import {
     fetchAllCapabilityChannels
 } from '../services/api';
 import {ApiToken, ChannelPriorityItem, CapabilityWithChannels, ChannelOption} from '../types';
+import { ChannelConfigEditor } from './ChannelConfigEditor';
 import { STATUS_COLORS, STATUS_LABELS } from '../constants';
 
 const Tokens: React.FC = () => {
@@ -174,89 +175,6 @@ const Tokens: React.FC = () => {
         }
     };
 
-    // 获取某能力的已配置渠道
-    const getCapabilityPriorities = (capabilityCode: string) => {
-        return editChannelPriorities
-            .filter(p => p.capabilityCode === capabilityCode)
-            .sort((a, b) => a.priority - b.priority);
-    };
-
-    // 添加渠道到能力
-    const addChannelToCapability = (capabilityCode: string, channelId: number) => {
-        const existing = editChannelPriorities.filter(p => p.capabilityCode === capabilityCode);
-        const maxPriority = existing.length > 0 ? Math.max(...existing.map(p => p.priority)) : 0;
-        setEditChannelPriorities([
-            ...editChannelPriorities,
-            {capabilityCode, channelId, priority: maxPriority + 1}
-        ]);
-    };
-
-    // 移除渠道
-    const removeChannelFromCapability = (capabilityCode: string, channelId: number) => {
-        const newPriorities = editChannelPriorities.filter(
-            p => !(p.capabilityCode === capabilityCode && p.channelId === channelId)
-        );
-        // 重新排序优先级
-        const capPriorities = newPriorities
-            .filter(p => p.capabilityCode === capabilityCode)
-            .sort((a, b) => a.priority - b.priority)
-            .map((p, idx) => ({...p, priority: idx + 1}));
-        const otherPriorities = newPriorities.filter(p => p.capabilityCode !== capabilityCode);
-        setEditChannelPriorities([...otherPriorities, ...capPriorities]);
-    };
-
-    // 上移渠道
-    const moveChannelUp = (capabilityCode: string, channelId: number) => {
-        const capPriorities = editChannelPriorities
-            .filter(p => p.capabilityCode === capabilityCode)
-            .sort((a, b) => a.priority - b.priority);
-        const idx = capPriorities.findIndex(p => p.channelId === channelId);
-        if (idx <= 0) return;
-
-        // 交换优先级
-        const temp = capPriorities[idx].priority;
-        capPriorities[idx].priority = capPriorities[idx - 1].priority;
-        capPriorities[idx - 1].priority = temp;
-
-        const otherPriorities = editChannelPriorities.filter(p => p.capabilityCode !== capabilityCode);
-        setEditChannelPriorities([...otherPriorities, ...capPriorities]);
-    };
-
-    // 下移渠道
-    const moveChannelDown = (capabilityCode: string, channelId: number) => {
-        const capPriorities = editChannelPriorities
-            .filter(p => p.capabilityCode === capabilityCode)
-            .sort((a, b) => a.priority - b.priority);
-        const idx = capPriorities.findIndex(p => p.channelId === channelId);
-        if (idx < 0 || idx >= capPriorities.length - 1) return;
-
-        // 交换优先级
-        const temp = capPriorities[idx].priority;
-        capPriorities[idx].priority = capPriorities[idx + 1].priority;
-        capPriorities[idx + 1].priority = temp;
-
-        const otherPriorities = editChannelPriorities.filter(p => p.capabilityCode !== capabilityCode);
-        setEditChannelPriorities([...otherPriorities, ...capPriorities]);
-    };
-
-    // 获取渠道名称
-    const getChannelName = (capabilityCode: string, channelId: number): string => {
-        const cap = capabilityChannels.find(c => c.code === capabilityCode);
-        if (!cap) return `渠道 ${channelId}`;
-        const ch = cap.channels.find(c => c.channelId === channelId);
-        return ch ? `${ch.channelName}${ch.model ? ` (${ch.model})` : ''}` : `渠道 ${channelId}`;
-    };
-
-    // 获取可添加的渠道选项
-    const getAvailableChannels = (capabilityCode: string): ChannelOption[] => {
-        const cap = capabilityChannels.find(c => c.code === capabilityCode);
-        if (!cap) return [];
-        const usedChannelIds = editChannelPriorities
-            .filter(p => p.capabilityCode === capabilityCode)
-            .map(p => p.channelId);
-        return cap.channels.filter(ch => !usedChannelIds.includes(ch.channelId));
-    };
-
     const closeModal = () => {
         setShowCreateModal(false);
         setNewTokenName('');
@@ -266,126 +184,6 @@ const Tokens: React.FC = () => {
         setShowChannelConfig(false);
     };
 
-    // 渠道配置编辑器组件
-    const ChannelConfigEditor: React.FC<{
-        priorities: ChannelPriorityItem[];
-        setPriorities: (p: ChannelPriorityItem[]) => void;
-        capabilities: CapabilityWithChannels[];
-        loading: boolean;
-    }> = ({priorities, setPriorities, capabilities, loading}) => {
-        const getPriorities = (code: string) => priorities.filter(p => p.capabilityCode === code).sort((a, b) => a.priority - b.priority);
-
-        const addChannel = (code: string, channelId: number) => {
-            const existing = priorities.filter(p => p.capabilityCode === code);
-            const maxP = existing.length > 0 ? Math.max(...existing.map(p => p.priority)) : 0;
-            setPriorities([...priorities, {capabilityCode: code, channelId, priority: maxP + 1}]);
-        };
-
-        const removeChannel = (code: string, channelId: number) => {
-            const newP = priorities.filter(p => !(p.capabilityCode === code && p.channelId === channelId));
-            const capP = newP.filter(p => p.capabilityCode === code).sort((a, b) => a.priority - b.priority).map((p, i) => ({
-                ...p,
-                priority: i + 1
-            }));
-            const otherP = newP.filter(p => p.capabilityCode !== code);
-            setPriorities([...otherP, ...capP]);
-        };
-
-        const moveUp = (code: string, channelId: number) => {
-            const capP = priorities.filter(p => p.capabilityCode === code).sort((a, b) => a.priority - b.priority);
-            const idx = capP.findIndex(p => p.channelId === channelId);
-            if (idx <= 0) return;
-            const temp = capP[idx].priority;
-            capP[idx] = {...capP[idx], priority: capP[idx - 1].priority};
-            capP[idx - 1] = {...capP[idx - 1], priority: temp};
-            const otherP = priorities.filter(p => p.capabilityCode !== code);
-            setPriorities([...otherP, ...capP]);
-        };
-
-        const moveDown = (code: string, channelId: number) => {
-            const capP = priorities.filter(p => p.capabilityCode === code).sort((a, b) => a.priority - b.priority);
-            const idx = capP.findIndex(p => p.channelId === channelId);
-            if (idx < 0 || idx >= capP.length - 1) return;
-            const temp = capP[idx].priority;
-            capP[idx] = {...capP[idx], priority: capP[idx + 1].priority};
-            capP[idx + 1] = {...capP[idx + 1], priority: temp};
-            const otherP = priorities.filter(p => p.capabilityCode !== code);
-            setPriorities([...otherP, ...capP]);
-        };
-
-        const getName = (code: string, channelId: number): string => {
-            const cap = capabilities.find(c => c.code === code);
-            if (!cap) return `渠道 ${channelId}`;
-            const ch = cap.channels.find(c => c.channelId === channelId);
-            return ch ? `${ch.channelName}${ch.model ? ` (${ch.model})` : ''}` : `渠道 ${channelId}`;
-        };
-
-        const getAvailable = (code: string): ChannelOption[] => {
-            const cap = capabilities.find(c => c.code === code);
-            if (!cap) return [];
-            const used = priorities.filter(p => p.capabilityCode === code).map(p => p.channelId);
-            return cap.channels.filter(ch => !used.includes(ch.channelId));
-        };
-
-        if (loading) {
-            return <div className="text-sm text-[var(--text-secondary)] py-4 text-center">加载中...</div>;
-        }
-
-        if (capabilities.length === 0) {
-            return <div className="text-sm text-[var(--text-secondary)] py-4 text-center">暂无可用能力</div>;
-        }
-
-        return (
-            <div className="space-y-4 max-h-80 overflow-y-auto">
-                {capabilities.map(cap => (
-                    <div key={cap.code} className="border border-[var(--border-soft)] rounded-lg p-3">
-                        <div className="flex items-center justify-between mb-2">
-                            <span className="font-medium text-[var(--text-primary)]">{cap.name}</span>
-                            <span className="text-xs text-[var(--text-secondary)]">{cap.code}</span>
-                        </div>
-                        <div className="space-y-2">
-                            {getPriorities(cap.code).map((p, idx) => (
-                                <div key={p.channelId}
-                                     className="flex items-center gap-2 bg-[var(--surface)] rounded-lg px-3 py-2">
-                                    <span className="text-sm text-[var(--text-secondary)] w-6">{idx + 1}.</span>
-                                    <span className="flex-1 text-sm">{getName(cap.code, p.channelId)}</span>
-                                    <button onClick={() => moveUp(cap.code, p.channelId)} disabled={idx === 0}
-                                            className="p-1 hover:bg-gray-200 rounded disabled:opacity-30">
-                                        <ChevronUp size={14}/>
-                                    </button>
-                                    <button onClick={() => moveDown(cap.code, p.channelId)}
-                                            disabled={idx === getPriorities(cap.code).length - 1}
-                                            className="p-1 hover:bg-gray-200 rounded disabled:opacity-30">
-                                        <ChevronDown size={14}/>
-                                    </button>
-                                    <button onClick={() => removeChannel(cap.code, p.channelId)}
-                                            className="p-1 hover:bg-red-100 text-red-500 rounded">
-                                        <X size={14}/>
-                                    </button>
-                                </div>
-                            ))}
-                            {getAvailable(cap.code).length > 0 && (
-                                <select
-                                    className="w-full text-sm border border-[var(--border-soft)] rounded-lg px-3 py-2 focus:outline-none focus:ring-2 focus:ring-[var(--primary)]"
-                                    value=""
-                                    onChange={e => {
-                                        if (e.target.value) addChannel(cap.code, Number(e.target.value));
-                                    }}
-                                >
-                                    <option value="">+ 添加渠道</option>
-                                    {getAvailable(cap.code).map(ch => (
-                                        <option key={ch.channelId} value={ch.channelId}>
-                                            {ch.channelName}{ch.model ? ` (${ch.model})` : ''} - ¥{ch.price}
-                                        </option>
-                                    ))}
-                                </select>
-                            )}
-                        </div>
-                    </div>
-                ))}
-            </div>
-        );
-    };
 
   return (
     <div className="space-y-6">
