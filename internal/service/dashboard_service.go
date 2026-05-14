@@ -90,40 +90,40 @@ func (s *DashboardService) GetStats(userID uint, isAdmin bool) (*StatsResult, er
 		costTrend = (todayStats.TotalCost - yesterdayStats.TotalCost) / yesterdayStats.TotalCost * 100
 	}
 
-	var weeklyStats []DailyStats
+	weekStart := todayStart.AddDate(0, 0, -6)
+
+	type dailyAgg struct {
+		Date     string  `gorm:"column:date"`
+		Requests int64   `gorm:"column:requests"`
+		Cost     float64 `gorm:"column:cost"`
+		Errors   int64   `gorm:"column:errors"`
+	}
+	var rawStats []dailyAgg
+	wq := db.Table("tasks").
+		Select("DATE_FORMAT(created_at, '%m-%d') as date, COUNT(*) as requests, COALESCE(SUM(cost), 0) as cost, SUM(CASE WHEN status = ? THEN 1 ELSE 0 END) as errors", model.TaskStatusFailed).
+		Where("created_at >= ? AND created_at < ?", weekStart, todayStart.AddDate(0, 0, 1)).
+		Group("DATE_FORMAT(created_at, '%m-%d')").
+		Order("date ASC")
+	if !isAdmin {
+		wq = wq.Where("user_id = ?", userID)
+	}
+	wq.Scan(&rawStats)
+
+	statsMap := make(map[string]dailyAgg, len(rawStats))
+	for _, r := range rawStats {
+		statsMap[r.Date] = r
+	}
+	weeklyStats := make([]DailyStats, 0, 7)
 	for i := 6; i >= 0; i-- {
-		dayStart := todayStart.AddDate(0, 0, -i)
-		dayEnd := dayStart.AddDate(0, 0, 1)
-
-		var dayAgg struct {
-			Requests int64   `gorm:"column:requests"`
-			Cost     float64 `gorm:"column:cost"`
-		}
-
-		q := db.Table("tasks")
-		if !isAdmin {
-			q = q.Where("user_id = ?", userID)
-		}
-		q.Where("created_at >= ? AND created_at < ?", dayStart, dayEnd).
-			Select("COUNT(*) as requests, COALESCE(SUM(cost), 0) as cost").
-			Scan(&dayAgg)
-
-		dayStat := DailyStats{
-			Date:     dayStart.Format("01-02"),
-			Requests: dayAgg.Requests,
-			Cost:     dayAgg.Cost,
-		}
-
-		var errCount int64
-		eq := db.Table("tasks")
-		if !isAdmin {
-			eq = eq.Where("user_id = ?", userID)
-		}
-		eq.Where("created_at >= ? AND created_at < ? AND status = ?", dayStart, dayEnd, model.TaskStatusFailed).
-			Count(&errCount)
-		dayStat.Errors = errCount
-
-		weeklyStats = append(weeklyStats, dayStat)
+		d := todayStart.AddDate(0, 0, -i)
+		key := d.Format("01-02")
+		agg := statsMap[key]
+		weeklyStats = append(weeklyStats, DailyStats{
+			Date:     key,
+			Requests: agg.Requests,
+			Cost:     agg.Cost,
+			Errors:   agg.Errors,
+		})
 	}
 
 	var capabilityStats []CapabilityDist
@@ -217,7 +217,7 @@ func (s *DashboardService) ListTasks(req *ListTasksRequest, userID uint, isAdmin
 		}
 	}
 	if req.Keyword != "" {
-		db = db.Where("task_no LIKE ?", "%"+req.Keyword+"%")
+		db = db.Where("task_no LIKE ?", req.Keyword+"%")
 	}
 
 	var total int64
@@ -228,7 +228,6 @@ func (s *DashboardService) ListTasks(req *ListTasksRequest, userID uint, isAdmin
 		Offset((req.Page - 1) * req.PageSize).
 		Limit(req.PageSize).
 		Preload("Channel").
-		Preload("Capability").
 		Find(&tasks)
 
 	items := make([]TaskItem, 0, len(tasks))
@@ -236,7 +235,7 @@ func (s *DashboardService) ListTasks(req *ListTasksRequest, userID uint, isAdmin
 		item := TaskItem{
 			ID:         t.TaskNo,
 			TaskNo:     t.TaskNo,
-			Capability: t.CapabilityCode,
+			Capability: t.ModelCode,
 			Status:     string(t.Status),
 			Progress:   t.Progress,
 			Cost:       t.Cost,
@@ -244,9 +243,7 @@ func (s *DashboardService) ListTasks(req *ListTasksRequest, userID uint, isAdmin
 			Error:      t.ErrorMessage,
 			CreatedAt:  t.CreatedAt.Format("2006-01-02 15:04:05"),
 		}
-		if t.Capability != nil {
-			item.CapabilityName = t.Capability.Name
-		}
+		item.CapabilityName = t.ModelCode
 		if t.Channel != nil {
 			item.Channel = t.Channel.Type
 		}
@@ -273,7 +270,95 @@ func (s *DashboardService) GetTaskDetail(taskNo string, userID uint, isAdmin boo
 	var task model.Task
 	err := query.
 		Preload("Channel").
-		Preload("Capability").
+		Preload("Endpoint").
+		Preload("Endpoint.Model").
 		First(&task).Error
 	return &task, err
+}
+
+// ChannelSuccessRate 渠道成功率
+type ChannelSuccessRate struct {
+	ChannelID   uint    `json:"channel_id"`
+	ChannelType string  `json:"channel_type"`
+	Total       int64   `json:"total"`
+	Success     int64   `json:"success"`
+	Rate        float64 `json:"rate"`
+}
+
+// ModelCallRanking 模型调用排行
+type ModelCallRanking struct {
+	ModelCode   string `json:"model_code"`
+	Calls       int64  `json:"calls"`
+	TotalTokens int64  `json:"total_tokens"`
+}
+
+// TokenUsageSummary Token 用量汇总
+type TokenUsageSummary struct {
+	TotalPromptTokens     int64 `json:"total_prompt_tokens"`
+	TotalCompletionTokens int64 `json:"total_completion_tokens"`
+	TotalTokens           int64 `json:"total_tokens"`
+}
+
+// ChatStatsResult Chat 增强统计
+type ChatStatsResult struct {
+	TokenUsage      *TokenUsageSummary   `json:"token_usage"`
+	ChannelRates    []ChannelSuccessRate `json:"channel_rates"`
+	ModelRankings   []ModelCallRanking   `json:"model_rankings"`
+}
+
+// GetChatStats 获取 Chat 增强统计（基于 channel_request_logs）
+func (s *DashboardService) GetChatStats(days int) (*ChatStatsResult, error) {
+	db := model.DB()
+	since := time.Now().AddDate(0, 0, -days)
+
+	var usage TokenUsageSummary
+	db.Table("channel_request_logs").
+		Where("request_type = 'chat' AND request_at >= ?", since).
+		Select("COALESCE(SUM(usage_prompt_tokens),0) as total_prompt_tokens, COALESCE(SUM(usage_completion_tokens),0) as total_completion_tokens, COALESCE(SUM(usage_total_tokens),0) as total_tokens").
+		Scan(&usage)
+
+	type channelAgg struct {
+		ChannelID   uint   `gorm:"column:channel_id"`
+		ChannelType string `gorm:"column:channel_type"`
+		Total       int64  `gorm:"column:total"`
+		Success     int64  `gorm:"column:success"`
+	}
+	var channelAggs []channelAgg
+	db.Table("channel_request_logs l").
+		Joins("JOIN channels c ON c.id = l.channel_id").
+		Where("l.request_type = 'chat' AND l.request_at >= ?", since).
+		Select("l.channel_id, c.type as channel_type, COUNT(*) as total, SUM(CASE WHEN l.status_code >= 200 AND l.status_code < 400 THEN 1 ELSE 0 END) as success").
+		Group("l.channel_id, c.type").
+		Order("total DESC").
+		Scan(&channelAggs)
+
+	rates := make([]ChannelSuccessRate, 0, len(channelAggs))
+	for _, a := range channelAggs {
+		rate := float64(0)
+		if a.Total > 0 {
+			rate = float64(a.Success) / float64(a.Total) * 100
+		}
+		rates = append(rates, ChannelSuccessRate{
+			ChannelID:   a.ChannelID,
+			ChannelType: a.ChannelType,
+			Total:       a.Total,
+			Success:     a.Success,
+			Rate:        rate,
+		})
+	}
+
+	var rankings []ModelCallRanking
+	db.Table("channel_request_logs").
+		Where("request_type = 'chat' AND request_at >= ?", since).
+		Select("model_code, COUNT(*) as calls, COALESCE(SUM(usage_total_tokens),0) as total_tokens").
+		Group("model_code").
+		Order("calls DESC").
+		Limit(10).
+		Scan(&rankings)
+
+	return &ChatStatsResult{
+		TokenUsage:    &usage,
+		ChannelRates:  rates,
+		ModelRankings: rankings,
+	}, nil
 }

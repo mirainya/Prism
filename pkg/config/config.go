@@ -1,6 +1,9 @@
 package config
 
 import (
+	"sync"
+
+	"github.com/fsnotify/fsnotify"
 	"github.com/spf13/viper"
 )
 
@@ -69,7 +72,23 @@ type FileStorageConfig struct {
 	AllowedTypes  []string `mapstructure:"allowed_types"`
 }
 
-var C *Config
+var (
+	C         *Config
+	mu        sync.RWMutex
+	callbacks []func(*Config)
+)
+
+func Get() *Config {
+	mu.RLock()
+	defer mu.RUnlock()
+	return C
+}
+
+func OnReload(fn func(*Config)) {
+	mu.Lock()
+	defer mu.Unlock()
+	callbacks = append(callbacks, fn)
+}
 
 func Load(path string) error {
 	viper.SetConfigFile(path)
@@ -78,4 +97,21 @@ func Load(path string) error {
 	}
 	C = &Config{}
 	return viper.Unmarshal(C)
+}
+
+func Watch() {
+	viper.OnConfigChange(func(e fsnotify.Event) {
+		mu.Lock()
+		newCfg := &Config{}
+		if err := viper.Unmarshal(newCfg); err == nil {
+			C = newCfg
+		}
+		cbs := make([]func(*Config), len(callbacks))
+		copy(cbs, callbacks)
+		mu.Unlock()
+		for _, fn := range cbs {
+			fn(C)
+		}
+	})
+	viper.WatchConfig()
 }

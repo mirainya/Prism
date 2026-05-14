@@ -39,13 +39,13 @@ func HandleTaskSubmit(ctx context.Context, t *asynq.Task) error {
 		return fmt.Errorf("get account: %w", err)
 	}
 
-	var channelCapability model.ChannelCapability
-	if err := model.DB().First(&channelCapability, task.ChannelCapabilityID).Error; err != nil {
-		return fmt.Errorf("get channel capability: %w", err)
+	var endpoint model.Endpoint
+	if err := model.DB().First(&endpoint, task.EndpointID).Error; err != nil {
+		return fmt.Errorf("get endpoint: %w", err)
 	}
 
 	// 3. 创建 Provider
-	prov, err := provider.NewProvider(&channel, &account, &channelCapability)
+	prov, err := provider.NewProvider(&channel, &account, &endpoint)
 	if err != nil {
 		taskService.UpdateTaskFail(task.ID, "create provider error: "+err.Error())
 		return nil
@@ -65,18 +65,17 @@ func HandleTaskSubmit(ctx context.Context, t *asynq.Task) error {
 	result, err := prov.Submit(ctx, submitReq)
 	if err != nil {
 		taskService.UpdateTaskFail(task.ID, "submit error: "+err.Error())
-		strategyService.DecrementAccountTasks(task.AccountID)
+		decrementAccountTasks(task.ID)
 		return nil
 	}
 
-	// 6. 更新任务状态
-	taskService.UpdateTaskStatus(task.ID, model.TaskStatusProcessing, result.ProviderTaskID)
-
-	// 7. 根据 result_mode 入队
-	if channelCapability.ResultMode == model.ResultModePoll {
+	// 6. 根据交互模式处理结果
+	switch endpoint.InteractionMode {
+	case model.ModePoll:
+		taskService.UpdateTaskStatus(task.ID, model.TaskStatusProcessing, result.ProviderTaskID)
 		if result.ProviderTaskID == "" {
 			taskService.UpdateTaskFail(task.ID, "upstream returned empty task_id, cannot poll")
-			strategyService.DecrementAccountTasks(task.AccountID)
+			decrementAccountTasks(task.ID)
 			return nil
 		}
 		pollPayload := TaskPollPayload{
@@ -85,12 +84,18 @@ func HandleTaskSubmit(ctx context.Context, t *asynq.Task) error {
 		}
 		payloadBytes, _ := json.Marshal(pollPayload)
 		pollTask := asynq.NewTask(TypeTaskPoll, payloadBytes)
-		info, enqErr := queue.Client.Enqueue(pollTask, asynq.ProcessIn(time.Duration(channelCapability.PollInterval)*time.Second), asynq.Queue("default"))
+		info, enqErr := queue.Client.Enqueue(pollTask, asynq.ProcessIn(time.Duration(endpoint.PollInterval)*time.Second), asynq.Queue("default"))
 		if enqErr != nil {
 			logger.Error("enqueue poll failed", zap.Uint("task_id", task.ID), zap.Error(enqErr))
 		} else {
 			logger.Info("enqueue poll ok", zap.Uint("task_id", task.ID), zap.String("queue", info.Queue))
 		}
+	case model.ModeCallback:
+		taskService.UpdateTaskStatus(task.ID, model.TaskStatusProcessing, result.ProviderTaskID)
+	default:
+		// sync/stream: submit 响应即为最终结果
+		taskService.UpdateTaskSuccess(task.ID, map[string]any{"data": result.ProviderTaskID, "urls": result.URLs}, endpoint.InputPrice)
+		decrementAccountTasks(task.ID)
 	}
 
 	logger.Info("task submitted", zap.Uint("task_id", task.ID), zap.String("vendor_task_id", result.ProviderTaskID))

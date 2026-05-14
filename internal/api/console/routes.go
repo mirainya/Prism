@@ -29,12 +29,16 @@ func RegisterRoutes(group *gin.RouterGroup) {
 
 	// 仪表盘
 	group.GET("/dashboard/stats", DashboardStats)
+	group.GET("/dashboard/chat-stats", ChatStats)
 	group.GET("/tasks", ListTasks)
 	group.GET("/tasks/:task_no", GetTaskDetail)
 
 	// 对话记录
 	group.GET("/conversations", ListConversations)
 	group.GET("/conversations/:id/messages", GetConversationMessages)
+
+	// 文档
+	group.GET("/docs/models", DocsListModels)
 
 	// Playground 代理（通过 JWT + token_id，无需原始 API Key）
 	group.GET("/playground/:token_id/models", PlaygroundListModels)

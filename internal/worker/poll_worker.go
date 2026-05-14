@@ -12,6 +12,7 @@ import (
 	"github.com/mirainya/Prism/pkg/logger"
 	"github.com/mirainya/Prism/pkg/queue"
 	"go.uber.org/zap"
+	"gorm.io/gorm"
 )
 
 const DefaultMaxPollCount = 360 // 默认最大轮询次数（兜底）
@@ -36,16 +37,16 @@ func HandleTaskPoll(ctx context.Context, t *asynq.Task) error {
 		return nil
 	}
 
-	// 2. 获取渠道能力配置（读取轮询参数）
-	var channelCapability model.ChannelCapability
-	model.DB().First(&channelCapability, task.ChannelCapabilityID)
+	// 2. 获取端点配置（读取轮询参数）
+	var endpoint model.Endpoint
+	model.DB().First(&endpoint, task.EndpointID)
 
-	maxPollCount := channelCapability.PollMaxAttempts
+	maxPollCount := endpoint.PollMaxAttempts
 	if maxPollCount <= 0 {
 		maxPollCount = DefaultMaxPollCount
 	}
 
-	pollInterval := channelCapability.PollInterval
+	pollInterval := endpoint.PollInterval
 	if pollInterval <= 0 {
 		pollInterval = DefaultPollInterval
 	}
@@ -65,7 +66,7 @@ func HandleTaskPoll(ctx context.Context, t *asynq.Task) error {
 	model.DB().First(&account, task.AccountID)
 
 	// 4. 创建 Provider 并查询进度
-	prov, err := provider.NewProvider(&channel, &account, &channelCapability)
+	prov, err := provider.NewProvider(&channel, &account, &endpoint)
 	if err != nil {
 		return fmt.Errorf("create provider: %w", err)
 	}
@@ -139,6 +140,8 @@ func enqueueUpload(taskID uint, originURL string, urls []string) error {
 func decrementAccountTasks(taskID uint) {
 	task, err := taskService.GetTaskByID(taskID)
 	if err == nil {
-		strategyService.DecrementAccountTasks(task.AccountID)
+		model.DB().Model(&model.ChannelAccount{}).
+			Where("id = ? AND current_tasks > 0", task.AccountID).
+			UpdateColumn("current_tasks", gorm.Expr("current_tasks - 1"))
 	}
 }

@@ -97,7 +97,7 @@ func (s *RequestLogService) ListRequestLogs(req *ListRequestLogsRequest) (*ListR
 		query = query.Where("request_type = ?", req.RequestType)
 	}
 	if req.TaskNo != "" {
-		query = query.Where("task_no LIKE ?", "%"+req.TaskNo+"%")
+		query = query.Where("task_no LIKE ?", req.TaskNo+"%")
 	}
 	if req.ConversationID > 0 {
 		query = query.Where("conversation_id = ?", req.ConversationID)
@@ -118,7 +118,7 @@ func (s *RequestLogService) ListRequestLogs(req *ListRequestLogsRequest) (*ListR
 	// 分页查询
 	var items []model.ChannelRequestLog
 	offset := (req.Page - 1) * req.PageSize
-	if err := query.Preload("Channel").Preload("Capability").
+	if err := query.Preload("Channel").Preload("Model").
 		Order("id DESC").
 		Offset(offset).Limit(req.PageSize).
 		Find(&items).Error; err != nil {
@@ -257,22 +257,22 @@ func (s *RequestLogService) resolveAuthConfig(log *model.ChannelRequestLog) (loc
 		return "header", "Authorization", "Bearer "
 	}
 
-	// 能力请求从 ChannelCapability 读取认证配置
+	// 能力请求从 Endpoint 读取认证配置
 	if log.ChannelID > 0 && log.CapabilityCode != "" {
-		var cc model.ChannelCapability
+		var ep model.Endpoint
 		err := model.DB().
-			Where("channel_id = ? AND capability_code = ?", log.ChannelID, log.CapabilityCode).
-			First(&cc).Error
+			Where("channel_id = ? AND model_code = ?", log.ChannelID, log.CapabilityCode).
+			First(&ep).Error
 		if err == nil {
-			loc := cc.AuthLocation
+			loc := ep.AuthLocation
 			if loc == "" {
 				loc = "header"
 			}
-			k := cc.AuthKey
+			k := ep.AuthKey
 			if k == "" {
 				k = "Authorization"
 			}
-			return loc, k, cc.AuthValuePrefix
+			return loc, k, ep.AuthValuePrefix
 		}
 	}
 

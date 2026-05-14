@@ -8,7 +8,7 @@ import (
 	"github.com/mirainya/Prism/internal/service"
 )
 
-var capabilityService = service.NewCapabilityService()
+var unifiedService = service.NewUnifiedService()
 
 // HandleCapabilityCallback 处理供应商回调
 func HandleCapabilityCallback(c *gin.Context) {
@@ -20,7 +20,7 @@ func HandleCapabilityCallback(c *gin.Context) {
 		return
 	}
 
-	err := capabilityService.HandleCallback(c.Request.Context(), channelType, body)
+	err := unifiedService.HandleCallback(c.Request.Context(), channelType, body)
 	if err != nil {
 		resp.ErrorMsg(c, http.StatusBadRequest, 400, err.Error())
 		return

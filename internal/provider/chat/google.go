@@ -5,8 +5,10 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"strings"
 	"time"
 
+	"github.com/mirainya/Prism/internal/domain"
 	"github.com/mirainya/Prism/pkg/httputil"
 )
 
@@ -42,6 +44,47 @@ func (p *GoogleProvider) Complete(ctx context.Context, req *ChatRequest) (*ChatR
 
 func (p *GoogleProvider) StreamComplete(ctx context.Context, req *ChatRequest) (*http.Response, error) {
 	return nil, fmt.Errorf("streaming not supported for provider: %s", p.Name())
+}
+
+func (p *GoogleProvider) ListModels(ctx context.Context) ([]domain.ModelInfo, error) {
+	url := fmt.Sprintf("%s/v1beta/models?key=%s", p.config.BaseURL, p.config.APIKey)
+
+	resp, err := httputil.Get(ctx, url, nil)
+	if err != nil {
+		return nil, fmt.Errorf("list models failed: %w", err)
+	}
+
+	var result struct {
+		Models []struct {
+			Name                       string   `json:"name"`
+			DisplayName                string   `json:"displayName"`
+			SupportedGenerationMethods []string `json:"supportedGenerationMethods"`
+			InputTokenLimit            int      `json:"inputTokenLimit"`
+			OutputTokenLimit           int      `json:"outputTokenLimit"`
+		} `json:"models"`
+	}
+	if err := json.Unmarshal(resp, &result); err != nil {
+		return nil, fmt.Errorf("unmarshal models failed: %w", err)
+	}
+
+	models := make([]domain.ModelInfo, 0, len(result.Models))
+	for _, m := range result.Models {
+		// name 格式: "models/gemini-2.0-flash"
+		id := strings.TrimPrefix(m.Name, "models/")
+		models = append(models, domain.ModelInfo{
+			ID:        id,
+			Name:      m.DisplayName,
+			Provider:  p.Name(),
+			Type:      "chat",
+			MaxTokens: m.OutputTokenLimit,
+			Features:  m.SupportedGenerationMethods,
+			RawMeta: map[string]any{
+				"input_token_limit":  m.InputTokenLimit,
+				"output_token_limit": m.OutputTokenLimit,
+			},
+		})
+	}
+	return models, nil
 }
 
 func (p *GoogleProvider) convertRequest(req *ChatRequest) map[string]any {

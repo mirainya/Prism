@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/mirainya/Prism/internal/domain"
 	"github.com/mirainya/Prism/pkg/httputil"
 )
 
@@ -49,6 +50,18 @@ func (p *AnthropicProvider) Complete(ctx context.Context, req *ChatRequest) (*Ch
 
 func (p *AnthropicProvider) StreamComplete(ctx context.Context, req *ChatRequest) (*http.Response, error) {
 	return nil, fmt.Errorf("streaming not supported for provider: %s", p.Name())
+}
+
+func (p *AnthropicProvider) ListModels(ctx context.Context) ([]domain.ModelInfo, error) {
+	// Anthropic 无公开 models API，返回已知模型列表
+	knownModels := []domain.ModelInfo{
+		{ID: "claude-sonnet-4-20250514", Name: "Claude Sonnet 4", Provider: "anthropic", Type: "chat", MaxTokens: 8192, Features: []string{"streaming", "tools", "vision"}},
+		{ID: "claude-opus-4-20250514", Name: "Claude Opus 4", Provider: "anthropic", Type: "chat", MaxTokens: 8192, Features: []string{"streaming", "tools", "vision"}},
+		{ID: "claude-3-7-sonnet-20250219", Name: "Claude 3.7 Sonnet", Provider: "anthropic", Type: "chat", MaxTokens: 8192, Features: []string{"streaming", "tools", "vision", "extended_thinking"}},
+		{ID: "claude-3-5-sonnet-20241022", Name: "Claude 3.5 Sonnet", Provider: "anthropic", Type: "chat", MaxTokens: 8192, Features: []string{"streaming", "tools", "vision"}},
+		{ID: "claude-3-5-haiku-20241022", Name: "Claude 3.5 Haiku", Provider: "anthropic", Type: "chat", MaxTokens: 8192, Features: []string{"streaming", "tools"}},
+	}
+	return knownModels, nil
 }
 
 func (p *AnthropicProvider) convertRequest(req *ChatRequest) map[string]any {

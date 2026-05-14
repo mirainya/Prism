@@ -15,6 +15,7 @@ import (
 	"github.com/mirainya/Prism/internal/api"
 	"github.com/mirainya/Prism/internal/model"
 	"github.com/mirainya/Prism/internal/provider"
+	"github.com/mirainya/Prism/internal/service"
 	"github.com/mirainya/Prism/internal/worker"
 	"github.com/mirainya/Prism/pkg/cache"
 	"github.com/mirainya/Prism/pkg/config"
@@ -62,6 +63,7 @@ func main() {
 	if err := config.Load(configPath); err != nil {
 		log.Fatalf("failed to load config: %v", err)
 	}
+	config.Watch()
 
 	if err := logger.Init(); err != nil {
 		log.Fatalf("failed to init logger: %v", err)
@@ -72,6 +74,9 @@ func main() {
 		log.Fatalf("failed to connect database: %v", err)
 	}
 	model.SetDB(db)
+
+	// 初始化 Repository 层
+	service.InitRepos(db)
 
 	if err := model.AutoMigrate(); err != nil {
 		log.Fatalf("failed to migrate database: %v", err)
@@ -174,6 +179,12 @@ func startScheduler() *asynq.Scheduler {
 	_, err := scheduler.Register("*/5 * * * *", worker.NewTimeoutCheckTask(), asynq.Queue("low"))
 	if err != nil {
 		log.Fatalf("failed to register timeout check task: %v", err)
+	}
+
+	// 每 6 小时同步一次上游模型
+	_, err = scheduler.Register("0 */6 * * *", worker.NewModelDiscoverySyncTask(), asynq.Queue("low"))
+	if err != nil {
+		log.Fatalf("failed to register model discovery sync task: %v", err)
 	}
 
 	go func() {

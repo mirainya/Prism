@@ -31,7 +31,7 @@ func HandleTaskTimeoutCheck(ctx context.Context, t *asynq.Task) error {
 	for _, task := range tasks {
 		logger.Warn("task timeout", zap.Uint("task_id", task.ID), zap.String("task_no", task.TaskNo))
 		taskService.UpdateTaskFail(task.ID, "task timeout")
-		strategyService.DecrementAccountTasks(task.AccountID)
+		decrementAccountTasks(task.ID)
 	}
 
 	logger.Info("timeout check completed", zap.Int("count", len(tasks)))

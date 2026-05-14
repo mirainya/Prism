@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 
+	"github.com/mirainya/Prism/internal/domain"
 	"github.com/mirainya/Prism/pkg/httputil"
 )
 
@@ -76,4 +77,40 @@ func (p *OpenAIProvider) StreamComplete(ctx context.Context, req *ChatRequest) (
 	}
 
 	return resp, nil
+}
+
+func (p *OpenAIProvider) ListModels(ctx context.Context) ([]domain.ModelInfo, error) {
+	url := p.config.BaseURL + "/v1/models"
+
+	headers := map[string]string{
+		"Authorization": "Bearer " + p.config.APIKey,
+	}
+
+	resp, err := httputil.Get(ctx, url, headers)
+	if err != nil {
+		return nil, fmt.Errorf("list models failed: %w", err)
+	}
+
+	var result struct {
+		Data []struct {
+			ID      string `json:"id"`
+			Object  string `json:"object"`
+			OwnedBy string `json:"owned_by"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(resp, &result); err != nil {
+		return nil, fmt.Errorf("unmarshal models failed: %w", err)
+	}
+
+	models := make([]domain.ModelInfo, 0, len(result.Data))
+	for _, m := range result.Data {
+		models = append(models, domain.ModelInfo{
+			ID:       m.ID,
+			Name:     m.ID,
+			Provider: p.Name(),
+			Type:     "chat",
+			RawMeta:  map[string]any{"owned_by": m.OwnedBy},
+		})
+	}
+	return models, nil
 }

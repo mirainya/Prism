@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { HashRouter as Router, Routes, Route, Navigate } from 'react-router-dom';
+import { ThemeProvider } from './theme/ThemeProvider';
 import Layout from './components/Layout';
 import ErrorBoundary from './components/ErrorBoundary';
 import Home from './pages/Home';
@@ -12,9 +13,8 @@ import Tokens from './pages/Tokens';
 import Logs from './pages/Logs';
 import RequestLogs from './pages/RequestLogs';
 import ApiDocs from './pages/ApiDocs';
-import ChatModels from './pages/ChatModels';
-import ChatModelChannels from './pages/ChatModelChannels';
 import ChatLogs from './pages/ChatLogs';
+import ChatModels from './pages/ChatModels';
 import ChangePassword from './pages/ChangePassword';
 import Playground from './pages/Playground';
 import { User, UserRole } from './types';
@@ -115,8 +115,8 @@ const App: React.FC = () => {
 
   if (isLoading) {
     return (
-      <div className="min-h-screen bg-gray-50 flex items-center justify-center">
-        <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-indigo-600"></div>
+      <div className="min-h-screen flex items-center justify-center" style={{ background: 'var(--login-gradient)' }}>
+        <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-[var(--primary)]"></div>
       </div>
     );
   }
@@ -131,11 +131,18 @@ const App: React.FC = () => {
       }
 
     return (
-      <div className="min-h-screen bg-gray-50 flex items-center justify-center p-6">
-        <div className="w-full max-w-md bg-white rounded-3xl shadow-xl p-8 border border-gray-100">
+      <div className="min-h-screen relative overflow-hidden flex items-center justify-center p-6" style={{ background: 'var(--login-gradient)' }}>
+        {/* 背景装饰 */}
+        <div className="absolute inset-0 bg-mesh" />
+        <div className="absolute w-[500px] h-[500px] rounded-full border-2 border-[var(--primary)]/10 -top-[150px] -right-[150px] animate-[login-spin_24s_linear_infinite]" />
+        <div className="absolute w-[200px] h-[200px] rounded-full border border-dashed border-[var(--primary)]/15 bottom-[10%] left-[5%] animate-[login-spin-reverse_36s_linear_infinite]" />
+        <div className="absolute w-[300px] h-[300px] rounded-full bg-[var(--primary)]/5 top-[30%] right-[10%] blur-[40px] animate-[glow-pulse_6s_ease-in-out_infinite]" />
+
+        {/* 登录卡片 */}
+        <div className="relative w-full max-w-md glass-card p-8">
             <button
                 onClick={handleBackToHome}
-                className="flex items-center gap-2 text-gray-500 hover:text-gray-700 mb-6 text-sm"
+                className="flex items-center gap-2 text-[var(--text-secondary)] hover:text-[var(--primary)] mb-6 text-sm transition-colors"
             >
                 <ArrowLeft size={16}/>
                 返回首页
@@ -143,44 +150,44 @@ const App: React.FC = () => {
 
           <div className="flex flex-col items-center mb-8">
               <img src={logo} alt="Prism" className="w-16 h-16 mb-4"/>
-              <h1 className="text-2xl font-bold text-gray-900">棱镜</h1>
-            <p className="text-gray-500 mt-2">
+              <h1 className="text-2xl font-bold bg-gradient-to-r from-[var(--primary)] to-[var(--accent)] bg-clip-text text-transparent">棱镜</h1>
+            <p className="text-[var(--text-secondary)] mt-2">
               {authMode === 'login' ? '请登录您的账户' : '创建新账户'}
             </p>
           </div>
 
           {successMsg && (
-            <div className="mb-4 p-3 bg-green-50 border border-green-200 text-green-600 rounded-lg text-sm">
+            <div className="mb-4 p-3 bg-green-50 border border-green-200 text-green-600 rounded-xl text-sm">
               {successMsg}
             </div>
           )}
 
           {error && (
-            <div className="mb-4 p-3 bg-red-50 border border-red-200 text-red-600 rounded-lg text-sm">
+            <div className="mb-4 p-3 bg-red-50 border border-red-200 text-red-600 rounded-xl text-sm">
               {error}
             </div>
           )}
 
           <form onSubmit={authMode === 'login' ? handleLogin : handleRegister} className="space-y-4">
             <div>
-              <label className="block text-sm font-medium text-gray-700 mb-1">用户名</label>
+              <label className="block text-sm font-medium text-[var(--text-primary)] mb-1">用户名</label>
               <input
                 type="text"
                 value={username}
                 onChange={e => setUsername(e.target.value)}
-                className="w-full px-4 py-3 border border-gray-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                className="w-full px-4 py-3 border border-[var(--border-soft)] rounded-xl bg-white/80 focus:outline-none focus:ring-2 focus:ring-[var(--primary)]/30 focus:border-[var(--primary)] transition-all"
                 placeholder="请输入用户名"
                 required
                 minLength={3}
               />
             </div>
             <div>
-              <label className="block text-sm font-medium text-gray-700 mb-1">密码</label>
+              <label className="block text-sm font-medium text-[var(--text-primary)] mb-1">密码</label>
               <input
                 type="password"
                 value={password}
                 onChange={e => setPassword(e.target.value)}
-                className="w-full px-4 py-3 border border-gray-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                className="w-full px-4 py-3 border border-[var(--border-soft)] rounded-xl bg-white/80 focus:outline-none focus:ring-2 focus:ring-[var(--primary)]/30 focus:border-[var(--primary)] transition-all"
                 placeholder="请输入密码"
                 required
                 minLength={6}
@@ -189,7 +196,7 @@ const App: React.FC = () => {
             <button
               type="submit"
               disabled={isAuthenticating}
-              className="w-full py-3 bg-indigo-600 text-white rounded-xl font-bold hover:bg-indigo-700 transition-colors disabled:opacity-50 flex items-center justify-center gap-2"
+              className="w-full py-3 bg-gradient-to-r from-[var(--primary)] to-[var(--primary-light)] text-white rounded-xl font-bold hover:shadow-lg hover:-translate-y-0.5 transition-all disabled:opacity-50 flex items-center justify-center gap-2"
             >
               {isAuthenticating ? (
                 <div className="animate-spin rounded-full h-5 w-5 border-b-2 border-white"></div>
@@ -214,13 +221,13 @@ const App: React.FC = () => {
                 setError('');
                 setSuccessMsg('');
               }}
-              className="text-indigo-600 hover:text-indigo-700 text-sm font-medium"
+              className="text-[var(--primary)] hover:text-[var(--accent)] text-sm font-medium transition-colors"
             >
               {authMode === 'login' ? '没有账户? 点击注册' : '已有账户? 点击登录'}
             </button>
           </div>
 
-          <p className="mt-8 text-center text-xs text-gray-400">
+          <p className="mt-8 text-center text-xs text-[var(--text-secondary)]">
               棱镜 v1.0.0
           </p>
         </div>
@@ -231,6 +238,7 @@ const App: React.FC = () => {
   const isAdmin = user.role === UserRole.ADMIN;
 
   return (
+    <ThemeProvider>
     <Router>
       <Layout user={user} onLogout={handleLogout}>
         <ErrorBoundary>
@@ -241,9 +249,8 @@ const App: React.FC = () => {
           {isAdmin && (
             <>
               <Route path="/channels" element={<Channels />} />
+              <Route path="/chat-models" element={<ChatModels />} />
               <Route path="/capabilities" element={<Capabilities />} />
-                <Route path="/chat-models" element={<ChatModels/>}/>
-                <Route path="/chat-model-channels" element={<ChatModelChannels/>}/>
               <Route path="/users" element={<Users />} />
               <Route path="/request-logs" element={<RequestLogs />} />
             </>
@@ -261,6 +268,7 @@ const App: React.FC = () => {
         </ErrorBoundary>
       </Layout>
     </Router>
+    </ThemeProvider>
   );
 };
 

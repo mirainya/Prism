@@ -1,9 +1,13 @@
 package service
 
 import (
+	"encoding/json"
+	"unicode/utf8"
+
 	"github.com/gin-gonic/gin"
 	"github.com/mirainya/Prism/internal/model"
 	"github.com/shopspring/decimal"
+	"golang.org/x/text/encoding/simplifiedchinese"
 )
 
 type QueryService struct{}
@@ -25,14 +29,14 @@ func (s *QueryService) ListAvailableChannels() ([]string, error) {
 	return result, nil
 }
 
-func (s *QueryService) ListAvailableCapabilities(channelType, capabilityType string) ([]gin.H, error) {
+func (s *QueryService) ListAvailableCapabilities(channelType, modelType string) ([]gin.H, error) {
 	query := model.DB().Where("status = ?", 1)
-	if capabilityType != "" {
-		query = query.Where("type = ?", capabilityType)
+	if modelType != "" {
+		query = query.Where("type = ?", modelType)
 	}
 
-	var capabilities []model.Capability
-	if err := query.Find(&capabilities).Error; err != nil {
+	var models []model.Model
+	if err := query.Find(&models).Error; err != nil {
 		return nil, err
 	}
 
@@ -45,47 +49,47 @@ func (s *QueryService) ListAvailableCapabilities(channelType, capabilityType str
 		channelMap[ch.ID] = ch
 	}
 
-	var channelCaps []model.ChannelCapability
-	ccQuery := model.DB().Where("status = ?", 1)
+	var endpoints []model.Endpoint
+	epQuery := model.DB().Where("status = ?", 1)
 	if channelType != "" {
 		var channel model.Channel
 		if err := model.DB().Where("type = ? AND status = ?", channelType, 1).First(&channel).Error; err != nil {
 			return nil, err
 		}
-		ccQuery = ccQuery.Where("channel_id = ?", channel.ID)
+		epQuery = epQuery.Where("channel_id = ?", channel.ID)
 	}
-	if err := ccQuery.Find(&channelCaps).Error; err != nil {
+	if err := epQuery.Find(&endpoints).Error; err != nil {
 		return nil, err
 	}
 
-	capChannels := make(map[string][]gin.H)
-	for _, cc := range channelCaps {
-		if ch, ok := channelMap[cc.ChannelID]; ok {
-			capChannels[cc.CapabilityCode] = append(capChannels[cc.CapabilityCode], gin.H{
+	modelChannels := make(map[string][]gin.H)
+	for _, ep := range endpoints {
+		if ch, ok := channelMap[ep.ChannelID]; ok {
+			modelChannels[ep.ModelCode] = append(modelChannels[ep.ModelCode], gin.H{
 				"channel_type": ch.Type,
 				"channel_name": ch.Name,
-				"model":        cc.Model,
-				"price":        cc.Price,
+				"model":        ep.VendorModel,
+				"price":        ep.InputPrice,
 			})
 		}
 	}
 
-	result := make([]gin.H, 0, len(capabilities))
-	for _, cap := range capabilities {
-		channels := capChannels[cap.Code]
-		if channelType != "" && len(channels) == 0 {
+	result := make([]gin.H, 0, len(models))
+	for _, m := range models {
+		chs := modelChannels[m.Code]
+		if channelType != "" && len(chs) == 0 {
 			continue
 		}
-		if channels == nil {
-			channels = []gin.H{}
+		if chs == nil {
+			chs = []gin.H{}
 		}
 		result = append(result, gin.H{
-			"code":            cap.Code,
-			"name":            cap.Name,
-			"type":            cap.Type,
-			"description":     cap.Description,
-			"standard_params": cap.StandardParams,
-			"channels":        channels,
+			"code":         m.Code,
+			"name":         m.Name,
+			"type":         m.Type,
+			"description":  m.Description,
+			"param_schema": ensureUTF8(m.ParamSchema),
+			"channels":     chs,
 		})
 	}
 
@@ -93,8 +97,8 @@ func (s *QueryService) ListAvailableCapabilities(channelType, capabilityType str
 }
 
 func (s *QueryService) ListCapabilityChannels() ([]gin.H, error) {
-	var capabilities []model.Capability
-	if err := model.DB().Where("status = ?", 1).Find(&capabilities).Error; err != nil {
+	var models []model.Model
+	if err := model.DB().Where("status = ?", 1).Find(&models).Error; err != nil {
 		return nil, err
 	}
 
@@ -107,38 +111,38 @@ func (s *QueryService) ListCapabilityChannels() ([]gin.H, error) {
 		channelMap[ch.ID] = ch
 	}
 
-	var channelCaps []model.ChannelCapability
-	if err := model.DB().Where("status = ?", 1).Find(&channelCaps).Error; err != nil {
+	var endpoints []model.Endpoint
+	if err := model.DB().Where("status = ?", 1).Find(&endpoints).Error; err != nil {
 		return nil, err
 	}
 
-	capChannels := make(map[string][]gin.H)
-	for _, cc := range channelCaps {
-		ch, ok := channelMap[cc.ChannelID]
+	modelChannels := make(map[string][]gin.H)
+	for _, ep := range endpoints {
+		ch, ok := channelMap[ep.ChannelID]
 		if !ok {
 			continue
 		}
-		capChannels[cc.CapabilityCode] = append(capChannels[cc.CapabilityCode], gin.H{
+		modelChannels[ep.ModelCode] = append(modelChannels[ep.ModelCode], gin.H{
 			"channel_id":   ch.ID,
 			"channel_type": ch.Type,
 			"channel_name": ch.Name,
-			"model":        cc.Model,
-			"price":        cc.Price,
+			"model":        ep.VendorModel,
+			"price":        ep.InputPrice,
 		})
 	}
 
-	result := make([]gin.H, 0, len(capabilities))
-	for _, cap := range capabilities {
-		channels := capChannels[cap.Code]
-		if len(channels) == 0 {
-			channels = []gin.H{}
+	result := make([]gin.H, 0, len(models))
+	for _, m := range models {
+		chs := modelChannels[m.Code]
+		if len(chs) == 0 {
+			chs = []gin.H{}
 		}
 		result = append(result, gin.H{
-			"code":        cap.Code,
-			"name":        cap.Name,
-			"type":        cap.Type,
-			"description": cap.Description,
-			"channels":    channels,
+			"code":        m.Code,
+			"name":        m.Name,
+			"type":        m.Type,
+			"description": m.Description,
+			"channels":    chs,
 		})
 	}
 
@@ -146,56 +150,7 @@ func (s *QueryService) ListCapabilityChannels() ([]gin.H, error) {
 }
 
 func (s *QueryService) ListChatModelChannelsForToken() ([]gin.H, error) {
-	var chatModels []model.ChatModel
-	if err := model.DB().Where("status = ?", 1).Find(&chatModels).Error; err != nil {
-		return nil, err
-	}
-
-	var channels []model.Channel
-	if err := model.DB().Where("status = ?", 1).Find(&channels).Error; err != nil {
-		return nil, err
-	}
-	channelMap := make(map[uint]model.Channel)
-	for _, ch := range channels {
-		channelMap[ch.ID] = ch
-	}
-
-	var modelChannels []model.ChatModelChannel
-	if err := model.DB().Where("status = ?", 1).Find(&modelChannels).Error; err != nil {
-		return nil, err
-	}
-
-	modelChannelMap := make(map[string][]gin.H)
-	for _, mc := range modelChannels {
-		ch, ok := channelMap[mc.ChannelID]
-		if !ok {
-			continue
-		}
-		modelChannelMap[mc.ModelCode] = append(modelChannelMap[mc.ModelCode], gin.H{
-			"channel_id":   ch.ID,
-			"channel_type": ch.Type,
-			"channel_name": ch.Name,
-			"model":        mc.VendorModel,
-			"price":        mc.InputPrice,
-		})
-	}
-
-	result := make([]gin.H, 0, len(chatModels))
-	for _, m := range chatModels {
-		channels := modelChannelMap[m.Code]
-		if len(channels) == 0 {
-			channels = []gin.H{}
-		}
-		result = append(result, gin.H{
-			"code":        "chat:" + m.Code,
-			"name":        m.Name + " (Chat)",
-			"type":        "chat",
-			"description": m.Description,
-			"channels":    channels,
-		})
-	}
-
-	return result, nil
+	return s.ListCapabilityChannels()
 }
 
 // ---------- PricingService ----------
@@ -222,46 +177,60 @@ type PricingChannelModel struct {
 }
 
 func (s *PricingService) GetPricing() ([]PricingCapability, error) {
-	var capabilities []model.Capability
-	if err := model.DB().Where("status = ?", 1).Order("code ASC").Find(&capabilities).Error; err != nil {
+	var models []model.Model
+	if err := model.DB().Where("status = ?", 1).Order("code ASC").Find(&models).Error; err != nil {
 		return nil, err
 	}
 
-	var channelCapabilities []model.ChannelCapability
+	var endpoints []model.Endpoint
 	if err := model.DB().
 		Where("status = ?", 1).
 		Preload("Channel").
-		Find(&channelCapabilities).Error; err != nil {
+		Find(&endpoints).Error; err != nil {
 		return nil, err
 	}
 
-	ccMap := make(map[string][]PricingChannelModel)
-	for _, cc := range channelCapabilities {
-		if cc.Channel == nil || cc.Channel.Status != 1 {
+	epMap := make(map[string][]PricingChannelModel)
+	for _, ep := range endpoints {
+		if ep.Channel == nil || ep.Channel.Status != 1 {
 			continue
 		}
-		ccMap[cc.CapabilityCode] = append(ccMap[cc.CapabilityCode], PricingChannelModel{
-			ChannelCode: cc.Channel.Type,
-			Model:       cc.Model,
-			Name:        cc.Name,
-			Price:       cc.Price,
-			PriceUnit:   cc.PriceUnit,
+		epMap[ep.ModelCode] = append(epMap[ep.ModelCode], PricingChannelModel{
+			ChannelCode: ep.Channel.Type,
+			Model:       ep.VendorModel,
+			Name:        ep.VendorModel,
+			Price:       ep.InputPrice,
+			PriceUnit:   string(ep.PriceMode),
 		})
 	}
 
-	result := make([]PricingCapability, 0, len(capabilities))
-	for _, cap := range capabilities {
-		channels := ccMap[cap.Code]
+	result := make([]PricingCapability, 0, len(models))
+	for _, m := range models {
+		channels := epMap[m.Code]
 		if channels == nil {
 			channels = []PricingChannelModel{}
 		}
 		result = append(result, PricingCapability{
-			Code:        cap.Code,
-			Name:        cap.Name,
-			Description: cap.Description,
+			Code:        m.Code,
+			Name:        m.Name,
+			Description: m.Description,
 			Channels:    channels,
 		})
 	}
 
 	return result, nil
+}
+
+func ensureUTF8(data []byte) json.RawMessage {
+	if len(data) == 0 {
+		return nil
+	}
+	if utf8.Valid(data) {
+		return json.RawMessage(data)
+	}
+	decoded, err := simplifiedchinese.GBK.NewDecoder().Bytes(data)
+	if err != nil {
+		return json.RawMessage(data)
+	}
+	return json.RawMessage(decoded)
 }

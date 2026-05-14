@@ -6,6 +6,7 @@ import (
 	"net/http"
 
 	"github.com/gin-gonic/gin"
+	"github.com/prometheus/client_golang/prometheus/promhttp"
 	consolefs "github.com/mirainya/Prism/console"
 	"github.com/mirainya/Prism/internal/api/admin"
 	"github.com/mirainya/Prism/internal/api/callback"
@@ -14,6 +15,7 @@ import (
 	"github.com/mirainya/Prism/internal/api/open"
 	"github.com/mirainya/Prism/internal/model"
 	"github.com/mirainya/Prism/pkg/cache"
+	"github.com/mirainya/Prism/pkg/metrics"
 )
 
 func SetupRouter() *gin.Engine {
@@ -24,9 +26,14 @@ func SetupRouter() *gin.Engine {
 	r.Use(middleware.CORS())
 	r.Use(middleware.RequestID())
 	r.Use(middleware.RequestLogger())
+	r.Use(middleware.ErrorHandler())
 
 	// 健康检查
 	r.GET("/health", healthCheck)
+
+	// Prometheus 指标
+	registry := metrics.InitPrometheus()
+	r.GET("/metrics", gin.WrapH(promhttp.HandlerFor(registry, promhttp.HandlerOpts{})))
 
 	// 认证接口 (无需登录)
 	console.RegisterAuthRoutes(r.Group("/api/auth"))

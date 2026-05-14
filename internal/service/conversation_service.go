@@ -51,68 +51,71 @@ func (s *ConversationService) ListConversations(req *ListConversationsRequest) (
 
 	db := model.DB()
 
-	// 构建子查询计算 total_cost
-	costSubQuery := db.Table("messages").
-		Select("conversation_id, SUM(cost) as total_cost").
-		Group("conversation_id")
-
-	query := db.Model(&model.Conversation{}).
-		Select("conversations.*, COALESCE(cost_sub.total_cost, 0) as total_cost").
-		Joins("LEFT JOIN (?) as cost_sub ON cost_sub.conversation_id = conversations.id", costSubQuery)
-
-	// 筛选条件
-	if req.UserID > 0 {
-		query = query.Where("conversations.user_id = ?", req.UserID)
-	}
-	if req.Model != "" {
-		query = query.Where("conversations.model = ?", req.Model)
-	}
-	if req.Keyword != "" {
-		query = query.Where("conversations.title LIKE ?", "%"+req.Keyword+"%")
-	}
-	if req.TokenID > 0 {
-		query = query.Where("conversations.token_id = ?", req.TokenID)
-	}
-	if req.StartDate != "" {
-		query = query.Where("conversations.created_at >= ?", req.StartDate+" 00:00:00")
-	}
-	if req.EndDate != "" {
-		query = query.Where("conversations.created_at <= ?", req.EndDate+" 23:59:59")
-	}
-
-	// 总数 - 需要单独查询不带 cost 子查询
-	countQuery := db.Model(&model.Conversation{})
-	if req.UserID > 0 {
-		countQuery = countQuery.Where("user_id = ?", req.UserID)
-	}
-	if req.Model != "" {
-		countQuery = countQuery.Where("model = ?", req.Model)
-	}
-	if req.Keyword != "" {
-		countQuery = countQuery.Where("title LIKE ?", "%"+req.Keyword+"%")
-	}
-	if req.TokenID > 0 {
-		countQuery = countQuery.Where("token_id = ?", req.TokenID)
-	}
-	if req.StartDate != "" {
-		countQuery = countQuery.Where("created_at >= ?", req.StartDate+" 00:00:00")
-	}
-	if req.EndDate != "" {
-		countQuery = countQuery.Where("created_at <= ?", req.EndDate+" 23:59:59")
+	applyFilters := func(q *gorm.DB) *gorm.DB {
+		if req.UserID > 0 {
+			q = q.Where("user_id = ?", req.UserID)
+		}
+		if req.Model != "" {
+			q = q.Where("model = ?", req.Model)
+		}
+		if req.Keyword != "" {
+			q = q.Where("title LIKE ?", "%"+req.Keyword+"%")
+		}
+		if req.TokenID > 0 {
+			q = q.Where("token_id = ?", req.TokenID)
+		}
+		if req.StartDate != "" {
+			q = q.Where("created_at >= ?", req.StartDate+" 00:00:00")
+		}
+		if req.EndDate != "" {
+			q = q.Where("created_at <= ?", req.EndDate+" 23:59:59")
+		}
+		return q
 	}
 
 	var total int64
-	if err := countQuery.Count(&total).Error; err != nil {
+	if err := applyFilters(db.Model(&model.Conversation{})).Count(&total).Error; err != nil {
 		return nil, err
 	}
 
-	// 分页查询
-	var items []ConversationItem
+	// 先分页查出当前页对话
+	var conversations []model.Conversation
 	offset := (req.Page - 1) * req.PageSize
-	if err := query.Order("conversations.id DESC").
-		Offset(offset).Limit(req.PageSize).
-		Scan(&items).Error; err != nil {
+	if err := applyFilters(db.Model(&model.Conversation{})).
+		Order("id DESC").Offset(offset).Limit(req.PageSize).
+		Find(&conversations).Error; err != nil {
 		return nil, err
+	}
+
+	items := make([]ConversationItem, len(conversations))
+	if len(conversations) > 0 {
+		ids := make([]uint, len(conversations))
+		for i, c := range conversations {
+			ids[i] = c.ID
+			items[i] = ConversationItem{Conversation: c}
+		}
+
+		// 只对当前页的 conversation_id 聚合 cost
+		type costRow struct {
+			ConversationID uint    `gorm:"column:conversation_id"`
+			TotalCost      float64 `gorm:"column:total_cost"`
+		}
+		var costs []costRow
+		if err := db.Table("messages").
+			Select("conversation_id, SUM(cost) as total_cost").
+			Where("conversation_id IN ?", ids).
+			Group("conversation_id").
+			Scan(&costs).Error; err != nil {
+			return nil, err
+		}
+
+		costMap := make(map[uint]float64, len(costs))
+		for _, c := range costs {
+			costMap[c.ConversationID] = c.TotalCost
+		}
+		for i := range items {
+			items[i].TotalCost = costMap[items[i].ID]
+		}
 	}
 
 	return &ListConversationsResponse{

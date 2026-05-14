@@ -5,12 +5,15 @@ import (
 	"fmt"
 	"net/http"
 	"time"
+
+	"github.com/mirainya/Prism/internal/domain"
 )
 
 // ChatProvider LLM 请求适配接口
 type ChatProvider interface {
 	Complete(ctx context.Context, req *ChatRequest) (*ChatResponse, error)
 	StreamComplete(ctx context.Context, req *ChatRequest) (*http.Response, error)
+	ListModels(ctx context.Context) ([]domain.ModelInfo, error)
 	Name() string
 }
 

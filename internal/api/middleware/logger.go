@@ -3,20 +3,30 @@ package middleware
 import (
 	"bytes"
 	"io"
+	"strconv"
 	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/mirainya/Prism/pkg/logger"
+	"github.com/mirainya/Prism/pkg/metrics"
 	"go.uber.org/zap"
 )
 
 type responseWriter struct {
 	gin.ResponseWriter
-	body *bytes.Buffer
+	body       *bytes.Buffer
+	statusCode int
+}
+
+func (w *responseWriter) WriteHeader(code int) {
+	w.statusCode = code
+	w.ResponseWriter.WriteHeader(code)
 }
 
 func (w *responseWriter) Write(b []byte) (int, error) {
-	w.body.Write(b)
+	if w.statusCode >= 400 && w.body.Len() < 1024 {
+		w.body.Write(b)
+	}
 	return w.ResponseWriter.Write(b)
 }
 
@@ -43,10 +53,15 @@ func RequestLogger() gin.HandlerFunc {
 		// 处理请求
 		c.Next()
 
-		// 记录日志
+		// 记录指标
 		latency := time.Since(start)
 		status := c.Writer.Status()
+		statusStr := strconv.Itoa(status)
 
+		metrics.APIRequestTotal.Inc(c.Request.Method, path, statusStr)
+		metrics.APIRequestDuration.Observe(latency.Seconds(), c.Request.Method, path)
+
+		// 记录日志
 		fields := []zap.Field{
 			zap.String("method", c.Request.Method),
 			zap.String("path", path),
@@ -54,6 +69,11 @@ func RequestLogger() gin.HandlerFunc {
 			zap.Int("status", status),
 			zap.Duration("latency", latency),
 			zap.String("ip", c.ClientIP()),
+		}
+
+		// 附加 request_id
+		if reqID, exists := c.Get(RequestIDKey); exists {
+			fields = append(fields, zap.String("request_id", reqID.(string)))
 		}
 
 		// 非 GET 请求记录请求体

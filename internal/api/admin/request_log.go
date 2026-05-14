@@ -51,8 +51,8 @@ func ListRequestLogs(c *gin.Context) {
 			item["channel_name"] = log.Channel.Name
 			item["channel_type"] = log.Channel.Type
 		}
-		if log.Capability != nil {
-			item["capability_name"] = log.Capability.Name
+		if log.Model != nil {
+			item["capability_name"] = log.Model.Name
 		}
 		items[i] = item
 	}
@@ -103,8 +103,8 @@ func GetRequestLog(c *gin.Context) {
 		result["channel_name"] = log.Channel.Name
 		result["channel_type"] = log.Channel.Type
 	}
-	if log.Capability != nil {
-		result["capability_name"] = log.Capability.Name
+	if log.Model != nil {
+		result["capability_name"] = log.Model.Name
 	}
 
 	resp.Success(c, result)
@@ -148,8 +148,8 @@ func RetryRequest(c *gin.Context) {
 		result["channel_name"] = newLog.Channel.Name
 		result["channel_type"] = newLog.Channel.Type
 	}
-	if newLog.Capability != nil {
-		result["capability_name"] = newLog.Capability.Name
+	if newLog.Model != nil {
+		result["capability_name"] = newLog.Model.Name
 	}
 
 	resp.Success(c, result)

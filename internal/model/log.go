@@ -22,9 +22,9 @@ type ChannelRequestLog struct {
 	TaskID                uint        `gorm:"index;comment:关联任务ID" json:"task_id"`
 	TaskNo                string      `gorm:"type:varchar(32);index;comment:任务编号" json:"task_no"`
 	ConversationID        uint        `gorm:"index;comment:关联对话ID(Chat)" json:"conversation_id"`
-	ChannelID             uint        `gorm:"index;comment:渠道ID" json:"channel_id"`
+	ChannelID             uint        `gorm:"index;index:idx_channel_request_at;comment:渠道ID" json:"channel_id"`
 	AccountID             uint        `gorm:"comment:渠道账号ID" json:"account_id"`
-	CapabilityCode        string      `gorm:"type:varchar(50);index;comment:能力编码或模型编码" json:"capability_code"`
+	CapabilityCode        string      `gorm:"type:varchar(50);index;index:idx_capability_request_at;comment:能力编码或模型编码" json:"capability_code"`
 	RequestType           RequestType `gorm:"type:varchar(20);index;comment:请求类型" json:"request_type"`
 	IsStream              bool        `gorm:"default:false;comment:是否流式请求" json:"is_stream"`
 	ModelCode             string      `gorm:"type:varchar(50);comment:请求模型" json:"model_code"`
@@ -48,10 +48,10 @@ type ChannelRequestLog struct {
 
 	ErrorMessage string `gorm:"type:text;comment:错误信息" json:"error_message"`
 
-	RequestAt time.Time `gorm:"index;comment:请求时间" json:"request_at"`
+	RequestAt time.Time `gorm:"index;index:idx_channel_request_at;index:idx_capability_request_at;comment:请求时间" json:"request_at"`
 
-	Channel    *Channel    `gorm:"foreignKey:ChannelID;constraint:-" json:"channel,omitempty"`
-	Capability *Capability `gorm:"foreignKey:CapabilityCode;references:Code;constraint:-" json:"capability,omitempty"`
+	Channel *Channel `gorm:"foreignKey:ChannelID;constraint:-" json:"channel,omitempty"`
+	Model   *Model   `gorm:"foreignKey:ModelCode;references:Code;constraint:-" json:"model,omitempty"`
 }
 
 func (ChannelRequestLog) TableName() string {

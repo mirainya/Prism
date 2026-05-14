@@ -50,11 +50,11 @@ const ChangePassword: React.FC = () => {
     return (
         <div className="space-y-6">
             <div>
-                <h1 className="text-2xl font-bold text-gray-900">修改密码</h1>
-                <p className="text-gray-500 mt-1">修改您的登录密码以保障账户安全</p>
+                <h1 className="text-2xl font-bold text-[var(--text-primary)]">修改密码</h1>
+                <p className="text-[var(--text-secondary)] mt-1">修改您的登录密码以保障账户安全</p>
             </div>
 
-            <div className="bg-white rounded-2xl shadow-sm border border-gray-100 overflow-hidden max-w-lg">
+            <div className="bg-[var(--surface-card)] rounded-2xl shadow-sm border border-[var(--border-soft)] overflow-hidden max-w-lg">
                 <div className="p-6">
                     {success && (
                         <div
@@ -77,23 +77,23 @@ const ChangePassword: React.FC = () => {
 
                     <form onSubmit={handleSubmit} className="space-y-5">
                         <div>
-                            <label className="block text-sm font-medium text-gray-700 mb-2">当前密码</label>
+                            <label className="block text-sm font-medium text-[var(--text-primary)] mb-2">当前密码</label>
                             <div className="relative">
-                                <div className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400">
+                                <div className="absolute left-3 top-1/2 -translate-y-1/2 text-[var(--text-secondary)]">
                                     <Lock size={18}/>
                                 </div>
                                 <input
                                     type={showOld ? 'text' : 'password'}
                                     value={oldPassword}
                                     onChange={e => setOldPassword(e.target.value)}
-                                    className="w-full pl-10 pr-10 py-3 border border-gray-200 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                                    className="w-full pl-10 pr-10 py-3 border border-[var(--border-soft)] rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-[var(--primary)]"
                                     placeholder="请输入当前密码"
                                     required
                                 />
                                 <button
                                     type="button"
                                     onClick={() => setShowOld(!showOld)}
-                                    className="absolute right-3 top-1/2 -translate-y-1/2 text-gray-400 hover:text-gray-600"
+                                    className="absolute right-3 top-1/2 -translate-y-1/2 text-[var(--text-secondary)] hover:text-[var(--text-secondary)]"
                                 >
                                     {showOld ? <EyeOff size={18}/> : <Eye size={18}/>}
                                 </button>
@@ -101,16 +101,16 @@ const ChangePassword: React.FC = () => {
                         </div>
 
                         <div>
-                            <label className="block text-sm font-medium text-gray-700 mb-2">新密码</label>
+                            <label className="block text-sm font-medium text-[var(--text-primary)] mb-2">新密码</label>
                             <div className="relative">
-                                <div className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400">
+                                <div className="absolute left-3 top-1/2 -translate-y-1/2 text-[var(--text-secondary)]">
                                     <Lock size={18}/>
                                 </div>
                                 <input
                                     type={showNew ? 'text' : 'password'}
                                     value={newPassword}
                                     onChange={e => setNewPassword(e.target.value)}
-                                    className="w-full pl-10 pr-10 py-3 border border-gray-200 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                                    className="w-full pl-10 pr-10 py-3 border border-[var(--border-soft)] rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-[var(--primary)]"
                                     placeholder="请输入新密码（至少6位）"
                                     required
                                     minLength={6}
@@ -118,7 +118,7 @@ const ChangePassword: React.FC = () => {
                                 <button
                                     type="button"
                                     onClick={() => setShowNew(!showNew)}
-                                    className="absolute right-3 top-1/2 -translate-y-1/2 text-gray-400 hover:text-gray-600"
+                                    className="absolute right-3 top-1/2 -translate-y-1/2 text-[var(--text-secondary)] hover:text-[var(--text-secondary)]"
                                 >
                                     {showNew ? <EyeOff size={18}/> : <Eye size={18}/>}
                                 </button>
@@ -126,16 +126,16 @@ const ChangePassword: React.FC = () => {
                         </div>
 
                         <div>
-                            <label className="block text-sm font-medium text-gray-700 mb-2">确认新密码</label>
+                            <label className="block text-sm font-medium text-[var(--text-primary)] mb-2">确认新密码</label>
                             <div className="relative">
-                                <div className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400">
+                                <div className="absolute left-3 top-1/2 -translate-y-1/2 text-[var(--text-secondary)]">
                                     <Lock size={18}/>
                                 </div>
                                 <input
                                     type={showConfirm ? 'text' : 'password'}
                                     value={confirmPassword}
                                     onChange={e => setConfirmPassword(e.target.value)}
-                                    className="w-full pl-10 pr-10 py-3 border border-gray-200 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                                    className="w-full pl-10 pr-10 py-3 border border-[var(--border-soft)] rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-[var(--primary)]"
                                     placeholder="请再次输入新密码"
                                     required
                                     minLength={6}
@@ -143,7 +143,7 @@ const ChangePassword: React.FC = () => {
                                 <button
                                     type="button"
                                     onClick={() => setShowConfirm(!showConfirm)}
-                                    className="absolute right-3 top-1/2 -translate-y-1/2 text-gray-400 hover:text-gray-600"
+                                    className="absolute right-3 top-1/2 -translate-y-1/2 text-[var(--text-secondary)] hover:text-[var(--text-secondary)]"
                                 >
                                     {showConfirm ? <EyeOff size={18}/> : <Eye size={18}/>}
                                 </button>
@@ -153,7 +153,7 @@ const ChangePassword: React.FC = () => {
                         <button
                             type="submit"
                             disabled={isSubmitting}
-                            className="w-full py-3 bg-indigo-600 text-white rounded-xl font-bold hover:bg-indigo-700 transition-colors disabled:opacity-50 flex items-center justify-center gap-2"
+                            className="w-full py-3 bg-[var(--primary)] text-white rounded-xl font-bold hover:opacity-90 transition-colors disabled:opacity-50 flex items-center justify-center gap-2"
                         >
                             {isSubmitting ? (
                                 <div className="animate-spin rounded-full h-5 w-5 border-b-2 border-white"></div>
@@ -166,8 +166,8 @@ const ChangePassword: React.FC = () => {
                         </button>
                     </form>
 
-                    <div className="mt-6 p-4 bg-gray-50 rounded-xl">
-                        <div className="text-xs text-gray-500 space-y-1">
+                    <div className="mt-6 p-4 bg-[var(--surface)] rounded-xl">
+                        <div className="text-xs text-[var(--text-secondary)] space-y-1">
                             <p>密码要求:</p>
                             <ul className="list-disc list-inside">
                                 <li>长度至少6位字符</li>

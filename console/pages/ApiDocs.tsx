@@ -1,694 +1,566 @@
-import React, {useState} from 'react';
-import {Book, ChevronDown, ChevronRight, Copy, Check, Code, FileJson} from 'lucide-react';
+import React, { useState, useEffect, useRef, useCallback } from 'react';
+import { Book, Search, Copy, Check, ChevronDown, ChevronRight, Play, Loader2, Zap, MessageSquare, ListChecks, Bell, AlertTriangle } from 'lucide-react';
+import { fetchDocsModels, DocsModel } from '../services/docsApi';
+import { fetchTokens } from '../services/api';
+import { ApiToken } from '../types';
 
-// API 接口定义
-const API_ENDPOINTS = [
-    {
-        group: '查询接口',
-        description: '查询可用的渠道和能力信息',
-        apis: [
-            {
-                method: 'GET',
-                path: '/v1/channels',
-                name: '获取渠道列表',
-                description: '获取所有可用的渠道编码列表',
-                auth: 'Token',
-                pathParams: [],
-                bodyParams: [],
-                requestExample: null,
-                responseExample: `{
-  "code": 0,
-  "message": "success",
-  "data": ["midjourney", "runway", "sora"]
-}`,
-            },
-            {
-                method: 'GET',
-                path: '/v1/capabilities',
-                name: '获取能力列表',
-                description: '获取所有可用的能力列表及其支持的渠道，可通过 channel 或 type 参数筛选',
-                auth: 'Token',
-                pathParams: [],
-                bodyParams: [
-                    {
-                        name: 'channel',
-                        type: 'string',
-                        required: false,
-                        description: '(Query) 渠道类型，筛选该渠道支持的能力'
-                    },
-                    {
-                        name: 'type',
-                        type: 'string',
-                        required: false,
-                        description: '(Query) 能力类型，可选值: image, video, chat, other'
-                    },
-                ],
-                requestExample: null,
-                responseExample: `{
-  "code": 0,
-  "message": "success",
-  "data": [
-    {
-      "code": "text2img_mj",
-      "name": "MJ文生图",
-      "type": "image",
-      "description": "使用Midjourney生成图片",
-      "channels": ["midjourney"]
-    },
-    {
-      "code": "text2img_banana",
-      "name": "香蕉文生图",
-      "type": "image",
-      "description": "使用香蕉模型生成图片",
-      "channels": ["banana"]
-    },
-    {
-      "code": "img2video",
-      "name": "图生视频",
-      "type": "video",
-      "description": "根据图片生成视频",
-      "channels": ["runway", "kling"]
-    }
-  ]
-}`,
-            },
-        ],
-    },
-    {
-        group: '能力调用',
-        description: '统一的能力调用接口，支持文生图、图生视频等多种能力',
-        apis: [
-            {
-                method: 'POST',
-                path: '/v1/capabilities/:capability',
-                name: '提交任务',
-                description: '调用指定能力创建任务，如 /v1/capabilities/text2img_mj',
-                auth: 'Token',
-                pathParams: [
-                    {
-                        name: 'capability',
-                        type: 'string',
-                        required: true,
-                        description: '能力编码，如 text2img_mj, img2video'
-                    },
-                ],
-                bodyParams: [
-                    {name: 'channel', type: 'string', required: false, description: '渠道类型（可选，用于指定特定渠道）'},
-                    {
-                        name: 'callback_url',
-                        type: 'string',
-                        required: false,
-                        description: '任务完成后的回调地址，系统将 POST 结果到此地址（详见「回调通知」）'
-                    },
-                    {name: 'prompt', type: 'string', required: true, description: '提示词'},
-                    {name: 'negative_prompt', type: 'string', required: false, description: '负向提示词'},
-                    {
-                        name: 'aspect_ratio',
-                        type: 'string',
-                        required: false,
-                        description: '宽高比: 1:1, 16:9, 9:16, 4:3, 3:4'
-                    },
-                    {name: 'width', type: 'integer', required: false, description: '宽度（与 aspect_ratio 二选一）'},
-                    {name: 'height', type: 'integer', required: false, description: '高度（与 aspect_ratio 二选一）'},
-                    {name: 'seed', type: 'integer', required: false, description: '随机种子'},
-                    {name: 'steps', type: 'integer', required: false, description: '生成步数'},
-                    {name: 'cfg_scale', type: 'number', required: false, description: 'CFG 强度'},
-                ],
-                requestExample: `{
-  "prompt": "a cat sitting on a chair, high quality",
-  "negative_prompt": "blurry, low quality",
-  "aspect_ratio": "16:9",
-  "callback_url": "https://your-domain.com/callback"
-}`,
-                responseExample: `{
-  "code": 0,
-  "message": "success",
-  "data": {
-    "task_no": "task_abc123def456",
-    "status": "pending",
-    "capability": "text2img_mj"
-  }
-}`,
-            },
-        ],
-    },
-    {
-        group: '任务管理',
-        description: '查询和管理已创建的任务',
-        apis: [
-            {
-                method: 'GET',
-                path: '/v1/tasks/:task_no',
-                name: '查询任务',
-                description: '根据任务编号查询任务状态和结果',
-                auth: 'Token',
-                pathParams: [
-                    {name: 'task_no', type: 'string', required: true, description: '任务编号'},
-                ],
-                bodyParams: [],
-                requestExample: null,
-                responseExample: `{
-  "code": 0,
-  "message": "success",
-  "data": {
-    "task_no": "task_abc123def456",
-    "status": "success",
-    "progress": 100,
-    "result": {
-      "url": "https://cdn.example.com/result.png"
-    },
-    "cost": 0.1,
-    "error": "",
-    "created_at": "2024-01-01T00:00:00Z",
-    "completed_at": "2024-01-01T00:00:30Z"
-  }
-}`,
-            },
-            {
-                method: 'POST',
-                path: '/v1/tasks/:task_no/cancel',
-                name: '取消任务',
-                description: '取消正在处理中的任务',
-                auth: 'Token',
-                pathParams: [
-                    {name: 'task_no', type: 'string', required: true, description: '任务编号'},
-                ],
-                bodyParams: [],
-                requestExample: null,
-                responseExample: `{
-  "code": 0,
-  "message": "success",
-  "data": {
-    "task_no": "task_abc123def456",
-    "status": "cancelled"
-  }
-}`,
-            },
-        ],
-    },
-    {
-        group: '回调通知',
-        description: '当提交任务时传递了 callback_url，任务完成或失败后系统会向该地址发送 POST 请求通知结果。最多重试 3 次，间隔递增（5s、10s、15s）。',
-        apis: [
-            {
-                method: 'POST',
-                path: '{callback_url}',
-                name: '任务结果回调',
-                description: '系统在任务完成（成功或失败）后，向提交任务时传入的 callback_url 发送 POST 请求（Content-Type: application/json）。你的回调接口返回 HTTP 200 即视为通知成功。',
-                auth: '无',
-                pathParams: [],
-                bodyParams: [
-                    {
-                        name: 'task_id',
-                        type: 'string',
-                        required: true,
-                        description: '任务编号，与提交任务时返回的 task_id 一致'
-                    },
-                    {name: 'status', type: 'string', required: true, description: '任务状态: success 或 failed'},
-                    {
-                        name: 'result',
-                        type: 'object',
-                        required: false,
-                        description: '任务结果（仅 status=success 时存在），包含 url/data 等字段'
-                    },
-                    {name: 'error', type: 'string', required: false, description: '错误信息（仅 status=failed 时存在）'},
-                ],
-                requestExample: `// 成功回调 - 结果为文件URL（图片/视频等）
-{
-  "task_id": "task_abc123def456",
-  "status": "success",
-  "result": {
-    "url": "https://cdn.example.com/result.png"
-  }
-}
-
-// 成功回调 - 结果为数据（角色ID等）
-{
-  "task_id": "task_abc123def456",
-  "status": "success",
-  "result": {
-    "data": "character_9a8b7c6d5e4f"
-  }
-}
-
-// 失败回调
-{
-  "task_id": "task_abc123def456",
-  "status": "failed",
-  "error": "generation failed: content policy violation"
-}`,
-                responseExample: `// 你的回调接口只需返回 HTTP 200 即可
-// 响应体内容不限，系统仅检查 HTTP 状态码
-
-HTTP/1.1 200 OK
-
-{"message": "ok"}`,
-            },
-        ],
-    },
-    {
-        group: 'Chat 对话接口',
-        description: '兼容 OpenAI API 格式的对话补全接口',
-        apis: [
-            {
-                method: 'GET',
-                path: '/v1/models',
-                name: '获取可用模型列表',
-                description: '获取所有可用的 Chat 模型列表，返回格式兼容 OpenAI API',
-                auth: 'Token',
-                pathParams: [],
-                bodyParams: [],
-                requestExample: null,
-                responseExample: `{
-  "object": "list",
-  "data": [
-    {
-      "id": "gpt-4o",
-      "object": "model",
-      "created": 1704067200,
-      "owned_by": "openai"
-    },
-    {
-      "id": "claude-3-opus",
-      "object": "model",
-      "created": 1704067200,
-      "owned_by": "anthropic"
-    },
-    {
-      "id": "deepseek-chat",
-      "object": "model",
-      "created": 1704067200,
-      "owned_by": "deepseek"
-    }
-  ]
-}`,
-            },
-            {
-                method: 'POST',
-                path: '/v1/chat/completions',
-                name: '对话补全',
-                description: '发送对话消息并获取模型的回复，接口格式兼容 OpenAI Chat Completions API',
-                auth: 'Token',
-                pathParams: [],
-                bodyParams: [
-                    {name: 'model', type: 'string', required: true, description: '模型标识，如 gpt-4o, claude-3-opus'},
-                    {
-                        name: 'messages',
-                        type: 'array',
-                        required: true,
-                        description: '消息数组，每条消息包含 role 和 content'
-                    },
-                    {
-                        name: 'temperature',
-                        type: 'number',
-                        required: false,
-                        description: '温度参数 (0-2)，默认 1，值越高回复越随机'
-                    },
-                    {name: 'max_tokens', type: 'integer', required: false, description: '最大输出 token 数'},
-                    {name: 'top_p', type: 'number', required: false, description: '核采样参数 (0-1)'},
-                    {
-                        name: 'conversation_id',
-                        type: 'string',
-                        required: false,
-                        description: '会话 ID，传入可继续之前的对话上下文'
-                    },
-                ],
-                requestExample: `{
-  "model": "gpt-4o",
-  "messages": [
-    {"role": "system", "content": "You are a helpful assistant."},
-    {"role": "user", "content": "Hello, who are you?"}
-  ],
-  "temperature": 0.7,
-  "max_tokens": 1000
-}`,
-                responseExample: `{
-  "id": "chatcmpl-abc123",
-  "object": "chat.completion",
-  "created": 1704067200,
-  "model": "gpt-4o",
-  "conversation_id": "12345",
-  "choices": [
-    {
-      "index": 0,
-      "message": {
-        "role": "assistant",
-        "content": "Hello! I'm an AI assistant. How can I help you today?"
-      },
-      "finish_reason": "stop"
-    }
-  ],
-  "usage": {
-    "prompt_tokens": 25,
-    "completion_tokens": 15,
-    "total_tokens": 40
-  }
-}`,
-            },
-        ],
-    },
-];
-
-// 状态说明
-const STATUS_DEFINITIONS = [
-    {status: 'pending', description: '等待处理'},
-    {status: 'processing', description: '处理中'},
-    {status: 'success', description: '处理成功'},
-    {status: 'failed', description: '处理失败'},
-    {status: 'cancelled', description: '已取消'},
-];
-
-// 错误码说明
-const ERROR_CODES = [
-    {code: 0, description: '成功'},
-    {code: 400, description: '请求参数错误'},
-    {code: 401, description: '未授权，Token 无效或已过期'},
-    {code: 403, description: '无权限访问'},
-    {code: 404, description: '资源不存在'},
-    {code: 429, description: '请求过于频繁'},
-    {code: 500, description: '服务器内部错误'},
-];
-
-const MethodBadge: React.FC<{ method: string }> = ({method}) => {
-    const colors: Record<string, string> = {
-        GET: 'bg-green-100 text-green-700',
-        POST: 'bg-blue-100 text-blue-700',
-        PUT: 'bg-yellow-100 text-yellow-700',
-        DELETE: 'bg-red-100 text-red-700',
-    };
-    return (
-        <span className={`px-2 py-1 rounded text-xs font-bold ${colors[method]}`}>
-            {method}
-        </span>
-    );
-};
-
-const CopyButton: React.FC<{ text: string }> = ({text}) => {
-    const [copied, setCopied] = useState(false);
-
-    const handleCopy = async () => {
-        await navigator.clipboard.writeText(text);
-        setCopied(true);
-        setTimeout(() => setCopied(false), 2000);
-    };
-
-    return (
-        <button
-            onClick={handleCopy}
-            className="p-1.5 text-gray-400 hover:text-gray-600 hover:bg-gray-100 rounded"
-            title="复制"
-        >
-            {copied ? <Check size={14} className="text-green-500"/> : <Copy size={14}/>}
-        </button>
-    );
-};
-
-const CodeBlock: React.FC<{ code: string; title?: string }> = ({code, title}) => (
-    <div className="bg-gray-900 rounded-lg overflow-hidden">
-        {title && (
-            <div className="flex items-center justify-between px-4 py-2 bg-gray-800 border-b border-gray-700">
-                <span className="text-xs text-gray-400">{title}</span>
-                <CopyButton text={code}/>
-            </div>
-        )}
-        <pre className="p-4 text-sm text-gray-300 overflow-x-auto">
-            <code>{code}</code>
-        </pre>
+// ===== 代码块组件 =====
+const CodeBlock: React.FC<{ code: string; title?: string }> = ({ code, title }) => {
+  const [copied, setCopied] = useState(false);
+  const copy = () => {
+    navigator.clipboard.writeText(code);
+    setCopied(true);
+    setTimeout(() => setCopied(false), 2000);
+  };
+  return (
+    <div className="relative group">
+      {title && <div className="text-xs text-[var(--text-secondary)] mb-1">{title}</div>}
+      <pre className="bg-gray-900 text-gray-100 rounded-lg p-4 text-xs overflow-x-auto">
+        <code>{code}</code>
+      </pre>
+      <button onClick={copy} className="absolute top-2 right-2 p-1.5 rounded bg-gray-700 hover:bg-gray-600 text-gray-300 opacity-0 group-hover:opacity-100 transition-opacity">
+        {copied ? <Check size={12} /> : <Copy size={12} />}
+      </button>
     </div>
+  );
+};
+
+// ===== 参数表组件 =====
+const ParamTable: React.FC<{ params: { name: string; type: string; required: boolean; description: string }[] }> = ({ params }) => (
+  <table className="w-full text-sm">
+    <thead>
+      <tr className="bg-[var(--primary-lighter)]">
+        <th className="px-3 py-2 text-left font-medium text-[var(--text-secondary)]">参数</th>
+        <th className="px-3 py-2 text-left font-medium text-[var(--text-secondary)]">类型</th>
+        <th className="px-3 py-2 text-left font-medium text-[var(--text-secondary)]">必填</th>
+        <th className="px-3 py-2 text-left font-medium text-[var(--text-secondary)]">说明</th>
+      </tr>
+    </thead>
+    <tbody>
+      {params.map(p => (
+        <tr key={p.name} className="border-t border-[var(--border-soft)]">
+          <td className="px-3 py-2 font-mono text-[var(--primary)] text-xs">{p.name}</td>
+          <td className="px-3 py-2 text-[var(--text-secondary)] text-xs">{p.type}</td>
+          <td className="px-3 py-2">{p.required ? <span className="text-red-500 text-xs">是</span> : <span className="text-[var(--text-secondary)] text-xs">否</span>}</td>
+          <td className="px-3 py-2 text-[var(--text-secondary)] text-xs">{p.description}</td>
+        </tr>
+      ))}
+    </tbody>
+  </table>
 );
 
-const ApiEndpoint: React.FC<{ api: typeof API_ENDPOINTS[0]['apis'][0] }> = ({api}) => {
-    const [expanded, setExpanded] = useState(false);
-
-    return (
-        <div className="border border-gray-200 rounded-xl overflow-hidden">
-            <div
-                className="p-4 flex items-center justify-between cursor-pointer hover:bg-gray-50"
-                onClick={() => setExpanded(!expanded)}
-            >
-                <div className="flex items-center gap-3">
-                    {expanded ? <ChevronDown size={18} className="text-gray-400"/> :
-                        <ChevronRight size={18} className="text-gray-400"/>}
-                    <MethodBadge method={api.method}/>
-                    <code className="text-sm font-mono text-gray-700">{api.path}</code>
-                    <span className="text-sm text-gray-500">- {api.name}</span>
-                </div>
-            </div>
-
-            {expanded && (
-                <div className="border-t border-gray-200 p-4 bg-gray-50 space-y-4">
-                    <p className="text-sm text-gray-600">{api.description}</p>
-
-                    <div className="flex items-center gap-2 text-sm">
-                        <span className="text-gray-500">认证方式:</span>
-                        <code className="px-2 py-0.5 bg-gray-200 rounded text-xs">{api.auth}</code>
-                    </div>
-
-                    {api.pathParams.length > 0 && (
-                        <div>
-                            <h4 className="text-sm font-medium text-gray-700 mb-2">路径参数</h4>
-                            <table className="w-full text-sm">
-                                <thead>
-                                <tr className="bg-gray-100">
-                                    <th className="px-3 py-2 text-left font-medium text-gray-600">参数名</th>
-                                    <th className="px-3 py-2 text-left font-medium text-gray-600">类型</th>
-                                    <th className="px-3 py-2 text-left font-medium text-gray-600">必填</th>
-                                    <th className="px-3 py-2 text-left font-medium text-gray-600">说明</th>
-                                </tr>
-                                </thead>
-                                <tbody>
-                                {api.pathParams.map(param => (
-                                    <tr key={param.name} className="border-t border-gray-200">
-                                        <td className="px-3 py-2 font-mono text-indigo-600">{param.name}</td>
-                                        <td className="px-3 py-2 text-gray-600">{param.type}</td>
-                                        <td className="px-3 py-2">
-                                            {param.required ? (
-                                                <span className="text-red-500">是</span>
-                                            ) : (
-                                                <span className="text-gray-400">否</span>
-                                            )}
-                                        </td>
-                                        <td className="px-3 py-2 text-gray-600">{param.description}</td>
-                                    </tr>
-                                ))}
-                                </tbody>
-                            </table>
-                        </div>
-                    )}
-
-                    {api.bodyParams.length > 0 && (
-                        <div>
-                            <h4 className="text-sm font-medium text-gray-700 mb-2">请求参数 (Body)</h4>
-                            <table className="w-full text-sm">
-                                <thead>
-                                <tr className="bg-gray-100">
-                                    <th className="px-3 py-2 text-left font-medium text-gray-600">参数名</th>
-                                    <th className="px-3 py-2 text-left font-medium text-gray-600">类型</th>
-                                    <th className="px-3 py-2 text-left font-medium text-gray-600">必填</th>
-                                    <th className="px-3 py-2 text-left font-medium text-gray-600">说明</th>
-                                </tr>
-                                </thead>
-                                <tbody>
-                                {api.bodyParams.map(param => (
-                                    <tr key={param.name} className="border-t border-gray-200">
-                                        <td className="px-3 py-2 font-mono text-indigo-600">{param.name}</td>
-                                        <td className="px-3 py-2 text-gray-600">{param.type}</td>
-                                        <td className="px-3 py-2">
-                                            {param.required ? (
-                                                <span className="text-red-500">是</span>
-                                            ) : (
-                                                <span className="text-gray-400">否</span>
-                                            )}
-                                        </td>
-                                        <td className="px-3 py-2 text-gray-600">{param.description}</td>
-                                    </tr>
-                                ))}
-                                </tbody>
-                            </table>
-                        </div>
-                    )}
-
-                    <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
-                        {api.requestExample && (
-                            <div>
-                                <h4 className="text-sm font-medium text-gray-700 mb-2">请求示例</h4>
-                                <CodeBlock code={api.requestExample} title="Request Body"/>
-                            </div>
-                        )}
-                        {api.responseExample && (
-                            <div>
-                                <h4 className="text-sm font-medium text-gray-700 mb-2">响应示例</h4>
-                                <CodeBlock code={api.responseExample} title="Response"/>
-                            </div>
-                        )}
-                    </div>
-                </div>
-            )}
-        </div>
-    );
+// ===== 方法标签 =====
+const MethodBadge: React.FC<{ method: string }> = ({ method }) => {
+  const colors: Record<string, string> = {
+    GET: 'bg-green-100 text-green-700',
+    POST: 'bg-blue-100 text-blue-700',
+    PUT: 'bg-yellow-100 text-yellow-700',
+    DELETE: 'bg-red-100 text-red-700',
+  };
+  return <span className={`px-2 py-0.5 rounded text-xs font-bold ${colors[method] || 'bg-gray-100 text-gray-700'}`}>{method}</span>;
 };
 
-const ApiDocs: React.FC = () => {
-    const [activeTab, setActiveTab] = useState<'endpoints' | 'status' | 'errors'>('endpoints');
+// ===== 试用面板 =====
+const TryItPanel: React.FC<{ method: string; path: string; bodyTemplate?: string; tokens: ApiToken[] }> = ({ method, path, bodyTemplate, tokens }) => {
+  const [token, setToken] = useState('');
+  const [body, setBody] = useState(bodyTemplate || '');
+  const [response, setResponse] = useState('');
+  const [loading, setLoading] = useState(false);
+  const [pathValue, setPathValue] = useState(path);
 
-    return (
-        <div className="space-y-6">
-            <div className="flex items-center justify-between">
-                <div>
-                    <h1 className="text-2xl font-bold text-gray-900">API 文档</h1>
-                    <p className="text-gray-500 mt-1">统一能力调用接口文档</p>
-                </div>
-            </div>
+  useEffect(() => { if (tokens.length > 0 && !token) setToken(tokens[0].key); }, [tokens]);
 
-            {/* 快速开始 */}
-            <div className="bg-gradient-to-r from-indigo-500 to-purple-600 rounded-2xl p-6 text-white">
-                <div className="flex items-center gap-3 mb-4">
-                    <Book size={24}/>
-                    <h2 className="text-lg font-bold">快速开始</h2>
-                </div>
-                <div className="space-y-3 text-sm text-indigo-100">
-                    <p>1. 在「令牌管理」页面创建 API Token</p>
-                    <p>2. 在请求头中添加认证信息：<code className="bg-white/20 px-2 py-0.5 rounded">Authorization:
-                        YOUR_TOKEN</code></p>
-                    <p>3. 调用能力接口创建任务，然后轮询或等待回调获取结果</p>
-                </div>
-                <div className="mt-4">
-                    <CodeBlock
-                        code={`curl -X POST "https://api.example.com/v1/capabilities/text2img" \\
-  -H "Authorization: YOUR_TOKEN" \\
-  -H "Content-Type: application/json" \\
-  -d '{"channel": "midjourney", "prompt": "a beautiful sunset"}'`}
-                        title="示例请求"
-                    />
-                </div>
-            </div>
+  const send = async () => {
+    setLoading(true);
+    setResponse('');
+    try {
+      const url = `${window.location.origin}${pathValue}`;
+      const headers: Record<string, string> = { 'Authorization': token, 'Content-Type': 'application/json' };
+      const opts: RequestInit = { method, headers };
+      if (method !== 'GET' && body) opts.body = body;
+      const res = await fetch(url, opts);
+      const text = await res.text();
+      try { setResponse(JSON.stringify(JSON.parse(text), null, 2)); } catch { setResponse(text); }
+    } catch (e: any) {
+      setResponse(`Error: ${e.message}`);
+    }
+    setLoading(false);
+  };
 
-            {/* 标签页 */}
-            <div className="flex border-b border-gray-200">
-                <button
-                    onClick={() => setActiveTab('endpoints')}
-                    className={`px-4 py-2 text-sm font-medium border-b-2 transition-colors ${
-                        activeTab === 'endpoints'
-                            ? 'border-indigo-600 text-indigo-600'
-                            : 'border-transparent text-gray-500 hover:text-gray-700'
-                    }`}
-                >
-                    <div className="flex items-center gap-2">
-                        <Code size={16}/>
-                        接口列表
-                    </div>
-                </button>
-                <button
-                    onClick={() => setActiveTab('status')}
-                    className={`px-4 py-2 text-sm font-medium border-b-2 transition-colors ${
-                        activeTab === 'status'
-                            ? 'border-indigo-600 text-indigo-600'
-                            : 'border-transparent text-gray-500 hover:text-gray-700'
-                    }`}
-                >
-                    <div className="flex items-center gap-2">
-                        <FileJson size={16}/>
-                        状态说明
-                    </div>
-                </button>
-                <button
-                    onClick={() => setActiveTab('errors')}
-                    className={`px-4 py-2 text-sm font-medium border-b-2 transition-colors ${
-                        activeTab === 'errors'
-                            ? 'border-indigo-600 text-indigo-600'
-                            : 'border-transparent text-gray-500 hover:text-gray-700'
-                    }`}
-                >
-                    <div className="flex items-center gap-2">
-                        <FileJson size={16}/>
-                        错误码
-                    </div>
-                </button>
-            </div>
+  const curlCmd = `curl -X ${method} '${window.location.origin}${pathValue}' \\\n  -H 'Authorization: YOUR_TOKEN' \\\n  -H 'Content-Type: application/json'${method !== 'GET' && body ? ` \\\n  -d '${body.replace(/\n/g, '')}'` : ''}`;
 
-            {/* 接口列表 */}
-            {activeTab === 'endpoints' && (
-                <div className="space-y-6">
-                    {API_ENDPOINTS.map(group => (
-                        <div key={group.group} className="bg-white rounded-2xl border border-gray-100 shadow-sm p-6">
-                            <h3 className="text-lg font-bold text-gray-900 mb-2">{group.group}</h3>
-                            <p className="text-sm text-gray-500 mb-4">{group.description}</p>
-                            <div className="space-y-3">
-                                {group.apis.map(api => (
-                                    <ApiEndpoint key={api.path + api.method} api={api}/>
-                                ))}
-                            </div>
-                        </div>
-                    ))}
-                </div>
-            )}
-
-            {/* 状态说明 */}
-            {activeTab === 'status' && (
-                <div className="bg-white rounded-2xl border border-gray-100 shadow-sm p-6">
-                    <h3 className="text-lg font-bold text-gray-900 mb-4">任务状态说明</h3>
-                    <table className="w-full text-sm">
-                        <thead>
-                        <tr className="bg-gray-50">
-                            <th className="px-4 py-3 text-left font-medium text-gray-600">状态值</th>
-                            <th className="px-4 py-3 text-left font-medium text-gray-600">说明</th>
-                        </tr>
-                        </thead>
-                        <tbody>
-                        {STATUS_DEFINITIONS.map(item => (
-                            <tr key={item.status} className="border-t border-gray-200">
-                                <td className="px-4 py-3">
-                                    <code className="px-2 py-1 bg-gray-100 rounded text-indigo-600">{item.status}</code>
-                                </td>
-                                <td className="px-4 py-3 text-gray-600">{item.description}</td>
-                            </tr>
-                        ))}
-                        </tbody>
-                    </table>
-                </div>
-            )}
-
-            {/* 错误码 */}
-            {activeTab === 'errors' && (
-                <div className="bg-white rounded-2xl border border-gray-100 shadow-sm p-6">
-                    <h3 className="text-lg font-bold text-gray-900 mb-4">错误码说明</h3>
-                    <table className="w-full text-sm">
-                        <thead>
-                        <tr className="bg-gray-50">
-                            <th className="px-4 py-3 text-left font-medium text-gray-600">错误码</th>
-                            <th className="px-4 py-3 text-left font-medium text-gray-600">说明</th>
-                        </tr>
-                        </thead>
-                        <tbody>
-                        {ERROR_CODES.map(item => (
-                            <tr key={item.code} className="border-t border-gray-200">
-                                <td className="px-4 py-3">
-                                    <code
-                                        className={`px-2 py-1 rounded ${item.code === 0 ? 'bg-green-100 text-green-700' : 'bg-red-100 text-red-700'}`}>
-                                        {item.code}
-                                    </code>
-                                </td>
-                                <td className="px-4 py-3 text-gray-600">{item.description}</td>
-                            </tr>
-                        ))}
-                        </tbody>
-                    </table>
-
-                    <div className="mt-6">
-                        <h4 className="text-sm font-medium text-gray-700 mb-2">错误响应示例</h4>
-                        <CodeBlock
-                            code={`{
-  "code": 400,
-  "message": "参数错误: prompt 不能为空",
-  "data": null
-}`}
-                            title="Error Response"
-                        />
-                    </div>
-                </div>
-            )}
+  return (
+    <div className="border border-[var(--border-soft)] rounded-xl p-4 bg-[var(--surface)] space-y-3">
+      <div className="flex items-center gap-3">
+        <select value={token} onChange={e => setToken(e.target.value)} className="flex-1 px-3 py-1.5 border border-[var(--border-soft)] rounded-lg text-xs bg-[var(--surface-card)] text-[var(--text-primary)]">
+          {tokens.length === 0
+            ? <option value="">无可用令牌</option>
+            : tokens.map(t => <option key={t.id} value={t.key}>{t.name}</option>)
+          }
+        </select>
+        <button onClick={send} disabled={loading || !token} className="flex items-center gap-1 px-4 py-1.5 bg-[var(--primary)] text-white rounded-lg text-xs font-medium hover:opacity-90 disabled:opacity-50">
+          {loading ? <Loader2 size={12} className="animate-spin" /> : <Play size={12} />} 发送
+        </button>
+      </div>
+      <input value={pathValue} onChange={e => setPathValue(e.target.value)} className="w-full px-3 py-1.5 border border-[var(--border-soft)] rounded-lg text-xs font-mono bg-[var(--surface-card)] text-[var(--text-primary)]" />
+      {method !== 'GET' && (
+        <textarea value={body} onChange={e => setBody(e.target.value)} rows={6} className="w-full px-3 py-2 border border-[var(--border-soft)] rounded-lg text-xs font-mono resize-y bg-[var(--surface-card)] text-[var(--text-primary)]" placeholder="Request Body (JSON)" />
+      )}
+      {response && (
+        <div>
+          <div className="text-xs text-[var(--text-secondary)] mb-1">响应</div>
+          <pre className="bg-gray-900 text-gray-100 rounded-lg p-3 text-xs overflow-x-auto max-h-64 overflow-y-auto"><code>{response}</code></pre>
         </div>
+      )}
+      <CodeBlock code={curlCmd} title="curl" />
+    </div>
+  );
+};
+
+// ===== 接口卡片 =====
+interface ApiEndpoint {
+  id: string;
+  method: string;
+  path: string;
+  name: string;
+  description: string;
+  params: { name: string; type: string; required: boolean; description: string }[];
+  requestExample?: string;
+  responseExample?: string;
+}
+
+// ===== 可复制路径 =====
+const CopyablePath: React.FC<{ path: string }> = ({ path }) => {
+  const [copied, setCopied] = useState(false);
+  const copy = (e: React.MouseEvent) => {
+    e.stopPropagation();
+    navigator.clipboard.writeText(`${window.location.origin}${path}`);
+    setCopied(true);
+    setTimeout(() => setCopied(false), 2000);
+  };
+  return (
+    <span className="flex items-center gap-1 group/path">
+      <code className="text-sm font-mono text-[var(--text-primary)]">{path}</code>
+      <button onClick={copy} className="p-0.5 rounded text-[var(--text-secondary)] opacity-0 group-hover/path:opacity-100 hover:text-[var(--primary)] transition-opacity" title="复制完整 URL">
+        {copied ? <Check size={11} /> : <Copy size={11} />}
+      </button>
+    </span>
+  );
+};
+
+const EndpointCard: React.FC<{ api: ApiEndpoint; tokens: ApiToken[] }> = ({ api, tokens }) => {
+  const [expanded, setExpanded] = useState(false);
+  const [tryIt, setTryIt] = useState(false);
+
+  const handleTryIt = (e: React.MouseEvent) => {
+    e.stopPropagation();
+    if (!expanded) setExpanded(true);
+    setTryIt(v => !v);
+  };
+
+  return (
+    <div id={api.id} className="border border-[var(--border-soft)] rounded-xl overflow-hidden bg-[var(--surface-card)]">
+      <div className="flex items-center gap-3 px-4 py-3 cursor-pointer hover:bg-[var(--primary-lighter)] transition-colors" onClick={() => setExpanded(!expanded)}>
+        {expanded ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
+        <MethodBadge method={api.method} />
+        <CopyablePath path={api.path} />
+        <span className="text-sm text-[var(--text-secondary)] ml-auto mr-2">{api.name}</span>
+        <button
+          onClick={handleTryIt}
+          className={`flex items-center gap-1 px-2.5 py-1 rounded-lg text-xs font-medium border transition-colors shrink-0 ${tryIt ? 'bg-[var(--primary)] text-white border-[var(--primary)]' : 'border-[var(--primary)] text-[var(--primary)] hover:bg-[var(--primary-lighter)]'}`}
+        >
+          <Play size={10} /> 试用
+        </button>
+      </div>
+      {(expanded || tryIt) && (
+        <div className="border-t border-[var(--border-soft)] p-4 space-y-4">
+          {expanded && (
+            <>
+              <p className="text-sm text-[var(--text-secondary)]">{api.description}</p>
+              {api.params.length > 0 && <ParamTable params={api.params} />}
+              <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+                {api.requestExample && <CodeBlock code={api.requestExample} title="请求示例" />}
+                {api.responseExample && <CodeBlock code={api.responseExample} title="响应示例" />}
+              </div>
+            </>
+          )}
+          {tryIt && <TryItPanel method={api.method} path={api.path} bodyTemplate={api.requestExample || ''} tokens={tokens} />}
+        </div>
+      )}
+    </div>
+  );
+};
+
+// ===== 导航分组 =====
+interface NavGroup {
+  id: string;
+  label: string;
+  icon: React.ReactNode;
+  items: { id: string; label: string }[];
+}
+
+// ===== Chat 接口参数定义 =====
+const CHAT_COMPLETIONS_PARAMS = [
+  { name: 'model', type: 'string', required: true, description: '模型标识，如 gpt-4o, claude-sonnet-4-20250514' },
+  { name: 'messages', type: 'array', required: true, description: '消息数组，每条包含 role(system/user/assistant/tool) 和 content' },
+  { name: 'stream', type: 'boolean', required: false, description: '是否流式返回，默认 false' },
+  { name: 'temperature', type: 'number', required: false, description: '温度 (0-2)，值越高越随机' },
+  { name: 'max_tokens', type: 'integer', required: false, description: '最大输出 token 数' },
+  { name: 'top_p', type: 'number', required: false, description: '核采样 (0-1)' },
+  { name: 'frequency_penalty', type: 'number', required: false, description: '频率惩罚 (-2~2)' },
+  { name: 'presence_penalty', type: 'number', required: false, description: '存在惩罚 (-2~2)' },
+  { name: 'stop', type: 'string[]', required: false, description: '停止序列' },
+  { name: 'tools', type: 'array', required: false, description: '工具定义数组，每个包含 type:"function" 和 function 对象' },
+  { name: 'tool_choice', type: 'string|object', required: false, description: '"auto"/"none"/"required" 或 {type:"function",function:{name:"..."}}' },
+  { name: 'response_format', type: 'object', required: false, description: '{type:"text"|"json_object"|"json_schema"}' },
+  { name: 'seed', type: 'integer', required: false, description: '随机种子，相同 seed 尽量返回相同结果' },
+  { name: 'user', type: 'string', required: false, description: '终端用户标识' },
+];
+
+// ===== 主组件 =====
+const ApiDocs: React.FC = () => {
+  const [models, setModels] = useState<DocsModel[]>([]);
+  const [tokens, setTokens] = useState<ApiToken[]>([]);
+  const [search, setSearch] = useState('');
+  const [loading, setLoading] = useState(true);
+  const [activeSection, setActiveSection] = useState('quickstart');
+  const [docsCopied, setDocsCopied] = useState(false);
+  const contentRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    Promise.all([
+      fetchDocsModels().catch(() => []),
+      fetchTokens().then((list: ApiToken[]) => list.filter(t => t.status === 'active')).catch(() => []),
+    ]).then(([m, t]) => {
+      setModels(m);
+      setTokens(t);
+      setLoading(false);
+    });
+  }, []);
+
+  // IntersectionObserver for active nav tracking
+  useEffect(() => {
+    if (loading) return;
+    const observer = new IntersectionObserver(
+      entries => {
+        for (const entry of entries) {
+          if (entry.isIntersecting) {
+            setActiveSection(entry.target.id);
+            break;
+          }
+        }
+      },
+      { root: contentRef.current, threshold: 0.15, rootMargin: '-10% 0px -70% 0px' }
     );
+    const sections = contentRef.current?.querySelectorAll('section[id], div[id^="ep-"], div[id^="cap-"]');
+    sections?.forEach(el => observer.observe(el));
+    return () => observer.disconnect();
+  }, [loading, models]);
+
+  const scrollTo = (id: string) => {
+    const el = document.getElementById(id);
+    if (el && contentRef.current) {
+      contentRef.current.scrollTo({ top: el.offsetTop - 16, behavior: 'smooth' });
+    }
+  };
+
+  const copyAllDocs = () => {
+    const chatModelsLocal = models.filter(m => m.type === 'chat');
+    const capModels = models.filter(m => m.type !== 'chat');
+    let md = `# API 文档\n\nBase URL: ${window.location.origin}\n认证方式: 请求头 Authorization: YOUR_TOKEN\n\n`;
+    md += `## Chat 对话接口\n\n### POST /v1/chat/completions\n对话补全 - 兼容 OpenAI 格式，支持多模态（图片/文件）\n\n| 参数 | 类型 | 必填 | 说明 |\n|------|------|------|------|\n`;
+    CHAT_COMPLETIONS_PARAMS.forEach(p => { md += `| ${p.name} | ${p.type} | ${p.required ? '是' : '否'} | ${p.description} |\n`; });
+    md += `\n**多模态请求示例 (图片):**\n\`\`\`json\n${JSON.stringify({ model: chatModelsLocal[0]?.code || "gpt-4o", messages: [{ role: "user", content: [{ type: "text", text: "这张图片里有什么？" }, { type: "image_url", image_url: { url: "https://example.com/image.jpg" } }] }], max_tokens: 1000 }, null, 2)}\n\`\`\`\n\n`;
+    md += `### GET /v1/models\n获取所有可用 Chat 模型\n\n当前可用模型: ${chatModelsLocal.map(m => m.code).join(', ')}\n\n`;
+    md += `## 能力接口\n\n`;
+    capModels.forEach(m => {
+      md += `### POST /v1/capabilities/${m.code}\n${m.name}${m.description ? ' - ' + m.description : ''}\n\n| 参数 | 类型 | 必填 | 说明 |\n|------|------|------|------|\n| channel | string | 否 | 指定渠道（可选） |\n| callback_url | string | 否 | 回调地址 |\n`;
+      if (m.param_schema && typeof m.param_schema === 'object') {
+        Object.entries(m.param_schema).forEach(([key, val]: [string, any]) => {
+          const t = val.type === 'enum' ? `enum(${(val.options || []).join('|')})` : (val.type || 'string');
+          md += `| ${key} | ${t} | ${val.required ? '是' : '否'} | ${val.name || ''} |\n`;
+        });
+      }
+      md += '\n';
+    });
+    md += `## 任务管理\n\n### GET /v1/tasks/:task_no\n查询任务状态和结果\n\n### POST /v1/tasks/:task_no/cancel\n取消正在处理中的任务\n\n`;
+    md += `## 回调通知\n\n提交任务时传入 callback_url，任务完成后系统 POST 结果到该地址。最多重试 3 次。\n\n`;
+    md += `## 错误码\n\n| 错误码 | 说明 |\n|--------|------|\n| 0 | 成功 |\n| 400 | 参数错误 |\n| 401 | 未认证/Token无效 |\n| 402 | 余额不足 |\n| 403 | 无权限 |\n| 404 | 资源不存在 |\n| 429 | 请求过于频繁 |\n| 500 | 服务器内部错误 |\n`;
+    navigator.clipboard.writeText(md);
+    setDocsCopied(true);
+    setTimeout(() => setDocsCopied(false), 2000);
+  };
+
+  const capabilityEndpoints: ApiEndpoint[] = models
+    .filter(m => m.type !== 'chat')
+    .filter(m => !search || m.name.includes(search) || m.code.includes(search))
+    .map(m => {
+      const params = [
+        { name: 'channel', type: 'string', required: false, description: '指定渠道（可选）' },
+        { name: 'callback_url', type: 'string', required: false, description: '回调地址' },
+      ];
+      if (m.param_schema && typeof m.param_schema === 'object' && !Array.isArray(m.param_schema)) {
+        Object.entries(m.param_schema).forEach(([key, val]: [string, any]) => {
+          const typeStr = val.type === 'enum' ? `enum(${(val.options || []).join('|')})` : (val.type || 'string');
+          params.push({ name: key, type: typeStr, required: val.required || false, description: val.name || '' });
+        });
+      }
+      const exampleBody: Record<string, any> = {};
+      if (m.param_schema && typeof m.param_schema === 'object') {
+        Object.entries(m.param_schema).forEach(([key, val]: [string, any]) => {
+          if (val.required) {
+            if (val.type === 'enum' && val.options?.length) exampleBody[key] = val.options[0];
+            else if (val.type === 'number') exampleBody[key] = 1;
+            else exampleBody[key] = `示例${val.name || key}`;
+          }
+        });
+      }
+      exampleBody.callback_url = "https://your-domain.com/callback";
+      return {
+        id: `cap-${m.code}`,
+        method: 'POST',
+        path: `/v1/capabilities/${m.code}`,
+        name: m.name,
+        description: m.description || `调用 ${m.name} 能力`,
+        params,
+        requestExample: JSON.stringify(exampleBody, null, 2),
+        responseExample: JSON.stringify({ code: 0, message: "success", data: { task_no: "task_xxx", status: "pending", capability: m.code } }, null, 2),
+      };
+    });
+
+  const chatModels = models.filter(m => m.type === 'chat');
+
+  const navGroups: NavGroup[] = [
+    { id: 'quickstart', label: '快速开始', icon: <Book size={14} />, items: [] },
+    { id: 'chat', label: 'Chat 对话', icon: <MessageSquare size={14} />, items: [
+      { id: 'ep-chat-completions', label: '对话补全' },
+      { id: 'ep-models', label: '模型列表' },
+    ]},
+    { id: 'capabilities', label: '能力接口', icon: <Zap size={14} />, items: capabilityEndpoints.map(e => ({ id: e.id, label: e.name })) },
+    { id: 'tasks', label: '任务管理', icon: <ListChecks size={14} />, items: [
+      { id: 'ep-get-task', label: '查询任务' },
+      { id: 'ep-cancel-task', label: '取消任务' },
+    ]},
+    { id: 'callback', label: '回调通知', icon: <Bell size={14} />, items: [] },
+    { id: 'errors', label: '错误码', icon: <AlertTriangle size={14} />, items: [] },
+  ];
+
+  const isActive = useCallback((id: string) => activeSection === id, [activeSection]);
+
+  if (loading) {
+    return (
+      <div className="flex items-center justify-center h-64">
+        <Loader2 size={24} className="animate-spin text-[var(--primary)]" />
+      </div>
+    );
+  }
+
+  return (
+    <div className="flex h-[calc(100vh-6rem)] gap-4">
+      {/* 左侧导航 */}
+      <aside className="w-56 shrink-0 overflow-y-auto no-scrollbar">
+        <div className="sticky top-0 space-y-1">
+          <div className="relative mb-3">
+            <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-[var(--text-secondary)]" />
+            <input value={search} onChange={e => setSearch(e.target.value)} placeholder="搜索接口..." className="w-full pl-8 pr-3 py-2 border border-[var(--border-soft)] rounded-lg text-xs focus:outline-none focus:ring-2 focus:ring-[var(--primary)] bg-[var(--surface-card)] text-[var(--text-primary)]" />
+          </div>
+          <button onClick={copyAllDocs} className="flex items-center gap-2 w-full px-3 py-2 mb-2 text-xs font-medium border border-[var(--border-soft)] rounded-lg hover:bg-[var(--primary-lighter)] transition-colors text-[var(--text-secondary)]">
+            {docsCopied ? <><Check size={12} className="text-green-500" /> 已复制</> : <><Copy size={12} /> 一键复制全部文档</>}
+          </button>
+          {navGroups.map(g => (
+            <div key={g.id}>
+              <button
+                onClick={() => scrollTo(g.id)}
+                className={`flex items-center gap-2 w-full px-3 py-2 text-sm font-medium rounded-lg transition-colors border-l-2 ${isActive(g.id) ? 'border-[var(--primary)] text-[var(--primary)] bg-[var(--primary-lighter)]' : 'border-transparent text-[var(--text-primary)] hover:bg-[var(--primary-lighter)]'}`}
+              >
+                {g.icon} {g.label}
+              </button>
+              {g.items.length > 0 && (
+                <div className="ml-6 space-y-0.5">
+                  {g.items.map(item => (
+                    <button
+                      key={item.id}
+                      onClick={() => scrollTo(item.id)}
+                      className={`block w-full text-left px-2 py-1 text-xs rounded border-l-2 truncate transition-colors ${isActive(item.id) ? 'border-[var(--primary)] text-[var(--primary)] font-medium' : 'border-transparent text-[var(--text-secondary)] hover:text-[var(--primary)]'}`}
+                    >
+                      {item.label}
+                    </button>
+                  ))}
+                </div>
+              )}
+            </div>
+          ))}
+        </div>
+      </aside>
+
+      {/* 右侧内容 */}
+      <main ref={contentRef} className="flex-1 overflow-y-auto space-y-6 pr-2">
+        {/* 快速开始 */}
+        <section id="quickstart">
+          <div className="bg-gradient-to-r from-indigo-500 to-purple-600 rounded-2xl p-6 text-white">
+            <div className="flex items-center gap-3 mb-4">
+              <Book size={24} />
+              <h2 className="text-lg font-bold">快速开始</h2>
+            </div>
+            <div className="space-y-2 text-sm text-indigo-100">
+              <p><strong>Base URL:</strong> <code className="bg-white/20 px-2 py-0.5 rounded">{window.location.origin}</code></p>
+              <p><strong>认证方式:</strong> 请求头 <code className="bg-white/20 px-2 py-0.5 rounded">Authorization: YOUR_TOKEN</code></p>
+              <p><strong>步骤:</strong> 1. 创建令牌 → 2. 选择模型/能力 → 3. 发起请求</p>
+            </div>
+          </div>
+        </section>
+
+        {/* Chat 对话接口 */}
+        <section id="chat">
+          <h2 className="text-lg font-bold text-[var(--text-primary)] mb-3 flex items-center gap-2"><MessageSquare size={18} /> Chat 对话接口</h2>
+          <p className="text-sm text-[var(--text-secondary)] mb-4">兼容 OpenAI Chat Completions API 格式</p>
+          <div className="space-y-3">
+            <EndpointCard api={{
+              id: 'ep-chat-completions',
+              method: 'POST',
+              path: '/v1/chat/completions',
+              name: '对话补全',
+              description: '发送消息获取模型回复，支持流式/非流式、多模态、Tool Use',
+              params: CHAT_COMPLETIONS_PARAMS,
+              requestExample: JSON.stringify({
+                model: chatModels[0]?.code || "gpt-4o",
+                messages: [
+                  { role: "system", content: "You are a helpful assistant." },
+                  { role: "user", content: [
+                    { type: "text", text: "这张图片里有什么？" },
+                    { type: "image_url", image_url: { url: "https://example.com/image.jpg" } }
+                  ]}
+                ],
+                stream: false,
+                temperature: 0.7,
+                max_tokens: 1000
+              }, null, 2),
+              responseExample: JSON.stringify({
+                id: "chatcmpl-abc123",
+                object: "chat.completion",
+                created: 1704067200,
+                model: chatModels[0]?.code || "gpt-4o",
+                choices: [{ index: 0, message: { role: "assistant", content: "Hello! How can I help you?" }, finish_reason: "stop" }],
+                usage: { prompt_tokens: 20, completion_tokens: 10, total_tokens: 30 }
+              }, null, 2),
+            }} tokens={tokens} />
+
+            <EndpointCard api={{
+              id: 'ep-models',
+              method: 'GET',
+              path: '/v1/models',
+              name: '模型列表',
+              description: '获取所有可用的 Chat 模型',
+              params: [],
+              responseExample: JSON.stringify({
+                object: "list",
+                data: chatModels.slice(0, 3).map(m => ({ id: m.code, object: "model", created: 1704067200, owned_by: m.channels[0]?.channel_type || "unknown" }))
+              }, null, 2),
+            }} tokens={tokens} />
+          </div>
+
+          {chatModels.length > 0 && (
+            <div className="mt-4 border border-[var(--border-soft)] rounded-xl p-4 bg-[var(--surface-card)]">
+              <h3 className="text-sm font-bold text-[var(--text-primary)] mb-3">当前可用模型</h3>
+              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-2">
+                {chatModels.map(m => (
+                  <div key={m.code} className="flex items-center gap-2 px-3 py-2 bg-[var(--surface)] rounded-lg">
+                    <code className="text-xs font-mono text-[var(--primary)]">{m.code}</code>
+                    {m.channels.length > 0 && <span className="text-xs text-[var(--text-secondary)] ml-auto">{m.channels[0].channel_type}</span>}
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+        </section>
+
+        {/* 能力接口 */}
+        <section id="capabilities">
+          <h2 className="text-lg font-bold text-[var(--text-primary)] mb-3 flex items-center gap-2"><Zap size={18} /> 能力接口</h2>
+          <p className="text-sm text-[var(--text-secondary)] mb-4">调用各类 AI 能力，支持异步任务模式</p>
+          {capabilityEndpoints.length === 0
+            ? <div className="text-sm text-[var(--text-secondary)] py-8 text-center">暂无能力接口</div>
+            : <div className="space-y-3">{capabilityEndpoints.map(ep => <EndpointCard key={ep.id} api={ep} tokens={tokens} />)}</div>
+          }
+        </section>
+
+        {/* 任务管理 */}
+        <section id="tasks">
+          <h2 className="text-lg font-bold text-[var(--text-primary)] mb-3 flex items-center gap-2"><ListChecks size={18} /> 任务管理</h2>
+          <div className="space-y-3">
+            <EndpointCard api={{
+              id: 'ep-get-task',
+              method: 'GET',
+              path: '/v1/tasks/{task_no}',
+              name: '查询任务',
+              description: '根据任务编号查询任务状态和结果',
+              params: [{ name: 'task_no', type: 'string', required: true, description: '任务编号（路径参数）' }],
+              responseExample: JSON.stringify({ code: 0, data: { task_no: "task_xxx", status: "completed", result: { url: "https://..." }, created_at: "2024-01-01T00:00:00Z" } }, null, 2),
+            }} tokens={tokens} />
+            <EndpointCard api={{
+              id: 'ep-cancel-task',
+              method: 'POST',
+              path: '/v1/tasks/{task_no}/cancel',
+              name: '取消任务',
+              description: '取消一个待处理或进行中的任务',
+              params: [{ name: 'task_no', type: 'string', required: true, description: '任务编号（路径参数）' }],
+              responseExample: JSON.stringify({ code: 0, message: "success" }, null, 2),
+            }} tokens={tokens} />
+          </div>
+        </section>
+
+        {/* 回调通知 */}
+        <section id="callback">
+          <h2 className="text-lg font-bold text-[var(--text-primary)] mb-3 flex items-center gap-2"><Bell size={18} /> 回调通知</h2>
+          <div className="border border-[var(--border-soft)] rounded-xl p-4 bg-[var(--surface-card)] space-y-3">
+            <p className="text-sm text-[var(--text-secondary)]">任务完成后，系统会向 <code className="text-[var(--primary)]">callback_url</code> 发送 POST 请求。</p>
+            <CodeBlock code={JSON.stringify({ task_no: "task_xxx", status: "completed", capability: "text-to-image", result: { url: "https://..." }, created_at: "2024-01-01T00:00:00Z" }, null, 2)} title="回调 Body 示例" />
+            <div className="text-sm text-[var(--text-secondary)] space-y-1">
+              <p><strong>status 枚举：</strong></p>
+              <ul className="ml-4 space-y-0.5 text-xs">
+                <li><code className="text-[var(--primary)]">pending</code> — 等待处理</li>
+                <li><code className="text-[var(--primary)]">processing</code> — 处理中</li>
+                <li><code className="text-[var(--primary)]">completed</code> — 已完成</li>
+                <li><code className="text-[var(--primary)]">failed</code> — 失败</li>
+              </ul>
+            </div>
+          </div>
+        </section>
+
+        {/* 错误码 */}
+        <section id="errors">
+          <h2 className="text-lg font-bold text-[var(--text-primary)] mb-3 flex items-center gap-2"><AlertTriangle size={18} /> 错误码</h2>
+          <div className="border border-[var(--border-soft)] rounded-xl overflow-hidden bg-[var(--surface-card)]">
+            <table className="w-full text-sm">
+              <thead>
+                <tr className="bg-[var(--surface)]">
+                  <th className="px-4 py-3 text-left font-medium text-[var(--text-secondary)]">错误码</th>
+                  <th className="px-4 py-3 text-left font-medium text-[var(--text-secondary)]">说明</th>
+                </tr>
+              </thead>
+              <tbody>
+                {[
+                  { code: 0, desc: '成功' },
+                  { code: 400, desc: '参数错误' },
+                  { code: 401, desc: '未认证 / Token 无效' },
+                  { code: 402, desc: '余额不足' },
+                  { code: 403, desc: '无权限' },
+                  { code: 404, desc: '资源不存在' },
+                  { code: 429, desc: '请求过于频繁' },
+                  { code: 500, desc: '服务器内部错误' },
+                ].map(e => (
+                  <tr key={e.code} className="border-t border-[var(--border-soft)]">
+                    <td className="px-4 py-3"><code className={`px-2 py-0.5 rounded text-xs ${e.code === 0 ? 'bg-green-100 text-green-700' : 'bg-red-100 text-red-700'}`}>{e.code}</code></td>
+                    <td className="px-4 py-3 text-[var(--text-secondary)]">{e.desc}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </section>
+      </main>
+    </div>
+  );
 };
 
 export default ApiDocs;

@@ -6,8 +6,7 @@ import (
 )
 
 var (
-	taskService     = service.NewTaskService()
-	strategyService = service.NewStrategyService()
+	taskService = service.NewTaskService()
 )
 
 func RegisterHandlers(mux *asynq.ServeMux) {
@@ -16,4 +15,5 @@ func RegisterHandlers(mux *asynq.ServeMux) {
 	mux.HandleFunc(TypeTaskUpload, HandleTaskUpload)
 	mux.HandleFunc(TypeTaskNotify, HandleTaskNotify)
 	mux.HandleFunc(TypeTaskTimeoutCheck, HandleTaskTimeoutCheck)
+	mux.HandleFunc(TypeModelDiscoverySync, HandleModelDiscoverySync)
 }

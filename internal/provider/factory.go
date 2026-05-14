@@ -4,21 +4,21 @@ import (
 	"github.com/mirainya/Prism/internal/model"
 )
 
-func NewProvider(channel *model.Channel, account *model.ChannelAccount, cc *model.ChannelCapability) (Provider, error) {
+func NewProvider(channel *model.Channel, account *model.ChannelAccount, endpoint *model.Endpoint) (Provider, error) {
 	// 解析响应映射
-	responseMapping, err := ParseResponseMapping(cc.ResponseMapping)
+	responseMapping, err := ParseResponseMapping(endpoint.ResponseMapping)
 	if err != nil {
 		return nil, err
 	}
 
 	// 解析回调映射
-	callbackMapping, err := ParseResponseMapping(cc.CallbackMapping)
+	callbackMapping, err := ParseResponseMapping(endpoint.CallbackMapping)
 	if err != nil {
 		return nil, err
 	}
 
 	// 解析轮询响应映射
-	pollResponseMapping, err := ParseResponseMapping(cc.PollResponseMapping)
+	pollResponseMapping, err := ParseResponseMapping(endpoint.PollResponseMapping)
 	if err != nil {
 		return nil, err
 	}
@@ -27,15 +27,15 @@ func NewProvider(channel *model.Channel, account *model.ChannelAccount, cc *mode
 	baseURL := channel.BaseURL
 
 	// 认证配置默认值
-	authLocation := cc.AuthLocation
+	authLocation := endpoint.AuthLocation
 	if authLocation == "" {
 		authLocation = "header"
 	}
-	authKey := cc.AuthKey
+	authKey := endpoint.AuthKey
 	if authKey == "" {
 		authKey = "Authorization"
 	}
-	authValuePrefix := cc.AuthValuePrefix
+	authValuePrefix := endpoint.AuthValuePrefix
 	if authValuePrefix == "" && authLocation == "header" {
 		authValuePrefix = "Bearer "
 	}
@@ -47,11 +47,11 @@ func NewProvider(channel *model.Channel, account *model.ChannelAccount, cc *mode
 		AuthLocation:        authLocation,
 		AuthKey:             authKey,
 		AuthValuePrefix:     authValuePrefix,
-		ContentType:         cc.ContentType,
-		RequestMethod:       cc.RequestMethod,
-		PollMethod:          cc.PollMethod,
-		SubmitPath:          cc.RequestPath,
-		ProgressPath:        cc.PollPath,
+		ContentType:         endpoint.ContentType,
+		RequestMethod:       endpoint.RequestMethod,
+		PollMethod:          endpoint.PollMethod,
+		SubmitPath:          endpoint.RequestPath,
+		ProgressPath:        endpoint.PollPath,
 		Converter:           NewDefaultConverter(),
 		Parser:              NewDefaultParser(),
 		ResponseMapping:     responseMapping,

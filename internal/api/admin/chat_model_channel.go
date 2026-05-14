@@ -2,6 +2,7 @@ package admin
 
 import (
 	"net/http"
+	"strconv"
 
 	"github.com/gin-gonic/gin"
 	"github.com/mirainya/Prism/internal/api/resp"
@@ -10,48 +11,49 @@ import (
 	"gorm.io/datatypes"
 )
 
-// ========== ChatModelChannel CRUD ==========
+// ========== ChatModelChannel CRUD (maps to Endpoint) ==========
 
 // ListChatModelChannels GET /api/admin/chat-model-channels
 func ListChatModelChannels(c *gin.Context) {
-	channels, err := chatAdminService.ListChatModelChannels(c.Query("model_code"), c.Query("channel_id"))
+	endpoints, err := endpointAdminService.ListEndpoints(c.Query("channel_id"), c.Query("model_code"), "")
 	if err != nil {
 		resp.ErrorMsg(c, http.StatusInternalServerError, 500, err.Error())
 		return
 	}
-	resp.Success(c, channels)
+	resp.Success(c, endpoints)
 }
 
 // GetChatModelChannel GET /api/admin/chat-model-channels/:id
 func GetChatModelChannel(c *gin.Context) {
-	mc, err := chatAdminService.GetChatModelChannel(c.Param("id"))
+	id, _ := strconv.ParseUint(c.Param("id"), 10, 64)
+	ep, err := endpointAdminService.GetEndpoint(uint(id))
 	if err != nil {
-		resp.ErrorMsg(c, http.StatusNotFound, 404, "model channel not found")
+		resp.ErrorMsg(c, http.StatusNotFound, 404, "endpoint not found")
 		return
 	}
-	resp.Success(c, mc)
+	resp.Success(c, ep)
 }
 
 // CreateChatModelChannel POST /api/admin/chat-model-channels
 func CreateChatModelChannel(c *gin.Context) {
-	var req service.CreateChatModelChannelRequest
+	var req service.CreateEndpointRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
 		resp.ErrorMsg(c, http.StatusBadRequest, 400, err.Error())
 		return
 	}
 
-	mc, err := chatAdminService.CreateChatModelChannel(&req)
+	ep, err := endpointAdminService.CreateEndpoint(&req)
 	if err != nil {
 		resp.ErrorMsg(c, http.StatusInternalServerError, 500, err.Error())
 		return
 	}
 
-	resp.Success(c, mc)
+	resp.Success(c, ep)
 }
 
 // UpdateChatModelChannel PUT /api/admin/chat-model-channels/:id
 func UpdateChatModelChannel(c *gin.Context) {
-	id := c.Param("id")
+	id, _ := strconv.ParseUint(c.Param("id"), 10, 64)
 
 	var req struct {
 		VendorModel    string           `json:"vendor_model"`
@@ -111,13 +113,9 @@ func UpdateChatModelChannel(c *gin.Context) {
 		updates["status"] = *req.Status
 	}
 
-	rowsAffected, err := chatAdminService.UpdateChatModelChannel(id, updates)
+	_, err := endpointAdminService.UpdateEndpoint(uint(id), updates)
 	if err != nil {
 		resp.ErrorMsg(c, http.StatusInternalServerError, 500, err.Error())
-		return
-	}
-	if rowsAffected == 0 {
-		resp.ErrorMsg(c, http.StatusNotFound, 404, "model channel not found")
 		return
 	}
 
@@ -126,13 +124,14 @@ func UpdateChatModelChannel(c *gin.Context) {
 
 // DeleteChatModelChannel DELETE /api/admin/chat-model-channels/:id
 func DeleteChatModelChannel(c *gin.Context) {
-	rowsAffected, err := chatAdminService.DeleteChatModelChannel(c.Param("id"))
+	id, _ := strconv.ParseUint(c.Param("id"), 10, 64)
+	rowsAffected, err := endpointAdminService.DeleteEndpoint(uint(id))
 	if err != nil {
 		resp.ErrorMsg(c, http.StatusInternalServerError, 500, err.Error())
 		return
 	}
 	if rowsAffected == 0 {
-		resp.ErrorMsg(c, http.StatusNotFound, 404, "model channel not found")
+		resp.ErrorMsg(c, http.StatusNotFound, 404, "endpoint not found")
 		return
 	}
 	resp.Success(c, nil)

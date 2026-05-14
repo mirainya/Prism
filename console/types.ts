@@ -73,6 +73,7 @@ export interface ChannelCapability {
   capabilityCode: string;
   model: string;
   name: string;
+  modelType?: string;
   price: number;
   priceUnit: string;
   resultMode: 'sync' | 'poll' | 'callback';
@@ -243,6 +244,8 @@ export interface ChatModel {
   name: string;
   provider: string;
   description: string;
+  features?: string[];
+  maxTokens?: number;
   status: number;
   createdAt: string;
   updatedAt: string;

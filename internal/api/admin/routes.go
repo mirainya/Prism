@@ -58,4 +58,12 @@ func RegisterRoutes(group *gin.RouterGroup) {
 	group.POST("/chat-model-channels", CreateChatModelChannel)
 	group.PUT("/chat-model-channels/:id", UpdateChatModelChannel)
 	group.DELETE("/chat-model-channels/:id", DeleteChatModelChannel)
+
+	// 模型发现
+	group.POST("/discovery/sync", SyncAllModels)
+	group.POST("/discovery/sync/:channel_id", SyncChannelModels)
+	group.GET("/discovery/pending", ListPendingModels)
+	group.POST("/discovery/approve", ApproveModels)
+	group.POST("/discovery/reject", RejectModels)
+	group.GET("/models/:code/meta", GetModelMeta)
 }

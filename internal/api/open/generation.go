@@ -6,7 +6,6 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/mirainya/Prism/internal/api/middleware"
 	"github.com/mirainya/Prism/internal/api/resp"
-	"github.com/mirainya/Prism/internal/model"
 	"github.com/mirainya/Prism/internal/service"
 	"github.com/mirainya/Prism/pkg/errors"
 )
@@ -25,11 +24,11 @@ type GenerationResponse struct {
 }
 
 func CreateImageGeneration(c *gin.Context) {
-	createGeneration(c, model.CapabilityText2Img)
+	createGeneration(c, "text2img")
 }
 
 func CreateVideoGeneration(c *gin.Context) {
-	createGeneration(c, model.CapabilityText2Video)
+	createGeneration(c, "text2video")
 }
 
 func createGeneration(c *gin.Context, capabilityCode string) {
@@ -45,7 +44,6 @@ func createGeneration(c *gin.Context, capabilityCode string) {
 		return
 	}
 
-	// 构建统一参数
 	params := map[string]any{
 		"prompt": req.Prompt,
 		"model":  req.Model,

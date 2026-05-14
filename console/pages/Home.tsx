@@ -59,26 +59,26 @@ const Home: React.FC<HomeProps> = ({onLogin, onPricing}) => {
     ];
 
     return (
-        <div className="min-h-screen bg-gradient-to-b from-gray-50 to-white">
+        <div className="min-h-screen bg-gradient-to-b from-[var(--surface)] to-[var(--surface-card)]">
             {/* Header */}
-            <header className="fixed top-0 left-0 right-0 bg-white/80 backdrop-blur-md z-50 border-b border-gray-100">
+            <header className="fixed top-0 left-0 right-0 bg-[var(--surface-card)]/80 backdrop-blur-md z-50 border-b border-[var(--border-soft)]">
                 <div className="max-w-7xl mx-auto px-6 py-4 flex items-center justify-between">
                     <div className="flex items-center gap-3">
                         <img src={logo} alt="Prism" className="w-10 h-10"/>
-                        <span className="text-xl font-bold text-gray-900">棱镜</span>
-                        <span className="text-sm text-gray-400 hidden sm:inline">Prism AI Gateway</span>
+                        <span className="text-xl font-bold text-[var(--text-primary)]">棱镜</span>
+                        <span className="text-sm text-[var(--text-secondary)] hidden sm:inline">Prism AI Gateway</span>
                     </div>
                     <div className="flex items-center gap-4">
                         <button
                             onClick={onPricing}
-                            className="px-4 py-2 text-gray-600 hover:text-gray-900 transition-colors flex items-center gap-2"
+                            className="px-4 py-2 text-[var(--text-secondary)] hover:text-[var(--text-primary)] transition-colors flex items-center gap-2"
                         >
                             <Coins className="w-4 h-4"/>
                             价格
                         </button>
                         <button
                             onClick={onLogin}
-                            className="px-5 py-2 bg-indigo-600 text-white rounded-lg font-medium hover:bg-indigo-700 transition-colors flex items-center gap-2"
+                            className="px-5 py-2 bg-[var(--primary)] text-white rounded-lg font-medium hover:opacity-90 transition-colors flex items-center gap-2"
                         >
                             登录
                             <ArrowRight className="w-4 h-4"/>
@@ -91,28 +91,28 @@ const Home: React.FC<HomeProps> = ({onLogin, onPricing}) => {
             <section className="pt-32 pb-20 px-6">
                 <div className="max-w-4xl mx-auto text-center">
                     <div
-                        className="inline-flex items-center gap-2 px-4 py-2 bg-indigo-50 text-indigo-600 rounded-full text-sm font-medium mb-6">
+                        className="inline-flex items-center gap-2 px-4 py-2 bg-[var(--primary-lighter)] text-[var(--primary)] rounded-full text-sm font-medium mb-6">
                         <Zap className="w-4 h-4"/>
                         AI 能力聚合网关
                     </div>
-                    <h1 className="text-4xl sm:text-5xl lg:text-6xl font-bold text-gray-900 mb-6 leading-tight">
-                        统一接入，<span className="text-indigo-600">无限可能</span>
+                    <h1 className="text-4xl sm:text-5xl lg:text-6xl font-bold text-[var(--text-primary)] mb-6 leading-tight">
+                        统一接入，<span className="text-[var(--primary)]">无限可能</span>
                     </h1>
-                    <p className="text-lg sm:text-xl text-gray-600 mb-10 max-w-2xl mx-auto leading-relaxed">
+                    <p className="text-lg sm:text-xl text-[var(--text-secondary)] mb-10 max-w-2xl mx-auto leading-relaxed">
                         棱镜是一个轻量级的 AI 能力聚合网关，将多个 AI 服务商的能力统一封装，
                         提供标准化的 API 接口，让 AI 能力接入变得简单高效。
                     </p>
                     <div className="flex flex-col sm:flex-row items-center justify-center gap-4">
                         <button
                             onClick={onLogin}
-                            className="px-8 py-3 bg-indigo-600 text-white rounded-xl font-bold hover:bg-indigo-700 transition-all shadow-lg shadow-indigo-200 flex items-center gap-2"
+                            className="px-8 py-3 bg-[var(--primary)] text-white rounded-xl font-bold hover:opacity-90 transition-all shadow-lg shadow-[var(--glow-color)] flex items-center gap-2"
                         >
                             开始使用
                             <ArrowRight className="w-5 h-5"/>
                         </button>
                         <button
                             onClick={onPricing}
-                            className="px-8 py-3 bg-white text-gray-700 rounded-xl font-bold hover:bg-gray-50 transition-all border border-gray-200 flex items-center gap-2"
+                            className="px-8 py-3 bg-[var(--surface-card)] text-[var(--text-primary)] rounded-xl font-bold hover:bg-[var(--surface)] transition-all border border-[var(--border-soft)] flex items-center gap-2"
                         >
                             <Coins className="w-5 h-5"/>
                             查看价格
@@ -122,11 +122,11 @@ const Home: React.FC<HomeProps> = ({onLogin, onPricing}) => {
             </section>
 
             {/* Features Section */}
-            <section className="py-20 px-6 bg-gray-50">
+            <section className="py-20 px-6 bg-[var(--surface)]">
                 <div className="max-w-6xl mx-auto">
                     <div className="text-center mb-16">
-                        <h2 className="text-3xl sm:text-4xl font-bold text-gray-900 mb-4">核心特性</h2>
-                        <p className="text-gray-600 max-w-2xl mx-auto">
+                        <h2 className="text-3xl sm:text-4xl font-bold text-[var(--text-primary)] mb-4">核心特性</h2>
+                        <p className="text-[var(--text-secondary)] max-w-2xl mx-auto">
                             专为 AI 能力聚合场景设计，提供完整的网关解决方案
                         </p>
                     </div>
@@ -134,14 +134,14 @@ const Home: React.FC<HomeProps> = ({onLogin, onPricing}) => {
                         {features.map((feature, index) => (
                             <div
                                 key={index}
-                                className="bg-white rounded-2xl p-6 shadow-sm border border-gray-100 hover:shadow-md hover:border-indigo-100 transition-all"
+                                className="bg-[var(--surface-card)] rounded-2xl p-6 shadow-sm border border-[var(--border-soft)] hover:shadow-md hover:border-[var(--primary-light)] transition-all"
                             >
                                 <div
-                                    className="w-12 h-12 bg-indigo-50 text-indigo-600 rounded-xl flex items-center justify-center mb-4">
+                                    className="w-12 h-12 bg-[var(--primary-lighter)] text-[var(--primary)] rounded-xl flex items-center justify-center mb-4">
                                     {feature.icon}
                                 </div>
-                                <h3 className="text-lg font-bold text-gray-900 mb-2">{feature.title}</h3>
-                                <p className="text-gray-600 text-sm leading-relaxed">{feature.description}</p>
+                                <h3 className="text-lg font-bold text-[var(--text-primary)] mb-2">{feature.title}</h3>
+                                <p className="text-[var(--text-secondary)] text-sm leading-relaxed">{feature.description}</p>
                             </div>
                         ))}
                     </div>
@@ -153,8 +153,8 @@ const Home: React.FC<HomeProps> = ({onLogin, onPricing}) => {
                 <div className="max-w-6xl mx-auto">
                     <div className="grid lg:grid-cols-2 gap-12 items-center">
                         <div>
-                            <h2 className="text-3xl sm:text-4xl font-bold text-gray-900 mb-6">支持的能力</h2>
-                            <p className="text-gray-600 mb-8 leading-relaxed">
+                            <h2 className="text-3xl sm:text-4xl font-bold text-[var(--text-primary)] mb-6">支持的能力</h2>
+                            <p className="text-[var(--text-secondary)] mb-8 leading-relaxed">
                                 棱镜支持多种 AI 能力的统一接入，通过标准化的 API
                                 接口调用不同服务商的能力，无需关心底层实现细节。
                             </p>
@@ -162,7 +162,7 @@ const Home: React.FC<HomeProps> = ({onLogin, onPricing}) => {
                                 {capabilities.map((cap, index) => (
                                     <li key={index} className="flex items-center gap-3">
                                         <CheckCircle2 className="w-5 h-5 text-green-500 flex-shrink-0"/>
-                                        <span className="text-gray-700">{cap}</span>
+                                        <span className="text-[var(--text-primary)]">{cap}</span>
                                     </li>
                                 ))}
                             </ul>
@@ -172,7 +172,7 @@ const Home: React.FC<HomeProps> = ({onLogin, onPricing}) => {
                                 <div className="w-3 h-3 rounded-full bg-red-500"></div>
                                 <div className="w-3 h-3 rounded-full bg-yellow-500"></div>
                                 <div className="w-3 h-3 rounded-full bg-green-500"></div>
-                                <span className="ml-2 text-gray-400 text-sm">API 调用示例</span>
+                                <span className="ml-2 text-[var(--text-secondary)] text-sm">API 调用示例</span>
                             </div>
                             <pre className="text-sm text-gray-300 overflow-x-auto">
                 <code>{`curl -X POST \\
@@ -191,10 +191,10 @@ const Home: React.FC<HomeProps> = ({onLogin, onPricing}) => {
             </section>
 
             {/* Architecture Section */}
-            <section className="py-20 px-6 bg-gray-50">
+            <section className="py-20 px-6 bg-[var(--surface)]">
                 <div className="max-w-6xl mx-auto text-center">
-                    <h2 className="text-3xl sm:text-4xl font-bold text-gray-900 mb-4">技术架构</h2>
-                    <p className="text-gray-600 max-w-2xl mx-auto mb-12">
+                    <h2 className="text-3xl sm:text-4xl font-bold text-[var(--text-primary)] mb-4">技术架构</h2>
+                    <p className="text-[var(--text-secondary)] max-w-2xl mx-auto mb-12">
                         基于 Go + React 构建，轻量高效，易于部署和扩展
                     </p>
                     <div className="grid sm:grid-cols-2 lg:grid-cols-4 gap-6">
@@ -204,9 +204,9 @@ const Home: React.FC<HomeProps> = ({onLogin, onPricing}) => {
                             {name: 'React', desc: '前端界面'},
                             {name: 'SQLite/MySQL', desc: '数据存储'}
                         ].map((tech, index) => (
-                            <div key={index} className="bg-white rounded-xl p-6 shadow-sm border border-gray-100">
-                                <div className="text-2xl font-bold text-indigo-600 mb-1">{tech.name}</div>
-                                <div className="text-gray-500 text-sm">{tech.desc}</div>
+                            <div key={index} className="bg-[var(--surface-card)] rounded-xl p-6 shadow-sm border border-[var(--border-soft)]">
+                                <div className="text-2xl font-bold text-[var(--primary)] mb-1">{tech.name}</div>
+                                <div className="text-[var(--text-secondary)] text-sm">{tech.desc}</div>
                             </div>
                         ))}
                     </div>
@@ -216,16 +216,16 @@ const Home: React.FC<HomeProps> = ({onLogin, onPricing}) => {
             {/* CTA Section */}
             <section className="py-20 px-6">
                 <div className="max-w-4xl mx-auto text-center">
-                    <h2 className="text-3xl sm:text-4xl font-bold text-gray-900 mb-6">
+                    <h2 className="text-3xl sm:text-4xl font-bold text-[var(--text-primary)] mb-6">
                         开始使用棱镜
                     </h2>
-                    <p className="text-gray-600 mb-10 max-w-xl mx-auto">
+                    <p className="text-[var(--text-secondary)] mb-10 max-w-xl mx-auto">
                         立即登录体验，或查看文档了解更多功能
                     </p>
                     <div className="flex flex-col sm:flex-row items-center justify-center gap-4">
                         <button
                             onClick={onLogin}
-                            className="px-8 py-3 bg-indigo-600 text-white rounded-xl font-bold hover:bg-indigo-700 transition-all shadow-lg shadow-indigo-200 flex items-center gap-2"
+                            className="px-8 py-3 bg-[var(--primary)] text-white rounded-xl font-bold hover:opacity-90 transition-all shadow-lg shadow-[var(--glow-color)] flex items-center gap-2"
                         >
                             登录 / 注册
                             <ArrowRight className="w-5 h-5"/>
@@ -235,16 +235,16 @@ const Home: React.FC<HomeProps> = ({onLogin, onPricing}) => {
             </section>
 
             {/* Footer */}
-            <footer className="py-8 px-6 border-t border-gray-100">
+            <footer className="py-8 px-6 border-t border-[var(--border-soft)]">
                 <div className="max-w-6xl mx-auto flex flex-col sm:flex-row items-center justify-between gap-4">
                     <div className="flex items-center gap-3">
                         <div
-                            className="w-8 h-8 bg-indigo-600 rounded-lg flex items-center justify-center text-white font-bold">
+                            className="w-8 h-8 bg-[var(--primary)] rounded-lg flex items-center justify-center text-white font-bold">
                             <img src={logo} alt="Prism" className="w-8 h-8"/>
                         </div>
-                        <span className="text-gray-600">棱镜 Prism</span>
+                        <span className="text-[var(--text-secondary)]">棱镜 Prism</span>
                     </div>
-                    <div className="text-gray-400 text-sm">
+                    <div className="text-[var(--text-secondary)] text-sm">
                         v1.0.0 - AI Gateway
                     </div>
                 </div>

@@ -13,6 +13,7 @@ import {
     ChevronUp,
     ChevronDown
 } from 'lucide-react';
+import { Modal } from '../components/ui/Modal';
 import {
     fetchTokens,
     createToken,
@@ -327,26 +328,26 @@ const Tokens: React.FC = () => {
         };
 
         if (loading) {
-            return <div className="text-sm text-gray-500 py-4 text-center">加载中...</div>;
+            return <div className="text-sm text-[var(--text-secondary)] py-4 text-center">加载中...</div>;
         }
 
         if (capabilities.length === 0) {
-            return <div className="text-sm text-gray-500 py-4 text-center">暂无可用能力</div>;
+            return <div className="text-sm text-[var(--text-secondary)] py-4 text-center">暂无可用能力</div>;
         }
 
         return (
             <div className="space-y-4 max-h-80 overflow-y-auto">
                 {capabilities.map(cap => (
-                    <div key={cap.code} className="border border-gray-200 rounded-lg p-3">
+                    <div key={cap.code} className="border border-[var(--border-soft)] rounded-lg p-3">
                         <div className="flex items-center justify-between mb-2">
-                            <span className="font-medium text-gray-900">{cap.name}</span>
-                            <span className="text-xs text-gray-400">{cap.code}</span>
+                            <span className="font-medium text-[var(--text-primary)]">{cap.name}</span>
+                            <span className="text-xs text-[var(--text-secondary)]">{cap.code}</span>
                         </div>
                         <div className="space-y-2">
                             {getPriorities(cap.code).map((p, idx) => (
                                 <div key={p.channelId}
-                                     className="flex items-center gap-2 bg-gray-50 rounded-lg px-3 py-2">
-                                    <span className="text-sm text-gray-500 w-6">{idx + 1}.</span>
+                                     className="flex items-center gap-2 bg-[var(--surface)] rounded-lg px-3 py-2">
+                                    <span className="text-sm text-[var(--text-secondary)] w-6">{idx + 1}.</span>
                                     <span className="flex-1 text-sm">{getName(cap.code, p.channelId)}</span>
                                     <button onClick={() => moveUp(cap.code, p.channelId)} disabled={idx === 0}
                                             className="p-1 hover:bg-gray-200 rounded disabled:opacity-30">
@@ -365,7 +366,7 @@ const Tokens: React.FC = () => {
                             ))}
                             {getAvailable(cap.code).length > 0 && (
                                 <select
-                                    className="w-full text-sm border border-gray-200 rounded-lg px-3 py-2 focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                                    className="w-full text-sm border border-[var(--border-soft)] rounded-lg px-3 py-2 focus:outline-none focus:ring-2 focus:ring-[var(--primary)]"
                                     value=""
                                     onChange={e => {
                                         if (e.target.value) addChannel(cap.code, Number(e.target.value));
@@ -390,12 +391,12 @@ const Tokens: React.FC = () => {
     <div className="space-y-6">
       <div className="flex items-center justify-between">
         <div>
-          <h1 className="text-2xl font-bold text-gray-900">API 令牌管理</h1>
-          <p className="text-gray-500 mt-1">创建和管理用于调用 Prism API 的密钥</p>
+          <h1 className="text-2xl font-bold text-[var(--text-primary)]">API 令牌管理</h1>
+          <p className="text-[var(--text-secondary)] mt-1">创建和管理用于调用 Prism API 的密钥</p>
         </div>
         <button
           onClick={() => setShowCreateModal(true)}
-          className="flex items-center gap-2 px-6 py-2 bg-indigo-600 text-white rounded-lg text-sm font-bold hover:bg-indigo-700 transition-all shadow-sm"
+          className="flex items-center gap-2 px-6 py-2 bg-[var(--primary)] text-white rounded-lg text-sm font-bold hover:opacity-90 transition-all shadow-sm"
         >
           <Plus size={18} />
           创建新令牌
@@ -405,22 +406,22 @@ const Tokens: React.FC = () => {
       <div className="grid grid-cols-1 gap-4">
         {isLoading ? (
           Array.from({ length: 3 }).map((_, i) => (
-            <div key={i} className="bg-white p-8 rounded-2xl border border-gray-100 animate-pulse h-32"></div>
+            <div key={i} className="bg-[var(--surface-card)] p-8 rounded-2xl border border-[var(--border-soft)] animate-pulse h-32"></div>
           ))
         ) : tokens.length === 0 ? (
-          <div className="bg-white p-12 rounded-2xl border border-gray-100 text-center">
+          <div className="bg-[var(--surface-card)] p-12 rounded-2xl border border-[var(--border-soft)] text-center">
             <Key className="mx-auto text-gray-300 mb-4" size={48} />
-            <p className="text-gray-500">暂无令牌，点击上方按钮创建</p>
+            <p className="text-[var(--text-secondary)]">暂无令牌，点击上方按钮创建</p>
           </div>
         ) : tokens.map(token => (
-          <div key={token.id} className="bg-white p-6 rounded-2xl border border-gray-100 shadow-sm flex flex-col md:flex-row items-center gap-6 group">
-            <div className="p-4 bg-gray-50 rounded-2xl text-indigo-600">
+          <div key={token.id} className="bg-[var(--surface-card)] p-6 rounded-2xl border border-[var(--border-soft)] shadow-sm flex flex-col md:flex-row items-center gap-6 group">
+            <div className="p-4 bg-[var(--surface)] rounded-2xl text-[var(--primary)]">
               <Key size={24} />
             </div>
 
             <div className="flex-1 min-w-0">
               <div className="flex items-center gap-3 mb-1">
-                <h3 className="font-bold text-gray-900 truncate">{token.name}</h3>
+                <h3 className="font-bold text-[var(--text-primary)] truncate">{token.name}</h3>
                 <span className={`px-2 py-0.5 rounded-full text-[10px] font-bold uppercase ${STATUS_COLORS[token.status]}`}>
                   {STATUS_LABELS[token.status]}
                 </span>
@@ -430,11 +431,11 @@ const Tokens: React.FC = () => {
                       </span>
                   )}
               </div>
-              <div className="flex items-center gap-2 text-sm text-gray-400 font-mono">
+              <div className="flex items-center gap-2 text-sm text-[var(--text-secondary)] font-mono">
                 <code>{token.key}</code>
                 <button
                   onClick={() => handleCopy(token.id, token.key)}
-                  className={`p-1 rounded hover:bg-gray-100 transition-colors ${copiedId === token.id ? 'text-green-500' : 'text-gray-400'}`}
+                  className={`p-1 rounded hover:bg-[var(--primary-lighter)] transition-colors ${copiedId === token.id ? 'text-green-500' : 'text-[var(--text-secondary)]'}`}
                 >
                   {copiedId === token.id ? <CheckCircle2 size={16} /> : <Copy size={16} />}
                 </button>
@@ -443,36 +444,36 @@ const Tokens: React.FC = () => {
 
               <div className="flex items-center gap-6">
                   <div className="text-center">
-                      <div className="flex items-center gap-1 text-[10px] font-bold text-gray-400 uppercase mb-1">
+                      <div className="flex items-center gap-1 text-[10px] font-bold text-[var(--text-secondary)] uppercase mb-1">
                           <Wallet size={12}/>
                           <span>可用余额</span>
                       </div>
                       <p className="text-lg font-bold text-green-600">¥{token.balance.toFixed(4)}</p>
               </div>
                   <div className="text-center">
-                      <div className="text-[10px] font-bold text-gray-400 uppercase mb-1">已使用</div>
-                      <p className="text-lg font-bold text-gray-600">¥{token.totalUsed.toFixed(4)}</p>
+                      <div className="text-[10px] font-bold text-[var(--text-secondary)] uppercase mb-1">已使用</div>
+                      <p className="text-lg font-bold text-[var(--text-secondary)]">¥{token.totalUsed.toFixed(4)}</p>
               </div>
             </div>
 
             <div className="flex gap-2 opacity-0 group-hover:opacity-100 transition-opacity">
                 <button
                     onClick={() => openEditModal(token)}
-                    className="p-2 text-gray-400 hover:text-indigo-500 hover:bg-indigo-50 rounded-lg"
+                    className="p-2 text-[var(--text-secondary)] hover:text-indigo-500 hover:bg-[var(--primary-lighter)] rounded-lg"
                     title="编辑"
                 >
                     <Edit2 size={18}/>
                 </button>
                 <button
                   onClick={() => openRechargeModal(token)}
-                  className="p-2 text-gray-400 hover:text-green-500 hover:bg-green-50 rounded-lg"
+                  className="p-2 text-[var(--text-secondary)] hover:text-green-500 hover:bg-green-50 rounded-lg"
                   title="充值"
               >
                   <PlusCircle size={18}/>
               </button>
                 <button
                 onClick={() => handleDelete(token.id, token.name)}
-                className="p-2 text-gray-400 hover:text-red-500 hover:bg-red-50 rounded-lg"
+                className="p-2 text-[var(--text-secondary)] hover:text-red-500 hover:bg-red-50 rounded-lg"
                 title="删除"
               >
                 <Trash2 size={18} />
@@ -494,15 +495,7 @@ const Tokens: React.FC = () => {
 
         {/* 创建令牌弹窗 */}
       {showCreateModal && (
-        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50">
-            <div className="bg-white rounded-2xl p-6 w-full max-w-lg shadow-xl max-h-[90vh] overflow-y-auto">
-            <div className="flex items-center justify-between mb-4">
-              <h3 className="text-lg font-bold text-gray-900">创建新令牌</h3>
-              <button onClick={closeModal} className="p-1 hover:bg-gray-100 rounded-lg">
-                <X size={20} className="text-gray-400" />
-              </button>
-            </div>
-
+        <Modal open={true} onClose={closeModal} title="创建新令牌">
             {newTokenKey ? (
               <div className="space-y-4">
                 <div className="p-4 bg-amber-50 border border-amber-300 rounded-xl">
@@ -518,7 +511,7 @@ const Tokens: React.FC = () => {
                       value={newTokenKey}
                       rows={3}
                       onClick={e => (e.target as HTMLTextAreaElement).select()}
-                      className="w-full text-sm font-mono bg-white p-3 rounded-lg border border-green-200 resize-none focus:outline-none focus:ring-2 focus:ring-green-400"
+                      className="w-full text-sm font-mono bg-[var(--surface-card)] p-3 rounded-lg border border-green-200 resize-none focus:outline-none focus:ring-2 focus:ring-green-400"
                     />
                     <button
                       onClick={() => {
@@ -538,7 +531,7 @@ const Tokens: React.FC = () => {
                 </div>
                 <button
                   onClick={closeModal}
-                  className="w-full py-3 bg-indigo-600 text-white rounded-xl font-bold hover:bg-indigo-700"
+                  className="w-full py-3 bg-[var(--primary)] text-white rounded-lg font-bold hover:opacity-90"
                 >
                   我已保存，关闭
                 </button>
@@ -546,17 +539,17 @@ const Tokens: React.FC = () => {
             ) : (
               <div className="space-y-4">
                 <div>
-                  <label className="block text-sm font-medium text-gray-700 mb-1">令牌名称</label>
+                  <label className="block text-sm font-medium text-[var(--text-primary)] mb-1">令牌名称</label>
                   <input
                     type="text"
                     value={newTokenName}
                     onChange={e => setNewTokenName(e.target.value)}
                     placeholder="如: 生产环境、测试项目"
-                    className="w-full px-4 py-3 border border-gray-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                    className="w-full px-4 py-3 border border-[var(--border-soft)] rounded-lg focus:outline-none focus:ring-2 focus:ring-[var(--primary)]"
                   />
                 </div>
                   <div>
-                      <label className="block text-sm font-medium text-gray-700 mb-1">初始余额 (元)</label>
+                      <label className="block text-sm font-medium text-[var(--text-primary)] mb-1">初始余额 (元)</label>
                       <input
                           type="number"
                           step="0.01"
@@ -564,7 +557,7 @@ const Tokens: React.FC = () => {
                           value={newTokenBalance}
                           onChange={e => setNewTokenBalance(e.target.value)}
                           placeholder="0.00"
-                          className="w-full px-4 py-3 border border-gray-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                          className="w-full px-4 py-3 border border-[var(--border-soft)] rounded-lg focus:outline-none focus:ring-2 focus:ring-[var(--primary)]"
                   />
                 </div>
 
@@ -586,14 +579,14 @@ const Tokens: React.FC = () => {
                               }
                               setShowChannelConfig(!showChannelConfig);
                           }}
-                          className="flex items-center gap-2 text-sm text-indigo-600 hover:text-indigo-700"
+                          className="flex items-center gap-2 text-sm text-[var(--primary)] hover:text-[var(--primary)]"
                       >
                           {showChannelConfig ? <ChevronUp size={16}/> : <ChevronDown size={16}/>}
                           {showChannelConfig ? '收起渠道配置' : '配置渠道优先级 (可选)'}
                       </button>
                       {showChannelConfig && (
                           <div className="mt-3">
-                              <p className="text-xs text-gray-500 mb-2">为每个能力配置渠道调用顺序，调用时将按优先级选择可用渠道</p>
+                              <p className="text-xs text-[var(--text-secondary)] mb-2">为每个能力配置渠道调用顺序，调用时将按优先级选择可用渠道</p>
                               <ChannelConfigEditor
                                   priorities={createChannelPriorities}
                                   setPriorities={setCreateChannelPriorities}
@@ -607,7 +600,7 @@ const Tokens: React.FC = () => {
                 <button
                   onClick={handleCreate}
                   disabled={isCreating || !newTokenName.trim()}
-                  className="w-full py-3 bg-indigo-600 text-white rounded-xl font-bold hover:bg-indigo-700 disabled:opacity-50 flex items-center justify-center gap-2"
+                  className="w-full py-3 bg-[var(--primary)] text-white rounded-lg font-bold hover:opacity-90 disabled:opacity-50 flex items-center justify-center gap-2"
                 >
                   {isCreating ? (
                     <div className="animate-spin rounded-full h-5 w-5 border-b-2 border-white"></div>
@@ -620,29 +613,19 @@ const Tokens: React.FC = () => {
                 </button>
               </div>
             )}
-          </div>
-        </div>
+        </Modal>
       )}
 
         {/* 充值弹窗 */}
         {showRechargeModal && (
-            <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50">
-                <div className="bg-white rounded-2xl p-6 w-full max-w-md shadow-xl">
-                    <div className="flex items-center justify-between mb-4">
-                        <h3 className="text-lg font-bold text-gray-900">充值余额</h3>
-                        <button onClick={() => setShowRechargeModal(false)}
-                                className="p-1 hover:bg-gray-100 rounded-lg">
-                            <X size={20} className="text-gray-400"/>
-                        </button>
-                    </div>
-
+            <Modal open={true} onClose={() => setShowRechargeModal(false)} title="充值余额" width="max-w-md">
                     <div className="space-y-4">
-                        <div className="p-4 bg-gray-50 rounded-xl">
-                            <p className="text-sm text-gray-500">为令牌充值</p>
-                            <p className="text-lg font-bold text-gray-900 mt-1">{rechargeTokenName}</p>
+                        <div className="p-4 bg-[var(--surface)] rounded-xl">
+                            <p className="text-sm text-[var(--text-secondary)]">为令牌充值</p>
+                            <p className="text-lg font-bold text-[var(--text-primary)] mt-1">{rechargeTokenName}</p>
                         </div>
                         <div>
-                            <label className="block text-sm font-medium text-gray-700 mb-1">充值金额 (元)</label>
+                            <label className="block text-sm font-medium text-[var(--text-primary)] mb-1">充值金额 (元)</label>
                             <input
                                 type="number"
                                 step="0.01"
@@ -650,14 +633,14 @@ const Tokens: React.FC = () => {
                                 value={rechargeAmount}
                                 onChange={e => setRechargeAmount(e.target.value)}
                                 placeholder="请输入充值金额"
-                                className="w-full px-4 py-3 border border-gray-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-green-500"
+                                className="w-full px-4 py-3 border border-[var(--border-soft)] rounded-lg focus:outline-none focus:ring-2 focus:ring-green-500"
                                 autoFocus
                             />
                         </div>
                         <button
                             onClick={handleRecharge}
                             disabled={isRecharging || !rechargeAmount || parseFloat(rechargeAmount) <= 0}
-                            className="w-full py-3 bg-green-600 text-white rounded-xl font-bold hover:bg-green-700 disabled:opacity-50 flex items-center justify-center gap-2"
+                            className="w-full py-3 bg-green-600 text-white rounded-lg font-bold hover:bg-green-700 disabled:opacity-50 flex items-center justify-center gap-2"
                         >
                             {isRecharging ? (
                                 <div className="animate-spin rounded-full h-5 w-5 border-b-2 border-white"></div>
@@ -669,36 +652,27 @@ const Tokens: React.FC = () => {
                             )}
                         </button>
                     </div>
-          </div>
-        </div>
+            </Modal>
       )}
 
         {/* 编辑令牌弹窗 */}
         {showEditModal && (
-            <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50">
-                <div className="bg-white rounded-2xl p-6 w-full max-w-lg shadow-xl max-h-[90vh] overflow-y-auto">
-                    <div className="flex items-center justify-between mb-4">
-                        <h3 className="text-lg font-bold text-gray-900">编辑令牌</h3>
-                        <button onClick={() => setShowEditModal(false)} className="p-1 hover:bg-gray-100 rounded-lg">
-                            <X size={20} className="text-gray-400"/>
-                        </button>
-                    </div>
-
+            <Modal open={true} onClose={() => setShowEditModal(false)} title="编辑令牌">
                     <div className="space-y-4">
                         <div>
-                            <label className="block text-sm font-medium text-gray-700 mb-1">令牌名称</label>
+                            <label className="block text-sm font-medium text-[var(--text-primary)] mb-1">令牌名称</label>
                             <input
                                 type="text"
                                 value={editTokenName}
                                 onChange={e => setEditTokenName(e.target.value)}
                                 placeholder="令牌名称"
-                                className="w-full px-4 py-3 border border-gray-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                                className="w-full px-4 py-3 border border-[var(--border-soft)] rounded-lg focus:outline-none focus:ring-2 focus:ring-[var(--primary)]"
                             />
                         </div>
 
                         <div className="border-t pt-4">
-                            <h4 className="font-medium text-gray-900 mb-2">渠道优先级配置</h4>
-                            <p className="text-xs text-gray-500 mb-3">为每个能力配置渠道调用顺序，调用时将按优先级选择可用渠道</p>
+                            <h4 className="font-medium text-[var(--text-primary)] mb-2">渠道优先级配置</h4>
+                            <p className="text-xs text-[var(--text-secondary)] mb-3">为每个能力配置渠道调用顺序，调用时将按优先级选择可用渠道</p>
                             <ChannelConfigEditor
                                 priorities={editChannelPriorities}
                                 setPriorities={setEditChannelPriorities}
@@ -710,7 +684,7 @@ const Tokens: React.FC = () => {
                         <button
                             onClick={handleSaveEdit}
                             disabled={isEditing || !editTokenName.trim()}
-                            className="w-full py-3 bg-indigo-600 text-white rounded-xl font-bold hover:bg-indigo-700 disabled:opacity-50 flex items-center justify-center gap-2"
+                            className="w-full py-3 bg-[var(--primary)] text-white rounded-lg font-bold hover:opacity-90 disabled:opacity-50 flex items-center justify-center gap-2"
                         >
                             {isEditing ? (
                                 <div className="animate-spin rounded-full h-5 w-5 border-b-2 border-white"></div>
@@ -722,8 +696,7 @@ const Tokens: React.FC = () => {
                             )}
                         </button>
                     </div>
-                </div>
-            </div>
+            </Modal>
         )}
     </div>
   );

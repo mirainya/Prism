@@ -65,28 +65,28 @@ const Pricing: React.FC<PricingProps> = ({onBack}) => {
 
     if (loading) {
         return (
-            <div className="min-h-screen bg-gray-50 flex items-center justify-center">
+            <div className="min-h-screen bg-[var(--surface)] flex items-center justify-center">
                 <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-indigo-600"></div>
             </div>
         );
     }
 
     return (
-        <div className="min-h-screen bg-gradient-to-b from-gray-50 to-white">
+        <div className="min-h-screen bg-gradient-to-b from-[var(--surface)] to-[var(--surface-card)]">
             {/* Header */}
-            <header className="fixed top-0 left-0 right-0 bg-white/80 backdrop-blur-md z-50 border-b border-gray-100">
+            <header className="fixed top-0 left-0 right-0 bg-[var(--surface-card)]/80 backdrop-blur-md z-50 border-b border-[var(--border-soft)]">
                 <div className="max-w-7xl mx-auto px-6 py-4 flex items-center justify-between">
                     <div className="flex items-center gap-3">
                         <div
-                            className="w-10 h-10 bg-indigo-600 rounded-xl flex items-center justify-center text-white text-xl font-bold shadow-lg">
+                            className="w-10 h-10 bg-[var(--primary)] rounded-xl flex items-center justify-center text-white text-xl font-bold shadow-lg">
                             P
                         </div>
-                        <span className="text-xl font-bold text-gray-900">棱镜</span>
-                        <span className="text-sm text-gray-400 hidden sm:inline">价格列表</span>
+                        <span className="text-xl font-bold text-[var(--text-primary)]">棱镜</span>
+                        <span className="text-sm text-[var(--text-secondary)] hidden sm:inline">价格列表</span>
                     </div>
                     <button
                         onClick={onBack}
-                        className="flex items-center gap-2 px-4 py-2 text-gray-600 hover:text-gray-900 transition-colors"
+                        className="flex items-center gap-2 px-4 py-2 text-[var(--text-secondary)] hover:text-[var(--text-primary)] transition-colors"
                     >
                         <ArrowLeft className="w-4 h-4"/>
                         返回首页
@@ -100,14 +100,14 @@ const Pricing: React.FC<PricingProps> = ({onBack}) => {
                     {/* Title */}
                     <div className="text-center mb-12">
                         <div
-                            className="inline-flex items-center gap-2 px-4 py-2 bg-indigo-50 text-indigo-600 rounded-full text-sm font-medium mb-6">
+                            className="inline-flex items-center gap-2 px-4 py-2 bg-[var(--primary-lighter)] text-[var(--primary)] rounded-full text-sm font-medium mb-6">
                             <Coins className="w-4 h-4"/>
                             透明定价
                         </div>
-                        <h1 className="text-3xl sm:text-4xl font-bold text-gray-900 mb-4">
+                        <h1 className="text-3xl sm:text-4xl font-bold text-[var(--text-primary)] mb-4">
                             能力价格列表
                         </h1>
-                        <p className="text-gray-600 max-w-2xl mx-auto">
+                        <p className="text-[var(--text-secondary)] max-w-2xl mx-auto">
                             以下是各能力的调用价格，价格按次计费，实际扣费以调用时配置为准
                         </p>
                     </div>
@@ -115,85 +115,85 @@ const Pricing: React.FC<PricingProps> = ({onBack}) => {
                     {/* Capabilities List */}
                     <div className="space-y-4">
                         {capabilities.length === 0 ? (
-                            <div className="text-center py-20 text-gray-400">
+                            <div className="text-center py-20 text-[var(--text-secondary)]">
                                 暂无可用能力
                             </div>
                         ) : (
                             capabilities.map(cap => (
                                 <div
                                     key={cap.code}
-                                    className="bg-white rounded-2xl border border-gray-100 shadow-sm overflow-hidden"
+                                    className="bg-[var(--surface-card)] rounded-2xl border border-[var(--border-soft)] shadow-sm overflow-hidden"
                                 >
                                     {/* Capability Header */}
                                     <button
                                         onClick={() => toggleExpand(cap.code)}
-                                        className="w-full px-6 py-5 flex items-center justify-between hover:bg-gray-50 transition-colors"
+                                        className="w-full px-6 py-5 flex items-center justify-between hover:bg-[var(--surface)] transition-colors"
                                     >
                                         <div className="flex items-center gap-4">
                                             <div
-                                                className="w-12 h-12 bg-indigo-50 text-indigo-600 rounded-xl flex items-center justify-center">
+                                                className="w-12 h-12 bg-[var(--primary-lighter)] text-[var(--primary)] rounded-xl flex items-center justify-center">
                                                 <Zap className="w-6 h-6"/>
                                             </div>
                                             <div className="text-left">
-                                                <h3 className="text-lg font-bold text-gray-900">{cap.name}</h3>
-                                                <p className="text-sm text-gray-500">{cap.code}</p>
+                                                <h3 className="text-lg font-bold text-[var(--text-primary)]">{cap.name}</h3>
+                                                <p className="text-sm text-[var(--text-secondary)]">{cap.code}</p>
                                             </div>
                                         </div>
                                         <div className="flex items-center gap-3">
-                                            <span className="text-sm text-gray-400">
+                                            <span className="text-sm text-[var(--text-secondary)]">
                                                 {cap.channels.length} 个渠道
                                             </span>
                                             {expandedCaps.has(cap.code) ? (
-                                                <ChevronUp className="w-5 h-5 text-gray-400"/>
+                                                <ChevronUp className="w-5 h-5 text-[var(--text-secondary)]"/>
                                             ) : (
-                                                <ChevronDown className="w-5 h-5 text-gray-400"/>
+                                                <ChevronDown className="w-5 h-5 text-[var(--text-secondary)]"/>
                                             )}
                                         </div>
                                     </button>
 
                                     {/* Channels Table */}
                                     {expandedCaps.has(cap.code) && (
-                                        <div className="border-t border-gray-100">
+                                        <div className="border-t border-[var(--border-soft)]">
                                             {cap.description && (
-                                                <div className="px-6 py-3 bg-gray-50 text-sm text-gray-600">
+                                                <div className="px-6 py-3 bg-[var(--surface)] text-sm text-[var(--text-secondary)]">
                                                     {cap.description}
                                                 </div>
                                             )}
                                             {cap.channels.length === 0 ? (
-                                                <div className="px-6 py-8 text-center text-gray-400 text-sm">
+                                                <div className="px-6 py-8 text-center text-[var(--text-secondary)] text-sm">
                                                     暂无可用渠道
                                                 </div>
                                             ) : (
                                                 <table className="w-full">
                                                     <thead>
-                                                    <tr className="border-b border-gray-100 bg-gray-50/50">
-                                                        <th className="px-6 py-3 text-left text-sm font-semibold text-gray-600">渠道</th>
-                                                        <th className="px-6 py-3 text-left text-sm font-semibold text-gray-600">模型</th>
-                                                        <th className="px-6 py-3 text-left text-sm font-semibold text-gray-600">名称</th>
-                                                        <th className="px-6 py-3 text-right text-sm font-semibold text-gray-600">价格</th>
+                                                    <tr className="border-b border-[var(--border-soft)] bg-[var(--surface)]/50">
+                                                        <th className="px-6 py-3 text-left text-sm font-semibold text-[var(--text-secondary)]">渠道</th>
+                                                        <th className="px-6 py-3 text-left text-sm font-semibold text-[var(--text-secondary)]">模型</th>
+                                                        <th className="px-6 py-3 text-left text-sm font-semibold text-[var(--text-secondary)]">名称</th>
+                                                        <th className="px-6 py-3 text-right text-sm font-semibold text-[var(--text-secondary)]">价格</th>
                                                     </tr>
                                                     </thead>
                                                     <tbody>
                                                     {cap.channels.map((ch, idx) => (
                                                         <tr
                                                             key={`${ch.channel_code}-${ch.model}-${idx}`}
-                                                            className="border-b border-gray-50 last:border-0 hover:bg-gray-50/50"
+                                                            className="border-b border-gray-50 last:border-0 hover:bg-[var(--surface)]/50"
                                                         >
                                                             <td className="px-6 py-4">
                                                                 <code
-                                                                    className="px-2 py-1 bg-gray-100 text-gray-700 rounded text-sm">
+                                                                    className="px-2 py-1 bg-[var(--primary-lighter)] text-[var(--text-primary)] rounded text-sm">
                                                                     {ch.channel_code}
                                                                 </code>
                                                             </td>
-                                                            <td className="px-6 py-4 text-gray-700">
+                                                            <td className="px-6 py-4 text-[var(--text-primary)]">
                                                                 {ch.model || '-'}
                                                             </td>
-                                                            <td className="px-6 py-4 text-gray-700">
+                                                            <td className="px-6 py-4 text-[var(--text-primary)]">
                                                                 {ch.name || '-'}
                                                             </td>
                                                             <td className="px-6 py-4 text-right">
                                                                     <span
-                                                                        className={`font-medium ${ch.price === 0 ? 'text-green-600' : 'text-indigo-600'}`}>
+                                                                        className={`font-medium ${ch.price === 0 ? 'text-green-600' : 'text-[var(--primary)]'}`}>
                                                                         {formatPrice(ch.price, ch.price_unit)}
                                                                     </span>
                                                             </td>
@@ -222,12 +222,12 @@ const Pricing: React.FC<PricingProps> = ({onBack}) => {
             </main>
 
             {/* Footer */}
-            <footer className="py-8 px-6 border-t border-gray-100">
+            <footer className="py-8 px-6 border-t border-[var(--border-soft)]">
                 <div className="max-w-6xl mx-auto flex flex-col sm:flex-row items-center justify-between gap-4">
                     <div className="flex items-center gap-3">
-                        <span className="text-gray-600">棱镜 Prism</span>
+                        <span className="text-[var(--text-secondary)]">棱镜 Prism</span>
                     </div>
-                    <div className="text-gray-400 text-sm">
+                    <div className="text-[var(--text-secondary)] text-sm">
                         v1.0.0 - AI Gateway
                     </div>
                 </div>

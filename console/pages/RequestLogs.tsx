@@ -11,6 +11,7 @@ import {
     CheckCircle,
     RotateCw
 } from 'lucide-react';
+import { Modal } from '../components/ui/Modal';
 import {
     fetchRequestLogs,
     fetchCapabilities,
@@ -115,35 +116,35 @@ const RequestLogs: React.FC = () => {
     <div className="space-y-6">
       <div className="flex items-center justify-between">
         <div>
-          <h1 className="text-2xl font-bold text-gray-900">渠道请求日志</h1>
-          <p className="text-gray-500 mt-1">查看所有与第三方渠道的 HTTP 交互记录</p>
+          <h1 className="text-2xl font-bold text-[var(--text-primary)]">渠道请求日志</h1>
+          <p className="text-[var(--text-secondary)] mt-1">查看所有与第三方渠道的 HTTP 交互记录</p>
         </div>
         <button
           onClick={() => loadLogs()}
-          className="px-4 py-2 bg-white border border-gray-200 rounded-lg text-sm font-medium hover:bg-gray-50 transition-colors flex items-center gap-2"
+          className="px-4 py-2 bg-[var(--surface-card)] border border-[var(--border-soft)] rounded-lg text-sm font-medium hover:bg-[var(--surface)] transition-colors flex items-center gap-2"
         >
           <RefreshCw size={16} className={isLoading ? 'animate-spin' : ''} />
           刷新
         </button>
       </div>
 
-      <div className="bg-white rounded-2xl shadow-sm border border-gray-100 overflow-hidden">
-        <div className="p-4 border-b border-gray-100 bg-gray-50/50 flex items-center gap-4 flex-wrap">
+      <div className="bg-[var(--surface-card)] rounded-2xl shadow-sm border border-[var(--border-soft)] overflow-hidden">
+        <div className="p-4 border-b border-[var(--border-soft)] bg-[var(--surface)]/50 flex items-center gap-4 flex-wrap">
           <div className="relative flex-1 min-w-[200px] max-w-md">
-            <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400" size={18} />
+            <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-[var(--text-secondary)]" size={18} />
             <input
               type="text"
               value={keyword}
               onChange={e => setKeyword(e.target.value)}
               onKeyDown={e => e.key === 'Enter' && handleSearch()}
               placeholder="搜索任务编号..."
-              className="w-full pl-10 pr-4 py-2 bg-white border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500"
+              className="w-full pl-10 pr-4 py-2 bg-[var(--surface-card)] border border-[var(--border-soft)] rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-[var(--primary)]"
             />
           </div>
           <select
             value={filters.channel_id || ''}
             onChange={e => { setFilters({ ...filters, channel_id: e.target.value ? Number(e.target.value) : undefined }); setPage(1); }}
-            className="bg-white border border-gray-200 rounded-lg px-3 py-2 text-sm text-gray-600 focus:outline-none focus:ring-2 focus:ring-indigo-500"
+            className="bg-[var(--surface-card)] border border-[var(--border-soft)] rounded-lg px-3 py-2 text-sm text-[var(--text-secondary)] focus:outline-none focus:ring-2 focus:ring-[var(--primary)]"
           >
             <option value="">所有渠道</option>
             {channels.map(ch => (
@@ -153,7 +154,7 @@ const RequestLogs: React.FC = () => {
           <select
             value={filters.capability_code || ''}
             onChange={e => { setFilters({ ...filters, capability_code: e.target.value || undefined }); setPage(1); }}
-            className="bg-white border border-gray-200 rounded-lg px-3 py-2 text-sm text-gray-600 focus:outline-none focus:ring-2 focus:ring-indigo-500"
+            className="bg-[var(--surface-card)] border border-[var(--border-soft)] rounded-lg px-3 py-2 text-sm text-[var(--text-secondary)] focus:outline-none focus:ring-2 focus:ring-[var(--primary)]"
           >
             <option value="">所有能力</option>
             {capabilities.map(c => (
@@ -163,7 +164,7 @@ const RequestLogs: React.FC = () => {
           <select
             value={filters.request_type || ''}
             onChange={e => { setFilters({ ...filters, request_type: e.target.value || undefined }); setPage(1); }}
-            className="bg-white border border-gray-200 rounded-lg px-3 py-2 text-sm text-gray-600 focus:outline-none focus:ring-2 focus:ring-indigo-500"
+            className="bg-[var(--surface-card)] border border-[var(--border-soft)] rounded-lg px-3 py-2 text-sm text-[var(--text-secondary)] focus:outline-none focus:ring-2 focus:ring-[var(--primary)]"
           >
             <option value="">所有类型</option>
             <option value="submit">提交</option>
@@ -176,41 +177,41 @@ const RequestLogs: React.FC = () => {
         <div className="overflow-x-auto">
           <table className="w-full text-left">
             <thead>
-              <tr className="border-b border-gray-100">
-                <th className="px-6 py-4 text-xs font-bold text-gray-400 uppercase tracking-wider">任务编号 / 时间</th>
-                <th className="px-6 py-4 text-xs font-bold text-gray-400 uppercase tracking-wider">渠道 / 能力</th>
-                <th className="px-6 py-4 text-xs font-bold text-gray-400 uppercase tracking-wider text-center">类型</th>
-                <th className="px-6 py-4 text-xs font-bold text-gray-400 uppercase tracking-wider text-center">状态码</th>
-                <th className="px-6 py-4 text-xs font-bold text-gray-400 uppercase tracking-wider text-right">耗时</th>
-                <th className="px-6 py-4 text-xs font-bold text-gray-400 uppercase tracking-wider text-right">操作</th>
+              <tr className="border-b border-[var(--border-soft)]">
+                <th className="px-6 py-4 text-xs font-bold text-[var(--text-secondary)] uppercase tracking-wider">任务编号 / 时间</th>
+                <th className="px-6 py-4 text-xs font-bold text-[var(--text-secondary)] uppercase tracking-wider">渠道 / 能力</th>
+                <th className="px-6 py-4 text-xs font-bold text-[var(--text-secondary)] uppercase tracking-wider text-center">类型</th>
+                <th className="px-6 py-4 text-xs font-bold text-[var(--text-secondary)] uppercase tracking-wider text-center">状态码</th>
+                <th className="px-6 py-4 text-xs font-bold text-[var(--text-secondary)] uppercase tracking-wider text-right">耗时</th>
+                <th className="px-6 py-4 text-xs font-bold text-[var(--text-secondary)] uppercase tracking-wider text-right">操作</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-gray-100">
               {isLoading ? (
                 Array.from({ length: 8 }).map((_, i) => (
                   <tr key={i} className="animate-pulse">
-                    <td colSpan={6} className="px-6 py-4"><div className="h-4 bg-gray-100 rounded w-full"></div></td>
+                    <td colSpan={6} className="px-6 py-4"><div className="h-4 bg-[var(--primary-lighter)] rounded w-full"></div></td>
                   </tr>
                 ))
               ) : logs.length === 0 ? (
                 <tr>
-                  <td colSpan={6} className="px-6 py-12 text-center text-gray-400">暂无数据</td>
+                  <td colSpan={6} className="px-6 py-12 text-center text-[var(--text-secondary)]">暂无数据</td>
                 </tr>
               ) : logs.map(log => {
-                const typeInfo = REQUEST_TYPE_MAP[log.request_type] || { label: log.request_type, color: 'bg-gray-100 text-gray-700' };
+                const typeInfo = REQUEST_TYPE_MAP[log.request_type] || { label: log.request_type, color: 'bg-[var(--primary-lighter)] text-[var(--text-primary)]' };
                 const isSuccess = log.status_code >= 200 && log.status_code < 300;
                 const hasError = !!log.error_message;
                 return (
-                  <tr key={log.id} className="hover:bg-indigo-50/30 transition-colors cursor-pointer group" onClick={() => openDetails(log)}>
+                  <tr key={log.id} className="hover:bg-[var(--primary-lighter)]/30 transition-colors cursor-pointer group" onClick={() => openDetails(log)}>
                     <td className="px-6 py-4">
-                        <div className="text-xs font-bold text-indigo-600 font-mono">
+                        <div className="text-xs font-bold text-[var(--primary)] font-mono">
                             {log.request_type === 'chat' ? `对话#${log.conversation_id}` : log.task_no}
                         </div>
-                      <div className="text-[10px] text-gray-400 mt-0.5">{log.request_at}</div>
+                      <div className="text-[10px] text-[var(--text-secondary)] mt-0.5">{log.request_at}</div>
                     </td>
                     <td className="px-6 py-4">
-                      <div className="text-sm font-medium text-gray-900">{log.channel_name || '-'}</div>
-                      <div className="text-[10px] text-gray-400">{log.capability_name || log.capability_code}</div>
+                      <div className="text-sm font-medium text-[var(--text-primary)]">{log.channel_name || '-'}</div>
+                      <div className="text-[10px] text-[var(--text-secondary)]">{log.capability_name || log.capability_code}</div>
                     </td>
                     <td className="px-6 py-4 text-center">
                       <span className={`inline-flex px-2 py-0.5 rounded-full text-[10px] font-bold ${typeInfo.color}`}>
@@ -232,7 +233,7 @@ const RequestLogs: React.FC = () => {
                       </div>
                     </td>
                     <td className="px-6 py-4 text-right">
-                      <div className="text-xs text-gray-400 flex items-center justify-end gap-1">
+                      <div className="text-xs text-[var(--text-secondary)] flex items-center justify-end gap-1">
                         <Clock size={10} />
                         {log.duration_ms}ms
                       </div>
@@ -242,7 +243,7 @@ const RequestLogs: React.FC = () => {
                             <button
                                 onClick={(e) => handleRetry(e, log.id)}
                                 disabled={retryingId === log.id}
-                                className="px-3 py-1.5 bg-white border border-gray-200 text-xs font-bold text-gray-600 rounded-lg hover:border-indigo-600 hover:text-indigo-600 transition-colors flex items-center gap-1.5 disabled:opacity-50"
+                                className="px-3 py-1.5 bg-[var(--surface-card)] border border-[var(--border-soft)] text-xs font-bold text-[var(--text-secondary)] rounded-lg hover:border-indigo-600 hover:text-[var(--primary)] transition-colors flex items-center gap-1.5 disabled:opacity-50"
                                 title="重试"
                             >
                                 <RotateCw size={12} className={retryingId === log.id ? 'animate-spin' : ''}/>
@@ -261,22 +262,22 @@ const RequestLogs: React.FC = () => {
 
         {/* Pagination */}
         {totalPages > 1 && (
-          <div className="p-4 border-t border-gray-100 flex items-center justify-between">
-            <div className="text-sm text-gray-500">
+          <div className="p-4 border-t border-[var(--border-soft)] flex items-center justify-between">
+            <div className="text-sm text-[var(--text-secondary)]">
               共 {total} 条记录，第 {page}/{totalPages} 页
             </div>
             <div className="flex items-center gap-2">
               <button
                 onClick={() => setPage(p => Math.max(1, p - 1))}
                 disabled={page <= 1}
-                className="p-2 rounded-lg hover:bg-gray-100 disabled:opacity-50 disabled:cursor-not-allowed"
+                className="p-2 rounded-lg hover:bg-[var(--primary-lighter)] disabled:opacity-50 disabled:cursor-not-allowed"
               >
                 <ChevronLeft size={16} />
               </button>
               <button
                 onClick={() => setPage(p => Math.min(totalPages, p + 1))}
                 disabled={page >= totalPages}
-                className="p-2 rounded-lg hover:bg-gray-100 disabled:opacity-50 disabled:cursor-not-allowed"
+                className="p-2 rounded-lg hover:bg-[var(--primary-lighter)] disabled:opacity-50 disabled:cursor-not-allowed"
               >
                 <ChevronRight size={16} />
               </button>
@@ -287,72 +288,72 @@ const RequestLogs: React.FC = () => {
 
       {/* Details Drawer */}
       {isDrawerOpen && selectedLog && (
-        <div className="fixed inset-0 z-50 flex justify-end bg-black/40 backdrop-blur-sm" onClick={() => setIsDrawerOpen(false)}>
-          <div className="w-full max-w-3xl bg-white shadow-2xl h-full flex flex-col" onClick={e => e.stopPropagation()}>
-            <div className="p-6 border-b border-gray-100 flex items-center justify-between">
+        <div className="fixed inset-0 z-50 flex justify-end bg-black/50 backdrop-blur-sm" onClick={() => setIsDrawerOpen(false)}>
+          <div className="w-full max-w-3xl bg-[var(--surface-card)] shadow-2xl h-full flex flex-col" onClick={e => e.stopPropagation()}>
+            <div className="p-6 border-b border-[var(--border-soft)] flex items-center justify-between">
               <div>
-                <h2 className="text-xl font-bold text-gray-900">请求详情</h2>
+                <h2 className="text-xl font-bold text-[var(--text-primary)]">请求详情</h2>
                 <p className="text-xs text-indigo-500 font-mono mt-1">{selectedLog.task_no}</p>
               </div>
                 <div className="flex items-center gap-3">
                     <button
                         onClick={(e) => handleRetry(e, selectedLog.id)}
                         disabled={retryingId === selectedLog.id}
-                        className="px-4 py-2 bg-indigo-600 text-white text-sm font-bold rounded-lg hover:bg-indigo-700 transition-colors flex items-center gap-2 disabled:opacity-50"
+                        className="px-4 py-2 bg-[var(--primary)] text-white text-sm font-bold rounded-lg hover:opacity-90 transition-colors flex items-center gap-2 disabled:opacity-50"
                     >
                         <RotateCw size={16} className={retryingId === selectedLog.id ? 'animate-spin' : ''}/>
                         重试请求
                     </button>
                     <button onClick={() => setIsDrawerOpen(false)}
-                            className="p-2 hover:bg-gray-100 rounded-full text-gray-400">
+                            className="p-2 hover:bg-[var(--primary-lighter)] rounded-full text-[var(--text-secondary)]">
                         <X size={24}/>
                     </button>
                 </div>
             </div>
 
             <div className="flex-1 overflow-y-auto p-6 space-y-6">
-              <div className="grid grid-cols-2 gap-4 bg-gray-50 p-5 rounded-2xl border border-gray-100">
+              <div className="grid grid-cols-2 gap-4 bg-[var(--surface)] p-5 rounded-2xl border border-[var(--border-soft)]">
                 <div className="space-y-1">
-                  <label className="text-[10px] font-bold text-gray-400 uppercase">请求类型</label>
-                  <p className="text-sm font-bold text-gray-900">
-                    <span className={`inline-flex px-2 py-0.5 rounded-full text-[10px] font-bold ${REQUEST_TYPE_MAP[selectedLog.request_type]?.color || 'bg-gray-100'}`}>
+                  <label className="text-[10px] font-bold text-[var(--text-secondary)] uppercase">请求类型</label>
+                  <p className="text-sm font-bold text-[var(--text-primary)]">
+                    <span className={`inline-flex px-2 py-0.5 rounded-full text-[10px] font-bold ${REQUEST_TYPE_MAP[selectedLog.request_type]?.color || 'bg-[var(--primary-lighter)]'}`}>
                       {REQUEST_TYPE_MAP[selectedLog.request_type]?.label || selectedLog.request_type}
                     </span>
                   </p>
                 </div>
                 <div className="space-y-1">
-                  <label className="text-[10px] font-bold text-gray-400 uppercase">HTTP 方法</label>
-                  <p className="text-sm font-bold text-gray-900">{selectedLog.method}</p>
+                  <label className="text-[10px] font-bold text-[var(--text-secondary)] uppercase">HTTP 方法</label>
+                  <p className="text-sm font-bold text-[var(--text-primary)]">{selectedLog.method}</p>
                 </div>
                 <div className="space-y-1">
-                  <label className="text-[10px] font-bold text-gray-400 uppercase">渠道</label>
-                  <p className="text-sm font-bold text-gray-900">{selectedLog.channel_name || '-'}</p>
+                  <label className="text-[10px] font-bold text-[var(--text-secondary)] uppercase">渠道</label>
+                  <p className="text-sm font-bold text-[var(--text-primary)]">{selectedLog.channel_name || '-'}</p>
                 </div>
                 <div className="space-y-1">
-                  <label className="text-[10px] font-bold text-gray-400 uppercase">能力</label>
-                  <p className="text-sm font-bold text-gray-900">{selectedLog.capability_name || selectedLog.capability_code}</p>
+                  <label className="text-[10px] font-bold text-[var(--text-secondary)] uppercase">能力</label>
+                  <p className="text-sm font-bold text-[var(--text-primary)]">{selectedLog.capability_name || selectedLog.capability_code}</p>
                 </div>
                 <div className="space-y-1">
-                  <label className="text-[10px] font-bold text-gray-400 uppercase">状态码</label>
+                  <label className="text-[10px] font-bold text-[var(--text-secondary)] uppercase">状态码</label>
                   <p className={`text-sm font-bold ${selectedLog.status_code >= 200 && selectedLog.status_code < 300 ? 'text-green-600' : 'text-red-600'}`}>
                     {selectedLog.status_code || '-'}
                   </p>
                 </div>
                 <div className="space-y-1">
-                  <label className="text-[10px] font-bold text-gray-400 uppercase">耗时</label>
-                  <p className="text-sm font-bold text-gray-900">{selectedLog.duration_ms}ms</p>
+                  <label className="text-[10px] font-bold text-[var(--text-secondary)] uppercase">耗时</label>
+                  <p className="text-sm font-bold text-[var(--text-primary)]">{selectedLog.duration_ms}ms</p>
                 </div>
                 <div className="col-span-2 space-y-1">
-                  <label className="text-[10px] font-bold text-gray-400 uppercase">请求时间</label>
-                  <p className="text-sm text-gray-700">{selectedLog.request_at}</p>
+                  <label className="text-[10px] font-bold text-[var(--text-secondary)] uppercase">请求时间</label>
+                  <p className="text-sm text-[var(--text-primary)]">{selectedLog.request_at}</p>
                 </div>
                 <div className="col-span-2 space-y-1">
-                  <label className="text-[10px] font-bold text-gray-400 uppercase">请求 URL</label>
-                  <p className="text-sm text-gray-700 font-mono break-all">{selectedLog.url}</p>
+                  <label className="text-[10px] font-bold text-[var(--text-secondary)] uppercase">请求 URL</label>
+                  <p className="text-sm text-[var(--text-primary)] font-mono break-all">{selectedLog.url}</p>
                 </div>
                 {selectedLog.error_message && (
                   <div className="col-span-2 space-y-1">
-                    <label className="text-[10px] font-bold text-gray-400 uppercase">错误信息</label>
+                    <label className="text-[10px] font-bold text-[var(--text-secondary)] uppercase">错误信息</label>
                     <p className="text-sm text-red-600">{selectedLog.error_message}</p>
                   </div>
                 )}
@@ -360,11 +361,11 @@ const RequestLogs: React.FC = () => {
 
               {selectedLog.request_headers && (
                 <div className="space-y-3">
-                  <div className="flex items-center gap-2 text-xs font-bold text-gray-400 uppercase tracking-widest">
+                  <div className="flex items-center gap-2 text-xs font-bold text-[var(--text-secondary)] uppercase tracking-widest">
                     <Code size={14} />
                     请求头
                   </div>
-                  <div className="bg-gray-50 rounded-2xl p-4 text-gray-700 font-mono text-sm leading-relaxed whitespace-pre-wrap border border-gray-200 overflow-x-auto max-h-40 overflow-y-auto">
+                  <div className="bg-[var(--surface)] rounded-2xl p-4 text-[var(--text-primary)] font-mono text-sm leading-relaxed whitespace-pre-wrap border border-[var(--border-soft)] overflow-x-auto max-h-40 overflow-y-auto">
                     {formatJson(selectedLog.request_headers)}
                   </div>
                 </div>
@@ -372,11 +373,11 @@ const RequestLogs: React.FC = () => {
 
               {selectedLog.request_body && (
                 <div className="space-y-3">
-                  <div className="flex items-center gap-2 text-xs font-bold text-gray-400 uppercase tracking-widest">
+                  <div className="flex items-center gap-2 text-xs font-bold text-[var(--text-secondary)] uppercase tracking-widest">
                     <Code size={14} />
                     请求体
                   </div>
-                  <div className="bg-gray-50 rounded-2xl p-4 text-gray-700 font-mono text-sm leading-relaxed whitespace-pre-wrap border border-gray-200 overflow-x-auto max-h-64 overflow-y-auto">
+                  <div className="bg-[var(--surface)] rounded-2xl p-4 text-[var(--text-primary)] font-mono text-sm leading-relaxed whitespace-pre-wrap border border-[var(--border-soft)] overflow-x-auto max-h-64 overflow-y-auto">
                     {formatJson(selectedLog.request_body)}
                   </div>
                 </div>
@@ -384,7 +385,7 @@ const RequestLogs: React.FC = () => {
 
               {selectedLog.response_body && (
                 <div className="space-y-3">
-                  <div className="flex items-center gap-2 text-xs font-bold text-gray-400 uppercase tracking-widest">
+                  <div className="flex items-center gap-2 text-xs font-bold text-[var(--text-secondary)] uppercase tracking-widest">
                     <Code size={14} />
                     响应体
                   </div>
@@ -400,51 +401,49 @@ const RequestLogs: React.FC = () => {
 
         {/* 重试确认弹窗 */}
         {confirmRetryId && (
-            <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40">
-                <div className="bg-white rounded-2xl shadow-xl w-96 p-6 space-y-4">
-                    <h3 className="text-lg font-bold text-gray-900">确认重试</h3>
-                    <p className="text-sm text-gray-500">
+            <Modal open={true} onClose={() => setConfirmRetryId(null)} title="确认重试" width="max-w-sm">
+                    <div className="space-y-4">
+                    <p className="text-sm text-[var(--text-secondary)]">
                         确定要重新发送该请求吗？这将使用相同的参数向目标地址发起新的 HTTP 请求。
                     </p>
                     <div className="flex justify-end gap-3">
                         <button
-                            className="px-4 py-2 text-sm font-bold text-gray-600 bg-gray-100 rounded-lg hover:bg-gray-200 transition-colors"
+                            className="px-4 py-2 text-sm font-bold text-[var(--text-secondary)] bg-[var(--primary-lighter)] rounded-lg hover:bg-gray-200 transition-colors"
                             onClick={() => setConfirmRetryId(null)}
                         >
                             取消
                         </button>
                         <button
-                            className="px-4 py-2 text-sm font-bold text-white bg-indigo-600 rounded-lg hover:bg-indigo-700 transition-colors"
+                            className="px-4 py-2 text-sm font-bold text-white bg-[var(--primary)] rounded-lg hover:opacity-90 transition-colors"
                             onClick={doRetry}
                         >
                             确认重试
                         </button>
                     </div>
-                </div>
-            </div>
+                    </div>
+            </Modal>
         )}
 
         {/* 错误提示弹窗 */}
         {retryError && (
-            <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40">
-                <div className="bg-white rounded-2xl shadow-xl w-96 p-6 space-y-4">
+            <Modal open={true} onClose={() => setRetryError('')} title="重试失败" width="max-w-sm">
+                    <div className="space-y-4">
                     <div className="flex items-center gap-3">
                         <div className="w-10 h-10 bg-red-100 rounded-full flex items-center justify-center">
                             <AlertCircle size={20} className="text-red-600"/>
                         </div>
-                        <h3 className="text-lg font-bold text-gray-900">重试失败</h3>
+                        <p className="text-sm text-[var(--text-secondary)]">{retryError}</p>
                     </div>
-                    <p className="text-sm text-gray-500">{retryError}</p>
                     <div className="flex justify-end">
                         <button
-                            className="px-4 py-2 text-sm font-bold text-white bg-indigo-600 rounded-lg hover:bg-indigo-700 transition-colors"
+                            className="px-4 py-2 text-sm font-bold text-white bg-[var(--primary)] rounded-lg hover:opacity-90 transition-colors"
                             onClick={() => setRetryError('')}
                         >
                             确定
                         </button>
                     </div>
-                </div>
-            </div>
+                    </div>
+            </Modal>
         )}
     </div>
   );

@@ -19,15 +19,15 @@ var (
 )
 
 type CreateTaskRequest struct {
-	UserID              uint
-	TokenID             uint
-	CapabilityCode      string
-	ChannelID           uint
-	ChannelCapabilityID uint
-	AccountID           uint
-	RequestParams       map[string]any
-	MappedParams        map[string]any
-	CallbackURL         string
+	UserID      uint
+	TokenID     uint
+	ModelCode   string
+	ChannelID   uint
+	EndpointID  uint
+	AccountID   uint
+	RequestParams map[string]any
+	MappedParams  map[string]any
+	CallbackURL   string
 	Cost                decimal.Decimal
 }
 
@@ -53,18 +53,18 @@ func (s *TaskService) CreateTask(req *CreateTaskRequest) (*model.Task, error) {
 	}
 
 	task := &model.Task{
-		TaskNo:              GenerateTaskNo(),
-		UserID:              req.UserID,
-		TokenID:             req.TokenID,
-		CapabilityCode:      req.CapabilityCode,
-		ChannelID:           req.ChannelID,
-		ChannelCapabilityID: req.ChannelCapabilityID,
-		AccountID:           req.AccountID,
-		RequestParams:       requestParamsJSON,
-		MappedParams:        mappedParamsJSON,
-		Status:              model.TaskStatusPending,
-		CallbackURL:         req.CallbackURL,
-		Cost:                req.Cost,
+		TaskNo:         GenerateTaskNo(),
+		UserID:         req.UserID,
+		TokenID:        req.TokenID,
+		ModelCode:      req.ModelCode,
+		ChannelID:      req.ChannelID,
+		EndpointID:     req.EndpointID,
+		AccountID:      req.AccountID,
+		RequestParams:  requestParamsJSON,
+		MappedParams:   mappedParamsJSON,
+		Status:         model.TaskStatusPending,
+		CallbackURL:    req.CallbackURL,
+		Cost:           req.Cost,
 	}
 
 	if err := model.DB().Create(task).Error; err != nil {
@@ -74,7 +74,7 @@ func (s *TaskService) CreateTask(req *CreateTaskRequest) (*model.Task, error) {
 	logger.Info("task created",
 		zap.Uint("task_id", task.ID),
 		zap.String("task_no", task.TaskNo),
-		zap.String("capability", task.CapabilityCode))
+		zap.String("model", task.ModelCode))
 
 	return task, nil
 }

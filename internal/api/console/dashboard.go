@@ -2,10 +2,11 @@ package console
 
 import (
 	"encoding/json"
+	"strconv"
 
 	"github.com/gin-gonic/gin"
-	"github.com/mirainya/Prism/internal/api/resp"
 	"github.com/mirainya/Prism/internal/api/middleware"
+	"github.com/mirainya/Prism/internal/api/resp"
 	"github.com/mirainya/Prism/internal/model"
 	"github.com/mirainya/Prism/internal/service"
 )
@@ -68,19 +69,16 @@ func GetTaskDetail(c *gin.Context) {
 		return
 	}
 
-	// 解析结果
 	var resultMap map[string]any
 	if len(task.Result) > 0 {
 		json.Unmarshal(task.Result, &resultMap)
 	}
 
-	// 解析原始请求参数
 	var rawParams map[string]any
 	if len(task.RequestParams) > 0 {
 		json.Unmarshal(task.RequestParams, &rawParams)
 	}
 
-	// 解析供应商响应（仅管理员可见）
 	var vendorResponse map[string]any
 	if isAdmin && len(task.VendorResponse) > 0 {
 		json.Unmarshal(task.VendorResponse, &vendorResponse)
@@ -88,7 +86,7 @@ func GetTaskDetail(c *gin.Context) {
 
 	detail := gin.H{
 		"task_no":        task.TaskNo,
-		"capability":     task.CapabilityCode,
+		"capability":     task.ModelCode,
 		"status":         task.Status,
 		"progress":       task.Progress,
 		"cost":           task.Cost,
@@ -107,8 +105,8 @@ func GetTaskDetail(c *gin.Context) {
 	if task.Channel != nil {
 		detail["channel"] = task.Channel.Type
 	}
-	if task.Capability != nil {
-		detail["capability_name"] = task.Capability.Name
+	if task.Endpoint != nil && task.Endpoint.Model != nil {
+		detail["capability_name"] = task.Endpoint.Model.Name
 	}
 	if task.StartedAt != nil {
 		detail["started_at"] = task.StartedAt.Format("2006-01-02 15:04:05")
@@ -118,4 +116,18 @@ func GetTaskDetail(c *gin.Context) {
 	}
 
 	resp.Success(c, detail)
+}
+
+// ChatStats Chat 增强统计
+func ChatStats(c *gin.Context) {
+	days := 7
+	if d, err := strconv.Atoi(c.DefaultQuery("days", "7")); err == nil && d > 0 && d <= 90 {
+		days = d
+	}
+	result, err := dashboardService.GetChatStats(days)
+	if err != nil {
+		resp.ErrorMsg(c, 500, 500, "failed to get chat stats")
+		return
+	}
+	resp.Success(c, result)
 }

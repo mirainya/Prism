@@ -18,8 +18,8 @@ import (
 	"github.com/mirainya/Prism/pkg/errors"
 )
 
-var chatService = service.NewChatService()
-var capabilityService = service.NewCapabilityService()
+var chatService = service.NewUnifiedService()
+var capabilityService = service.NewUnifiedService()
 var queryService = service.NewQueryService()
 var playgroundDashboardService = service.NewDashboardService()
 
@@ -150,14 +150,10 @@ func PlaygroundChatCompletions(c *gin.Context) {
 		c.Status(http.StatusOK)
 
 		aggregation, streamErr := proxyPlaygroundStream(c, session.UpstreamResp)
-		debugDetail, finalizeErr := chatService.FinalizeStream(session, aggregation, streamErr)
+		_, finalizeErr := chatService.FinalizeStream(session, aggregation, streamErr)
 		if finalizeErr != nil {
 			resp.ErrorMsg(c, http.StatusInternalServerError, 500, finalizeErr.Error())
 			return
-		}
-		if debugDetail != nil {
-			c.Writer.Write([]byte(fmt.Sprintf("event: prism-debug\ndata: %s\n\n", mustJSON(debugDetail))))
-			c.Writer.Flush()
 		}
 		if streamErr != nil {
 			return
@@ -277,7 +273,7 @@ func PlaygroundGetTask(c *gin.Context) {
 	}
 
 	taskNo := c.Param("task_no")
-	task, err := capabilityService.GetTask(c.Request.Context(), taskNo, token.UserID, token.ID)
+	task, err := capabilityService.GetTask(c.Request.Context(), taskNo, token.UserID)
 	if err != nil {
 		resp.ErrorMsg(c, http.StatusNotFound, 404, "task not found")
 		return

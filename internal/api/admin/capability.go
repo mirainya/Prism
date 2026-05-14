@@ -1,67 +1,72 @@
 package admin
 
 import (
-	"errors"
 	"net/http"
 
 	"github.com/gin-gonic/gin"
 	"github.com/mirainya/Prism/internal/api/resp"
 	"github.com/mirainya/Prism/internal/service"
 	"gorm.io/datatypes"
-	"gorm.io/gorm"
 )
 
-var capabilityAdminService = service.NewCapabilityAdminService()
+var modelAdminService = service.NewModelAdminService()
 
-// ListCapabilities 能力列表
+// ListCapabilities 模型列表
 func ListCapabilities(c *gin.Context) {
-	capabilities, err := capabilityAdminService.ListCapabilities(c.Query("status"))
+	models, err := modelAdminService.ListModels(c.Query("status"))
 	if err != nil {
 		resp.ErrorMsg(c, http.StatusInternalServerError, 500, err.Error())
 		return
 	}
-	resp.Success(c, capabilities)
+	resp.Success(c, models)
 }
 
-// GetCapability 获取能力详情
+// GetCapability 获取模型详情
 func GetCapability(c *gin.Context) {
-	capability, err := capabilityAdminService.GetCapability(c.Param("code"))
+	m, err := modelAdminService.GetModel(c.Param("code"))
 	if err != nil {
-		resp.ErrorMsg(c, http.StatusNotFound, 404, "capability not found")
+		resp.ErrorMsg(c, http.StatusNotFound, 404, "model not found")
 		return
 	}
-	resp.Success(c, capability)
+	resp.Success(c, m)
 }
 
-// CreateCapability 创建能力
+// CreateCapability 创建模型
 func CreateCapability(c *gin.Context) {
-	var req service.CreateCapabilityRequest
-	if err := c.ShouldBindJSON(&req); err != nil {
+	var raw struct {
+		service.CreateModelRequest
+		StandardParams datatypes.JSON `json:"standard_params"`
+	}
+	if err := c.ShouldBindJSON(&raw); err != nil {
 		resp.ErrorMsg(c, http.StatusBadRequest, 400, err.Error())
 		return
 	}
+	if len(raw.ParamSchema) == 0 && len(raw.StandardParams) > 0 {
+		raw.CreateModelRequest.ParamSchema = raw.StandardParams
+	}
 
-	capability, err := capabilityAdminService.CreateCapability(&req)
+	m, err := modelAdminService.CreateModel(&raw.CreateModelRequest)
 	if err != nil {
 		resp.ErrorMsg(c, http.StatusInternalServerError, 500, err.Error())
 		return
 	}
 
-	resp.Success(c, capability)
+	resp.Success(c, m)
 }
 
-// UpdateCapability 更新能力
+// UpdateCapability 更新模型
 func UpdateCapability(c *gin.Context) {
 	code := c.Param("code")
 
 	var req struct {
-		Code             string         `json:"code"`
-		Name             string         `json:"name"`
-		Type             string         `json:"type"`
-		Description      string         `json:"description"`
-		StandardParams   datatypes.JSON `json:"standard_params"`
-		StandardResponse datatypes.JSON `json:"standard_response"`
-		Status           *int8          `json:"status"`
+		Code           string         `json:"code"`
+		Name           string         `json:"name"`
+		Type           string         `json:"type"`
+		Description    string         `json:"description"`
+		ParamSchema    datatypes.JSON `json:"param_schema"`
+		StandardParams datatypes.JSON `json:"standard_params"`
+		Features       datatypes.JSON `json:"features"`
+		Status         *int8          `json:"status"`
 	}
 
 	if err := c.ShouldBindJSON(&req); err != nil {
@@ -82,43 +87,36 @@ func UpdateCapability(c *gin.Context) {
 	if req.Description != "" {
 		updates["description"] = req.Description
 	}
-	if len(req.StandardParams) > 0 {
-		updates["standard_params"] = req.StandardParams
+	if len(req.ParamSchema) > 0 {
+		updates["param_schema"] = req.ParamSchema
+	} else if len(req.StandardParams) > 0 {
+		updates["param_schema"] = req.StandardParams
 	}
-	if len(req.StandardResponse) > 0 {
-		updates["standard_response"] = req.StandardResponse
+	if len(req.Features) > 0 {
+		updates["features"] = req.Features
 	}
 	if req.Status != nil {
 		updates["status"] = *req.Status
 	}
 
-	capability, err := capabilityAdminService.UpdateCapability(code, updates)
+	m, err := modelAdminService.UpdateModel(code, updates)
 	if err != nil {
-		switch {
-		case errors.Is(err, gorm.ErrRecordNotFound):
-			resp.ErrorMsg(c, http.StatusNotFound, 404, "capability not found")
-		case errors.Is(err, service.ErrCapabilityCodeRequired):
-			resp.ErrorMsg(c, http.StatusBadRequest, 400, "capability code is required")
-		case errors.Is(err, service.ErrCapabilityCodeConflict):
-			resp.ErrorMsg(c, http.StatusConflict, 409, "capability code already exists")
-		default:
-			resp.ErrorMsg(c, http.StatusInternalServerError, 500, err.Error())
-		}
+		resp.ErrorMsg(c, http.StatusInternalServerError, 500, err.Error())
 		return
 	}
 
-	resp.Success(c, capability)
+	resp.Success(c, m)
 }
 
-// DeleteCapability 删除能力
+// DeleteCapability 删除模型
 func DeleteCapability(c *gin.Context) {
-	rowsAffected, err := capabilityAdminService.DeleteCapability(c.Param("code"))
+	rowsAffected, err := modelAdminService.DeleteModel(c.Param("code"))
 	if err != nil {
 		resp.ErrorMsg(c, http.StatusInternalServerError, 500, err.Error())
 		return
 	}
 	if rowsAffected == 0 {
-		resp.ErrorMsg(c, http.StatusNotFound, 404, "capability not found")
+		resp.ErrorMsg(c, http.StatusNotFound, 404, "model not found")
 		return
 	}
 	resp.Success(c, gin.H{"message": "deleted"})

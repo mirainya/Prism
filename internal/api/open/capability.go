@@ -11,7 +11,7 @@ import (
 	perrors "github.com/mirainya/Prism/pkg/errors"
 )
 
-var capabilityService = service.NewCapabilityService()
+var capabilityService = service.NewUnifiedService()
 
 // InvokeCapability 调用能力接口
 func InvokeCapability(c *gin.Context) {
@@ -27,12 +27,10 @@ func InvokeCapability(c *gin.Context) {
 		return
 	}
 
-	// 从参数中提取路由控制字段
 	channel, _ := params["channel"].(string)
 	model, _ := params["model"].(string)
 	callbackURL, _ := params["callback_url"].(string)
 
-	// 只移除路由控制字段，model 保留在 params 中供透传
 	delete(params, "channel")
 	delete(params, "callback_url")
 

@@ -1,4 +1,3 @@
-
 import React from 'react';
 import {
     LayoutDashboard,
@@ -9,19 +8,17 @@ import {
     Zap,
     Book,
     Activity,
-    Bot,
-    Link2,
     MessageSquare,
     Lock,
-    Play
+    Play,
+    Bot
 } from 'lucide-react';
 
 export const ROUTES = [
   { path: '/dashboard', name: '仪表盘', icon: <LayoutDashboard size={20} />, roles: ['admin', 'user'] },
   { path: '/channels', name: '渠道管理', icon: <Layers size={20} />, roles: ['admin'] },
+  { path: '/chat-models', name: '对话模型', icon: <Bot size={20} />, roles: ['admin'] },
   { path: '/capabilities', name: '能力配置', icon: <Zap size={20} />, roles: ['admin'] },
-    {path: '/chat-models', name: '语言模型', icon: <Bot size={20}/>, roles: ['admin']},
-    {path: '/chat-model-channels', name: '模型渠道', icon: <Link2 size={20}/>, roles: ['admin']},
   { path: '/users', name: '用户管理', icon: <Users size={20} />, roles: ['admin'] },
   { path: '/tokens', name: '令牌管理', icon: <Key size={20} />, roles: ['user', 'admin'] },
     {path: '/playground', name: '在线试用', icon: <Play size={20}/>, roles: ['user', 'admin']},

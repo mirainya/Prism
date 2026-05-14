@@ -27,9 +27,9 @@ func HandleTaskUpload(ctx context.Context, t *asynq.Task) error {
 		return fmt.Errorf("get task: %w", err)
 	}
 
-	// 获取渠道能力配置以获取价格
-	var cc model.ChannelCapability
-	model.DB().First(&cc, task.ChannelCapabilityID)
+	// 获取端点配置以获取价格
+	var ep model.Endpoint
+	model.DB().First(&ep, task.EndpointID)
 
 	originURLs := payload.URLs
 	if len(originURLs) == 0 && payload.OriginURL != "" {
@@ -37,14 +37,14 @@ func HandleTaskUpload(ctx context.Context, t *asynq.Task) error {
 	}
 
 	finalURLs := make([]string, 0, len(originURLs))
-	transferEnabled := isTransferEnabled(cc.ExtraConfig)
+	transferEnabled := isTransferEnabled(ep.ExtraConfig)
 	for _, originURL := range originURLs {
 		if originURL == "" {
 			continue
 		}
 		finalURL := originURL
 		if transferEnabled {
-			if transferred, err := transferResultFile(ctx, originURL, task.CapabilityCode); err != nil {
+			if transferred, err := transferResultFile(ctx, originURL, task.ModelCode); err != nil {
 				logger.Error("file transfer failed", zap.Uint("task_id", task.ID), zap.Error(err))
 			} else {
 				finalURL = transferred
@@ -60,8 +60,8 @@ func HandleTaskUpload(ctx context.Context, t *asynq.Task) error {
 		primaryURL = finalURLs[0]
 	}
 	result := buildResult(primaryURL, finalURLs)
-	taskService.UpdateTaskSuccess(task.ID, result, cc.Price)
-	strategyService.DecrementAccountTasks(task.AccountID)
+	taskService.UpdateTaskSuccess(task.ID, result, ep.InputPrice)
+	decrementAccountTasks(task.ID)
 
 	// 如果有回调地址，入队通知任务
 	if task.CallbackURL != "" {
@@ -93,18 +93,18 @@ func buildResult(primaryURL string, urls []string) map[string]any {
 
 func isTransferEnabled(extraConfig datatypes.JSON) bool {
 	if len(extraConfig) == 0 {
-		return true
+		return false
 	}
 	var cfg map[string]any
 	if err := json.Unmarshal(extraConfig, &cfg); err != nil {
-		return true
+		return false
 	}
 	if v, ok := cfg["transfer_enabled"]; ok {
 		if b, ok := v.(bool); ok {
 			return b
 		}
 	}
-	return true
+	return false
 }
 
 func enqueueNotify(taskID uint) error {

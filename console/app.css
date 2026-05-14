@@ -1,0 +1,179 @@
+@import "tailwindcss";
+
+/* ===== 主题系统 ===== */
+:root {
+  --primary: #8b5cf6;
+  --primary-light: #a78bfa;
+  --primary-lighter: #f5f3ff;
+  --accent: #ec4899;
+  --surface: #faf8ff;
+  --surface-card: rgba(255, 255, 255, 0.82);
+  --border-soft: #e8e0f4;
+  --text-primary: #3a3448;
+  --text-secondary: #9690a8;
+  --sidebar-gradient: linear-gradient(180deg, #f5f3ff 0%, #ede9fe 100%);
+  --login-gradient: linear-gradient(135deg, #f5f3ff 0%, #ede9fe 50%, #c4b5fd 100%);
+  --glow-color: rgba(139, 92, 246, 0.15);
+  --chart-1: #8b5cf6;
+  --chart-2: #ec4899;
+  --chart-3: #6366f1;
+  --chart-4: #a78bfa;
+  --chart-5: #f472b6;
+}
+
+[data-theme="sakura"] {
+  --primary: #f472b6;
+  --primary-light: #f9a8d4;
+  --primary-lighter: #fdf2f8;
+  --accent: #fb923c;
+  --surface: #fffbfe;
+  --surface-card: rgba(255, 255, 255, 0.85);
+  --border-soft: #fce7f3;
+  --text-primary: #4a2040;
+  --text-secondary: #a8849c;
+  --sidebar-gradient: linear-gradient(180deg, #fdf2f8 0%, #fce7f3 100%);
+  --login-gradient: linear-gradient(135deg, #fdf2f8 0%, #fce7f3 50%, #f9a8d4 100%);
+  --glow-color: rgba(244, 114, 182, 0.15);
+  --chart-1: #f472b6;
+  --chart-2: #fb923c;
+  --chart-3: #e879f9;
+  --chart-4: #f9a8d4;
+  --chart-5: #fdba74;
+}
+
+[data-theme="mint"] {
+  --primary: #10b981;
+  --primary-light: #34d399;
+  --primary-lighter: #ecfdf5;
+  --accent: #06b6d4;
+  --surface: #f8fffe;
+  --surface-card: rgba(255, 255, 255, 0.82);
+  --border-soft: #d1fae5;
+  --text-primary: #1a3a2e;
+  --text-secondary: #6b9080;
+  --sidebar-gradient: linear-gradient(180deg, #ecfdf5 0%, #d1fae5 100%);
+  --login-gradient: linear-gradient(135deg, #ecfdf5 0%, #d1fae5 50%, #6ee7b7 100%);
+  --glow-color: rgba(16, 185, 129, 0.15);
+  --chart-1: #10b981;
+  --chart-2: #06b6d4;
+  --chart-3: #14b8a6;
+  --chart-4: #34d399;
+  --chart-5: #22d3ee;
+}
+
+[data-theme="sky"] {
+  --primary: #3b82f6;
+  --primary-light: #60a5fa;
+  --primary-lighter: #eff6ff;
+  --accent: #8b5cf6;
+  --surface: #f8faff;
+  --surface-card: rgba(255, 255, 255, 0.82);
+  --border-soft: #dbeafe;
+  --text-primary: #1e3a5f;
+  --text-secondary: #7094b8;
+  --sidebar-gradient: linear-gradient(180deg, #eff6ff 0%, #dbeafe 100%);
+  --login-gradient: linear-gradient(135deg, #eff6ff 0%, #dbeafe 50%, #93c5fd 100%);
+  --glow-color: rgba(59, 130, 246, 0.15);
+  --chart-1: #3b82f6;
+  --chart-2: #8b5cf6;
+  --chart-3: #6366f1;
+  --chart-4: #60a5fa;
+  --chart-5: #a78bfa;
+}
+
+[data-theme="milktea"] {
+  --primary: #a8896c;
+  --primary-light: #c4a882;
+  --primary-lighter: #faf6f2;
+  --accent: #d97706;
+  --surface: #fdfcfa;
+  --surface-card: rgba(255, 255, 255, 0.85);
+  --border-soft: #ede4da;
+  --text-primary: #3d3229;
+  --text-secondary: #9c8b7a;
+  --sidebar-gradient: linear-gradient(180deg, #faf6f2 0%, #f3ebe2 100%);
+  --login-gradient: linear-gradient(135deg, #faf6f2 0%, #f3ebe2 50%, #d4b896 100%);
+  --glow-color: rgba(168, 137, 108, 0.15);
+  --chart-1: #a8896c;
+  --chart-2: #d97706;
+  --chart-3: #b45309;
+  --chart-4: #c4a882;
+  --chart-5: #f59e0b;
+}
+
+/* ===== 全局样式 ===== */
+body {
+  font-family: 'Nunito', 'Noto Sans SC', 'PingFang SC', system-ui, sans-serif;
+  background-color: var(--surface);
+  color: var(--text-primary);
+}
+
+/* ===== 玻璃拟态 ===== */
+.glass-card {
+  background: var(--surface-card);
+  backdrop-filter: blur(20px);
+  border: 1px solid rgba(255, 255, 255, 0.6);
+  box-shadow: 0 8px 32px var(--glow-color);
+  border-radius: 16px;
+}
+
+/* ===== 弹窗不透明背景 ===== */
+.modal-card {
+  background: var(--surface-card);
+  border: 1px solid rgba(255, 255, 255, 0.6);
+  box-shadow: 0 8px 32px var(--glow-color);
+  border-radius: 20px;
+}
+
+/* ===== 动画 ===== */
+@keyframes fade-slide-up {
+  from { opacity: 0; transform: translateY(12px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+.page-enter { animation: fade-slide-up 0.3s ease-out; }
+
+.card-enter {
+  animation: fade-slide-up 0.4s ease-out backwards;
+}
+.card-enter:nth-child(1) { animation-delay: 0ms; }
+.card-enter:nth-child(2) { animation-delay: 60ms; }
+.card-enter:nth-child(3) { animation-delay: 120ms; }
+.card-enter:nth-child(4) { animation-delay: 180ms; }
+
+.hover-lift {
+  transition: all 0.2s ease;
+}
+.hover-lift:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 12px 24px var(--glow-color);
+}
+
+@keyframes glow-pulse {
+  0%, 100% { opacity: 0.6; }
+  50% { opacity: 1; }
+}
+
+@keyframes login-spin { to { transform: rotate(360deg); } }
+@keyframes login-spin-reverse { to { transform: rotate(-360deg); } }
+
+/* ===== 滚动条 ===== */
+::-webkit-scrollbar { width: 5px; height: 5px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb {
+  background: var(--primary-light);
+  border-radius: 3px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: var(--primary);
+}
+
+.no-scrollbar::-webkit-scrollbar { display: none; }
+.no-scrollbar { -ms-overflow-style: none; scrollbar-width: none; }
+
+/* ===== 背景 ===== */
+.bg-mesh {
+  background:
+    radial-gradient(at 20% 30%, color-mix(in srgb, var(--primary) 8%, transparent) 0px, transparent 50%),
+    radial-gradient(at 80% 10%, color-mix(in srgb, var(--accent) 6%, transparent) 0px, transparent 50%),
+    radial-gradient(at 50% 80%, color-mix(in srgb, var(--primary-light) 5%, transparent) 0px, transparent 50%);
+}

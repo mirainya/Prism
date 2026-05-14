@@ -1,6 +1,7 @@
 package open
 
 import (
+	"encoding/json"
 	"io"
 	"net/http"
 
@@ -58,11 +59,10 @@ func ChatCompletions(c *gin.Context) {
 		ConversationID:   req.ConversationID,
 	}
 
-	chatService := service.NewChatService()
+	svc := service.NewUnifiedService()
 
-	// 流式请求走透明代理
 	if req.Stream {
-		session, err := chatService.StreamComplete(c.Request.Context(), completionReq)
+		session, err := svc.StreamComplete(c.Request.Context(), completionReq)
 		if err != nil {
 			resp.ErrorMsg(c, http.StatusInternalServerError, 500, err.Error())
 			return
@@ -78,11 +78,11 @@ func ChatCompletions(c *gin.Context) {
 
 		io.Copy(c.Writer, session.UpstreamResp.Body)
 		c.Writer.Flush()
-		_, _ = chatService.FinalizeStream(session, nil, nil)
+		svc.FinalizeStream(session, nil, nil)
 		return
 	}
 
-	chatResp, err := chatService.Complete(c.Request.Context(), completionReq)
+	chatResp, err := svc.Complete(c.Request.Context(), completionReq)
 	if err != nil {
 		resp.ErrorMsg(c, http.StatusInternalServerError, 500, err.Error())
 		return
@@ -93,8 +93,8 @@ func ChatCompletions(c *gin.Context) {
 
 // ListChatModelsPublic GET /v1/models
 func ListChatModelsPublic(c *gin.Context) {
-	chatService := service.NewChatService()
-	models, err := chatService.ListModels(c.Request.Context())
+	svc := service.NewUnifiedService()
+	models, err := svc.ListModels(c.Request.Context())
 	if err != nil {
 		resp.ErrorMsg(c, http.StatusInternalServerError, 500, err.Error())
 		return
@@ -102,12 +102,22 @@ func ListChatModelsPublic(c *gin.Context) {
 
 	data := make([]gin.H, 0, len(models))
 	for _, m := range models {
-		data = append(data, gin.H{
+		item := gin.H{
 			"id":       m.Code,
 			"object":   "model",
 			"created":  m.CreatedAt.Unix(),
 			"owned_by": m.Provider,
-		})
+		}
+		if m.MaxTokens > 0 {
+			item["max_tokens"] = m.MaxTokens
+		}
+		if len(m.Features) > 0 {
+			var features []string
+			if json.Unmarshal(m.Features, &features) == nil && len(features) > 0 {
+				item["features"] = features
+			}
+		}
+		data = append(data, item)
 	}
 
 	c.JSON(http.StatusOK, gin.H{

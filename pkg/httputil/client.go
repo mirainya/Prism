@@ -16,6 +16,33 @@ var client = &http.Client{
 	Timeout: 5 * time.Minute,
 }
 
+// Get 发送 GET 请求，返回响应体
+func Get(ctx context.Context, url string, headers map[string]string) ([]byte, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		return nil, fmt.Errorf("create request: %w", err)
+	}
+	for k, v := range headers {
+		req.Header.Set(k, v)
+	}
+
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("do request: %w", err)
+	}
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("read response: %w", err)
+	}
+
+	if resp.StatusCode >= 400 {
+		return nil, fmt.Errorf("http error: %d, body: %s", resp.StatusCode, string(body))
+	}
+	return body, nil
+}
+
 // RequestDetail HTTP 请求详情
 type RequestDetail struct {
 	Method         string
