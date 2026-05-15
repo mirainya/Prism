@@ -91,6 +91,46 @@ func ChatCompletions(c *gin.Context) {
 	c.JSON(http.StatusOK, chatResp)
 }
 
+// GetChatModelDetail GET /v1/models/:code
+func GetChatModelDetail(c *gin.Context) {
+	svc := service.NewUnifiedService()
+	m, err := svc.GetModelDetail(c.Request.Context(), c.Param("code"))
+	if err != nil {
+		resp.ErrorMsg(c, http.StatusNotFound, 404, "model not found")
+		return
+	}
+
+	item := gin.H{
+		"id":       m.Code,
+		"object":   "model",
+		"created":  m.CreatedAt.Unix(),
+		"owned_by": m.Provider,
+	}
+	if m.Name != "" {
+		item["name"] = m.Name
+	}
+	if m.Description != "" {
+		item["description"] = m.Description
+	}
+	if m.MaxTokens > 0 {
+		item["max_tokens"] = m.MaxTokens
+	}
+	if len(m.Features) > 0 {
+		var features []string
+		if json.Unmarshal(m.Features, &features) == nil && len(features) > 0 {
+			item["features"] = features
+		}
+	}
+	if len(m.ParamSchema) > 0 {
+		var schema any
+		if json.Unmarshal(m.ParamSchema, &schema) == nil && schema != nil {
+			item["param_schema"] = schema
+		}
+	}
+
+	c.JSON(http.StatusOK, item)
+}
+
 // ListChatModelsPublic GET /v1/models
 func ListChatModelsPublic(c *gin.Context) {
 	svc := service.NewUnifiedService()

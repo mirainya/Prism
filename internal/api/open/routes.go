@@ -22,4 +22,5 @@ func RegisterRoutes(group *gin.RouterGroup) {
 	// Chat 接口
 	group.POST("/chat/completions", ChatCompletions)
 	group.GET("/models", ListChatModelsPublic)
+	group.GET("/models/:code", GetChatModelDetail)
 }

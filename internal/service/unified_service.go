@@ -189,6 +189,14 @@ func (s *UnifiedService) ListModels(ctx context.Context) ([]model.Model, error) 
 	return models, nil
 }
 
+func (s *UnifiedService) GetModelDetail(ctx context.Context, code string) (*model.Model, error) {
+	var m model.Model
+	if err := model.DB().Where("code = ? AND status = 1", code).First(&m).Error; err != nil {
+		return nil, err
+	}
+	return &m, nil
+}
+
 // ListPlaygroundModels 列出 playground 可用模型
 func (s *UnifiedService) ListPlaygroundModels(ctx context.Context, tokenID uint) ([]ModelInfo, error) {
 	var models []model.Model
