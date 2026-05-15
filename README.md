@@ -5,184 +5,172 @@
 <h1 align="center">Prism</h1>
 
 <p align="center">
-  一个面向多渠道聚合、统一鉴权、可视化运营的 AI Gateway。
+  多渠道聚合、统一鉴权、可视化运营的 AI Gateway
 </p>
 
-Prism 是一个基于 Go + React 的 AI Gateway 项目，提供统一的 OpenAI 兼容接口、能力路由、渠道与账号管理、请求日志、计费与管理后台。它既可以作为对外 API 网关，也可以作为内部多渠道调度平台使用。
+---
+
+Prism 是一个基于 Go + React 的 AI Gateway，提供统一的 OpenAI 兼容接口，支持多渠道路由、异步任务调度、计费管理和完整的管理后台。单二进制部署，前端嵌入后端。
 
 ## 核心能力
 
-- **统一 Chat 接口**：提供 `/v1/chat/completions`、`/v1/models` 等 OpenAI 兼容接口
-- **多渠道路由**：同一模型可映射多个渠道，支持优先级与账号负载选择
-- **多类型渠道支持**：支持 OpenAI / Anthropic / Gemini / 兼容 OpenAI 渠道等接入方式
-- **管理后台**：提供渠道、账号、模型、能力、Token、日志、仪表盘等页面
-- **Playground 调试台**：可直接在控制台测试模型、查看历史会话与调试信息
-- **请求日志与追踪**：记录请求头、请求体、响应体、错误信息与用量
-- **Token / 用户计费**：支持 Token 与用户余额体系、用量统计和费用计算
-- **异步任务能力**：支持图片 / 视频类任务提交、轮询、回调、取消等流程
+| 能力 | 说明 |
+|------|------|
+| **统一 Chat 接口** | `/v1/chat/completions`、`/v1/models`，完全兼容 OpenAI 格式 |
+| **多渠道路由** | 同一模型映射多个渠道，支持优先级与负载均衡 |
+| **多提供商** | OpenAI / Anthropic / Google Gemini / DeepSeek / 通义千问 / Moonshot / 火山引擎 |
+| **异步任务** | 图片/视频生成等能力，支持提交、轮询、回调、取消 |
+| **Playground** | 控制台内置调试台，支持流式对话、文件上传、能力调用 |
+| **API 文档** | 动态生成，内置右侧抽屉试用面板（表单/JSON 双模式） |
+| **模型发现** | 自动同步上游渠道模型列表，审批后上线 |
+| **计费系统** | Token 余额体系，按模型定价，用量统计 |
+| **请求日志** | 完整记录请求/响应/错误/用量，支持重试 |
+| **配置热重载** | Viper 监听配置文件变更，无需重启 |
 
 ## 技术栈
 
-### 后端
+**后端**：Go 1.25 · Gin · GORM · MySQL · Redis · Asynq · Viper · Zap · Prometheus
 
-- Go 1.25+
-- Gin
-- GORM
-- MySQL
-- Redis
-- Asynq
-- Viper
-- Zap
-
-### 前端
-
-- React 19
-- TypeScript
-- Vite
-- Tailwind CSS
-- React Router
-- Recharts
+**前端**：React 19 · TypeScript · Vite · Tailwind CSS · Recharts · Lucide Icons
 
 ## 项目结构
 
-```text
+```
 Prism/
-├── cmd/server/          # 服务启动入口
-├── configs/             # 配置文件
-├── console/             # React 管理后台
-├── docs/                # 使用文档
+├── cmd/server/              # 服务入口
+├── configs/                 # 配置文件
+├── console/                 # React 前端（构建后嵌入二进制）
+│   └── pages/               # 页面组件
 ├── internal/
-│   ├── api/             # HTTP API、路由与中间件
-│   ├── model/           # 数据模型
-│   ├── provider/        # 上游渠道适配
-│   ├── service/         # 业务逻辑
-│   └── worker/          # 异步任务 Worker
-├── pkg/                 # 配置、数据库、缓存、鉴权等公共组件
-└── build.bat            # Windows 下构建 Linux AMD64 二进制
+│   ├── api/
+│   │   ├── admin/           # 管理员 API（渠道/模型/用户/日志）
+│   │   ├── console/         # 控制台 API（Token/仪表盘/Playground）
+│   │   ├── open/            # 公开 API（Chat/能力/任务）
+│   │   ├── callback/        # 上游回调接收
+│   │   └── middleware/      # JWT/Token鉴权/限流/日志
+│   ├── model/               # 数据模型
+│   ├── domain/              # 领域接口
+│   ├── repository/          # 数据访问层
+│   ├── provider/
+│   │   ├── chat/            # Chat 提供商适配（OpenAI/Anthropic/Google）
+│   │   └── mapping/         # 参数/响应映射规则引擎
+│   ├── service/             # 业务逻辑
+│   └── worker/              # 异步任务（提交/轮询/超时/回调/模型发现）
+├── pkg/                     # 公共组件（config/database/cache/auth/logger/queue）
+├── Dockerfile               # 多阶段构建
+├── docker-compose.yml       # 一键部署（含 MySQL + Redis）
+└── build.bat                # Windows 构建 Linux 二进制
 ```
 
 ## 快速开始
 
-### 1. 克隆项目
-
-```bash
-git clone https://github.com/mirainya/Prism.git
-cd Prism
-```
-
-### 2. 准备依赖
+### 环境要求
 
 - Go 1.25+
 - Node.js 18+
 - MySQL 8+
 - Redis 6+
 
-### 3. 配置服务
-
-复制配置文件：
+### Docker 部署（推荐）
 
 ```bash
+git clone https://github.com/mirainya/Prism.git
+cd Prism
+docker compose up -d
+```
+
+服务启动后访问 `http://localhost:23523`。
+
+### 手动部署
+
+```bash
+# 1. 克隆
+git clone https://github.com/mirainya/Prism.git
+cd Prism
+
+# 2. 配置
 cp configs/config.example.yaml configs/config.yaml
+# 编辑 config.yaml 填写数据库和 Redis 连接信息
+
+# 3. 构建前端
+cd console && npm install && npm run build && cd ..
+
+# 4. 构建后端（Linux）
+GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build -ldflags="-s -w" -o prism ./cmd/server
+
+# 5. 部署
+# 上传 prism + configs/ 到服务器，运行 ./prism
 ```
 
-然后修改 `configs/config.yaml` 中的数据库、Redis、JWT 等配置。
+Windows 下可直接执行 `build.bat` 一键构建。
 
-### 4. 启动前端开发环境
+### 开发模式
 
 ```bash
-cd console
-npm install
-npm run dev
+# 后端
+go run ./cmd/server
+
+# 前端（独立开发服务器）
+cd console && npm run dev
 ```
 
-默认前端开发地址：
+## API 概览
 
-```text
-http://localhost:3000
+### 公开接口（Token 鉴权）
+
+```
+POST   /v1/chat/completions          # 对话补全（流式/非流式）
+GET    /v1/models                     # 模型列表
+GET    /v1/capabilities               # 可用能力列表
+POST   /v1/capabilities/:capability   # 调用能力（图片/视频生成等）
+GET    /v1/tasks/:task_no             # 查询任务状态
+POST   /v1/tasks/:task_no/cancel      # 取消任务
 ```
 
-### 5. 启动后端
+认证方式：`Authorization: YOUR_TOKEN`
 
-在项目根目录执行：
+### 管理后台
 
-```bash
-go run ./cmd/server/main.go
+| 模块 | 说明 |
+|------|------|
+| 仪表盘 | 请求量、用量、费用统计与趋势图 |
+| 渠道管理 | 添加/编辑上游渠道与账号 |
+| 模型管理 | Chat 模型配置、渠道映射、模型发现 |
+| 能力管理 | 异步能力配置、参数 Schema、渠道绑定 |
+| Token 管理 | 创建/充值/禁用 API Token |
+| 请求日志 | 查看请求详情、错误信息、重试 |
+| Playground | 在线调试对话和能力调用 |
+| API 文档 | 动态生成的接口文档，内置试用面板 |
+| 用户管理 | 角色/状态/余额管理 |
+
+## 配置说明
+
+`configs/config.yaml` 主要配置项：
+
+```yaml
+server:
+  port: 23523
+  jwt_secret: "your-secret"
+
+database:
+  host: localhost
+  port: 3306
+  user: prism
+  password: ""
+  dbname: prism
+
+redis:
+  addr: localhost:6379
+  password: ""
+
+worker:
+  concurrency: 10
+  poll_interval: 5s
+
+rate_limit:
+  enabled: false
+  requests_per_min: 60
 ```
-
-默认后端地址：
-
-```text
-http://localhost:23523
-```
-
-### 6. 构建发布版本
-
-Windows 下可直接执行：
-
-```bash
-build.bat
-```
-
-构建完成后会在 `dist/` 目录输出 Linux AMD64 可执行文件与示例配置。
-
-## 常用接口
-
-### OpenAI 兼容接口
-
-```text
-GET    /v1/models
-POST   /v1/chat/completions
-```
-
-### 能力接口
-
-```text
-GET    /v1/capabilities
-POST   /v1/capabilities/:capability
-GET    /v1/tasks/:task_no
-POST   /v1/tasks/:task_no/cancel
-POST   /v1/images/generations
-POST   /v1/videos/generations
-```
-
-### 控制台接口
-
-```text
-POST   /api/auth/login
-GET    /api/dashboard/stats
-GET    /api/admin/channels
-GET    /api/admin/chat-models
-GET    /api/admin/chat-model-channels
-GET    /api/admin/request-logs
-POST   /api/playground/:token_id/chat/completions
-```
-
-## 管理后台功能
-
-当前后台主要包含以下页面：
-
-- 仪表盘
-- 渠道管理
-- 渠道账号管理
-- 能力管理
-- Chat 模型管理
-- 模型渠道映射管理
-- Token 管理
-- 请求日志
-- Playground 调试台
-- 对话记录 / 定价 / 查询相关页面
-
-## 文档
-
-- 详细使用文档：[`docs/USAGE_GUIDE.md`](docs/USAGE_GUIDE.md)
-- 前端说明：[`console/README.md`](console/README.md)
-
-## 开发说明
-
-- 配置通过 `viper` 从 `configs/config.yaml` 加载，并支持热重载
-- 服务启动时会自动执行数据库连接与表迁移
-- 前端构建产物可嵌入 Go 服务统一部署
-- Chat 模型对上游的实际模型名由 `chat_model_channels.vendor_model` 决定
 
 ## License
 
