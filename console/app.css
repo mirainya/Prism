@@ -177,3 +177,12 @@ body {
     radial-gradient(at 80% 10%, color-mix(in srgb, var(--accent) 6%, transparent) 0px, transparent 50%),
     radial-gradient(at 50% 80%, color-mix(in srgb, var(--primary-light) 5%, transparent) 0px, transparent 50%);
 }
+
+/* ===== 抽屉动画 ===== */
+@keyframes slide-in-right {
+  from { transform: translateX(100%); }
+  to { transform: translateX(0); }
+}
+.animate-slide-in-right {
+  animation: slide-in-right 0.2s ease-out;
+}

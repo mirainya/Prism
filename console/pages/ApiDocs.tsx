@@ -3,6 +3,7 @@ import { Book, Search, Copy, Check, ChevronDown, ChevronRight, Play, Loader2, Za
 import { fetchDocsModels, DocsModel } from '../services/docsApi';
 import { fetchTokens } from '../services/api';
 import { ApiToken } from '../types';
+import { TryItDrawer } from './TryItDrawer';
 
 // ===== 代码块组件 =====
 const CodeBlock: React.FC<{ code: string; title?: string }> = ({ code, title }) => {
@@ -60,63 +61,6 @@ const MethodBadge: React.FC<{ method: string }> = ({ method }) => {
   return <span className={`px-2 py-0.5 rounded text-xs font-bold ${colors[method] || 'bg-gray-100 text-gray-700'}`}>{method}</span>;
 };
 
-// ===== 试用面板 =====
-const TryItPanel: React.FC<{ method: string; path: string; bodyTemplate?: string; tokens: ApiToken[] }> = ({ method, path, bodyTemplate, tokens }) => {
-  const [token, setToken] = useState('');
-  const [body, setBody] = useState(bodyTemplate || '');
-  const [response, setResponse] = useState('');
-  const [loading, setLoading] = useState(false);
-  const [pathValue, setPathValue] = useState(path);
-
-  useEffect(() => { if (tokens.length > 0 && !token) setToken(tokens[0].key); }, [tokens]);
-
-  const send = async () => {
-    setLoading(true);
-    setResponse('');
-    try {
-      const url = `${window.location.origin}${pathValue}`;
-      const headers: Record<string, string> = { 'Authorization': token, 'Content-Type': 'application/json' };
-      const opts: RequestInit = { method, headers };
-      if (method !== 'GET' && body) opts.body = body;
-      const res = await fetch(url, opts);
-      const text = await res.text();
-      try { setResponse(JSON.stringify(JSON.parse(text), null, 2)); } catch { setResponse(text); }
-    } catch (e: any) {
-      setResponse(`Error: ${e.message}`);
-    }
-    setLoading(false);
-  };
-
-  const curlCmd = `curl -X ${method} '${window.location.origin}${pathValue}' \\\n  -H 'Authorization: YOUR_TOKEN' \\\n  -H 'Content-Type: application/json'${method !== 'GET' && body ? ` \\\n  -d '${body.replace(/\n/g, '')}'` : ''}`;
-
-  return (
-    <div className="border border-[var(--border-soft)] rounded-xl p-4 bg-[var(--surface)] space-y-3">
-      <div className="flex items-center gap-3">
-        <select value={token} onChange={e => setToken(e.target.value)} className="flex-1 px-3 py-1.5 border border-[var(--border-soft)] rounded-lg text-xs bg-[var(--surface-card)] text-[var(--text-primary)]">
-          {tokens.length === 0
-            ? <option value="">无可用令牌</option>
-            : tokens.map(t => <option key={t.id} value={t.key}>{t.name}</option>)
-          }
-        </select>
-        <button onClick={send} disabled={loading || !token} className="flex items-center gap-1 px-4 py-1.5 bg-[var(--primary)] text-white rounded-lg text-xs font-medium hover:opacity-90 disabled:opacity-50">
-          {loading ? <Loader2 size={12} className="animate-spin" /> : <Play size={12} />} 发送
-        </button>
-      </div>
-      <input value={pathValue} onChange={e => setPathValue(e.target.value)} className="w-full px-3 py-1.5 border border-[var(--border-soft)] rounded-lg text-xs font-mono bg-[var(--surface-card)] text-[var(--text-primary)]" />
-      {method !== 'GET' && (
-        <textarea value={body} onChange={e => setBody(e.target.value)} rows={6} className="w-full px-3 py-2 border border-[var(--border-soft)] rounded-lg text-xs font-mono resize-y bg-[var(--surface-card)] text-[var(--text-primary)]" placeholder="Request Body (JSON)" />
-      )}
-      {response && (
-        <div>
-          <div className="text-xs text-[var(--text-secondary)] mb-1">响应</div>
-          <pre className="bg-gray-900 text-gray-100 rounded-lg p-3 text-xs overflow-x-auto max-h-64 overflow-y-auto"><code>{response}</code></pre>
-        </div>
-      )}
-      <CodeBlock code={curlCmd} title="curl" />
-    </div>
-  );
-};
-
 // ===== 接口卡片 =====
 interface ApiEndpoint {
   id: string;
@@ -148,14 +92,12 @@ const CopyablePath: React.FC<{ path: string }> = ({ path }) => {
   );
 };
 
-const EndpointCard: React.FC<{ api: ApiEndpoint; tokens: ApiToken[] }> = ({ api, tokens }) => {
+const EndpointCard: React.FC<{ api: ApiEndpoint; onTryIt: (api: ApiEndpoint) => void }> = ({ api, onTryIt }) => {
   const [expanded, setExpanded] = useState(false);
-  const [tryIt, setTryIt] = useState(false);
 
   const handleTryIt = (e: React.MouseEvent) => {
     e.stopPropagation();
-    if (!expanded) setExpanded(true);
-    setTryIt(v => !v);
+    onTryIt(api);
   };
 
   return (
@@ -167,24 +109,19 @@ const EndpointCard: React.FC<{ api: ApiEndpoint; tokens: ApiToken[] }> = ({ api,
         <span className="text-sm text-[var(--text-secondary)] ml-auto mr-2">{api.name}</span>
         <button
           onClick={handleTryIt}
-          className={`flex items-center gap-1 px-2.5 py-1 rounded-lg text-xs font-medium border transition-colors shrink-0 ${tryIt ? 'bg-[var(--primary)] text-white border-[var(--primary)]' : 'border-[var(--primary)] text-[var(--primary)] hover:bg-[var(--primary-lighter)]'}`}
+          className="flex items-center gap-1 px-2.5 py-1 rounded-lg text-xs font-medium border transition-colors shrink-0 border-[var(--primary)] text-[var(--primary)] hover:bg-[var(--primary-lighter)]"
         >
           <Play size={10} /> 试用
         </button>
       </div>
-      {(expanded || tryIt) && (
+      {expanded && (
         <div className="border-t border-[var(--border-soft)] p-4 space-y-4">
-          {expanded && (
-            <>
-              <p className="text-sm text-[var(--text-secondary)]">{api.description}</p>
-              {api.params.length > 0 && <ParamTable params={api.params} />}
-              <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
-                {api.requestExample && <CodeBlock code={api.requestExample} title="请求示例" />}
-                {api.responseExample && <CodeBlock code={api.responseExample} title="响应示例" />}
-              </div>
-            </>
-          )}
-          {tryIt && <TryItPanel method={api.method} path={api.path} bodyTemplate={api.requestExample || ''} tokens={tokens} />}
+          <p className="text-sm text-[var(--text-secondary)]">{api.description}</p>
+          {api.params.length > 0 && <ParamTable params={api.params} />}
+          <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+            {api.requestExample && <CodeBlock code={api.requestExample} title="请求示例" />}
+            {api.responseExample && <CodeBlock code={api.responseExample} title="响应示例" />}
+          </div>
         </div>
       )}
     </div>
@@ -225,6 +162,7 @@ const ApiDocs: React.FC = () => {
   const [loading, setLoading] = useState(true);
   const [activeSection, setActiveSection] = useState('quickstart');
   const [docsCopied, setDocsCopied] = useState(false);
+  const [tryItApi, setTryItApi] = useState<ApiEndpoint | null>(null);
   const contentRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -443,7 +381,7 @@ const ApiDocs: React.FC = () => {
                 choices: [{ index: 0, message: { role: "assistant", content: "Hello! How can I help you?" }, finish_reason: "stop" }],
                 usage: { prompt_tokens: 20, completion_tokens: 10, total_tokens: 30 }
               }, null, 2),
-            }} tokens={tokens} />
+            }} onTryIt={setTryItApi} />
 
             <EndpointCard api={{
               id: 'ep-models',
@@ -456,7 +394,7 @@ const ApiDocs: React.FC = () => {
                 object: "list",
                 data: chatModels.slice(0, 3).map(m => ({ id: m.code, object: "model", created: 1704067200, owned_by: m.channels[0]?.channel_type || "unknown" }))
               }, null, 2),
-            }} tokens={tokens} />
+            }} onTryIt={setTryItApi} />
           </div>
 
           {chatModels.length > 0 && (
@@ -480,7 +418,7 @@ const ApiDocs: React.FC = () => {
           <p className="text-sm text-[var(--text-secondary)] mb-4">调用各类 AI 能力，支持异步任务模式</p>
           {capabilityEndpoints.length === 0
             ? <div className="text-sm text-[var(--text-secondary)] py-8 text-center">暂无能力接口</div>
-            : <div className="space-y-3">{capabilityEndpoints.map(ep => <EndpointCard key={ep.id} api={ep} tokens={tokens} />)}</div>
+            : <div className="space-y-3">{capabilityEndpoints.map(ep => <EndpointCard key={ep.id} api={ep} onTryIt={setTryItApi} />)}</div>
           }
         </section>
 
@@ -496,7 +434,7 @@ const ApiDocs: React.FC = () => {
               description: '根据任务编号查询任务状态和结果',
               params: [{ name: 'task_no', type: 'string', required: true, description: '任务编号（路径参数）' }],
               responseExample: JSON.stringify({ code: 0, data: { task_no: "task_xxx", status: "completed", result: { url: "https://..." }, created_at: "2024-01-01T00:00:00Z" } }, null, 2),
-            }} tokens={tokens} />
+            }} onTryIt={setTryItApi} />
             <EndpointCard api={{
               id: 'ep-cancel-task',
               method: 'POST',
@@ -505,7 +443,7 @@ const ApiDocs: React.FC = () => {
               description: '取消一个待处理或进行中的任务',
               params: [{ name: 'task_no', type: 'string', required: true, description: '任务编号（路径参数）' }],
               responseExample: JSON.stringify({ code: 0, message: "success" }, null, 2),
-            }} tokens={tokens} />
+            }} onTryIt={setTryItApi} />
           </div>
         </section>
 
@@ -559,6 +497,16 @@ const ApiDocs: React.FC = () => {
           </div>
         </section>
       </main>
+
+      <TryItDrawer
+        open={!!tryItApi}
+        onClose={() => setTryItApi(null)}
+        method={tryItApi?.method || 'GET'}
+        path={tryItApi?.path || ''}
+        name={tryItApi?.name || ''}
+        params={tryItApi?.params || []}
+        tokens={tokens}
+      />
     </div>
   );
 };
