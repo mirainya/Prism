@@ -147,6 +147,7 @@ func ListChatModelsPublic(c *gin.Context) {
 			"object":   "model",
 			"created":  m.CreatedAt.Unix(),
 			"owned_by": m.Provider,
+			"type":     m.Type,
 		}
 		if m.MaxTokens > 0 {
 			item["max_tokens"] = m.MaxTokens

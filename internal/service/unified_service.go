@@ -183,7 +183,7 @@ func (s *UnifiedService) FinalizeStream(session *StreamSession, result *StreamAg
 // ListModels 列出可用模型
 func (s *UnifiedService) ListModels(ctx context.Context) ([]model.Model, error) {
 	var models []model.Model
-	if err := model.DB().Where("status = 1 AND type = 'chat'").Find(&models).Error; err != nil {
+	if err := model.DB().Where("status = 1").Find(&models).Error; err != nil {
 		return nil, err
 	}
 	return models, nil

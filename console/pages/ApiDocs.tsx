@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
-import { Book, Search, Copy, Check, ChevronDown, ChevronRight, Play, Loader2, Zap, MessageSquare, ListChecks, Bell, AlertTriangle } from 'lucide-react';
+import { Book, Search, Copy, Check, ChevronDown, ChevronRight, Play, Loader2, Zap, MessageSquare, ListChecks, Bell, AlertTriangle, RefreshCw } from 'lucide-react';
 import { fetchDocsModels, DocsModel } from '../services/docsApi';
 import { fetchTokens } from '../services/api';
 import { ApiToken } from '../types';
@@ -209,8 +209,10 @@ const ApiDocs: React.FC = () => {
     md += `## Chat 对话接口\n\n### POST /v1/chat/completions\n对话补全 - 兼容 OpenAI 格式，支持多模态（图片/文件）\n\n| 参数 | 类型 | 必填 | 说明 |\n|------|------|------|------|\n`;
     CHAT_COMPLETIONS_PARAMS.forEach(p => { md += `| ${p.name} | ${p.type} | ${p.required ? '是' : '否'} | ${p.description} |\n`; });
     md += `\n**多模态请求示例 (图片):**\n\`\`\`json\n${JSON.stringify({ model: chatModelsLocal[0]?.code || "gpt-4o", messages: [{ role: "user", content: [{ type: "text", text: "这张图片里有什么？" }, { type: "image_url", image_url: { url: "https://example.com/image.jpg" } }] }], max_tokens: 1000 }, null, 2)}\n\`\`\`\n\n`;
-    md += `### GET /v1/models\n获取所有可用 Chat 模型\n\n当前可用模型: ${chatModelsLocal.map(m => m.code).join(', ')}\n\n`;
-    md += `## 能力接口\n\n`;
+    md += `### GET /v1/models\n获取所有可用模型\n\n当前可用模型: ${models.map(m => m.code).join(', ')}\n\n`;
+    md += `### GET /v1/models/:code\n获取单个模型详情\n\n| 参数 | 类型 | 必填 | 说明 |\n|------|------|------|------|\n| code | string | 是 | 模型标识（路径参数） |\n\n`;
+    md += `### GET /v1/channels\n获取所有可用渠道列表\n\n`;
+    md += `## 能力接口\n\n### GET /v1/capabilities\n获取所有可用能力接口列表\n\n| 参数 | 类型 | 必填 | 说明 |\n|------|------|------|------|\n| channel | string | 否 | 按渠道类型筛选 |\n| type | string | 否 | 按能力类型筛选 |\n\n当前可用能力: ${capModels.map(m => m.code).join(', ')}\n\n`;
     capModels.forEach(m => {
       md += `### POST /v1/capabilities/${m.code}\n${m.name}${m.description ? ' - ' + m.description : ''}\n\n| 参数 | 类型 | 必填 | 说明 |\n|------|------|------|------|\n| channel | string | 否 | 指定渠道（可选） |\n| callback_url | string | 否 | 回调地址 |\n`;
       if (m.param_schema && typeof m.param_schema === 'object') {
@@ -221,6 +223,7 @@ const ApiDocs: React.FC = () => {
       }
       md += '\n';
     });
+    md += `## 兼容接口\n\n### POST /v1/images/generations\n图片生成（兼容 OpenAI 格式）\n\n| 参数 | 类型 | 必填 | 说明 |\n|------|------|------|------|\n| model | string | 是 | 模型标识 |\n| prompt | string | 是 | 提示词 |\n| params | object | 否 | 额外参数 |\n| callback_url | string | 否 | 回调地址 |\n\n### POST /v1/videos/generations\n视频生成（兼容 OpenAI 格式）\n\n| 参数 | 类型 | 必填 | 说明 |\n|------|------|------|------|\n| model | string | 是 | 模型标识 |\n| prompt | string | 是 | 提示词 |\n| params | object | 否 | 额外参数 |\n| callback_url | string | 否 | 回调地址 |\n\n`;
     md += `## 任务管理\n\n### GET /v1/tasks/:task_no\n查询任务状态和结果\n\n### POST /v1/tasks/:task_no/cancel\n取消正在处理中的任务\n\n`;
     md += `## 回调通知\n\n提交任务时传入 callback_url，任务完成后系统 POST 结果到该地址。最多重试 3 次。\n\n`;
     md += `## 错误码\n\n| 错误码 | 说明 |\n|--------|------|\n| 0 | 成功 |\n| 400 | 参数错误 |\n| 401 | 未认证/Token无效 |\n| 402 | 余额不足 |\n| 403 | 无权限 |\n| 404 | 资源不存在 |\n| 429 | 请求过于频繁 |\n| 500 | 服务器内部错误 |\n`;
@@ -273,8 +276,14 @@ const ApiDocs: React.FC = () => {
     { id: 'chat', label: 'Chat 对话', icon: <MessageSquare size={14} />, items: [
       { id: 'ep-chat-completions', label: '对话补全' },
       { id: 'ep-models', label: '模型列表' },
+      { id: 'ep-model-detail', label: '模型详情' },
+      { id: 'ep-channels', label: '渠道列表' },
     ]},
     { id: 'capabilities', label: '能力接口', icon: <Zap size={14} />, items: capabilityEndpoints.map(e => ({ id: e.id, label: e.name })) },
+    { id: 'compat', label: '兼容接口', icon: <RefreshCw size={14} />, items: [
+      { id: 'ep-images-generations', label: '图片生成' },
+      { id: 'ep-videos-generations', label: '视频生成' },
+    ]},
     { id: 'tasks', label: '任务管理', icon: <ListChecks size={14} />, items: [
       { id: 'ep-get-task', label: '查询任务' },
       { id: 'ep-cancel-task', label: '取消任务' },
@@ -388,12 +397,33 @@ const ApiDocs: React.FC = () => {
               method: 'GET',
               path: '/v1/models',
               name: '模型列表',
-              description: '获取所有可用的 Chat 模型',
+              description: '获取所有可用模型（含 Chat 和能力接口）',
               params: [],
               responseExample: JSON.stringify({
                 object: "list",
-                data: chatModels.slice(0, 3).map(m => ({ id: m.code, object: "model", created: 1704067200, owned_by: m.channels[0]?.channel_type || "unknown" }))
+                data: chatModels.slice(0, 3).map(m => ({ id: m.code, object: "model", created: 1704067200, owned_by: m.channels[0]?.channel_type || "unknown", type: "chat" }))
               }, null, 2),
+            }} onTryIt={setTryItApi} />
+
+            <EndpointCard api={{
+              id: 'ep-model-detail',
+              method: 'GET',
+              path: '/v1/models/:code',
+              name: '模型详情',
+              description: '获取单个模型的详细信息',
+              params: [{ name: 'code', type: 'string', required: true, description: '模型标识（路径参数）' }],
+              responseExample: JSON.stringify({
+                id: chatModels[0]?.code || "gpt-4o", object: "model", created: 1704067200, owned_by: "openai", max_tokens: 4096
+              }, null, 2),
+            }} onTryIt={setTryItApi} />
+
+            <EndpointCard api={{
+              id: 'ep-channels',
+              method: 'GET',
+              path: '/v1/channels',
+              name: '渠道列表',
+              description: '获取所有可用渠道',
+              params: [],
             }} onTryIt={setTryItApi} />
           </div>
 
@@ -416,10 +446,57 @@ const ApiDocs: React.FC = () => {
         <section id="capabilities">
           <h2 className="text-lg font-bold text-[var(--text-primary)] mb-3 flex items-center gap-2"><Zap size={18} /> 能力接口</h2>
           <p className="text-sm text-[var(--text-secondary)] mb-4">调用各类 AI 能力，支持异步任务模式</p>
+          <div className="space-y-3">
+            <EndpointCard api={{
+              id: 'ep-list-capabilities',
+              method: 'GET',
+              path: '/v1/capabilities',
+              name: '能力列表',
+              description: '获取所有可用的能力接口列表',
+              params: [
+                { name: 'channel', type: 'string', required: false, description: '按渠道类型筛选' },
+                { name: 'type', type: 'string', required: false, description: '按能力类型筛选' },
+              ],
+            }} onTryIt={setTryItApi} />
+          </div>
           {capabilityEndpoints.length === 0
             ? <div className="text-sm text-[var(--text-secondary)] py-8 text-center">暂无能力接口</div>
-            : <div className="space-y-3">{capabilityEndpoints.map(ep => <EndpointCard key={ep.id} api={ep} onTryIt={setTryItApi} />)}</div>
+            : <div className="space-y-3 mt-3">{capabilityEndpoints.map(ep => <EndpointCard key={ep.id} api={ep} onTryIt={setTryItApi} />)}</div>
           }
+        </section>
+
+        {/* 兼容接口 */}
+        <section id="compat">
+          <h2 className="text-lg font-bold text-[var(--text-primary)] mb-3 flex items-center gap-2"><RefreshCw size={18} /> 兼容接口</h2>
+          <p className="text-sm text-[var(--text-secondary)] mb-4">兼容 OpenAI 格式的图片/视频生成接口</p>
+          <div className="space-y-3">
+            <EndpointCard api={{
+              id: 'ep-images-generations',
+              method: 'POST',
+              path: '/v1/images/generations',
+              name: '图片生成',
+              description: '兼容 OpenAI 格式的图片生成',
+              params: [
+                { name: 'model', type: 'string', required: true, description: '模型标识' },
+                { name: 'prompt', type: 'string', required: true, description: '提示词' },
+                { name: 'params', type: 'object', required: false, description: '额外参数' },
+                { name: 'callback_url', type: 'string', required: false, description: '回调地址' },
+              ],
+            }} onTryIt={setTryItApi} />
+            <EndpointCard api={{
+              id: 'ep-videos-generations',
+              method: 'POST',
+              path: '/v1/videos/generations',
+              name: '视频生成',
+              description: '兼容 OpenAI 格式的视频生成',
+              params: [
+                { name: 'model', type: 'string', required: true, description: '模型标识' },
+                { name: 'prompt', type: 'string', required: true, description: '提示词' },
+                { name: 'params', type: 'object', required: false, description: '额外参数' },
+                { name: 'callback_url', type: 'string', required: false, description: '回调地址' },
+              ],
+            }} onTryIt={setTryItApi} />
+          </div>
         </section>
 
         {/* 任务管理 */}
