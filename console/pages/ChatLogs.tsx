@@ -14,6 +14,7 @@ import {
 } from 'lucide-react';
 import {fetchConversations, fetchConversationMessages, ConversationListParams, fetchChatModels} from '../services/api';
 import {Conversation, ChatMessage, ChatModel, UserRole} from '../types';
+import ModelSelector from './playground/ModelSelector';
 
 const isAdmin = () => {
     try {
@@ -125,19 +126,12 @@ const ChatLogs: React.FC = () => {
                         />
                     </div>
                     {isAdmin() && models.length > 0 && (
-                        <select
+                        <ModelSelector
+                            options={models.map(m => ({ id: m.code, label: m.name, provider: m.provider }))}
                             value={filters.model ?? ''}
-                            onChange={e => {
-                                setFilters({...filters, model: e.target.value});
-                                setPage(1);
-                            }}
-                            className="bg-[var(--surface-card)] border border-[var(--border-soft)] rounded-lg px-3 py-2 text-sm text-[var(--text-secondary)] focus:outline-none focus:ring-2 focus:ring-[var(--primary)]"
-                        >
-                            <option value="">所有模型</option>
-                            {models.map(m => (
-                                <option key={m.code} value={m.code}>{m.name}</option>
-                            ))}
-                        </select>
+                            onChange={v => { setFilters({...filters, model: v}); setPage(1); }}
+                            allOption="所有模型"
+                        />
                     )}
                 </div>
 

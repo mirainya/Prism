@@ -17,6 +17,7 @@ import ThinkingBlock from './ThinkingBlock';
 import StatusBadge from './StatusBadge';
 import HistoryPanel from './HistoryPanel';
 import DebugPanel from './DebugPanel';
+import ModelSelector from './ModelSelector';
 import {
   parseJsonField, getFileIcon, parseStopSequences, extractAssistantText,
   formatFileSize, ACCEPTED_FILE_TYPES, MAX_FILE_SIZE,
@@ -461,9 +462,7 @@ const ChatTab: React.FC<{ tokenId: string }> = ({ tokenId }) => {
         <div className="flex-1 flex flex-col bg-[var(--surface-card)] rounded-xl border border-[var(--border-soft)] overflow-hidden min-w-0">
           <div className="px-4 py-2 border-b border-[var(--border-soft)] flex items-center justify-between gap-3 flex-wrap">
             <div className="flex items-center gap-2 min-w-0">
-              <select value={selectedModel} onChange={e => handleModelSelect(e.target.value)} className="px-3 py-1.5 border border-[var(--border-soft)] rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-[var(--primary)] bg-[var(--surface-card)]">
-                {models.map(m => <option key={m.id} value={m.id}>{m.id}</option>)}
-              </select>
+              <ModelSelector options={models.map(m => ({ id: m.id, provider: m.owned_by }))} value={selectedModel} onChange={handleModelSelect} />
             </div>
             <div className="flex items-center gap-2 flex-wrap">
               <button type="button" onClick={() => setShowHistoryDrawer(prev => !prev)} className="inline-flex items-center gap-1.5 px-2 py-1 rounded-lg border border-[var(--border-soft)] text-[11px] text-[var(--text-secondary)] hover:bg-[var(--surface)]"><Plus size={12} /> 历史</button>
