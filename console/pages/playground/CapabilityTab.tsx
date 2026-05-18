@@ -372,23 +372,55 @@ const CapabilityTab: React.FC<{ tokenId: string }> = ({ tokenId }) => {
             </div>
           </div>
 
-          <div ref={capabilityPickerRef} className="px-4 py-1.5 border-b border-[var(--border-soft)] space-y-3">
+          <div className="px-4 py-1.5 border-b border-[var(--border-soft)] space-y-3">
             <div className="grid grid-cols-1 xl:grid-cols-[minmax(0,1.2fr)_220px_minmax(0,1fr)] gap-3 items-start">
               <div>
                 <label className="block text-[11px] font-medium text-[var(--text-secondary)] mb-1">能力</label>
-                <button type="button" onClick={() => setShowCapabilityPicker(prev => !prev)}
-                  className="w-full h-10 rounded-xl border border-[var(--border-soft)] bg-[var(--surface-card)] px-3 text-left hover:border-indigo-200 hover:bg-[var(--primary-lighter)]/30 transition-colors">
-                  <div className="flex h-full items-center justify-between gap-3">
-                    <div className="min-w-0 flex-1 overflow-hidden">
-                      <div className="flex items-center gap-2 min-w-0 whitespace-nowrap overflow-hidden">
-                        <span className="min-w-0 overflow-hidden whitespace-nowrap text-clip text-sm font-medium text-[var(--text-primary)]">{currentCap?.name || '请选择能力'}</span>
-                        {currentCap?.code ? <code className="shrink-0 text-[11px] px-2 py-0.5 rounded bg-[var(--primary-lighter)] text-[var(--text-secondary)]">{currentCap.code}</code> : null}
-                        {currentCap?.type ? <span className={`shrink-0 text-[11px] px-2 py-0.5 rounded ${getCapabilityTypeBadgeClass(currentCap.type)}`}>{currentCap.type}</span> : null}
+                <div ref={capabilityPickerRef} className="relative">
+                  <button type="button" onClick={() => setShowCapabilityPicker(prev => !prev)}
+                    className="w-full h-10 rounded-lg border border-[var(--border-soft)] bg-[var(--surface-card)] px-3 text-left hover:bg-[var(--surface)] transition-colors focus:outline-none focus:ring-2 focus:ring-[var(--primary)]">
+                    <div className="flex h-full items-center justify-between gap-2">
+                      <div className="min-w-0 flex-1 flex items-center gap-2">
+                        <span className="text-sm truncate">{currentCap?.name || '请选择能力'}</span>
+                        {currentCap?.type && <span className={`shrink-0 text-[10px] px-1.5 py-0.5 rounded ${getCapabilityTypeBadgeClass(currentCap.type)}`}>{currentCap.type}</span>}
+                      </div>
+                      <ChevronDown size={14} className="text-[var(--text-tertiary)] flex-shrink-0" />
+                    </div>
+                  </button>
+                  {showCapabilityPicker && (
+                    <div className="absolute top-full left-0 mt-1 w-full min-w-[320px] bg-[var(--surface-card)] border border-[var(--border-soft)] rounded-xl shadow-lg z-50 flex flex-col" style={{ maxHeight: 'min(380px, calc(100vh - 200px))' }}>
+                      <div className="px-2 pt-2 pb-1 space-y-2 sticky top-0 bg-[var(--surface-card)] border-b border-[var(--border-soft)]">
+                        <div className="relative">
+                          <Search size={13} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-[var(--text-tertiary)]" />
+                          <input type="text" value={capabilitySearch} onChange={e => setCapabilitySearch(e.target.value)} placeholder="搜索能力名 / code / 描述" className="w-full pl-8 pr-3 py-1.5 text-sm border border-[var(--border-soft)] rounded-lg bg-[var(--surface)] focus:outline-none focus:ring-1 focus:ring-[var(--primary)]" />
+                        </div>
+                        {capabilityTypes.length > 1 && (
+                          <div className="flex items-center gap-1 flex-wrap">
+                            <button type="button" onClick={() => setCapabilityTypeFilter('')} className={`px-2 py-1 rounded-md text-[11px] font-medium transition-all ${!capabilityTypeFilter ? 'bg-[var(--primary-lighter)] text-[var(--primary)]' : 'text-[var(--text-secondary)] hover:text-[var(--text-primary)]'}`}>全部</button>
+                            {capabilityTypes.map(type => (
+                              <button key={type} type="button" onClick={() => setCapabilityTypeFilter(type)} className={`px-2 py-1 rounded-md text-[11px] font-medium transition-all ${capabilityTypeFilter === type ? 'bg-[var(--primary-lighter)] text-[var(--primary)]' : 'text-[var(--text-secondary)] hover:text-[var(--text-primary)]'}`}>{type}</button>
+                            ))}
+                          </div>
+                        )}
+                      </div>
+                      <div className="overflow-y-auto flex-1 py-1">
+                        {filteredCapabilities.length === 0 ? (
+                          <div className="py-4 text-center text-sm text-[var(--text-tertiary)]">无匹配结果</div>
+                        ) : filteredCapabilities.map(cap => (
+                          <button key={cap.code} type="button" onClick={() => handleSelectCapability(cap.code)}
+                            className={`w-full text-left px-3 py-2 text-sm hover:bg-[var(--surface)] transition-colors ${selectedCap === cap.code ? 'bg-[var(--primary-lighter)] text-[var(--primary)]' : 'text-[var(--text-primary)]'}`}>
+                            <div className="flex items-center gap-2 min-w-0">
+                              <span className="font-medium truncate">{cap.name}</span>
+                              <code className="shrink-0 text-[10px] px-1.5 py-0.5 rounded bg-[var(--surface)] text-[var(--text-secondary)]">{cap.code}</code>
+                              <span className={`shrink-0 text-[10px] px-1.5 py-0.5 rounded ${getCapabilityTypeBadgeClass(cap.type)}`}>{cap.type}</span>
+                            </div>
+                            {cap.description && <div className="mt-0.5 text-[11px] text-[var(--text-tertiary)] truncate">{cap.description}</div>}
+                          </button>
+                        ))}
                       </div>
                     </div>
-                    <div className="text-[var(--text-secondary)] flex-shrink-0">{showCapabilityPicker ? <ChevronDown size={16} /> : <ChevronRight size={16} />}</div>
-                  </div>
-                </button>
+                  )}
+                </div>
               </div>
               <div>
                 <label className="block text-[11px] font-medium text-[var(--text-secondary)] mb-1">渠道</label>
@@ -405,41 +437,6 @@ const CapabilityTab: React.FC<{ tokenId: string }> = ({ tokenId }) => {
                 </div>
               </div>
             </div>
-            {showCapabilityPicker && (
-              <div className="rounded-2xl border border-[var(--border-soft)] bg-[var(--surface)] p-3 space-y-3">
-                <div className="flex flex-col lg:flex-row gap-3">
-                  <div className="relative flex-1">
-                    <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-[var(--text-secondary)]" />
-                    <input type="text" value={capabilitySearch} onChange={e => setCapabilitySearch(e.target.value)} placeholder="搜索能力名 / code / 描述" className="w-full h-10 pl-9 pr-3 border border-[var(--border-soft)] rounded-lg text-sm bg-[var(--surface-card)] focus:outline-none focus:ring-2 focus:ring-[var(--primary)]" />
-                  </div>
-                  {capabilityTypes.length > 1 && (
-                    <div className="flex items-center gap-1 bg-[var(--primary-lighter)] rounded-xl p-1">
-                      <button type="button" onClick={() => setCapabilityTypeFilter('')} className={`px-3 py-1.5 rounded-lg text-[11px] font-medium transition-all ${!capabilityTypeFilter ? 'bg-[var(--surface-card)] text-[var(--primary)] shadow-sm' : 'text-[var(--text-secondary)] hover:text-[var(--text-primary)]'}`}>全部</button>
-                      {capabilityTypes.map(type => (
-                        <button key={type} type="button" onClick={() => setCapabilityTypeFilter(type)} className={`px-3 py-1.5 rounded-lg text-[11px] font-medium transition-all ${capabilityTypeFilter === type ? 'bg-[var(--surface-card)] text-[var(--primary)] shadow-sm' : 'text-[var(--text-secondary)] hover:text-[var(--text-primary)]'}`}>{type}</button>
-                      ))}
-                    </div>
-                  )}
-                </div>
-                {filteredCapabilities.length === 0 ? (
-                  <div className="py-4 text-center text-sm text-[var(--text-secondary)]">没有匹配的能力</div>
-                ) : (
-                  <div className="space-y-1 max-h-72 overflow-y-auto">
-                    {filteredCapabilities.map(cap => (
-                      <button key={cap.code} type="button" onClick={() => handleSelectCapability(cap.code)}
-                        className={`w-full text-left px-3 py-2 rounded-xl text-sm transition-colors ${selectedCap === cap.code ? 'bg-[var(--primary-lighter)] text-[var(--primary)]' : 'hover:bg-[var(--surface-card)]'}`}>
-                        <div className="flex items-center gap-2 min-w-0">
-                          <span className="font-medium truncate">{cap.name}</span>
-                          <code className="shrink-0 text-[11px] px-1.5 py-0.5 rounded bg-[var(--surface)] text-[var(--text-secondary)]">{cap.code}</code>
-                          <span className={`shrink-0 text-[11px] px-1.5 py-0.5 rounded ${getCapabilityTypeBadgeClass(cap.type)}`}>{cap.type}</span>
-                        </div>
-                        {cap.description && <div className="mt-0.5 text-[11px] text-[var(--text-secondary)] truncate">{cap.description}</div>}
-                      </button>
-                    ))}
-                  </div>
-                )}
-              </div>
-            )}
           </div>
 
           <div className="px-4 py-1 border-b border-[var(--border-soft)] text-[11px] text-[var(--text-secondary)] flex items-center gap-3 flex-wrap">
