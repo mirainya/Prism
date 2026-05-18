@@ -15,19 +15,29 @@ func (s *UnifiedService) loadConversation(conversationID string, tokenID uint) (
 	return &conv, err
 }
 
-func (s *UnifiedService) loadMessages(conversationID uint) ([]chat.ChatMessage, error) {
+func (s *UnifiedService) loadMessages(conversationID uint, targetModel string) ([]chat.ChatMessage, error) {
 	var messages []model.Message
 	model.DB().Where("conversation_id = ?", conversationID).
 		Order("created_at ASC").
 		Find(&messages)
 
+	// 判断目标模型是否支持 reasoning_content
+	keepReasoning := false
+	var mdl model.Model
+	if model.DB().Select("provider").Where("code = ?", targetModel).First(&mdl).Error == nil {
+		keepReasoning = mdl.Provider == "anthropic"
+	}
+
 	result := make([]chat.ChatMessage, 0, len(messages))
 	for _, msg := range messages {
-		result = append(result, chat.ChatMessage{
-			Role:             msg.Role,
-			Content:          msg.Content,
-			ReasoningContent: msg.ReasoningContent,
-		})
+		cm := chat.ChatMessage{
+			Role:    msg.Role,
+			Content: msg.Content,
+		}
+		if keepReasoning {
+			cm.ReasoningContent = msg.ReasoningContent
+		}
+		result = append(result, cm)
 	}
 	return result, nil
 }
