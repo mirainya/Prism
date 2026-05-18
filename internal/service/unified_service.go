@@ -96,23 +96,46 @@ func (s *UnifiedService) Route(tokenID uint, modelCode string, excludeChannelIDs
 
 // Complete 非流式对话补全（带 fallback）
 func (s *UnifiedService) Complete(ctx context.Context, req *CompletionRequest) (*CompletionResponse, error) {
+	// 加载对话历史并标准化
+	var conv *model.Conversation
+	if req.ConversationID != "" {
+		var err error
+		conv, err = s.loadConversation(req.ConversationID, req.TokenID)
+		if err == nil {
+			history, _ := s.loadMessages(conv.ID, req.Model)
+			if conv.SystemPrompt != "" {
+				history = append([]chat.ChatMessage{{Role: model.RoleSystem, Content: conv.SystemPrompt}}, history...)
+			}
+			req.Messages = append(history, req.Messages...)
+		}
+	}
+
 	var excludeChannelIDs []uint
 	maxRetries := 3
+	var lastErr error
 
 	for attempt := 0; attempt < maxRetries; attempt++ {
 		route, err := s.Route(req.TokenID, req.Model, excludeChannelIDs)
 		if err != nil {
+			if lastErr != nil {
+				return nil, lastErr
+			}
 			return nil, err
 		}
 
 		resp, err := s.doComplete(ctx, req, route)
 		if err != nil {
 			route.Cleanup()
-			// 4xx 客户端错误不应 fallback，直接返回
+			lastErr = err
 			if strings.Contains(err.Error(), "http error: 4") {
 				return nil, err
 			}
-			excludeChannelIDs = append(excludeChannelIDs, route.Endpoint.ChannelID)
+			// 5xx: 不排除 channel，短暂延迟后重试
+			if !strings.Contains(err.Error(), "status 5") && !strings.Contains(err.Error(), "http error: 5") {
+				excludeChannelIDs = append(excludeChannelIDs, route.Endpoint.ChannelID)
+			} else {
+				time.Sleep(time.Duration(attempt+1) * 500 * time.Millisecond)
+			}
 			logger.Warn("complete attempt failed, trying fallback",
 				zap.Int("attempt", attempt+1), zap.Error(err))
 			continue
@@ -123,24 +146,49 @@ func (s *UnifiedService) Complete(ctx context.Context, req *CompletionRequest) (
 		return resp, nil
 	}
 
-	return nil, fmt.Errorf("all attempts failed for model: %s", req.Model)
+	return nil, fmt.Errorf("upstream service unavailable for model: %s", req.Model)
 }
 
 // StreamComplete 流式对话补全
 func (s *UnifiedService) StreamComplete(ctx context.Context, req *CompletionRequest) (*StreamSession, error) {
+	// 加载对话历史并标准化
+	if req.ConversationID != "" {
+		conv, err := s.loadConversation(req.ConversationID, req.TokenID)
+		if err == nil {
+			history, _ := s.loadMessages(conv.ID, req.Model)
+			if conv.SystemPrompt != "" {
+				history = append([]chat.ChatMessage{{Role: model.RoleSystem, Content: conv.SystemPrompt}}, history...)
+			}
+			req.Messages = append(history, req.Messages...)
+		}
+	}
+
 	var excludeChannelIDs []uint
 	maxRetries := 3
+	var lastErr error
 
 	for attempt := 0; attempt < maxRetries; attempt++ {
 		route, err := s.Route(req.TokenID, req.Model, excludeChannelIDs)
 		if err != nil {
+			if lastErr != nil {
+				return nil, lastErr
+			}
 			return nil, err
 		}
 
 		resp, reqLog, err := s.doStreamComplete(ctx, req, route)
 		if err != nil {
 			route.Cleanup()
-			excludeChannelIDs = append(excludeChannelIDs, route.Endpoint.ChannelID)
+			lastErr = err
+			if strings.Contains(err.Error(), "http error: 4") {
+				return nil, err
+			}
+			// 5xx: 不排除 channel，短暂延迟后重试
+			if !strings.Contains(err.Error(), "status 5") && !strings.Contains(err.Error(), "http error: 5") {
+				excludeChannelIDs = append(excludeChannelIDs, route.Endpoint.ChannelID)
+			} else {
+				time.Sleep(time.Duration(attempt+1) * 500 * time.Millisecond)
+			}
 			logger.Warn("stream attempt failed, trying fallback",
 				zap.Int("attempt", attempt+1), zap.Error(err))
 			continue
@@ -157,7 +205,7 @@ func (s *UnifiedService) StreamComplete(ctx context.Context, req *CompletionRequ
 		}, nil
 	}
 
-	return nil, fmt.Errorf("all attempts failed for model: %s", req.Model)
+	return nil, fmt.Errorf("upstream service unavailable for model: %s", req.Model)
 }
 
 // FinalizeStream 流式结束后计费
@@ -417,7 +465,7 @@ func (s *UnifiedService) selectEndpoint(tokenID uint, modelCode string, excludeC
 		Select("endpoints.*, tcp.priority AS token_priority").
 		Joins("JOIN channels c ON c.id = endpoints.channel_id AND c.status = 1 AND c.deleted_at IS NULL").
 		Joins("LEFT JOIN token_channel_priorities tcp ON tcp.channel_id = endpoints.channel_id AND tcp.token_id = ? AND tcp.capability_code = ?", tokenID, priorityKey).
-		Where("endpoints.model_code = ? AND endpoints.status = 1", modelCode)
+		Where("endpoints.model_code = ? AND endpoints.status = 1 AND endpoints.deleted_at IS NULL", modelCode)
 
 	if len(excludeChannelIDs) > 0 {
 		query = query.Where("endpoints.channel_id NOT IN ?", excludeChannelIDs)
@@ -429,10 +477,14 @@ func (s *UnifiedService) selectEndpoint(tokenID uint, modelCode string, excludeC
 		return nil, result.Error
 	}
 	if len(candidates) == 0 {
+		// 做一次简单验证查询
+		var count int64
+		model.DB().Table("endpoints").Where("model_code = ? AND status = 1", modelCode).Count(&count)
 		logger.Warn("selectEndpoint: no candidates found",
 			zap.Uint("tokenID", tokenID),
 			zap.String("modelCode", modelCode),
 			zap.String("priorityKey", priorityKey),
+			zap.Int64("directCount", count),
 			zap.Any("excludeChannelIDs", excludeChannelIDs))
 		return nil, fmt.Errorf("no available endpoint for model: %s", modelCode)
 	}
