@@ -35,6 +35,9 @@ Thumbs.db
 configs/config.yaml
 configs/config.local.yaml
 
+# Database migrations (GORM AutoMigrate is the source of truth)
+database/
+
 # Logs
 *.log
 logs/
