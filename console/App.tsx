@@ -20,7 +20,7 @@ import Playground from './pages/Playground';
 import { User, UserRole } from './types';
 import { login, register, logout, getCurrentUser } from './services/api';
 import {LogIn, UserPlus, ArrowLeft} from 'lucide-react';
-import logo from '@/assets/logo.png';
+import logo from '@/assets/logo.svg';
 
 const App: React.FC = () => {
   const [user, setUser] = useState<User | null>(null);

@@ -10,7 +10,7 @@ import {
     CheckCircle2,
     Coins
 } from 'lucide-react';
-import logo from '@/assets/logo.png';
+import logo from '@/assets/logo.svg';
 
 interface HomeProps {
     onLogin: () => void;

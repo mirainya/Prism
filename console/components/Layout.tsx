@@ -4,7 +4,7 @@ import { Menu, X, LogOut, ChevronRight } from 'lucide-react';
 import { ROUTES } from '../constants';
 import { User, UserRole } from '../types';
 import { ThemeSwitch } from '../theme/ThemeSwitch';
-import logo from '@/assets/logo.png';
+import logo from '@/assets/logo.svg';
 
 interface LayoutProps {
   children: React.ReactNode;
