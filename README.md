@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="console/assets/logo.png" width="120" alt="Prism Logo" />
+  <img src="console/assets/logo.svg" width="120" alt="Prism Logo" />
 </p>
 
 <h1 align="center">Prism</h1>
