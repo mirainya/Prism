@@ -193,11 +193,13 @@ const ChatTab: React.FC<{ tokenId: string }> = ({ tokenId }) => {
 
     const payload: Record<string, any> = {
       model: selectedModel, messages: requestMessages, temperature, max_tokens: maxTokens,
-      top_p: topP, presence_penalty: presencePenalty, frequency_penalty: frequencyPenalty,
       stop: parseStopSequences(stop), stream, seed: seed.trim() ? Number(seed) : undefined,
       user: userValue.trim() || undefined, conversation_id: effectiveConversationId || undefined,
       response_format: responseFormat, tools, tool_choice: toolChoice,
     };
+    if (topP !== 1) payload.top_p = topP;
+    if (presencePenalty !== 0) payload.presence_penalty = presencePenalty;
+    if (frequencyPenalty !== 0) payload.frequency_penalty = frequencyPenalty;
     setLastPayload(payload);
     setChat(prev => ({
       ...prev,

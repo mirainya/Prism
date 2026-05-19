@@ -62,17 +62,22 @@ type ResponseFormat struct {
 
 // ---------- 请求/响应结构 ----------
 
+type StreamOptions struct {
+	IncludeUsage bool `json:"include_usage"`
+}
+
 // ChatRequest 统一请求格式
 type ChatRequest struct {
 	Model            string           `json:"model"`
 	Messages         []ChatMessage    `json:"messages"`
-	Temperature      float64          `json:"temperature,omitempty"`
+	Temperature      *float64         `json:"temperature,omitempty"`
 	MaxTokens        int              `json:"max_tokens,omitempty"`
-	TopP             float64          `json:"top_p,omitempty"`
-	FrequencyPenalty float64          `json:"frequency_penalty,omitempty"`
-	PresencePenalty  float64          `json:"presence_penalty,omitempty"`
+	TopP             *float64         `json:"top_p,omitempty"`
+	FrequencyPenalty *float64         `json:"frequency_penalty,omitempty"`
+	PresencePenalty  *float64         `json:"presence_penalty,omitempty"`
 	Stop             []string         `json:"stop,omitempty"`
 	Stream           bool             `json:"stream,omitempty"`
+	StreamOptions    *StreamOptions   `json:"stream_options,omitempty"`
 	Tools            []ToolDefinition `json:"tools,omitempty"`
 	ToolChoice       any              `json:"tool_choice,omitempty"` // "auto","none","required" 或 {"type":"function","function":{"name":"..."}}
 	ResponseFormat   *ResponseFormat  `json:"response_format,omitempty"`

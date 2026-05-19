@@ -16,6 +16,16 @@ var client = &http.Client{
 	Timeout: 5 * time.Minute,
 }
 
+var streamClient = &http.Client{
+	Transport: &http.Transport{
+		ResponseHeaderTimeout: 120 * time.Second,
+		MaxIdleConns:          100,
+		MaxIdleConnsPerHost:   20,
+		IdleConnTimeout:       120 * time.Second,
+		DisableCompression:    true,
+	},
+}
+
 // Get 发送 GET 请求，返回响应体
 func Get(ctx context.Context, url string, headers map[string]string) ([]byte, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
@@ -108,7 +118,7 @@ func PostJSONStream(ctx context.Context, url string, body any, headers map[strin
 		req.Header.Set(k, v)
 	}
 
-	resp, err := client.Do(req)
+	resp, err := streamClient.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("do request: %w", err)
 	}

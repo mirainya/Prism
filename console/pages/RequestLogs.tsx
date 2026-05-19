@@ -205,7 +205,7 @@ const RequestLogs: React.FC = () => {
                   <tr key={log.id} className="hover:bg-[var(--primary-lighter)]/30 transition-colors cursor-pointer group" onClick={() => openDetails(log)}>
                     <td className="px-6 py-4">
                         <div className="text-xs font-bold text-[var(--primary)] font-mono">
-                            {log.request_type === 'chat' ? `对话#${log.conversation_id}` : log.task_no}
+                            {log.request_type === 'chat' ? (log.conversation_id ? `对话#${log.conversation_id}` : `LOG#${log.id}`) : log.task_no}
                         </div>
                       <div className="text-[10px] text-[var(--text-secondary)] mt-0.5">{log.request_at}</div>
                     </td>

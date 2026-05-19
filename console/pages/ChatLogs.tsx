@@ -304,7 +304,7 @@ const ChatLogs: React.FC = () => {
                                             <MessageSquare size={14}/>
                                             消息列表
                                         </div>
-                                        <div className="space-y-4">
+                                        <div className="space-y-3">
                                             {messages.map(msg => (
                                                 <div
                                                     key={msg.id}
@@ -315,9 +315,9 @@ const ChatLogs: React.FC = () => {
                                                         <div
                                                             className={`flex items-center gap-2 mb-1 ${msg.role === 'user' ? 'justify-end' : 'justify-start'}`}>
                                                             {msg.role === 'user' ? (
-                                                                <User size={12} className="text-indigo-500"/>
+                                                                <User size={12} className="text-blue-400"/>
                                                             ) : msg.role === 'assistant' ? (
-                                                                <Bot size={12} className="text-green-500"/>
+                                                                <Bot size={12} className="text-emerald-400"/>
                                                             ) : (
                                                                 <Hash size={12} className="text-[var(--text-secondary)]"/>
                                                             )}
@@ -326,19 +326,19 @@ const ChatLogs: React.FC = () => {
                                 {msg.role === 'user' ? '用户' : msg.role === 'assistant' ? '助手' : '系统'}
                               </span>
                                                             <span
-                                                                className="text-[10px] text-gray-300">{formatTime(msg.createdAt)}</span>
+                                                                className="text-[10px] text-[var(--text-secondary)] opacity-60">{formatTime(msg.createdAt)}</span>
                                                         </div>
                                                         <div
                                                             className={`rounded-2xl px-4 py-3 text-sm leading-relaxed ${
                                                                 msg.role === 'user'
-                                                                    ? 'bg-[var(--primary-lighter)]0 text-white rounded-br-sm'
+                                                                    ? 'bg-blue-600 text-white rounded-br-sm'
                                                                     : msg.role === 'assistant'
-                                                                        ? 'bg-[var(--primary-lighter)] text-gray-800 rounded-bl-sm'
-                                                                        : 'bg-amber-50 text-amber-800 border border-amber-200'
+                                                                        ? 'bg-[var(--surface)] border border-[var(--border-soft)] text-[var(--text-primary)] rounded-bl-sm'
+                                                                        : 'bg-amber-500/10 text-amber-300 border border-amber-500/20'
                                                             }`}
                                                         >
                                                             <div
-                                                                className="whitespace-pre-wrap break-words">{msg.content}</div>
+                                                                className="whitespace-pre-wrap break-words max-h-96 overflow-y-auto">{msg.content}</div>
                                                         </div>
                                                         {msg.role === 'assistant' && (msg.inputTokens > 0 || msg.outputTokens > 0 || msg.cost > 0) && (
                                                             <div

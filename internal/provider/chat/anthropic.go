@@ -74,11 +74,11 @@ func (p *AnthropicProvider) convertRequest(req *ChatRequest) map[string]any {
 		result["max_tokens"] = 4096
 	}
 
-	if req.Temperature > 0 {
-		result["temperature"] = req.Temperature
+	if req.Temperature != nil {
+		result["temperature"] = *req.Temperature
 	}
-	if req.TopP > 0 {
-		result["top_p"] = req.TopP
+	if req.TopP != nil {
+		result["top_p"] = *req.TopP
 	}
 	if len(req.Stop) > 0 {
 		result["stop_sequences"] = req.Stop

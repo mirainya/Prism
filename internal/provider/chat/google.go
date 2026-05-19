@@ -126,11 +126,11 @@ func (p *GoogleProvider) convertRequest(req *ChatRequest) map[string]any {
 	if req.MaxTokens > 0 {
 		generationConfig["maxOutputTokens"] = req.MaxTokens
 	}
-	if req.Temperature > 0 {
-		generationConfig["temperature"] = req.Temperature
+	if req.Temperature != nil {
+		generationConfig["temperature"] = *req.Temperature
 	}
-	if req.TopP > 0 {
-		generationConfig["topP"] = req.TopP
+	if req.TopP != nil {
+		generationConfig["topP"] = *req.TopP
 	}
 	if len(req.Stop) > 0 {
 		generationConfig["stopSequences"] = req.Stop

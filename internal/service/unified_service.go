@@ -49,6 +49,8 @@ type StreamSession struct {
 	Route         *RoutingResult
 	OriginalModel string
 	OriginalReq   *CompletionRequest
+	NewMessages   []chat.ChatMessage
+	Conversation  *model.Conversation
 	StartedAt     time.Time
 	RequestLog    *model.ChannelRequestLog
 	CleanupFunc   func()
@@ -96,12 +98,15 @@ func (s *UnifiedService) Route(tokenID uint, modelCode string, excludeChannelIDs
 
 // Complete 非流式对话补全（带 fallback）
 func (s *UnifiedService) Complete(ctx context.Context, req *CompletionRequest) (*CompletionResponse, error) {
+	// 保存本轮新消息（用于后续写入对话记录）
+	newMessages := req.Messages
+
 	// 加载对话历史并标准化
 	var conv *model.Conversation
 	if req.ConversationID != "" {
-		var err error
-		conv, err = s.loadConversation(req.ConversationID, req.TokenID)
+		loaded, err := s.loadConversation(req.ConversationID, req.TokenID)
 		if err == nil {
+			conv = loaded
 			history, _ := s.loadMessages(conv.ID, req.Model)
 			if conv.SystemPrompt != "" {
 				history = append([]chat.ChatMessage{{Role: model.RoleSystem, Content: conv.SystemPrompt}}, history...)
@@ -123,7 +128,7 @@ func (s *UnifiedService) Complete(ctx context.Context, req *CompletionRequest) (
 			return nil, err
 		}
 
-		resp, err := s.doComplete(ctx, req, route)
+		resp, reqLog, err := s.doComplete(ctx, req, route)
 		if err != nil {
 			route.Cleanup()
 			lastErr = err
@@ -143,6 +148,24 @@ func (s *UnifiedService) Complete(ctx context.Context, req *CompletionRequest) (
 
 		route.Cleanup()
 		s.chargeTokenUsage(req.TokenID, req.UserID, resp.Usage, route.Endpoint)
+
+		// 保存对话记录
+		if conv == nil {
+			conv = s.findOrCreateConversation(req.UserID, req.TokenID, req.Model, newMessages)
+			// open API 场景：只保存最后一条 user message（增量）
+			newMessages = lastUserMessage(newMessages)
+		}
+		if conv != nil {
+			logID := requestLogID(reqLog)
+			chatResp := &chat.ChatResponse{Usage: resp.Usage, Choices: resp.Choices}
+			s.saveConversationMessages(conv, newMessages, chatResp, route.Endpoint, route.Account, 0, decimal.Zero, logID)
+			resp.ConversationID = fmt.Sprint(conv.ID)
+			// 回写 conversation_id 到请求日志
+			if reqLog != nil {
+				model.DB().Model(reqLog).Update("conversation_id", conv.ID)
+			}
+		}
+
 		return resp, nil
 	}
 
@@ -151,10 +174,15 @@ func (s *UnifiedService) Complete(ctx context.Context, req *CompletionRequest) (
 
 // StreamComplete 流式对话补全
 func (s *UnifiedService) StreamComplete(ctx context.Context, req *CompletionRequest) (*StreamSession, error) {
+	// 保存本轮新消息
+	newMessages := req.Messages
+
 	// 加载对话历史并标准化
+	var conv *model.Conversation
 	if req.ConversationID != "" {
-		conv, err := s.loadConversation(req.ConversationID, req.TokenID)
+		loaded, err := s.loadConversation(req.ConversationID, req.TokenID)
 		if err == nil {
+			conv = loaded
 			history, _ := s.loadMessages(conv.ID, req.Model)
 			if conv.SystemPrompt != "" {
 				history = append([]chat.ChatMessage{{Role: model.RoleSystem, Content: conv.SystemPrompt}}, history...)
@@ -199,6 +227,8 @@ func (s *UnifiedService) StreamComplete(ctx context.Context, req *CompletionRequ
 			Route:         route,
 			OriginalModel: req.Model,
 			OriginalReq:   req,
+			NewMessages:   newMessages,
+			Conversation:  conv,
 			StartedAt:     time.Now(),
 			RequestLog:    reqLog,
 			CleanupFunc:   route.Cleanup,
@@ -224,7 +254,39 @@ func (s *UnifiedService) FinalizeStream(session *StreamSession, result *StreamAg
 		CompletionTokens: result.CompletionTokens,
 		TotalTokens:      result.TotalTokens,
 	}
+	if result.Usage != nil {
+		usage = result.Usage
+	}
 	s.chargeTokenUsage(session.OriginalReq.TokenID, session.OriginalReq.UserID, usage, session.Route.Endpoint)
+
+	// 保存对话记录
+	conv := session.Conversation
+	req := session.OriginalReq
+	newMsgs := session.NewMessages
+	if conv == nil {
+		conv = s.findOrCreateConversation(req.UserID, req.TokenID, req.Model, newMsgs)
+		newMsgs = lastUserMessage(newMsgs)
+	}
+	if conv != nil {
+		chatResp := &chat.ChatResponse{
+			Usage: usage,
+			Choices: []chat.ChatChoice{{
+				Message: chat.ChatMessage{
+					Role:             "assistant",
+					Content:          result.AssistantContent,
+					ReasoningContent: result.ReasoningContent,
+				},
+				FinishReason: result.FinishReason,
+			}},
+		}
+		logID := requestLogID(session.RequestLog)
+		s.saveConversationMessages(conv, newMsgs, chatResp, session.Route.Endpoint, session.Route.Account, latency, decimal.Zero, logID)
+		// 回写 conversation_id 到请求日志
+		if session.RequestLog != nil {
+			model.DB().Model(session.RequestLog).Update("conversation_id", conv.ID)
+		}
+	}
+
 	return result, nil
 }
 
@@ -320,7 +382,7 @@ type ModelInfo struct {
 
 // --- 内部方法 ---
 
-func (s *UnifiedService) doComplete(ctx context.Context, req *CompletionRequest, route *RoutingResult) (*CompletionResponse, error) {
+func (s *UnifiedService) doComplete(ctx context.Context, req *CompletionRequest, route *RoutingResult) (*CompletionResponse, *model.ChannelRequestLog, error) {
 	chatReq := s.buildChatRequest(req, route)
 	chatReq.Stream = false
 
@@ -338,13 +400,13 @@ func (s *UnifiedService) doComplete(ctx context.Context, req *CompletionRequest,
 
 	if err != nil {
 		s.finalizeRequestLog(reqLog, route.Channel, route.Endpoint, nil, nil, latency, err)
-		return nil, fmt.Errorf("request failed: %w", err)
+		return nil, nil, fmt.Errorf("request failed: %w", err)
 	}
 
 	var chatResp CompletionResponse
 	if err := json.Unmarshal(respBody, &chatResp); err != nil {
 		s.finalizeRequestLog(reqLog, route.Channel, route.Endpoint, nil, nil, latency, err)
-		return nil, fmt.Errorf("unmarshal response failed: %w", err)
+		return nil, nil, fmt.Errorf("unmarshal response failed: %w", err)
 	}
 
 	chatResp.Model = req.Model
@@ -352,12 +414,13 @@ func (s *UnifiedService) doComplete(ctx context.Context, req *CompletionRequest,
 		Usage:   chatResp.Usage,
 		Choices: chatResp.Choices,
 	}, nil, latency, nil)
-	return &chatResp, nil
+	return &chatResp, reqLog, nil
 }
 
 func (s *UnifiedService) doStreamComplete(ctx context.Context, req *CompletionRequest, route *RoutingResult) (*http.Response, *model.ChannelRequestLog, error) {
 	chatReq := s.buildChatRequest(req, route)
 	chatReq.Stream = true
+	chatReq.StreamOptions = &chat.StreamOptions{IncludeUsage: true}
 
 	reqLog, _ := s.createRequestLog(nil, req.Model, route.Channel, route.Account, route.Endpoint, chatReq, true)
 
@@ -386,9 +449,15 @@ func (s *UnifiedService) buildChatRequest(req *CompletionRequest, route *Routing
 	// 查询模型的 max_tokens 限制，如果设置了则裁剪
 	var mdl model.Model
 	if err := model.DB().Select("max_tokens").Where("code = ?", req.Model).First(&mdl).Error; err == nil {
-		if mdl.MaxTokens > 0 && maxTokens > mdl.MaxTokens {
+		if mdl.MaxTokens > 0 && (maxTokens == 0 || maxTokens > mdl.MaxTokens) {
 			maxTokens = mdl.MaxTokens
 		}
+	}
+
+	// 部分上游不允许同时指定 temperature 和 top_p，保留 temperature
+	topP := req.TopP
+	if req.Temperature != nil && req.TopP != nil {
+		topP = nil
 	}
 
 	chatReq := &chat.ChatRequest{
@@ -396,7 +465,7 @@ func (s *UnifiedService) buildChatRequest(req *CompletionRequest, route *Routing
 		Messages:         req.Messages,
 		Temperature:      req.Temperature,
 		MaxTokens:        maxTokens,
-		TopP:             req.TopP,
+		TopP:             topP,
 		FrequencyPenalty: req.FrequencyPenalty,
 		PresencePenalty:  req.PresencePenalty,
 		Stop:             req.Stop,
@@ -412,6 +481,10 @@ func (s *UnifiedService) buildChatRequest(req *CompletionRequest, route *Routing
 		var cfg map[string]any
 		if json.Unmarshal(route.Endpoint.ExtraConfig, &cfg) == nil {
 			if extraBody, ok := cfg["extra_body"].(map[string]any); ok {
+				// 防止 extra_body 重新引入 top_p 导致冲突
+				if chatReq.Temperature != nil {
+					delete(extraBody, "top_p")
+				}
 				chatReq.ExtraBody = extraBody
 			}
 		}
@@ -582,9 +655,4 @@ func (s *UnifiedService) chargeTokenUsage(tokenID, userID uint, usage *chat.Chat
 			logger.Warn("charge failed", zap.Uint("token_id", tokenID), zap.Error(err))
 		}
 	}
-}
-
-func (s *UnifiedService) saveMessages(session *StreamSession, result *StreamAggregationResult) {
-	// 保存用户消息和助手回复到 conversations/messages 表
-	// 复用现有逻辑，后续实现
 }

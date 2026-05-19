@@ -1,9 +1,12 @@
 package open
 
 import (
+	"bufio"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
+	"strings"
 
 	"github.com/gin-gonic/gin"
 	"github.com/mirainya/Prism/internal/api/middleware"
@@ -17,11 +20,11 @@ func ChatCompletions(c *gin.Context) {
 	var req struct {
 		Model            string                `json:"model" binding:"required"`
 		Messages         []chat.ChatMessage    `json:"messages" binding:"required,min=1"`
-		Temperature      float64               `json:"temperature"`
+		Temperature      *float64              `json:"temperature"`
 		MaxTokens        int                   `json:"max_tokens"`
-		TopP             float64               `json:"top_p"`
-		FrequencyPenalty float64               `json:"frequency_penalty"`
-		PresencePenalty  float64               `json:"presence_penalty"`
+		TopP             *float64              `json:"top_p"`
+		FrequencyPenalty *float64              `json:"frequency_penalty"`
+		PresencePenalty  *float64              `json:"presence_penalty"`
 		Stop             []string              `json:"stop"`
 		Stream           bool                  `json:"stream"`
 		Tools            []chat.ToolDefinition `json:"tools"`
@@ -76,9 +79,8 @@ func ChatCompletions(c *gin.Context) {
 		c.Header("X-Accel-Buffering", "no")
 		c.Status(http.StatusOK)
 
-		io.Copy(c.Writer, session.UpstreamResp.Body)
-		c.Writer.Flush()
-		svc.FinalizeStream(session, nil, nil)
+		aggregation, streamErr := proxyOpenStream(c, session.UpstreamResp)
+		svc.FinalizeStream(session, aggregation, streamErr)
 		return
 	}
 
@@ -165,4 +167,72 @@ func ListChatModelsPublic(c *gin.Context) {
 		"object": "list",
 		"data":   data,
 	})
+}
+
+func proxyOpenStream(c *gin.Context, upstreamResp *http.Response) (*service.StreamAggregationResult, error) {
+	aggregation := &service.StreamAggregationResult{}
+	reader := bufio.NewReader(upstreamResp.Body)
+	for {
+		line, err := reader.ReadString('\n')
+		if line != "" {
+			_, _ = c.Writer.Write([]byte(line))
+			c.Writer.Flush()
+			trimmed := strings.TrimSpace(line)
+			if strings.HasPrefix(trimmed, "data: ") {
+				payload := strings.TrimPrefix(trimmed, "data: ")
+				if payload != "[DONE]" {
+					mergeOpenSSEChunk(aggregation, payload)
+				}
+			}
+		}
+		if err != nil {
+			if err != io.EOF {
+				aggregation.ErrorMessage = err.Error()
+				return aggregation, err
+			}
+			return aggregation, nil
+		}
+	}
+}
+
+func mergeOpenSSEChunk(aggregation *service.StreamAggregationResult, payload string) {
+	var parsed struct {
+		Choices []struct {
+			Delta struct {
+				Content          string `json:"content"`
+				ReasoningContent string `json:"reasoning_content"`
+				ToolCalls        []struct {
+					Function struct {
+						Arguments string `json:"arguments"`
+					} `json:"function"`
+				} `json:"tool_calls"`
+			} `json:"delta"`
+			FinishReason string `json:"finish_reason"`
+		} `json:"choices"`
+		Usage *chat.ChatUsage `json:"usage"`
+	}
+	if err := json.Unmarshal([]byte(payload), &parsed); err != nil {
+		return
+	}
+	if len(parsed.Choices) > 0 {
+		choice := parsed.Choices[0]
+		aggregation.AssistantContent += choice.Delta.Content
+		aggregation.ReasoningContent += choice.Delta.ReasoningContent
+		for _, tc := range choice.Delta.ToolCalls {
+			aggregation.AssistantContent += tc.Function.Arguments
+		}
+		if choice.FinishReason != "" {
+			aggregation.FinishReason = choice.FinishReason
+		}
+	}
+	if parsed.Usage != nil {
+		aggregation.Usage = parsed.Usage
+	}
+	runes := []rune(aggregation.AssistantContent)
+	if len(runes) <= 500 {
+		aggregation.ResponsePreview = aggregation.AssistantContent
+	} else {
+		aggregation.ResponsePreview = string(runes[:500]) + "..."
+	}
+	aggregation.ResponseBody = fmt.Sprintf("{\"content\":\"%s\"}", payload)
 }

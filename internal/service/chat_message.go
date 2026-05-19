@@ -1,6 +1,8 @@
 package service
 
 import (
+	"time"
+
 	"github.com/mirainya/Prism/internal/model"
 	"github.com/mirainya/Prism/internal/provider/chat"
 	"github.com/mirainya/Prism/pkg/logger"
@@ -40,6 +42,33 @@ func (s *UnifiedService) loadMessages(conversationID uint, targetModel string) (
 		result = append(result, cm)
 	}
 	return result, nil
+}
+
+func (s *UnifiedService) findOrCreateConversation(userID, tokenID uint, modelCode string, messages []chat.ChatMessage) *model.Conversation {
+	// 提取第一条 user message 作为标题指纹
+	title := ""
+	for _, msg := range messages {
+		if msg.Role == model.RoleUser {
+			title = truncateString(msg.ContentText(), 50)
+			break
+		}
+	}
+	if title == "" {
+		return s.createConversation(userID, tokenID, modelCode, messages)
+	}
+
+	// 在同一 token 下查找 2 小时内 title 匹配的 conversation
+	// 仅当请求消息数 > 已有消息数时才归并（说明是续传历史），否则视为新对话
+	var conv model.Conversation
+	since := time.Now().Add(-2 * time.Hour)
+	err := model.DB().Where("token_id = ? AND title = ? AND status = 1 AND updated_at > ?", tokenID, title, since).
+		Order("updated_at DESC").First(&conv).Error
+	if err == nil && len(messages) > conv.MessageCount {
+		model.DB().Model(&conv).Update("updated_at", time.Now())
+		return &conv
+	}
+
+	return s.createConversation(userID, tokenID, modelCode, messages)
 }
 
 func (s *UnifiedService) createConversation(userID, tokenID uint, modelCode string, messages []chat.ChatMessage) *model.Conversation {

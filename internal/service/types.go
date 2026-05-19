@@ -10,11 +10,11 @@ type CompletionRequest struct {
 	TokenID          uint
 	Model            string
 	Messages         []chat.ChatMessage
-	Temperature      float64
+	Temperature      *float64
 	MaxTokens        int
-	TopP             float64
-	FrequencyPenalty float64
-	PresencePenalty  float64
+	TopP             *float64
+	FrequencyPenalty *float64
+	PresencePenalty  *float64
 	Stop             []string
 	Stream           bool
 	StreamSpecified  bool

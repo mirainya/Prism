@@ -38,18 +38,20 @@ func ListConversations(c *gin.Context) {
 	items := make([]gin.H, len(listResp.Items))
 	for i, conv := range listResp.Items {
 		items[i] = gin.H{
-			"id":            conv.ID,
-			"user_id":       conv.UserID,
-			"token_id":      conv.TokenID,
-			"title":         conv.Title,
-			"model":         conv.Model,
-			"system_prompt": conv.SystemPrompt,
-			"total_tokens":  conv.TotalTokens,
-			"message_count": conv.MessageCount,
-			"total_cost":    conv.TotalCost,
-			"status":        conv.Status,
-			"created_at":    conv.CreatedAt,
-			"updated_at":    conv.UpdatedAt,
+			"id":                  conv.ID,
+			"user_id":             conv.UserID,
+			"token_id":            conv.TokenID,
+			"title":               conv.Title,
+			"model":               conv.Model,
+			"system_prompt":       conv.SystemPrompt,
+			"total_tokens":        conv.TotalTokens,
+			"message_count":       conv.MessageCount,
+			"total_cost":          conv.TotalCost,
+			"last_request_log_id": conv.LastRequestLogID,
+			"last_status":         conv.LastStatus,
+			"status":              conv.Status,
+			"created_at":          conv.CreatedAt,
+			"updated_at":          conv.UpdatedAt,
 		}
 	}
 
@@ -101,16 +103,21 @@ func GetConversationMessages(c *gin.Context) {
 	items := make([]gin.H, len(msgResp.Items))
 	for i, msg := range msgResp.Items {
 		items[i] = gin.H{
-			"id":              msg.ID,
-			"conversation_id": msg.ConversationID,
-			"role":            msg.Role,
-			"content":         msg.Content,
-			"input_tokens":    msg.InputTokens,
-			"output_tokens":   msg.OutputTokens,
-			"model":           msg.Model,
-			"latency_ms":      msg.LatencyMs,
-			"cost":            msg.Cost,
-			"created_at":      msg.CreatedAt,
+			"id":                msg.ID,
+			"conversation_id":   msg.ConversationID,
+			"request_log_id":    msg.RequestLogID,
+			"role":              msg.Role,
+			"content":           msg.Content,
+			"reasoning_content": msg.ReasoningContent,
+			"finish_reason":     msg.FinishReason,
+			"input_tokens":      msg.InputTokens,
+			"output_tokens":     msg.OutputTokens,
+			"model":             msg.Model,
+			"channel_id":        msg.ChannelID,
+			"account_id":        msg.AccountID,
+			"latency_ms":        msg.LatencyMs,
+			"cost":              msg.Cost,
+			"created_at":        msg.CreatedAt,
 		}
 	}
 
