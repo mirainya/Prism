@@ -386,21 +386,42 @@ func (s *UnifiedService) doComplete(ctx context.Context, req *CompletionRequest,
 	chatReq := s.buildChatRequest(req, route)
 	chatReq.Stream = false
 
+	if channelConfigBool(route.Channel, "image_to_base64") {
+		chatReq.Messages = convertImageURLsToBase64(chatReq.Messages)
+	}
+
 	reqLog, _ := s.createRequestLog(nil, req.Model, route.Channel, route.Account, route.Endpoint, chatReq, false)
 
-	url := route.Channel.BaseURL + route.Endpoint.RequestPath
+	// 协议适配：Anthropic 使用不同的请求体格式
+	var reqBody any = chatReq
+	if isAnthropicProtocol(route.Endpoint) {
+		reqBody = toAnthropicRequestBody(chatReq)
+	}
+
+	url := route.Channel.BaseURL + resolveRequestPath(route.Endpoint)
 	headers := s.buildHeaders(route)
 
 	ctx, cancel := context.WithTimeout(ctx, time.Duration(route.Endpoint.Timeout)*time.Second)
 	defer cancel()
 
 	start := time.Now()
-	respBody, err := httputil.PostJSON(ctx, url, chatReq, headers)
+	respBody, err := httputil.PostJSON(ctx, url, reqBody, headers)
 	latency := time.Since(start).Milliseconds()
 
 	if err != nil {
 		s.finalizeRequestLog(reqLog, route.Channel, route.Endpoint, nil, nil, latency, err)
 		return nil, nil, fmt.Errorf("request failed: %w", err)
+	}
+
+	// 协议适配：Anthropic 响应解析
+	if isAnthropicProtocol(route.Endpoint) {
+		compResp, chatResp, err := parseAnthropicNonStreamResponse(respBody, req.Model)
+		if err != nil {
+			s.finalizeRequestLog(reqLog, route.Channel, route.Endpoint, nil, nil, latency, err)
+			return nil, nil, err
+		}
+		s.finalizeRequestLog(reqLog, route.Channel, route.Endpoint, chatResp, nil, latency, nil)
+		return compResp, reqLog, nil
 	}
 
 	var chatResp CompletionResponse
@@ -422,12 +443,22 @@ func (s *UnifiedService) doStreamComplete(ctx context.Context, req *CompletionRe
 	chatReq.Stream = true
 	chatReq.StreamOptions = &chat.StreamOptions{IncludeUsage: true}
 
+	if channelConfigBool(route.Channel, "image_to_base64") {
+		chatReq.Messages = convertImageURLsToBase64(chatReq.Messages)
+	}
+
 	reqLog, _ := s.createRequestLog(nil, req.Model, route.Channel, route.Account, route.Endpoint, chatReq, true)
 
-	url := route.Channel.BaseURL + route.Endpoint.RequestPath
+	// 协议适配：Anthropic 使用不同的请求体格式
+	var reqBody any = chatReq
+	if isAnthropicProtocol(route.Endpoint) {
+		reqBody = toAnthropicRequestBody(chatReq)
+	}
+
+	url := route.Channel.BaseURL + resolveRequestPath(route.Endpoint)
 	headers := s.buildHeaders(route)
 
-	resp, err := httputil.PostJSONStream(ctx, url, chatReq, headers)
+	resp, err := httputil.PostJSONStream(ctx, url, reqBody, headers)
 	if err != nil {
 		s.finalizeRequestLog(reqLog, route.Channel, route.Endpoint, nil, nil, 0, err)
 		return nil, nil, fmt.Errorf("stream request failed: %w", err)
@@ -438,6 +469,11 @@ func (s *UnifiedService) doStreamComplete(ctx context.Context, req *CompletionRe
 		streamErr := fmt.Errorf("upstream returned status %d", resp.StatusCode)
 		s.finalizeRequestLog(reqLog, route.Channel, route.Endpoint, nil, nil, 0, streamErr)
 		return nil, nil, streamErr
+	}
+
+	// 协议适配：将 Anthropic SSE 事件流转换为 OpenAI SSE 格式
+	if isAnthropicProtocol(route.Endpoint) {
+		resp.Body = newAnthropicStreamAdapter(resp.Body, req.Model)
 	}
 
 	return resp, reqLog, nil
@@ -504,7 +540,7 @@ func (s *UnifiedService) buildHeaders(route *RoutingResult) map[string]string {
 			key = "Authorization"
 		}
 		prefix := route.Endpoint.AuthValuePrefix
-		if prefix == "" {
+		if prefix == "" && !isAnthropicProtocol(route.Endpoint) {
 			prefix = "Bearer "
 		}
 		headers[key] = prefix + route.Account.APIKey
@@ -519,6 +555,13 @@ func (s *UnifiedService) buildHeaders(route *RoutingResult) map[string]string {
 			for k, v := range extra {
 				headers[k] = v
 			}
+		}
+	}
+
+	// Anthropic 协议自动注入版本头
+	if isAnthropicProtocol(route.Endpoint) {
+		if _, ok := headers["anthropic-version"]; !ok {
+			headers["anthropic-version"] = "2023-06-01"
 		}
 	}
 
@@ -655,4 +698,35 @@ func (s *UnifiedService) chargeTokenUsage(tokenID, userID uint, usage *chat.Chat
 			logger.Warn("charge failed", zap.Uint("token_id", tokenID), zap.Error(err))
 		}
 	}
+}
+
+// resolveProtocol 返回端点的协议类型
+func resolveProtocol(endpoint *model.Endpoint) model.Protocol {
+	if endpoint.Protocol != "" {
+		return endpoint.Protocol
+	}
+	return model.ProtocolOpenAI
+}
+
+func isAnthropicProtocol(endpoint *model.Endpoint) bool {
+	return resolveProtocol(endpoint) == model.ProtocolAnthropic
+}
+
+func channelConfigBool(ch *model.Channel, key string) bool {
+	if len(ch.Config) == 0 {
+		return false
+	}
+	var cfg map[string]any
+	if json.Unmarshal(ch.Config, &cfg) != nil {
+		return false
+	}
+	v, _ := cfg[key].(bool)
+	return v
+}
+
+func resolveRequestPath(endpoint *model.Endpoint) string {
+	if isAnthropicProtocol(endpoint) {
+		return "/v1/messages"
+	}
+	return endpoint.RequestPath
 }

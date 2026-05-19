@@ -1,6 +1,9 @@
 package chat
 
-import "encoding/json"
+import (
+	"encoding/json"
+	"strings"
+)
 
 // ---------- 多模态内容类型 ----------
 
@@ -133,17 +136,46 @@ func (m *ChatMessage) ContentText() string {
 	case string:
 		return v
 	case []any:
+		var texts []string
 		for _, part := range v {
 			if pm, ok := part.(map[string]any); ok {
 				if pm["type"] == "text" {
 					if text, ok := pm["text"].(string); ok {
-						return text
+						texts = append(texts, text)
 					}
 				}
 			}
 		}
+		return strings.Join(texts, "\n")
 	}
 	return ""
+}
+
+// ContentAttachments 提取非文本内容块（image_url, file_url 等），返回 JSON 字符串
+func (m *ChatMessage) ContentAttachments() string {
+	if m.Content == nil {
+		return ""
+	}
+	parts, ok := m.Content.([]any)
+	if !ok {
+		return ""
+	}
+	var attachments []any
+	for _, part := range parts {
+		if pm, ok := part.(map[string]any); ok {
+			if pm["type"] != "text" {
+				attachments = append(attachments, pm)
+			}
+		}
+	}
+	if len(attachments) == 0 {
+		return ""
+	}
+	data, err := json.Marshal(attachments)
+	if err != nil {
+		return ""
+	}
+	return string(data)
 }
 
 // ChatResponse 统一响应格式

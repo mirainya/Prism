@@ -256,8 +256,15 @@ const ChatModelSection: React.FC<{ channels: Channel[] }> = ({ channels }) => {
                             </div>
                             <div>
                                 <label className="block text-sm font-medium text-[var(--text-primary)] mb-1">供应商</label>
-                                <input type="text" value={modelForm.provider} onChange={e => setModelForm({ ...modelForm, provider: e.target.value })}
-                                    className="w-full px-3 py-2 border border-[var(--border-soft)] rounded-lg bg-[var(--surface)] text-[var(--text-primary)]" placeholder="如: openai" />
+                                <div className="relative">
+                                    <input type="text" list="provider-options" value={modelForm.provider} onChange={e => setModelForm({ ...modelForm, provider: e.target.value })}
+                                        className="w-full px-3 py-2 border border-[var(--border-soft)] rounded-lg bg-[var(--surface)] text-[var(--text-primary)]" placeholder="选择或输入供应商" />
+                                    <datalist id="provider-options">
+                                        <option value="openai">OpenAI 兼容</option>
+                                        <option value="anthropic">Anthropic (Claude)</option>
+                                        <option value="google">Google (Gemini)</option>
+                                    </datalist>
+                                </div>
                             </div>
                             <div>
                                 <label className="block text-sm font-medium text-[var(--text-primary)] mb-1">描述</label>

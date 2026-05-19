@@ -9,20 +9,23 @@ export const ChannelModal: React.FC<{
   onClose: () => void;
   onSave: (data: any) => Promise<void>;
 }> = ({ isOpen, channel, onClose, onSave }) => {
-  const [form, setForm] = useState({ type: '', name: '', base_url: '', config: '{}' });
+  const [form, setForm] = useState({ type: '', name: '', base_url: '', config: '{}', image_to_base64: false });
   const [loading, setLoading] = useState(false);
   const [jsonError, setJsonError] = useState('');
 
   useEffect(() => {
     if (channel) {
+      const cfg = channel.config || {};
+      const { image_to_base64, ...restConfig } = cfg as any;
       setForm({
         type: channel.type,
         name: channel.name,
         base_url: channel.baseUrl,
-        config: JSON.stringify(channel.config || {}, null, 2)
+        config: JSON.stringify(restConfig, null, 2),
+        image_to_base64: !!image_to_base64,
       });
     } else {
-      setForm({ type: '', name: '', base_url: '', config: '{}' });
+      setForm({ type: '', name: '', base_url: '', config: '{}', image_to_base64: false });
     }
     setJsonError('');
   }, [channel, isOpen]);
@@ -44,7 +47,7 @@ export const ChannelModal: React.FC<{
         type: form.type,
         name: form.name,
         base_url: form.base_url,
-        config: JSON.parse(form.config)
+        config: { ...JSON.parse(form.config), ...(form.image_to_base64 ? { image_to_base64: true } : {}) }
       });
       onClose();
     } finally {
@@ -88,6 +91,17 @@ export const ChannelModal: React.FC<{
               placeholder="如: https://duomiapi.com"
               required
             />
+          </div>
+          <div className="flex items-center gap-2">
+            <input
+              type="checkbox"
+              id="image_to_base64"
+              checked={form.image_to_base64}
+              onChange={e => setForm({ ...form, image_to_base64: e.target.checked })}
+              className="w-4 h-4 rounded border-[var(--border-soft)] text-[var(--primary)] focus:ring-[var(--primary)]"
+            />
+            <label htmlFor="image_to_base64" className="text-sm text-[var(--text-primary)]">图片转 Base64</label>
+            <span className="text-xs text-[var(--text-tertiary)]">上游无法访问图片 URL 时启用</span>
           </div>
           <div>
             <label className="block text-sm font-medium text-[var(--text-primary)] mb-1">渠道配置 (JSON)</label>

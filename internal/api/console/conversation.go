@@ -108,6 +108,7 @@ func GetConversationMessages(c *gin.Context) {
 			"request_log_id":    msg.RequestLogID,
 			"role":              msg.Role,
 			"content":           msg.Content,
+			"attachments":       msg.Attachments,
 			"reasoning_content": msg.ReasoningContent,
 			"finish_reason":     msg.FinishReason,
 			"input_tokens":      msg.InputTokens,

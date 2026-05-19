@@ -39,6 +39,7 @@ type Message struct {
 	RequestLogID     uint            `gorm:"default:0;index;comment:关联请求日志ID" json:"request_log_id"`
 	Role             string          `gorm:"type:varchar(20);not null;comment:角色" json:"role"`
 	Content          string          `gorm:"type:mediumtext;not null;comment:内容" json:"content"`
+	Attachments      string          `gorm:"type:mediumtext;comment:多模态附件(JSON)" json:"attachments"`
 	ReasoningContent string          `gorm:"type:mediumtext;comment:思考/推理内容" json:"reasoning_content"`
 	FinishReason     string          `gorm:"type:varchar(50);comment:完成原因" json:"finish_reason"`
 	InputTokens      int             `gorm:"default:0;comment:输入token" json:"input_tokens"`

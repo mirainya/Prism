@@ -82,6 +82,7 @@ export const fetchConversationMessages = async (
             requestLogId: m.request_log_id,
             role: m.role,
             content: m.content,
+            attachments: m.attachments,
             reasoningContent: m.reasoning_content,
             finishReason: m.finish_reason,
             inputTokens: m.input_tokens,

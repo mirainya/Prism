@@ -1,4 +1,4 @@
-import React, {useEffect, useState} from 'react';
+import React, {useEffect, useState, useMemo} from 'react';
 import {
     Search,
     DollarSign,
@@ -10,7 +10,9 @@ import {
     User,
     Bot,
     Clock,
-    Hash
+    Hash,
+    Image as ImageIcon,
+    FileText
 } from 'lucide-react';
 import {fetchConversations, fetchConversationMessages, ConversationListParams, fetchChatModels} from '../services/api';
 import {Conversation, ChatMessage, ChatModel, UserRole} from '../types';
@@ -31,6 +33,56 @@ const formatTime = (t: string) => {
     const d = new Date(t);
     const pad = (n: number) => n.toString().padStart(2, '0');
     return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
+};
+
+interface Attachment {
+    type: string;
+    image_url?: { url: string; detail?: string };
+    file_url?: { url: string; content_type?: string };
+}
+
+const parseAttachments = (raw?: string): Attachment[] => {
+    if (!raw) return [];
+    try {
+        return JSON.parse(raw);
+    } catch {
+        return [];
+    }
+};
+
+const AttachmentRenderer: React.FC<{ attachments: Attachment[] }> = ({attachments}) => {
+    const [preview, setPreview] = useState<string | null>(null);
+    if (attachments.length === 0) return null;
+    return (
+        <>
+            <div className="flex flex-wrap gap-2 mt-2">
+                {attachments.map((att, i) => {
+                    if (att.type === 'image_url' && att.image_url?.url) {
+                        return (
+                            <div key={i} className="relative group cursor-pointer" onClick={() => setPreview(att.image_url!.url)}>
+                                <img src={att.image_url.url} alt="attachment" className="max-w-[200px] max-h-[150px] rounded-lg object-cover border border-white/20"/>
+                            </div>
+                        );
+                    }
+                    if (att.type === 'file_url' && att.file_url?.url) {
+                        return (
+                            <a key={i} href={att.file_url.url} target="_blank" rel="noopener noreferrer"
+                               className="flex items-center gap-2 px-3 py-2 rounded-lg bg-black/20 border border-white/10 text-xs hover:bg-black/30 transition-colors">
+                                <FileText size={14}/>
+                                <span className="max-w-[160px] truncate opacity-80">{att.file_url.content_type || 'file'}</span>
+                            </a>
+                        );
+                    }
+                    return null;
+                })}
+            </div>
+            {preview && (
+                <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/70 backdrop-blur-sm" onClick={() => setPreview(null)}>
+                    <img src={preview} alt="preview" className="max-w-[90vw] max-h-[90vh] rounded-xl shadow-2xl"/>
+                </div>
+            )}
+        </>
+    );
 };
 
 const ChatLogs: React.FC = () => {
@@ -339,6 +391,7 @@ const ChatLogs: React.FC = () => {
                                                         >
                                                             <div
                                                                 className="whitespace-pre-wrap break-words max-h-96 overflow-y-auto">{msg.content}</div>
+                                                            <AttachmentRenderer attachments={parseAttachments(msg.attachments)}/>
                                                         </div>
                                                         {msg.role === 'assistant' && (msg.inputTokens > 0 || msg.outputTokens > 0 || msg.cost > 0) && (
                                                             <div

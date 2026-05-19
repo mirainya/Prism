@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/mirainya/Prism/internal/domain"
@@ -64,9 +65,10 @@ func (p *AnthropicProvider) ListModels(ctx context.Context) ([]domain.ModelInfo,
 	return knownModels, nil
 }
 
-func (p *AnthropicProvider) convertRequest(req *ChatRequest) map[string]any {
+// ConvertRequestToAnthropic 将 OpenAI 格式的 ChatRequest 转换为 Anthropic Messages API 格式
+func ConvertRequestToAnthropic(req *ChatRequest) map[string]any {
 	result := map[string]any{
-		"model":      p.config.VendorModel,
+		"model":      req.Model,
 		"max_tokens": req.MaxTokens,
 	}
 
@@ -84,11 +86,9 @@ func (p *AnthropicProvider) convertRequest(req *ChatRequest) map[string]any {
 		result["stop_sequences"] = req.Stop
 	}
 
-	// 消息转换：支持多模态 Content
 	var messages []map[string]any
 	for _, msg := range req.Messages {
 		if msg.Role == "system" {
-			// Anthropic 的 system 是顶层字段
 			result["system"] = msg.ContentText()
 			continue
 		}
@@ -97,18 +97,15 @@ func (p *AnthropicProvider) convertRequest(req *ChatRequest) map[string]any {
 			"role": msg.Role,
 		}
 
-		// Content 可能是 string 或 []ContentPart
 		switch v := msg.Content.(type) {
 		case string:
 			m["content"] = v
 		case []any:
-			// 转换为 Anthropic 格式的 content blocks
-			m["content"] = convertToAnthropicContent(v)
+			m["content"] = ConvertToAnthropicContent(v)
 		default:
 			m["content"] = fmt.Sprint(msg.Content)
 		}
 
-		// tool_result 消息
 		if msg.ToolCallID != "" {
 			m["content"] = []map[string]any{{
 				"type":        "tool_result",
@@ -121,7 +118,6 @@ func (p *AnthropicProvider) convertRequest(req *ChatRequest) map[string]any {
 	}
 	result["messages"] = messages
 
-	// Tool Use
 	if len(req.Tools) > 0 {
 		var tools []map[string]any
 		for _, t := range req.Tools {
@@ -142,8 +138,14 @@ func (p *AnthropicProvider) convertRequest(req *ChatRequest) map[string]any {
 	return result
 }
 
-// convertToAnthropicContent 将 OpenAI 格式的 content parts 转为 Anthropic 格式
-func convertToAnthropicContent(parts []any) []map[string]any {
+func (p *AnthropicProvider) convertRequest(req *ChatRequest) map[string]any {
+	body := ConvertRequestToAnthropic(req)
+	body["model"] = p.config.VendorModel
+	return body
+}
+
+// ConvertToAnthropicContent 将 OpenAI 格式的 content parts 转为 Anthropic 格式
+func ConvertToAnthropicContent(parts []any) []map[string]any {
 	var blocks []map[string]any
 	for _, part := range parts {
 		pm, ok := part.(map[string]any)
@@ -159,6 +161,20 @@ func convertToAnthropicContent(parts []any) []map[string]any {
 		case "image_url":
 			if imgURL, ok := pm["image_url"].(map[string]any); ok {
 				url, _ := imgURL["url"].(string)
+				if strings.HasPrefix(url, "data:") {
+					mediaType, data, ok := parseDataURL(url)
+					if ok {
+						blocks = append(blocks, map[string]any{
+							"type": "image",
+							"source": map[string]any{
+								"type":       "base64",
+								"media_type": mediaType,
+								"data":       data,
+							},
+						})
+						continue
+					}
+				}
 				blocks = append(blocks, map[string]any{
 					"type": "image",
 					"source": map[string]any{
@@ -188,7 +204,8 @@ func convertToAnthropicContent(parts []any) []map[string]any {
 	return blocks
 }
 
-func (p *AnthropicProvider) convertResponse(body []byte) (*ChatResponse, error) {
+// ParseAnthropicResponse 将 Anthropic Messages API 响应转换为 OpenAI 格式
+func ParseAnthropicResponse(body []byte, modelName string) (*ChatResponse, error) {
 	var anthropicResp struct {
 		ID      string `json:"id"`
 		Type    string `json:"type"`
@@ -253,7 +270,7 @@ func (p *AnthropicProvider) convertResponse(body []byte) (*ChatResponse, error) 
 		ID:      anthropicResp.ID,
 		Object:  "chat.completion",
 		Created: time.Now().Unix(),
-		Model:   p.config.VendorModel,
+		Model:   modelName,
 		Choices: []ChatChoice{{
 			Index:        0,
 			Message:      msg,
@@ -265,4 +282,22 @@ func (p *AnthropicProvider) convertResponse(body []byte) (*ChatResponse, error) 
 			TotalTokens:      anthropicResp.Usage.InputTokens + anthropicResp.Usage.OutputTokens,
 		},
 	}, nil
+}
+
+func (p *AnthropicProvider) convertResponse(body []byte) (*ChatResponse, error) {
+	return ParseAnthropicResponse(body, p.config.VendorModel)
+}
+
+// parseDataURL 解析 data:image/jpeg;base64,... 格式
+func parseDataURL(url string) (mediaType, data string, ok bool) {
+	// data:<mediatype>;base64,<data>
+	if !strings.HasPrefix(url, "data:") {
+		return "", "", false
+	}
+	rest := url[5:]
+	semicolon := strings.Index(rest, ";base64,")
+	if semicolon < 0 {
+		return "", "", false
+	}
+	return rest[:semicolon], rest[semicolon+8:], true
 }

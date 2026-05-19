@@ -306,6 +306,7 @@ export interface ChatMessage {
   requestLogId?: number;
   role: 'system' | 'user' | 'assistant';
   content: string;
+  attachments?: string;
   reasoningContent?: string;
   finishReason?: string;
   inputTokens: number;

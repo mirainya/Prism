@@ -1,6 +1,7 @@
 package service
 
 import (
+	"encoding/json"
 	"time"
 
 	"github.com/mirainya/Prism/internal/model"
@@ -34,7 +35,7 @@ func (s *UnifiedService) loadMessages(conversationID uint, targetModel string) (
 	for _, msg := range messages {
 		cm := chat.ChatMessage{
 			Role:    msg.Role,
-			Content: msg.Content,
+			Content: restoreContent(msg.Content, msg.Attachments),
 		}
 		if keepReasoning {
 			cm.ReasoningContent = msg.ReasoningContent
@@ -42,6 +43,22 @@ func (s *UnifiedService) loadMessages(conversationID uint, targetModel string) (
 		result = append(result, cm)
 	}
 	return result, nil
+}
+
+// restoreContent 从 text + attachments 还原为原始 content 结构
+func restoreContent(text, attachments string) any {
+	if attachments == "" {
+		return text
+	}
+	var parts []any
+	if err := json.Unmarshal([]byte(attachments), &parts); err != nil {
+		return text
+	}
+	if text != "" {
+		textPart := map[string]any{"type": "text", "text": text}
+		parts = append([]any{textPart}, parts...)
+	}
+	return parts
 }
 
 func (s *UnifiedService) findOrCreateConversation(userID, tokenID uint, modelCode string, messages []chat.ChatMessage) *model.Conversation {
@@ -113,6 +130,7 @@ func (s *UnifiedService) saveConversationMessages(
 			RequestLogID:   reqLogID,
 			Role:           msg.Role,
 			Content:        msg.ContentText(),
+			Attachments:    msg.ContentAttachments(),
 			Model:          endpoint.ModelCode,
 		}
 		if err := model.DB().Create(message).Error; err != nil {
