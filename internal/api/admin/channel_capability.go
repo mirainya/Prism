@@ -59,17 +59,35 @@ func CreateChannelCapability(c *gin.Context) {
 func UpdateChannelCapability(c *gin.Context) {
 	id, _ := strconv.ParseUint(c.Param("id"), 10, 64)
 
-	var req map[string]any
-	if err := c.ShouldBindJSON(&req); err != nil {
+	var raw map[string]any
+	if err := c.ShouldBindJSON(&raw); err != nil {
 		resp.ErrorMsg(c, http.StatusBadRequest, 400, err.Error())
 		return
 	}
 
-	delete(req, "id")
-	delete(req, "created_at")
-	delete(req, "updated_at")
+	allowedFields := map[string]bool{
+		"model_code": true, "channel_id": true,
+		"protocol": true, "request_path": true, "request_method": true, "content_type": true,
+		"auth_location": true, "auth_key": true, "auth_value_prefix": true,
+		"vendor_model": true,
+		"interaction_mode": true, "supports_stream": true, "default_stream": true,
+		"price_mode": true, "input_price": true, "output_price": true,
+		"param_mapping": true, "param_schema": true, "response_mapping": true,
+		"poll_path": true, "poll_method": true, "poll_interval": true, "poll_max_attempts": true,
+		"poll_param_mapping": true, "poll_response_mapping": true,
+		"callback_mapping": true,
+		"extra_headers": true, "extra_config": true,
+		"timeout": true, "priority": true, "status": true,
+	}
 
-	jsonFields := []string{"param_mapping", "response_mapping", "callback_mapping", "extra_config", "extra_headers", "poll_param_mapping", "poll_response_mapping"}
+	req := make(map[string]any)
+	for k, v := range raw {
+		if allowedFields[k] {
+			req[k] = v
+		}
+	}
+
+	jsonFields := []string{"param_schema", "param_mapping", "response_mapping", "callback_mapping", "extra_config", "extra_headers", "poll_param_mapping", "poll_response_mapping"}
 	for _, field := range jsonFields {
 		if v, ok := req[field]; ok {
 			if v == nil {

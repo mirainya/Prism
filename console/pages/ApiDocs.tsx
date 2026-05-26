@@ -28,7 +28,8 @@ const CodeBlock: React.FC<{ code: string; title?: string }> = ({ code, title }) 
 
 // ===== 参数表组件 =====
 const ParamTable: React.FC<{ params: { name: string; type: string; required: boolean; description: string }[] }> = ({ params }) => (
-  <table className="w-full text-sm">
+  <div className="overflow-x-auto -mx-2 px-2">
+  <table className="w-full text-sm min-w-[480px]">
     <thead>
       <tr className="bg-[var(--primary-lighter)]">
         <th className="px-3 py-2 text-left font-medium text-[var(--text-secondary)]">参数</th>
@@ -48,6 +49,7 @@ const ParamTable: React.FC<{ params: { name: string; type: string; required: boo
       ))}
     </tbody>
   </table>
+  </div>
 );
 
 // ===== 方法标签 =====
@@ -69,6 +71,7 @@ interface ApiEndpoint {
   name: string;
   description: string;
   params: { name: string; type: string; required: boolean; description: string }[];
+  channelParams?: { channelName: string; channelType: string; interactionMode?: string; params: { name: string; type: string; required: boolean; description: string }[] }[];
   requestExample?: string;
   responseExample?: string;
 }
@@ -102,22 +105,43 @@ const EndpointCard: React.FC<{ api: ApiEndpoint; onTryIt: (api: ApiEndpoint) => 
 
   return (
     <div id={api.id} className="border border-[var(--border-soft)] rounded-xl overflow-hidden bg-[var(--surface-card)]">
-      <div className="flex items-center gap-3 px-4 py-3 cursor-pointer hover:bg-[var(--primary-lighter)] transition-colors" onClick={() => setExpanded(!expanded)}>
-        {expanded ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
-        <MethodBadge method={api.method} />
-        <CopyablePath path={api.path} />
-        <span className="text-sm text-[var(--text-secondary)] ml-auto mr-2">{api.name}</span>
-        <button
-          onClick={handleTryIt}
-          className="flex items-center gap-1 px-2.5 py-1 rounded-lg text-xs font-medium border transition-colors shrink-0 border-[var(--primary)] text-[var(--primary)] hover:bg-[var(--primary-lighter)]"
-        >
-          <Play size={10} /> 试用
-        </button>
+      <div className="flex items-start sm:items-center gap-2 sm:gap-3 px-4 py-3 cursor-pointer hover:bg-[var(--primary-lighter)] transition-colors flex-wrap" onClick={() => setExpanded(!expanded)}>
+        <div className="flex items-center gap-2 sm:gap-3 min-w-0 flex-1">
+          {expanded ? <ChevronDown size={14} className="flex-shrink-0" /> : <ChevronRight size={14} className="flex-shrink-0" />}
+          <MethodBadge method={api.method} />
+          <CopyablePath path={api.path} />
+        </div>
+        <div className="flex items-center gap-2 ml-auto">
+          <span className="text-sm text-[var(--text-secondary)] hidden sm:inline">{api.name}</span>
+          <button
+            onClick={handleTryIt}
+            className="flex items-center gap-1 px-2.5 py-1 rounded-lg text-xs font-medium border transition-colors shrink-0 border-[var(--primary)] text-[var(--primary)] hover:bg-[var(--primary-lighter)]"
+          >
+            <Play size={10} /> 试用
+          </button>
+        </div>
       </div>
       {expanded && (
         <div className="border-t border-[var(--border-soft)] p-4 space-y-4">
           <p className="text-sm text-[var(--text-secondary)]">{api.description}</p>
           {api.params.length > 0 && <ParamTable params={api.params} />}
+          {api.channelParams && api.channelParams.length > 0 && (
+            <div className="space-y-3">
+              <h4 className="text-xs font-bold text-[var(--text-secondary)]">渠道专属参数</h4>
+              {api.channelParams.map(ch => {
+                const modeLabel = ch.interactionMode === 'poll' ? '异步轮询' : ch.interactionMode === 'callback' ? '异步回调' : ch.interactionMode === 'sync' ? '同步' : '';
+                return (
+                  <div key={ch.channelName} className="border border-[var(--border-soft)] rounded-lg p-3">
+                    <div className="text-xs font-medium text-[var(--text-primary)] mb-2">
+                      {ch.channelName} <span className="text-[var(--text-tertiary)]">({ch.channelType})</span>
+                      {modeLabel && <span className={`ml-2 px-1.5 py-0.5 rounded text-[10px] ${ch.interactionMode === 'sync' ? 'bg-green-100 text-green-700' : 'bg-amber-100 text-amber-700'}`}>{modeLabel}</span>}
+                    </div>
+                    <ParamTable params={ch.params} />
+                  </div>
+                );
+              })}
+            </div>
+          )}
           <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
             {api.requestExample && <CodeBlock code={api.requestExample} title="请求示例" />}
             {api.responseExample && <CodeBlock code={api.responseExample} title="响应示例" />}
@@ -246,6 +270,19 @@ const ApiDocs: React.FC = () => {
           params.push({ name: key, type: typeStr, required: val.required || false, description: val.name || '' });
         });
       }
+      // 收集渠道专属参数（与能力级不同的）
+      const channelParams: ApiEndpoint['channelParams'] = [];
+      m.channels.forEach(ch => {
+        if (ch.param_schema && typeof ch.param_schema === 'object') {
+          const chParams = Object.entries(ch.param_schema).map(([key, val]: [string, any]) => {
+            const typeStr = val.type === 'enum' ? `enum(${(val.options || []).join('|')})` : (val.type || 'string');
+            return { name: key, type: typeStr, required: val.required || false, description: val.name || '' };
+          });
+          if (chParams.length > 0) {
+            channelParams.push({ channelName: ch.channel_name, channelType: ch.channel_type, interactionMode: ch.interaction_mode, params: chParams });
+          }
+        }
+      });
       const exampleBody: Record<string, any> = {};
       if (m.param_schema && typeof m.param_schema === 'object') {
         Object.entries(m.param_schema).forEach(([key, val]: [string, any]) => {
@@ -264,6 +301,7 @@ const ApiDocs: React.FC = () => {
         name: m.name,
         description: m.description || `调用 ${m.name} 能力`,
         params,
+        channelParams: channelParams.length > 0 ? channelParams : undefined,
         requestExample: JSON.stringify(exampleBody, null, 2),
         responseExample: JSON.stringify({ code: 0, message: "success", data: { task_no: "task_xxx", status: "pending", capability: m.code } }, null, 2),
       };
@@ -303,9 +341,9 @@ const ApiDocs: React.FC = () => {
   }
 
   return (
-    <div className="flex h-[calc(100vh-6rem)] gap-4">
+    <div className="flex h-[calc(100dvh-6rem)] gap-4">
       {/* 左侧导航 */}
-      <aside className="w-56 shrink-0 overflow-y-auto no-scrollbar">
+      <aside className="w-56 shrink-0 overflow-y-auto no-scrollbar hidden md:block">
         <div className="sticky top-0 space-y-1">
           <div className="relative mb-3">
             <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-[var(--text-secondary)]" />
