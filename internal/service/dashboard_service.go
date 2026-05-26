@@ -129,8 +129,8 @@ func (s *DashboardService) GetStats(userID uint, isAdmin bool) (*StatsResult, er
 	var capabilityStats []CapabilityDist
 	baseQuery().
 		Where("created_at >= ?", todayStart.AddDate(0, 0, -7)).
-		Select("capability_code as capability, COUNT(*) as count").
-		Group("capability_code").
+		Select("model_code as capability, COUNT(*) as count").
+		Group("model_code").
 		Order("count DESC").
 		Limit(5).
 		Scan(&capabilityStats)
