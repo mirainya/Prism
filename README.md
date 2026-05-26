@@ -24,12 +24,12 @@ Prism 是一个基于 Go + React 的 AI Gateway，提供统一的 OpenAI 兼容�
 | 能力 | 说明 |
 |------|------|
 | **统一 Chat 接口** | `/v1/chat/completions`、`/v1/models`，完全兼容 OpenAI 格式 |
-| **多渠道路由** | 同一模型映射多个渠道，支持优先级与负载均衡，失败自动切换 |
-| **多提供商** | OpenAI / Anthropic Claude / Google Gemini，统一协议翻译 |
-| **对话管理** | 自动归并对话、流式聚合 usage、消息历史追溯 |
-| **异步任务** | 图片/视频生成等能力，支持提交、轮询、回调、取消 |
+| **多渠道路由** | 同一模型映射多个渠道，支持优先级与负载均衡，失败自动切换，渠道级图片 Base64 转换 |
+| **多提供商** | OpenAI / Anthropic Claude（原生协议） / Google Gemini，统一协议翻译 |
+| **对话管理** | 自动归并对话、流式聚合 usage、消息历史追溯、附件显示 |
+| **异步任务** | 图片/视频生成等能力，支持同步/轮询/回调三种交互模式，支持取消 |
 | **Playground** | 内置调试台：流式对话、文件上传、能力调用、请求调试面板 |
-| **API 文档** | 动态生成，内置右侧抽屉试用面板（表单/JSON 双模式） |
+| **API 文档** | 动态生成，渠道参数按交互模式分组显示，内置右侧抽屉试用面板（表单/JSON 双模式） |
 | **模型发现** | 自动同步上游渠道模型列表，审批后上线，支持快速配置 |
 | **计费系统** | Token 余额体系，按模型定价，用量实时扣费 |
 | **请求日志** | 完整记录请求/响应/用量/延迟/错误，支持重试 |
@@ -37,7 +37,7 @@ Prism 是一个基于 Go + React 的 AI Gateway，提供统一的 OpenAI 兼容�
 | **统计仪表盘** | 今日概览 + 7 天趋势 + 模型/渠道分布图 |
 | **配置热重载** | Viper 监听 config.yaml 变更，无需重启 |
 | **监控** | Prometheus 指标 + `/health` 健康检查（DB + Redis） |
-| **安全** | JWT + Token 双鉴权、CORS 可配置、Token 级限流 |
+| **安全** | JWT + Token 双鉴权、CORS 可配置、Token 级限流、渠道能力更新白名单校验 |
 
 ## 技术栈
 
@@ -143,6 +143,7 @@ cd console && npm run dev
 POST   /v1/chat/completions            # 对话补全（流式/非流式）
 GET    /v1/models                       # 模型列表
 GET    /v1/models/:code                 # 模型详情
+GET    /v1/channels                      # 可用渠道列表
 GET    /v1/capabilities                 # 可用能力列表
 POST   /v1/capabilities/:capability     # 调用能力（图片/视频生成等）
 GET    /v1/tasks/:task_no               # 查询任务状态
