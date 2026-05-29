@@ -95,10 +95,11 @@ func PlaygroundInvokeCapability(c *gin.Context) {
 
 	capability := c.Param("capability")
 	var body struct {
-		Channel     string         `json:"channel"`
-		Model       string         `json:"model"`
-		CallbackURL string         `json:"callback_url"`
-		Params      map[string]any `json:"params"`
+		Channel         string         `json:"channel"`
+		Model           string         `json:"model"`
+		InteractionMode string         `json:"interaction_mode"`
+		CallbackURL     string         `json:"callback_url"`
+		Params          map[string]any `json:"params"`
 	}
 	if err := c.ShouldBindJSON(&body); err != nil {
 		resp.ErrorMsg(c, http.StatusBadRequest, 400, "invalid request body")
@@ -107,12 +108,13 @@ func PlaygroundInvokeCapability(c *gin.Context) {
 
 	userID := middleware.GetUserID(c)
 	result, err := capabilityService.Invoke(c.Request.Context(), &service.InvokeRequest{
-		UserID:      userID,
-		TokenID:     token.ID,
-		Capability:  capability,
-		Channel:     body.Channel,
-		Model:       body.Model,
-		CallbackURL: body.CallbackURL,
+		UserID:          userID,
+		TokenID:         token.ID,
+		Capability:      capability,
+		Channel:         body.Channel,
+		Model:           body.Model,
+		InteractionMode: body.InteractionMode,
+		CallbackURL:     body.CallbackURL,
 		Params:      body.Params,
 	})
 	if err != nil {

@@ -12,6 +12,8 @@ import {
 import { PlaygroundCapability, CapabilityStandardParamSchema } from '../../types';
 import { TaskResult, Attachment } from './types';
 import StatusBadge from './StatusBadge';
+import ModelSelector from './ModelSelector';
+import EnumSelect from './EnumSelect';
 import { CapabilityDebugPanel, CapabilityResultCard } from './CapabilityResultCard';
 import {
   ACCEPTED_FILE_TYPES, FALLBACK_STANDARD_PARAMS, LONG_TEXT_FIELDS, CONTROL_FIELDS,
@@ -125,8 +127,17 @@ const CapabilityTab: React.FC<{ tokenId: string }> = ({ tokenId }) => {
   }, []);
 
   const currentCap = capabilities.find(c => c.code === selectedCap);
-  const currentSchemaEntries = useMemo(() => extractCapabilitySchema(currentCap), [currentCap]);
-  const hasExplicitSchema = Boolean(currentCap?.standardParams && Object.keys(currentCap.standardParams).length > 0);
+  const selectedChannel = useMemo(() => {
+    if (!params.channel || !currentCap?.channels) return null;
+    return currentCap.channels.find(ch => `${ch.channelType}::${ch.interactionMode || 'sync'}` === params.channel) || null;
+  }, [params.channel, currentCap]);
+  const currentSchemaEntries = useMemo(() => {
+    if (selectedChannel?.paramSchema && Object.keys(selectedChannel.paramSchema).length > 0) {
+      return extractCapabilitySchema({ ...currentCap!, standardParams: selectedChannel.paramSchema });
+    }
+    return extractCapabilitySchema(currentCap);
+  }, [currentCap, selectedChannel]);
+  const hasExplicitSchema = Boolean((selectedChannel?.paramSchema && Object.keys(selectedChannel.paramSchema).length > 0) || (currentCap?.standardParams && Object.keys(currentCap.standardParams).length > 0));
 
   const capabilityTypes = useMemo(() => {
     const types = new Set<string>(capabilities.map(cap => cap.type || 'other'));
@@ -291,8 +302,15 @@ const CapabilityTab: React.FC<{ tokenId: string }> = ({ tokenId }) => {
     setError(''); setIsSubmitting(true);
     try {
       const requestParams = Object.entries(params).reduce<Record<string, any>>((acc, [key, value]) => {
-        if (key === 'channel') { if (value) acc[key] = value; return acc; }
-        const schema = currentCap?.standardParams?.[key] || FALLBACK_STANDARD_PARAMS[key];
+        if (key === 'channel') {
+          if (value) {
+            const [ch, mode] = String(value).split('::');
+            acc.channel = ch;
+            if (mode && mode !== 'sync') acc.interaction_mode = mode;
+          }
+          return acc;
+        }
+        const schema = (selectedChannel?.paramSchema && selectedChannel.paramSchema[key]) || currentCap?.standardParams?.[key] || FALLBACK_STANDARD_PARAMS[key];
         const stringValue = String(value || '');
         if (!schema) { const trimmed = stringValue.trim(); if (trimmed) acc[key] = trimmed; return acc; }
         const normalized = normalizeCapabilityValue(schema, stringValue);
@@ -313,7 +331,8 @@ const CapabilityTab: React.FC<{ tokenId: string }> = ({ tokenId }) => {
         }
       }
 
-      const res = await playgroundInvokeCapability(tokenId, selectedCap, requestParams);
+      const { channel, interaction_mode, ...invokeParams } = requestParams;
+      const res = await playgroundInvokeCapability(tokenId, selectedCap, { channel, interaction_mode, params: invokeParams });
       const taskNo = res.data?.task_id || res.data?.task_no || res.task_id || '';
       if (taskNo) {
         const newTask: TaskResult = {
@@ -340,7 +359,7 @@ const CapabilityTab: React.FC<{ tokenId: string }> = ({ tokenId }) => {
     }
   };
   return (
-    <div className="relative h-[calc(100vh-220px)] overflow-hidden">
+    <div className="relative h-[calc(100dvh-180px)] md:h-[calc(100dvh-220px)] overflow-hidden">
       <input ref={capFileInputRef} type="file" accept={ACCEPTED_FILE_TYPES} className="hidden"
         onChange={e => { const file = e.target.files?.[0]; if (file && capUploadingField) handleFieldUpload(capUploadingField, file); e.target.value = ''; setCapUploadingField(null); }} />
       {showDebugDrawer && (
@@ -357,23 +376,23 @@ const CapabilityTab: React.FC<{ tokenId: string }> = ({ tokenId }) => {
 
       <div className="h-full flex gap-4">
         <div className="flex-1 flex flex-col bg-[var(--surface-card)] rounded-xl border border-[var(--border-soft)] overflow-hidden min-w-0">
-          <div className="px-4 py-2 border-b border-[var(--border-soft)] flex items-center justify-between gap-3">
+          <div className="px-3 md:px-4 py-2 border-b border-[var(--border-soft)] flex items-center justify-between gap-2">
             <div className="flex items-center gap-2 text-sm font-medium text-[var(--text-primary)] min-w-0">
-              <Zap size={15} /> 能力任务
+              <Zap size={15} /> <span className="hidden sm:inline">能力任务</span>
               <StatusBadge status={selectedTask ? getCapabilityTaskStatus(selectedTask.status) : 'pending'} />
             </div>
-            <div className="flex items-center gap-2 flex-wrap justify-end">
-              <span className="text-[11px] text-[var(--text-secondary)]">{filteredTasks.length > 0 ? `筛选后 ${filteredTasks.length} 条` : '提交任务后会显示在这里'}</span>
-              <div className="flex items-center gap-1 bg-[var(--primary-lighter)] rounded-xl p-1">
-                <button type="button" onClick={() => setTaskFilter('all')} className={`px-3 py-1 rounded-lg text-[11px] font-medium transition-all ${taskFilter === 'all' ? 'bg-[var(--surface-card)] text-[var(--primary)] shadow-sm' : 'text-[var(--text-secondary)] hover:text-[var(--text-primary)]'}`}>全部</button>
-                <button type="button" onClick={() => setTaskFilter('current')} className={`px-3 py-1 rounded-lg text-[11px] font-medium transition-all ${taskFilter === 'current' ? 'bg-[var(--surface-card)] text-[var(--primary)] shadow-sm' : 'text-[var(--text-secondary)] hover:text-[var(--text-primary)]'}`}>当前能力</button>
+            <div className="flex items-center gap-1.5 flex-wrap justify-end">
+              <span className="text-[11px] text-[var(--text-secondary)] hidden sm:inline">{filteredTasks.length > 0 ? `${filteredTasks.length} 条` : ''}</span>
+              <div className="flex items-center gap-0.5 bg-[var(--primary-lighter)] rounded-lg p-0.5">
+                <button type="button" onClick={() => setTaskFilter('all')} className={`px-2 py-1 rounded-md text-[11px] font-medium transition-all ${taskFilter === 'all' ? 'bg-[var(--surface-card)] text-[var(--primary)] shadow-sm' : 'text-[var(--text-secondary)]'}`}>全部</button>
+                <button type="button" onClick={() => setTaskFilter('current')} className={`px-2 py-1 rounded-md text-[11px] font-medium transition-all ${taskFilter === 'current' ? 'bg-[var(--surface-card)] text-[var(--primary)] shadow-sm' : 'text-[var(--text-secondary)]'}`}>当前</button>
               </div>
-              <button type="button" onClick={() => setShowDebugDrawer(true)} className="inline-flex items-center gap-1.5 px-2 py-1 rounded-lg border border-[var(--border-soft)] text-[11px] text-[var(--text-secondary)] hover:bg-[var(--surface)] xl:hidden" disabled={!selectedTask}><Bug size={12} /> 详情</button>
+              <button type="button" onClick={() => setShowDebugDrawer(true)} className="inline-flex items-center gap-1 px-2 py-1 rounded-lg border border-[var(--border-soft)] text-[11px] text-[var(--text-secondary)] hover:bg-[var(--surface)] xl:hidden" disabled={!selectedTask}><Bug size={12} /></button>
             </div>
           </div>
 
-          <div className="px-4 py-1.5 border-b border-[var(--border-soft)] space-y-3">
-            <div className="grid grid-cols-1 xl:grid-cols-[minmax(0,1.2fr)_220px_minmax(0,1fr)] gap-3 items-start">
+          <div className="px-3 md:px-4 py-1.5 border-b border-[var(--border-soft)] space-y-3">
+            <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-[minmax(0,1.2fr)_220px_minmax(0,1fr)] gap-2 md:gap-3 items-start">
               <div>
                 <label className="block text-[11px] font-medium text-[var(--text-secondary)] mb-1">能力</label>
                 <div ref={capabilityPickerRef} className="relative">
@@ -424,10 +443,13 @@ const CapabilityTab: React.FC<{ tokenId: string }> = ({ tokenId }) => {
               </div>
               <div>
                 <label className="block text-[11px] font-medium text-[var(--text-secondary)] mb-1">渠道</label>
-                <select value={params.channel || ''} onChange={e => setParams(prev => ({ ...prev, channel: e.target.value }))} className="w-full h-10 px-3 border border-[var(--border-soft)] rounded-lg text-sm bg-[var(--surface-card)] focus:outline-none focus:ring-2 focus:ring-[var(--primary)]">
-                  <option value="">自动选择</option>
-                  {currentCap?.channels?.map((ch: any, idx: number) => <option key={idx} value={ch.channel_type}>{ch.channel_name} ({ch.model})</option>)}
-                </select>
+                <ModelSelector
+                  options={currentCap?.channels?.map((ch: any) => ({ id: `${ch.channelType}::${ch.interactionMode || 'sync'}`, label: `${ch.model}${ch.interactionMode && ch.interactionMode !== 'sync' ? ` · ${ch.interactionMode}` : ''}`, provider: ch.channelName })) || []}
+                  value={params.channel || ''}
+                  onChange={v => setParams(prev => ({ ...prev, channel: v }))}
+                  placeholder="选择渠道"
+                  allOption="自动选择"
+                />
               </div>
               <div>
                 <label className="block text-[11px] font-medium text-[var(--text-secondary)] mb-1">搜索任务</label>
@@ -522,7 +544,7 @@ const CapabilityTab: React.FC<{ tokenId: string }> = ({ tokenId }) => {
           )}
 
           <div className="border-t border-[var(--border-soft)] bg-[var(--surface-card)]">
-            <div className="px-4 py-3 flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
+            <div className="px-3 md:px-4 py-2 md:py-3 flex flex-col gap-2 md:gap-3 md:flex-row md:items-center md:justify-between">
               <button type="button" onClick={() => { setHasTouchedParamPanel(true); setShowParamPanel(prev => !prev); }}
                 className="flex-1 text-left rounded-2xl border border-[var(--border-soft)] bg-[var(--surface)] px-4 py-3 hover:bg-[var(--primary-lighter)] transition-colors">
                 <div className="flex items-start justify-between gap-3">
@@ -551,7 +573,7 @@ const CapabilityTab: React.FC<{ tokenId: string }> = ({ tokenId }) => {
             </div>
 
             {showParamPanel && (
-              <div className="px-4 pb-4 space-y-3 overflow-y-auto" style={{ maxHeight: '240px' }}>
+              <div className="px-3 md:px-4 pb-3 md:pb-4 space-y-3 overflow-y-auto" style={{ maxHeight: '240px' }}>
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
                   {currentSchemaEntries.map(([key, schema]) => {
                     const value = params[key] || '';
@@ -570,7 +592,7 @@ const CapabilityTab: React.FC<{ tokenId: string }> = ({ tokenId }) => {
                                 {att.uploading && <div className="absolute inset-0 bg-black/40 flex items-center justify-center"><Loader2 size={16} className="animate-spin text-white" /></div>}
                                 {att.error && <div className="absolute inset-0 bg-red-500/60 flex items-center justify-center"><XCircle size={16} className="text-white" /></div>}
                                 {att.uploaded && <div className="absolute bottom-0.5 right-0.5 w-4 h-4 bg-emerald-500 rounded-full flex items-center justify-center"><CheckCircle2 size={10} className="text-white" /></div>}
-                                <button onClick={() => removeCapAttachment(key, att.id)} className="absolute -top-1.5 -right-1.5 w-5 h-5 bg-black/60 hover:bg-red-500 text-white rounded-full flex items-center justify-center opacity-0 group-hover:opacity-100 transition-all shadow-sm"><X size={10} /></button>
+                                <button onClick={() => removeCapAttachment(key, att.id)} className="absolute -top-1.5 -right-1.5 w-5 h-5 bg-black/60 hover:bg-red-500 text-white rounded-full flex items-center justify-center md:opacity-0 md:group-hover:opacity-100 transition-all shadow-sm"><X size={10} /></button>
                               </div>
                             ) : (
                               <div className="relative flex items-center gap-2 pl-2 pr-6 py-1.5 rounded-xl border border-[var(--border-soft)] bg-[var(--surface)] max-w-[180px]">
@@ -583,7 +605,7 @@ const CapabilityTab: React.FC<{ tokenId: string }> = ({ tokenId }) => {
                                     {att.error && <><XCircle size={8} className="text-red-500" /><span className="text-red-500 truncate">{att.error}</span></>}
                                   </div>
                                 </div>
-                                <button onClick={() => removeCapAttachment(key, att.id)} className="absolute -top-1.5 -right-1.5 w-5 h-5 bg-black/60 hover:bg-red-500 text-white rounded-full flex items-center justify-center opacity-0 group-hover:opacity-100 transition-all shadow-sm"><X size={10} /></button>
+                                <button onClick={() => removeCapAttachment(key, att.id)} className="absolute -top-1.5 -right-1.5 w-5 h-5 bg-black/60 hover:bg-red-500 text-white rounded-full flex items-center justify-center md:opacity-0 md:group-hover:opacity-100 transition-all shadow-sm"><X size={10} /></button>
                               </div>
                             )}
                           </div>
@@ -602,10 +624,7 @@ const CapabilityTab: React.FC<{ tokenId: string }> = ({ tokenId }) => {
                     if (schema.type === 'enum' || (selectOptions && selectOptions.length > 0)) {
                       return (
                         <div key={key}><label className="block text-[11px] font-medium text-[var(--text-secondary)] mb-1">{label}</label>
-                          <select value={value} onChange={e => setParams(prev => ({ ...prev, [key]: e.target.value }))} className={commonClassName} disabled={isSubmitting}>
-                            <option value="">请选择</option>
-                            {selectOptions!.map(option => <option key={option} value={option}>{option}</option>)}
-                          </select>
+                          <EnumSelect options={selectOptions!} value={value} onChange={v => setParams(prev => ({ ...prev, [key]: v }))} placeholder="请选择" disabled={isSubmitting} description={schema.description} />
                         </div>
                       );
                     }
@@ -645,7 +664,7 @@ const CapabilityTab: React.FC<{ tokenId: string }> = ({ tokenId }) => {
                                 <img src={att.preview} alt="" className="w-full h-full object-cover" />
                                 {att.uploading && <div className="absolute inset-0 bg-black/40 flex items-center justify-center"><Loader2 size={16} className="animate-spin text-white" /></div>}
                                 {att.uploaded && <div className="absolute bottom-0.5 right-0.5 w-4 h-4 bg-emerald-500 rounded-full flex items-center justify-center"><CheckCircle2 size={10} className="text-white" /></div>}
-                                <button onClick={() => removeCapAttachment('image_urls', att.id)} className="absolute -top-1.5 -right-1.5 w-5 h-5 bg-black/60 hover:bg-red-500 text-white rounded-full flex items-center justify-center opacity-0 group-hover:opacity-100 transition-all shadow-sm"><X size={10} /></button>
+                                <button onClick={() => removeCapAttachment('image_urls', att.id)} className="absolute -top-1.5 -right-1.5 w-5 h-5 bg-black/60 hover:bg-red-500 text-white rounded-full flex items-center justify-center md:opacity-0 md:group-hover:opacity-100 transition-all shadow-sm"><X size={10} /></button>
                               </div>
                             ) : (
                               <div className="relative flex items-center gap-2 pl-2 pr-6 py-1.5 rounded-xl border border-[var(--border-soft)] bg-[var(--surface)] max-w-[180px]">
@@ -657,7 +676,7 @@ const CapabilityTab: React.FC<{ tokenId: string }> = ({ tokenId }) => {
                                     {att.uploaded && <><CheckCircle2 size={8} className="text-emerald-500" /><span>{formatFileSize(att.file.size)}</span></>}
                                   </div>
                                 </div>
-                                <button onClick={() => removeCapAttachment('image_urls', att.id)} className="absolute -top-1.5 -right-1.5 w-5 h-5 bg-black/60 hover:bg-red-500 text-white rounded-full flex items-center justify-center opacity-0 group-hover:opacity-100 transition-all shadow-sm"><X size={10} /></button>
+                                <button onClick={() => removeCapAttachment('image_urls', att.id)} className="absolute -top-1.5 -right-1.5 w-5 h-5 bg-black/60 hover:bg-red-500 text-white rounded-full flex items-center justify-center md:opacity-0 md:group-hover:opacity-100 transition-all shadow-sm"><X size={10} /></button>
                               </div>
                             )}
                           </div>

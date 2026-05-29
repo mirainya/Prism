@@ -29,6 +29,8 @@ export const playgroundListCapabilities = async (tokenId: string): Promise<Playg
             channelName: ch.channel_name || '',
             model: ch.model || '',
             price: ch.price || 0,
+            interactionMode: ch.interaction_mode || '',
+            paramSchema: ch.param_schema || null,
         })),
     }));
 };

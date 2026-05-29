@@ -20,6 +20,7 @@ type Config struct {
 type ServerConfig struct {
 	Port      int    `mapstructure:"port"`
 	JWTSecret string `mapstructure:"jwt_secret"`
+	PublicURL string `mapstructure:"public_url"`
 }
 
 type DatabaseConfig struct {

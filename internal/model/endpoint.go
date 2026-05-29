@@ -29,6 +29,7 @@ type Model struct {
 	Features    datatypes.JSON `gorm:"type:json;comment:能力标签" json:"features"`
 	ParamSchema datatypes.JSON `gorm:"type:json;comment:参数schema" json:"param_schema"`
 	MaxTokens   int            `gorm:"default:0;comment:最大token数" json:"max_tokens"`
+	Sort        int            `gorm:"default:0;index;comment:排序(降序)" json:"sort"`
 	Status      int8           `gorm:"default:1;comment:状态(1启用/0禁用)" json:"status"`
 	CreatedAt   time.Time      `gorm:"index;comment:创建时间" json:"created_at"`
 	UpdatedAt   time.Time      `gorm:"comment:更新时间" json:"updated_at"`
@@ -99,6 +100,7 @@ type Endpoint struct {
 
 	// 映射配置
 	ParamMapping    datatypes.JSON `gorm:"type:json;comment:参数映射" json:"param_mapping"`
+	ParamSchema     datatypes.JSON `gorm:"type:json;comment:端点参数schema(覆盖模型级)" json:"param_schema"`
 	ResponseMapping datatypes.JSON `gorm:"type:json;comment:响应映射" json:"response_mapping"`
 
 	// 轮询

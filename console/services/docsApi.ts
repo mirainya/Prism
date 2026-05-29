@@ -6,7 +6,7 @@ export interface DocsModel {
   type: string;
   description: string;
   param_schema: Record<string, any> | null;
-  channels: { channel_type: string; channel_name: string; model: string; price: number }[];
+  channels: { channel_type: string; channel_name: string; model: string; price: number; interaction_mode?: string; param_schema?: Record<string, any> }[];
 }
 
 export const fetchDocsModels = async (): Promise<DocsModel[]> => {

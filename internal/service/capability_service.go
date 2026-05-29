@@ -17,13 +17,14 @@ import (
 
 // InvokeRequest 能力调用请求
 type InvokeRequest struct {
-	UserID      uint
-	TokenID     uint
-	Capability  string
-	Channel     string
-	Model       string
-	CallbackURL string
-	Params      map[string]any
+	UserID          uint
+	TokenID         uint
+	Capability      string
+	Channel         string
+	Model           string
+	InteractionMode string
+	CallbackURL     string
+	Params          map[string]any
 }
 
 // InvokeResponse 能力调用响应
@@ -143,6 +144,9 @@ func (s *UnifiedService) CancelTask(ctx context.Context, taskNo string, userID u
 func (s *UnifiedService) HandleCallback(ctx context.Context, channelType string, body map[string]any) error {
 	taskID, _ := body["task_id"].(string)
 	if taskID == "" {
+		taskID, _ = body["id"].(string)
+	}
+	if taskID == "" {
 		return errors.New("missing task_id in callback")
 	}
 
@@ -171,6 +175,9 @@ func (s *UnifiedService) findEndpointForCapability(req *InvokeRequest) (*model.E
 		if err := model.DB().Where("type = ? AND status = 1", req.Channel).First(&ch).Error; err == nil {
 			query = query.Where("channel_id = ?", ch.ID)
 		}
+	}
+	if req.InteractionMode != "" {
+		query = query.Where("interaction_mode = ?", req.InteractionMode)
 	}
 
 	var endpoint model.Endpoint

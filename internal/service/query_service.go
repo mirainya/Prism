@@ -65,12 +65,17 @@ func (s *QueryService) ListAvailableCapabilities(channelType, modelType string) 
 	modelChannels := make(map[string][]gin.H)
 	for _, ep := range endpoints {
 		if ch, ok := channelMap[ep.ChannelID]; ok {
-			modelChannels[ep.ModelCode] = append(modelChannels[ep.ModelCode], gin.H{
-				"channel_type": ch.Type,
-				"channel_name": ch.Name,
-				"model":        ep.VendorModel,
-				"price":        ep.InputPrice,
-			})
+			entry := gin.H{
+				"channel_type":     ch.Type,
+				"channel_name":     ch.Name,
+				"model":            ep.VendorModel,
+				"price":            ep.InputPrice,
+				"interaction_mode": ep.InteractionMode,
+			}
+			if len(ep.ParamSchema) > 0 {
+				entry["param_schema"] = ensureUTF8(ep.ParamSchema)
+			}
+			modelChannels[ep.ModelCode] = append(modelChannels[ep.ModelCode], entry)
 		}
 	}
 

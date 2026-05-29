@@ -1,6 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import { X } from 'lucide-react';
 import { Modal } from '../../components/ui/Modal';
+import JsonEditor from '../../components/ui/JsonEditor';
 import { createChannelCapability, updateChannelCapability } from '../../services/api';
 import { ChannelCapability, Channel, Capability } from '../../types';
 import {
@@ -25,7 +26,7 @@ const ChannelCapabilityModal: React.FC<{
     onSave: () => void;
 }> = ({isOpen, capabilityCode, channelCapability, channels, capabilities, onClose, onSave}) => {
     const [templateSelected, setTemplateSelected] = useState(!!channelCapability);
-    const [activeTab, setActiveTab] = useState<'basic' | 'request' | 'param' | 'response' | 'poll_response' | 'callback'>('basic');
+    const [activeTab, setActiveTab] = useState<'basic' | 'request' | 'param' | 'response' | 'poll_response' | 'callback' | 'schema'>('basic');
     const [form, setForm] = useState({
         channel_id: 0, capability_code: '', model: '', name: '', price: 0, price_unit: 'request',
         result_mode: 'poll', request_path: '', request_method: 'POST', content_type: 'application/json',
@@ -49,6 +50,8 @@ const ChannelCapabilityModal: React.FC<{
     const [pollParamFixedParams, setPollParamFixedParams] = useState<FixedParam[]>([]);
     const [callbackConfig, setCallbackConfig] = useState({ task_id_path: '', status_path: '', result_path: '' });
     const [callbackStatusMappings, setCallbackStatusMappings] = useState<{stdValue: string; vendorValue: string}[]>([]);
+    const [paramSchemaJson, setParamSchemaJson] = useState('');
+    const [paramSchemaError, setParamSchemaError] = useState('');
     const [loading, setLoading] = useState(false);
 
     useEffect(() => {
@@ -112,6 +115,8 @@ const ChannelCapabilityModal: React.FC<{
                 });
             }
             setCallbackStatusMappings(cbStatusMappings);
+            const ps = (channelCapability as any).paramSchema;
+            setParamSchemaJson(ps && Object.keys(ps).length > 0 ? JSON.stringify(ps, null, 2) : '');
         } else {
             setForm({
                 channel_id: channels[0]?.id ? Number(channels[0].id) : 0,
@@ -125,6 +130,7 @@ const ChannelCapabilityModal: React.FC<{
             setPollRespFieldMappings([]); setPollRespValueMappings([]); setPollRespTypeConverts([]); setPollRespSuccessCondition(null);
             setUseSeparatePollMapping(false); setPollParamFieldMappings([]); setPollParamFixedParams([]);
             setCallbackConfig({task_id_path: '', status_path: '', result_path: ''}); setCallbackStatusMappings([]);
+            setParamSchemaJson('');
         }
         setActiveTab('basic');
         setTemplateSelected(!!channelCapability);
@@ -159,6 +165,11 @@ const ChannelCapabilityModal: React.FC<{
                 poll_max_attempts: form.poll_max_attempts, param_mapping: paramMapping, callback_mapping: callbackMapping,
                 extra_config: {transfer_enabled: form.transfer_enabled},
             };
+            if (paramSchemaJson.trim()) {
+                try { data.param_schema = JSON.parse(paramSchemaJson); } catch { setParamSchemaError('JSON 格式错误'); setLoading(false); return; }
+            } else {
+                data.param_schema = null;
+            }
             if (form.result_mode === 'sync' || form.result_mode === 'poll') data.response_mapping = responseMapping;
             if (form.result_mode === 'poll') {
                 if (pollResponseMapping) data.poll_response_mapping = pollResponseMapping;
@@ -181,6 +192,7 @@ const ChannelCapabilityModal: React.FC<{
     const baseTabs = [
         {key: 'basic', label: '基本信息'},
         {key: 'request', label: '请求配置'},
+        {key: 'schema', label: '参数Schema'},
         {key: 'param', label: '参数映射'},
         {key: 'response', label: '响应映射'},
     ];
@@ -464,6 +476,22 @@ const ChannelCapabilityModal: React.FC<{
                                     )}
                                 </div>
                             )}
+                        </div>
+                    )}
+
+                    {/* 参数Schema */}
+                    {activeTab === 'schema' && (
+                        <div className="space-y-3">
+                            <p className="text-xs text-[var(--text-secondary)]">覆盖能力级别的参数定义。留空则使用能力默认 schema。Playground 会根据此 schema 渲染输入表单。</p>
+                            {paramSchemaError && <p className="text-xs text-red-500">{paramSchemaError}</p>}
+                            <JsonEditor value={paramSchemaJson} onChange={v => { setParamSchemaJson(v); setParamSchemaError(''); }}
+                                height="300px" placeholder='{"prompt": {"type": "string", "name": "描述文本", "required": true}}' />
+                            <div className="flex items-center gap-2">
+                                <button type="button" onClick={() => { try { setParamSchemaJson(JSON.stringify(JSON.parse(paramSchemaJson), null, 2)); setParamSchemaError(''); } catch (e: any) { setParamSchemaError(e.message); } }}
+                                    className="px-3 py-1.5 text-xs border border-[var(--border-soft)] rounded-lg hover:bg-[var(--surface)] transition-colors" disabled={!paramSchemaJson.trim()}>格式化</button>
+                                <button type="button" onClick={() => { const cap = capabilities.find(c => c.code === form.capability_code); if (cap?.standardParams && Object.keys(cap.standardParams).length > 0) { setParamSchemaJson(JSON.stringify(cap.standardParams, null, 2)); setParamSchemaError(''); } }}
+                                    className="px-3 py-1.5 text-xs border border-[var(--border-soft)] rounded-lg hover:bg-[var(--surface)] transition-colors">从能力复制</button>
+                            </div>
                         </div>
                     )}
 

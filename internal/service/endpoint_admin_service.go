@@ -61,6 +61,7 @@ type CreateEndpointRequest struct {
 	PriceMode       string          `json:"price_mode"`
 	InputPrice      decimal.Decimal `json:"input_price"`
 	OutputPrice     decimal.Decimal `json:"output_price"`
+	ParamSchema     datatypes.JSON  `json:"param_schema"`
 	ParamMapping    datatypes.JSON  `json:"param_mapping"`
 	ResponseMapping datatypes.JSON  `json:"response_mapping"`
 	PollPath        string          `json:"poll_path"`
@@ -101,6 +102,7 @@ func (s *EndpointAdminService) CreateEndpoint(req *CreateEndpointRequest) (*mode
 		PriceMode:       model.PriceMode(req.PriceMode),
 		InputPrice:      req.InputPrice,
 		OutputPrice:     req.OutputPrice,
+		ParamSchema:     req.ParamSchema,
 		ParamMapping:    req.ParamMapping,
 		ResponseMapping: req.ResponseMapping,
 		PollPath:        req.PollPath,

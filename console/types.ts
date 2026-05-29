@@ -93,6 +93,7 @@ export interface ChannelCapability {
     pollResponseMapping: Record<string, any>;
     // 映射配置
   paramMapping: Record<string, any>;
+  paramSchema?: Record<string, any> | null;
   responseMapping: Record<string, any>;
   callbackMapping: Record<string, any>;
   extraConfig: Record<string, any>;
@@ -141,6 +142,8 @@ export interface ChannelOption {
   channelName: string;
   model: string;
   price: number;
+  interactionMode: string;
+  paramSchema?: CapabilityStandardParams | null;
 }
 
 export interface TaskLog {
@@ -246,6 +249,7 @@ export interface ChatModel {
   description: string;
   features?: string[];
   maxTokens?: number;
+  sort?: number;
   status: number;
   createdAt: string;
   updatedAt: string;

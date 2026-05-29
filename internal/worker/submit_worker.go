@@ -9,6 +9,7 @@ import (
 	"github.com/hibiken/asynq"
 	"github.com/mirainya/Prism/internal/model"
 	"github.com/mirainya/Prism/internal/provider"
+	"github.com/mirainya/Prism/pkg/config"
 	"github.com/mirainya/Prism/pkg/logger"
 	"github.com/mirainya/Prism/pkg/queue"
 	"go.uber.org/zap"
@@ -54,6 +55,14 @@ func HandleTaskSubmit(ctx context.Context, t *asynq.Task) error {
 	// 4. 解析参数
 	var mappedParams map[string]any
 	json.Unmarshal(task.MappedParams, &mappedParams)
+
+	// callback 模式：注入 Prism 自身的回调地址
+	if endpoint.InteractionMode == model.ModeCallback {
+		if mappedParams == nil {
+			mappedParams = make(map[string]any)
+		}
+		mappedParams["callback_url"] = config.C.Server.PublicURL + "/internal/callback/" + channel.Type
+	}
 
 	// 5. 提交到上游
 	submitReq := provider.SubmitRequest{
