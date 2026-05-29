@@ -7,11 +7,12 @@ import {
 } from '../services/api';
 import { Capability, ChannelCapability, Channel } from '../types';
 import {
-    CAPABILITY_TYPES, CAPABILITY_TYPE_ORDER,
+    CAPABILITY_TYPES, CAPABILITY_TYPE_ORDER, RESULT_MODES,
     normalizeText, getCapabilityTypeLabel, getCapabilityTypeBadgeClass, formatPrice,
 } from './capabilities/constants';
 import CapabilityModal from './capabilities/CapabilityModal';
 import ChannelCapabilityModal from './capabilities/ChannelCapabilityModal';
+import { Select } from '../components/ui';
 
 const Capabilities: React.FC = () => {
   const [capabilities, setCapabilities] = useState<Capability[]>([]);
@@ -22,6 +23,8 @@ const Capabilities: React.FC = () => {
   const [searchTerm, setSearchTerm] = useState('');
   const [filterType, setFilterType] = useState('');
   const [filterStatus, setFilterStatus] = useState('all');
+  const [filterChannel, setFilterChannel] = useState('');
+  const [filterResultMode, setFilterResultMode] = useState('');
 
     const [capabilityModal, setCapabilityModal] = useState<{
         open: boolean;
@@ -49,6 +52,18 @@ const Capabilities: React.FC = () => {
         return map;
     }, [channelCapabilities]);
 
+    // 应用 渠道 + 交互模式 筛选后，每个能力的可见渠道配置
+    const visibleCCsByCodeMap = useMemo(() => {
+        const map = new Map<string, ChannelCapability[]>();
+        channelCapabilitiesByCodeMap.forEach((list, code) => {
+            map.set(code, list.filter(cc =>
+                (!filterChannel || String(cc.channelId) === filterChannel) &&
+                (!filterResultMode || cc.resultMode === filterResultMode)
+            ));
+        });
+        return map;
+    }, [channelCapabilitiesByCodeMap, filterChannel, filterResultMode]);
+
     const stats = useMemo(() => ({
         totalCapabilities: capabilities.length,
         enabledCapabilities: capabilities.filter(cap => cap.status === 1).length,
@@ -58,6 +73,7 @@ const Capabilities: React.FC = () => {
 
     const filteredCapabilities = useMemo(() => {
         const keyword = searchTerm.trim().toLowerCase();
+        const ccFilterActive = !!filterChannel || !!filterResultMode;
         return capabilities.filter(cap => {
             const normalizedType = cap.type || 'other';
             const relatedCCs = channelCapabilitiesByCodeMap.get(cap.code) || [];
@@ -65,13 +81,14 @@ const Capabilities: React.FC = () => {
             const matchesStatus = filterStatus === 'all'
                 || (filterStatus === 'enabled' && cap.status === 1)
                 || (filterStatus === 'disabled' && cap.status !== 1);
+            const matchesCcFilter = !ccFilterActive || (visibleCCsByCodeMap.get(cap.code)?.length || 0) > 0;
             const matchesKeyword = !keyword || [
                 cap.name, cap.code, cap.description, normalizedType,
                 ...relatedCCs.flatMap(cc => [cc.name, cc.model, cc.requestPath, cc.resultMode, channelNameMap.get(cc.channelId)]),
             ].some(field => normalizeText(field).includes(keyword));
-            return matchesType && matchesStatus && matchesKeyword;
+            return matchesType && matchesStatus && matchesCcFilter && matchesKeyword;
         });
-    }, [capabilities, channelCapabilitiesByCodeMap, channelNameMap, filterStatus, filterType, searchTerm]);
+    }, [capabilities, channelCapabilitiesByCodeMap, visibleCCsByCodeMap, channelNameMap, filterStatus, filterType, filterChannel, filterResultMode, searchTerm]);
 
     const groupedCapabilities = useMemo(() => {
         const groups = new Map<string, Capability[]>();
@@ -90,12 +107,12 @@ const Capabilities: React.FC = () => {
                     type, label: getCapabilityTypeLabel(type), items,
                     capabilityCount: items.length,
                     enabledCount: items.filter(cap => cap.status === 1).length,
-                    channelCapabilityCount: items.reduce((sum, cap) => sum + (channelCapabilitiesByCodeMap.get(cap.code)?.length || 0), 0),
+                    channelCapabilityCount: items.reduce((sum, cap) => sum + (visibleCCsByCodeMap.get(cap.code)?.length || 0), 0),
                 };
             });
-    }, [filteredCapabilities, channelCapabilitiesByCodeMap]);
+    }, [filteredCapabilities, channelCapabilitiesByCodeMap, visibleCCsByCodeMap]);
 
-    const resetFilters = () => { setSearchTerm(''); setFilterType(''); setFilterStatus('all'); };
+    const resetFilters = () => { setSearchTerm(''); setFilterType(''); setFilterStatus('all'); setFilterChannel(''); setFilterResultMode(''); };
 
     useEffect(() => { loadData(); }, []);
 
@@ -134,64 +151,66 @@ const Capabilities: React.FC = () => {
     };
 
   return (
-    <div className="space-y-6">
+    <div className="space-y-4 md:space-y-6">
 
       {isLoading ? (
         <div className="animate-pulse space-y-4">
           {[1, 2, 3].map(i => (
-            <div key={i} className="bg-[var(--surface-card)] p-6 rounded-2xl border border-[var(--border-soft)] h-24"></div>
+            <div key={i} className="bg-[var(--surface-card)] p-4 md:p-6 rounded-2xl border border-[var(--border-soft)] h-24"></div>
           ))}
         </div>
       ) : (<>
 
-      <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
+      <div className="flex flex-col gap-3 md:gap-4 lg:flex-row lg:items-center lg:justify-between">
         <div>
-          <h1 className="text-2xl font-bold text-[var(--text-primary)]">
+          <h1 className="text-xl md:text-2xl font-bold text-[var(--text-primary)]">
             能力配置
-            <span className="ml-3 text-base font-normal text-[var(--text-secondary)]">
-              {stats.totalCapabilities} 个能力，{stats.enabledCapabilities} 个启用，{stats.totalChannelCapabilities} 个渠道配置
+            <span className="ml-2 md:ml-3 text-xs md:text-base font-normal text-[var(--text-secondary)]">
+              {stats.totalCapabilities} 能力 / {stats.enabledCapabilities} 启用
             </span>
           </h1>
-          <p className="text-[var(--text-secondary)] mt-1">管理平台能力定义和渠道能力映射</p>
+          <p className="text-[var(--text-secondary)] mt-1 text-sm md:text-base">管理平台能力定义和渠道能力映射</p>
         </div>
           <div className="flex flex-wrap gap-2">
               <button onClick={loadData}
-                      className="flex items-center gap-2 px-4 py-2 border border-[var(--border-soft)] rounded-lg text-[var(--text-secondary)] hover:bg-[var(--surface)]">
+                      className="flex items-center gap-2 px-3 md:px-4 py-2 border border-[var(--border-soft)] rounded-lg text-[var(--text-secondary)] hover:bg-[var(--surface)]">
                   <RefreshCw size={16} className={isLoading ? 'animate-spin' : ''}/>
-                  刷新
+                  <span className="hidden md:inline">刷新</span>
               </button>
               <button
                   onClick={() => setCapabilityModal({open: true, capability: null})}
-                  className="flex items-center gap-2 px-6 py-2 bg-[var(--primary)] text-white rounded-lg text-sm font-bold hover:opacity-90 transition-all shadow-sm"
+                  className="flex items-center gap-2 px-4 md:px-6 py-2 bg-[var(--primary)] text-white rounded-lg text-sm font-bold hover:opacity-90 transition-all shadow-sm"
               >
                   <Plus size={18}/>
-                  新建能力
+                  <span className="hidden md:inline">新建能力</span>
+                  <span className="md:hidden">新建</span>
               </button>
           </div>
       </div>
 
-      <div className="bg-[var(--surface-card)] rounded-2xl shadow-sm border border-[var(--border-soft)] p-4 space-y-4">
-        <div className="flex flex-col lg:flex-row gap-4">
+      <div className="bg-[var(--surface-card)] rounded-2xl shadow-sm border border-[var(--border-soft)] p-3 md:p-4 space-y-3 md:space-y-4">
+        <div className="flex flex-col lg:flex-row gap-3 md:gap-4">
           <div className="relative flex-1">
-            <Search size={18} className="absolute left-3 top-1/2 -translate-y-1/2 text-[var(--text-secondary)]" />
+            <Search size={16} className="absolute left-3 top-1/2 -translate-y-1/2 text-[var(--text-secondary)]" />
             <input type="text" value={searchTerm} onChange={e => setSearchTerm(e.target.value)}
-              placeholder="搜索能力名、编码、描述、渠道名或渠道配置..."
-              className="w-full pl-10 pr-4 py-2 border border-[var(--border-soft)] rounded-lg focus:outline-none focus:ring-2 focus:ring-[var(--primary)] text-sm" />
+              placeholder="搜索能力名、编码..."
+              className="w-full pl-9 pr-4 py-2 border border-[var(--border-soft)] rounded-lg focus:outline-none focus:ring-2 focus:ring-[var(--primary)] text-sm" />
           </div>
           <div className="lg:w-52">
-            <select value={filterType} onChange={e => setFilterType(e.target.value)}
-              className="w-full px-3 py-2 border border-[var(--border-soft)] rounded-lg focus:outline-none focus:ring-2 focus:ring-[var(--primary)] text-sm">
-              <option value="">全部类型</option>
-              {CAPABILITY_TYPES.map(type => (<option key={type.value} value={type.value}>{type.label}</option>))}
-            </select>
+            <Select value={filterType} onChange={setFilterType} placeholder="全部类型"
+              options={[{ label: '全部类型', value: '' }, ...CAPABILITY_TYPES]} />
           </div>
           <div className="lg:w-52">
-            <select value={filterStatus} onChange={e => setFilterStatus(e.target.value)}
-              className="w-full px-3 py-2 border border-[var(--border-soft)] rounded-lg focus:outline-none focus:ring-2 focus:ring-[var(--primary)] text-sm">
-              <option value="all">全部状态</option>
-              <option value="enabled">仅启用</option>
-              <option value="disabled">仅禁用</option>
-            </select>
+            <Select value={filterStatus} onChange={setFilterStatus} placeholder="全部状态"
+              options={[{ label: '全部状态', value: 'all' }, { label: '仅启用', value: 'enabled' }, { label: '仅禁用', value: 'disabled' }]} />
+          </div>
+          <div className="lg:w-52">
+            <Select value={filterChannel} onChange={setFilterChannel} placeholder="全部渠道"
+              options={[{ label: '全部渠道', value: '' }, ...channels.map(ch => ({ label: ch.name, value: String(ch.id) }))]} />
+          </div>
+          <div className="lg:w-52">
+            <Select value={filterResultMode} onChange={setFilterResultMode} placeholder="全部交互模式"
+              options={[{ label: '全部交互模式', value: '' }, ...RESULT_MODES]} />
           </div>
           <button type="button" onClick={resetFilters}
             className="px-4 py-2 border border-[var(--border-soft)] rounded-lg text-sm text-[var(--text-primary)] hover:bg-[var(--surface)] transition-colors">
@@ -245,7 +264,8 @@ const Capabilities: React.FC = () => {
               <div className="p-4 space-y-4">
                 {group.items.map(cap => {
                   const isExpanded = expandedCapability === cap.code;
-                  const relatedCCs = channelCapabilitiesByCodeMap.get(cap.code) || [];
+                  const ccFilterActive = !!filterChannel || !!filterResultMode;
+                  const relatedCCs = (ccFilterActive ? visibleCCsByCodeMap.get(cap.code) : channelCapabilitiesByCodeMap.get(cap.code)) || [];
                   const enabledCCCount = relatedCCs.filter(cc => cc.status === 1).length;
                   const standardParamCount = Object.keys(cap.standardParams || {}).length;
 

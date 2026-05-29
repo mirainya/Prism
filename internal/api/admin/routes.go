@@ -47,6 +47,7 @@ func RegisterRoutes(group *gin.RouterGroup) {
 	group.GET("/chat-models", ListChatModels)
 	group.GET("/chat-models/presets", GetChatModelPresets)
 	group.POST("/chat-models/quick-setup", QuickSetupChatModels)
+	group.POST("/chat-models/reorder", ReorderChatModels)
 	group.GET("/chat-models/:code", GetChatModel)
 	group.POST("/chat-models", CreateChatModel)
 	group.PUT("/chat-models/:code", UpdateChatModel)

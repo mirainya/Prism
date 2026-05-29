@@ -7,6 +7,7 @@ import (
 	"github.com/mirainya/Prism/internal/model"
 	"github.com/shopspring/decimal"
 	"gorm.io/datatypes"
+	"gorm.io/gorm"
 )
 
 type ModelAdminService struct{}
@@ -44,7 +45,7 @@ func (s *ModelAdminService) ListModels(status string) ([]model.Model, error) {
 
 func (s *ModelAdminService) ListModelsByType(typ string) ([]model.Model, error) {
 	var models []model.Model
-	err := model.DB().Where("type = ?", typ).Order("created_at DESC").Find(&models).Error
+	err := model.DB().Where("type = ?", typ).Order("sort DESC, created_at DESC").Find(&models).Error
 	return models, err
 }
 
@@ -99,6 +100,19 @@ func (s *ModelAdminService) UpdateModel(code string, updates map[string]any) (*m
 		return nil, err
 	}
 	return &m, nil
+}
+
+// UpdateModelSorts 按顺序批量更新模型排序权重，codes[0] 权重最高
+func (s *ModelAdminService) UpdateModelSorts(codes []string) error {
+	return model.DB().Transaction(func(tx *gorm.DB) error {
+		n := len(codes)
+		for i, code := range codes {
+			if err := tx.Model(&model.Model{}).Where("code = ?", code).Update("sort", n-i).Error; err != nil {
+				return err
+			}
+		}
+		return nil
+	})
 }
 
 func (s *ModelAdminService) DeleteModel(code string) (int64, error) {

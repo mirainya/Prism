@@ -59,6 +59,7 @@ func UpdateChatModel(c *gin.Context) {
 		Description string  `json:"description"`
 		Features    *[]string `json:"features"`
 		MaxTokens   *int    `json:"max_tokens"`
+		Sort        *int    `json:"sort"`
 		Status      *int8   `json:"status"`
 	}
 
@@ -84,6 +85,9 @@ func UpdateChatModel(c *gin.Context) {
 	if req.MaxTokens != nil {
 		updates["max_tokens"] = *req.MaxTokens
 	}
+	if req.Sort != nil {
+		updates["sort"] = *req.Sort
+	}
 	if req.Status != nil {
 		updates["status"] = *req.Status
 	}
@@ -94,6 +98,22 @@ func UpdateChatModel(c *gin.Context) {
 		return
 	}
 
+	resp.Success(c, nil)
+}
+
+// ReorderChatModels POST /api/admin/chat-models/reorder
+func ReorderChatModels(c *gin.Context) {
+	var req struct {
+		Codes []string `json:"codes" binding:"required"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		resp.ErrorMsg(c, http.StatusBadRequest, 400, err.Error())
+		return
+	}
+	if err := modelAdminService.UpdateModelSorts(req.Codes); err != nil {
+		resp.ErrorMsg(c, http.StatusInternalServerError, 500, err.Error())
+		return
+	}
 	resp.Success(c, nil)
 }
 

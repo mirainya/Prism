@@ -293,7 +293,7 @@ func (s *UnifiedService) FinalizeStream(session *StreamSession, result *StreamAg
 // ListModels 列出可用模型
 func (s *UnifiedService) ListModels(ctx context.Context) ([]model.Model, error) {
 	var models []model.Model
-	if err := model.DB().Where("status = 1").Find(&models).Error; err != nil {
+	if err := model.DB().Where("status = 1").Order("sort DESC, created_at DESC").Find(&models).Error; err != nil {
 		return nil, err
 	}
 	return models, nil
@@ -310,7 +310,7 @@ func (s *UnifiedService) GetModelDetail(ctx context.Context, code string) (*mode
 // ListPlaygroundModels 列出 playground 可用模型
 func (s *UnifiedService) ListPlaygroundModels(ctx context.Context, tokenID uint) ([]ModelInfo, error) {
 	var models []model.Model
-	if err := model.DB().Where("status = 1 AND type = 'chat'").Find(&models).Error; err != nil {
+	if err := model.DB().Where("status = 1 AND type = 'chat'").Order("sort DESC, created_at DESC").Find(&models).Error; err != nil {
 		return nil, err
 	}
 

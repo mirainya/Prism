@@ -11,6 +11,7 @@ export const fetchChatModels = async (): Promise<ChatModel[]> => {
         description: m.description,
         features: m.features || [],
         maxTokens: m.max_tokens || 0,
+        sort: m.sort || 0,
         status: m.status,
         createdAt: m.created_at,
         updatedAt: m.updated_at,
@@ -27,6 +28,7 @@ export const getChatModel = async (code: string): Promise<ChatModel> => {
         description: m.description,
         features: m.features || [],
         maxTokens: m.max_tokens || 0,
+        sort: m.sort || 0,
         status: m.status,
         createdAt: m.created_at,
         updatedAt: m.updated_at,
@@ -40,6 +42,7 @@ export const createChatModel = async (data: {
     description?: string;
     features?: string[];
     max_tokens?: number;
+    sort?: number;
 }): Promise<ChatModel> => {
     const m = await request<any>('/admin/chat-models', {
         method: 'POST',
@@ -53,6 +56,7 @@ export const createChatModel = async (data: {
         description: m.description,
         features: m.features || [],
         maxTokens: m.max_tokens || 0,
+        sort: m.sort || 0,
         status: m.status,
         createdAt: m.created_at,
         updatedAt: m.updated_at,
@@ -65,6 +69,7 @@ export const updateChatModel = async (code: string, data: {
     description?: string;
     features?: string[];
     max_tokens?: number;
+    sort?: number;
     status?: number;
 }): Promise<void> => {
     await request(`/admin/chat-models/${code}`, {
@@ -75,6 +80,13 @@ export const updateChatModel = async (code: string, data: {
 
 export const deleteChatModel = async (code: string): Promise<void> => {
     await request(`/admin/chat-models/${code}`, {method: 'DELETE'});
+};
+
+export const reorderChatModels = async (codes: string[]): Promise<void> => {
+    await request('/admin/chat-models/reorder', {
+        method: 'POST',
+        body: JSON.stringify({ codes }),
+    });
 };
 
 // 快速配置

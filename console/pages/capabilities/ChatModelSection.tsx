@@ -1,12 +1,33 @@
 import React, { useEffect, useMemo, useState } from 'react';
-import { Plus, Edit2, Trash2, ChevronDown, ChevronRight, Power, RefreshCw, Search, Settings, MessageSquare } from 'lucide-react';
+import { Plus, Edit2, Trash2, ChevronDown, ChevronRight, Power, RefreshCw, Search, Settings, MessageSquare, GripVertical } from 'lucide-react';
+import { DndContext, DragOverlay, PointerSensor, closestCenter, useSensor, useSensors, DragStartEvent, DragEndEvent } from '@dnd-kit/core';
+import { SortableContext, arrayMove, useSortable, verticalListSortingStrategy } from '@dnd-kit/sortable';
+import { CSS } from '@dnd-kit/utilities';
 import { Modal } from '../../components/ui/Modal';
 import {
-    fetchChatModels, createChatModel, updateChatModel, deleteChatModel,
+    fetchChatModels, createChatModel, updateChatModel, deleteChatModel, reorderChatModels,
     fetchChatModelChannels, deleteChatModelChannel, updateChatModelChannel,
 } from '../../services/api';
 import { ChatModel, ChatModelChannel, Channel } from '../../types';
 import ChatModelChannelModal from './ChatModelChannelModal';
+
+const SortableModelRow: React.FC<{ id: string; disabled: boolean; children: React.ReactNode }> = ({ id, disabled, children }) => {
+    const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({ id, disabled });
+    const style = { transform: CSS.Transform.toString(transform), transition, opacity: isDragging ? 0.4 : 1 };
+    return (
+        <div ref={setNodeRef} style={style}
+            className="relative rounded-2xl border border-[var(--border-soft)] bg-[var(--surface-card)] shadow-sm overflow-hidden">
+            {!disabled && (
+                <span {...attributes} {...listeners}
+                    className="absolute left-1 top-1/2 -translate-y-1/2 z-10 p-1 text-[var(--text-secondary)] hover:text-[var(--primary)] cursor-grab active:cursor-grabbing touch-none"
+                    title="拖拽排序">
+                    <GripVertical size={16} />
+                </span>
+            )}
+            <div className={disabled ? '' : 'pl-5'}>{children}</div>
+        </div>
+    );
+};
 
 const ChatModelSection: React.FC<{ channels: Channel[] }> = ({ channels }) => {
     const [models, setModels] = useState<ChatModel[]>([]);
@@ -51,6 +72,26 @@ const ChatModelSection: React.FC<{ channels: Channel[] }> = ({ channels }) => {
     };
 
     useEffect(() => { loadData(); }, []);
+
+    const [activeId, setActiveId] = useState<string | null>(null);
+    const sensors = useSensors(useSensor(PointerSensor, { activationConstraint: { distance: 5 } }));
+    const canDrag = !searchTerm.trim();
+
+    const handleDragEnd = async (e: DragEndEvent) => {
+        setActiveId(null);
+        const { active, over } = e;
+        if (!over || active.id === over.id) return;
+        const oldIndex = models.findIndex(m => m.code === active.id);
+        const newIndex = models.findIndex(m => m.code === over.id);
+        if (oldIndex < 0 || newIndex < 0) return;
+        const reordered = arrayMove(models, oldIndex, newIndex);
+        setModels(reordered); // 乐观更新
+        try {
+            await reorderChatModels(reordered.map(m => m.code));
+        } catch {
+            loadData(); // 失败回滚
+        }
+    };
 
     const filteredModels = useMemo(() => {
         const kw = searchTerm.trim().toLowerCase();
@@ -108,36 +149,39 @@ const ChatModelSection: React.FC<{ channels: Channel[] }> = ({ channels }) => {
     };
 
     return (
-        <div className="space-y-6">
-            <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
+        <div className="space-y-4 md:space-y-6">
+            <div className="flex flex-col gap-3 md:gap-4 lg:flex-row lg:items-center lg:justify-between">
                 <div>
-                    <h1 className="text-2xl font-bold text-[var(--text-primary)]">
+                    <h1 className="text-xl md:text-2xl font-bold text-[var(--text-primary)]">
                         对话模型
-                        <span className="ml-3 text-base font-normal text-[var(--text-secondary)]">
-                            {models.length} 个模型，{models.filter(m => m.status === 1).length} 个启用，{modelChannels.length} 个渠道映射
+                        <span className="ml-2 md:ml-3 text-xs md:text-base font-normal text-[var(--text-secondary)]">
+                            {models.length} 模型 / {models.filter(m => m.status === 1).length} 启用
                         </span>
                     </h1>
-                    <p className="text-[var(--text-secondary)] mt-1">管理对话模型及渠道映射</p>
+                    <p className="text-[var(--text-secondary)] mt-1 text-sm md:text-base">管理对话模型及渠道映射</p>
                 </div>
                 <div className="flex flex-wrap gap-2">
                     <button onClick={loadData}
-                        className="flex items-center gap-2 px-4 py-2 border border-[var(--border-soft)] rounded-lg text-[var(--text-secondary)] hover:bg-[var(--surface)]">
-                        <RefreshCw size={16} className={isLoading ? 'animate-spin' : ''} /> 刷新
+                        className="flex items-center gap-2 px-3 md:px-4 py-2 border border-[var(--border-soft)] rounded-lg text-[var(--text-secondary)] hover:bg-[var(--surface)]">
+                        <RefreshCw size={16} className={isLoading ? 'animate-spin' : ''} />
+                        <span className="hidden md:inline">刷新</span>
                     </button>
                     <button onClick={() => openModelModal(null)}
-                        className="flex items-center gap-2 px-6 py-2 bg-[var(--primary)] text-white rounded-lg text-sm font-bold hover:opacity-90 shadow-sm">
-                        <Plus size={18} /> 新建模型
+                        className="flex items-center gap-2 px-4 md:px-6 py-2 bg-[var(--primary)] text-white rounded-lg text-sm font-bold hover:opacity-90 shadow-sm">
+                        <Plus size={18} />
+                        <span className="hidden md:inline">新建模型</span>
+                        <span className="md:hidden">新建</span>
                     </button>
                 </div>
             </div>
 
             {/* Search */}
             <div className="flex items-center gap-3">
-                <div className="relative flex-1 max-w-md">
+                <div className="relative flex-1 md:max-w-md">
                     <Search size={16} className="absolute left-3 top-1/2 -translate-y-1/2 text-[var(--text-secondary)]" />
                     <input type="text" value={searchTerm} onChange={e => setSearchTerm(e.target.value)}
-                        className="w-full pl-10 pr-4 py-2 border border-[var(--border-soft)] rounded-lg text-sm"
-                        placeholder="搜索模型名称、编码、供应商..." />
+                        className="w-full pl-9 pr-4 py-2 border border-[var(--border-soft)] rounded-lg text-sm"
+                        placeholder="搜索模型名称..." />
                 </div>
             </div>
 
@@ -147,13 +191,17 @@ const ChatModelSection: React.FC<{ channels: Channel[] }> = ({ channels }) => {
                     {[1, 2, 3].map(i => <div key={i} className="bg-[var(--surface-card)] p-6 rounded-2xl border border-[var(--border-soft)] h-20" />)}
                 </div>
             ) : (
-                <div className="space-y-3">
-                    {filteredModels.map(model => {
-                        const isExpanded = expandedModel === model.code;
-                        const mcs = modelChannelsByCode.get(model.code) || [];
-                        return (
-                            <div key={model.code} className="rounded-2xl border border-[var(--border-soft)] bg-[var(--surface-card)] shadow-sm overflow-hidden">
-                                <div className="p-4 flex items-center justify-between cursor-pointer hover:bg-[var(--surface)]"
+                <DndContext sensors={sensors} collisionDetection={closestCenter}
+                    onDragStart={(e: DragStartEvent) => setActiveId(String(e.active.id))}
+                    onDragEnd={handleDragEnd} onDragCancel={() => setActiveId(null)}>
+                    <SortableContext items={filteredModels.map(m => m.code)} strategy={verticalListSortingStrategy}>
+                        <div className="space-y-3">
+                            {filteredModels.map(model => {
+                                const isExpanded = expandedModel === model.code;
+                                const mcs = modelChannelsByCode.get(model.code) || [];
+                                return (
+                                    <SortableModelRow key={model.code} id={model.code} disabled={!canDrag}>
+                                        <div className="p-4 flex items-center justify-between cursor-pointer hover:bg-[var(--surface)]"
                                     onClick={() => setExpandedModel(isExpanded ? null : model.code)}>
                                     <div className="flex items-center gap-3 min-w-0 flex-1">
                                         <span className="text-[var(--text-secondary)]">
@@ -233,10 +281,26 @@ const ChatModelSection: React.FC<{ channels: Channel[] }> = ({ channels }) => {
                                         )}
                                     </div>
                                 )}
-                            </div>
-                        );
-                    })}
-                </div>
+                                    </SortableModelRow>
+                                );
+                            })}
+                        </div>
+                    </SortableContext>
+                    <DragOverlay>
+                        {activeId ? (() => {
+                            const m = models.find(x => x.code === activeId);
+                            if (!m) return null;
+                            return (
+                                <div className="rounded-2xl border border-[var(--primary)] bg-[var(--surface-card)] shadow-lg p-4 flex items-center gap-3 opacity-95">
+                                    <GripVertical size={18} className="text-[var(--text-secondary)]" />
+                                    <div className="p-2 bg-[var(--primary-lighter)] rounded-xl"><MessageSquare size={18} className="text-[var(--primary)]" /></div>
+                                    <span className="font-bold text-[var(--text-primary)]">{m.name}</span>
+                                    <code className="text-xs px-2 py-0.5 bg-[var(--primary-lighter)] rounded text-[var(--text-secondary)]">{m.code}</code>
+                                </div>
+                            );
+                        })() : null}
+                    </DragOverlay>
+                </DndContext>
             )}
 
             {/* Model Modal */}
