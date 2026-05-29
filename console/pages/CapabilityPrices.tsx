@@ -23,17 +23,17 @@ const CapabilityCard: React.FC<{ capability: CapabilityPrice }> = ({ capability 
     return (
         <div className="bg-[var(--surface-card)] rounded-xl border border-[var(--border-soft)] shadow-sm overflow-hidden">
             <div
-                className="p-4 flex items-center justify-between cursor-pointer hover:bg-[var(--surface)]"
+                className="p-3 md:p-4 flex items-center justify-between cursor-pointer hover:bg-[var(--surface)]"
                 onClick={() => setExpanded(!expanded)}
             >
-                <div className="flex items-center gap-3">
-                    <div className="w-10 h-10 bg-indigo-100 rounded-lg flex items-center justify-center">
-                        <Zap size={20} className="text-[var(--primary)]" />
+                <div className="flex items-center gap-2 md:gap-3 min-w-0">
+                    <div className="w-8 h-8 md:w-10 md:h-10 bg-indigo-100 rounded-lg flex items-center justify-center flex-shrink-0">
+                        <Zap size={18} className="text-[var(--primary)]" />
                     </div>
-                    <div>
-                        <div className="flex items-center gap-2">
-                            <span className="font-medium text-[var(--text-primary)]">{capability.name}</span>
-                            <code className="text-xs px-2 py-0.5 bg-[var(--primary-lighter)] rounded text-[var(--text-secondary)]">{capability.code}</code>
+                    <div className="min-w-0">
+                        <div className="flex items-center gap-2 flex-wrap">
+                            <span className="font-medium text-[var(--text-primary)] text-sm md:text-base">{capability.name}</span>
+                            <code className="text-xs px-2 py-0.5 bg-[var(--primary-lighter)] rounded text-[var(--text-secondary)] hidden md:inline">{capability.code}</code>
                             <span className={`text-xs px-2 py-0.5 rounded flex items-center gap-1 ${typeInfo.color}`}>
                                 {typeInfo.icon}
                                 {typeInfo.label}
@@ -132,23 +132,23 @@ const CapabilityPrices: React.FC = () => {
     }
 
     return (
-        <div className="space-y-6">
-            <div className="flex items-center justify-between">
+        <div className="space-y-4 md:space-y-6">
+            <div className="flex items-center justify-between flex-wrap gap-3">
                 <div>
-                    <h1 className="text-2xl font-bold text-[var(--text-primary)]">能力列表</h1>
-                    <p className="text-[var(--text-secondary)] mt-1">查看所有可用能力及其价格</p>
+                    <h1 className="text-xl md:text-2xl font-bold text-[var(--text-primary)]">能力列表</h1>
+                    <p className="text-[var(--text-secondary)] mt-1 text-sm md:text-base">查看所有可用能力及其价格</p>
                 </div>
             </div>
 
-            <div className="flex items-center gap-4">
-                <div className="relative flex-1 max-w-md">
-                    <Search size={18} className="absolute left-3 top-1/2 -translate-y-1/2 text-[var(--text-secondary)]" />
+            <div className="flex items-center gap-3 md:gap-4 flex-wrap">
+                <div className="relative flex-1 min-w-[160px] md:max-w-md">
+                    <Search size={16} className="absolute left-3 top-1/2 -translate-y-1/2 text-[var(--text-secondary)]" />
                     <input
                         type="text"
                         placeholder="搜索能力名称或编码..."
                         value={searchTerm}
                         onChange={e => setSearchTerm(e.target.value)}
-                        className="w-full pl-10 pr-4 py-2 border border-[var(--border-soft)] rounded-lg focus:outline-none focus:ring-2 focus:ring-[var(--primary)] text-sm"
+                        className="w-full pl-9 pr-4 py-2 border border-[var(--border-soft)] rounded-lg focus:outline-none focus:ring-2 focus:ring-[var(--primary)] text-sm"
                     />
                 </div>
                 <select
@@ -157,7 +157,7 @@ const CapabilityPrices: React.FC = () => {
                     className="px-4 py-2 border border-[var(--border-soft)] rounded-lg focus:outline-none focus:ring-2 focus:ring-[var(--primary)] text-sm"
                 >
                     <option value="">全部类型</option>
-                    {types.map(type => (
+                    {types.map((type: string) => (
                         <option key={type} value={type}>{TYPE_MAP[type]?.label || type}</option>
                     ))}
                 </select>

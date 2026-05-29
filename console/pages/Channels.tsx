@@ -74,18 +74,18 @@ const ChannelRow: React.FC<{
   return (
     <>
       <tr className="hover:bg-[var(--surface)] transition-colors group border-b border-[var(--border-soft)]">
-        <td className="px-6 py-4">
+        <td className="px-3 md:px-6 py-3 md:py-4">
           <button onClick={onToggle} className="p-1 hover:bg-[var(--primary-lighter)] rounded">
             {expanded ? <ChevronDown size={16} /> : <ChevronRight size={16} />}
           </button>
         </td>
-        <td className="px-6 py-4">
-          <div className="flex items-center gap-3">
-            <div className="w-10 h-10 rounded-xl bg-indigo-100 flex items-center justify-center text-[var(--primary)] font-bold uppercase text-xs">
+        <td className="px-3 md:px-6 py-3 md:py-4">
+          <div className="flex items-center gap-2 md:gap-3">
+            <div className="w-8 h-8 md:w-10 md:h-10 rounded-xl bg-indigo-100 flex items-center justify-center text-[var(--primary)] font-bold uppercase text-xs flex-shrink-0">
               {channel.type.substring(0, 2)}
             </div>
-            <div>
-              <div className="text-sm font-bold text-[var(--text-primary)]">{channel.name}</div>
+            <div className="min-w-0">
+              <div className="text-sm font-bold text-[var(--text-primary)] truncate">{channel.name}</div>
               <div className="text-xs text-[var(--text-secondary)] flex items-center gap-1">
                 <Shield size={10} />
                 {channel.type}
@@ -93,32 +93,32 @@ const ChannelRow: React.FC<{
             </div>
           </div>
         </td>
-        <td className="px-6 py-4">
+        <td className="px-3 md:px-6 py-3 md:py-4">
           <span className={`px-2 py-1 rounded-full text-[10px] font-bold uppercase tracking-wider ${status.color}`}>
             {status.label}
           </span>
         </td>
-        <td className="px-6 py-4 text-center">
+        <td className="px-3 md:px-6 py-3 md:py-4 text-center hidden sm:table-cell">
           <span className="text-sm font-semibold text-[var(--text-primary)]">{channel.accountsCount}</span>
         </td>
-        <td className="px-6 py-4 text-right">
-          <div className="flex items-center justify-end gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
-            <button onClick={onToggleStatus} className={`p-2 rounded-lg ${channel.status === 1 ? 'text-yellow-600 hover:bg-yellow-50' : 'text-green-600 hover:bg-green-50'}`} title={channel.status === 1 ? '禁用' : '启用'}>
-              <Power size={16} />
+        <td className="px-3 md:px-6 py-3 md:py-4 text-right">
+          <div className="flex items-center justify-end gap-1 md:opacity-0 md:group-hover:opacity-100 transition-opacity">
+            <button onClick={onToggleStatus} className={`p-1.5 md:p-2 rounded-lg ${channel.status === 1 ? 'text-yellow-600 hover:bg-yellow-50' : 'text-green-600 hover:bg-green-50'}`} title={channel.status === 1 ? '禁用' : '启用'}>
+              <Power size={14} />
             </button>
-            <button onClick={onEdit} className="p-2 text-[var(--text-secondary)] hover:text-[var(--primary)] hover:bg-[var(--primary-lighter)] rounded-lg" title="编辑">
-              <Edit3 size={16} />
+            <button onClick={onEdit} className="p-1.5 md:p-2 text-[var(--text-secondary)] hover:text-[var(--primary)] hover:bg-[var(--primary-lighter)] rounded-lg" title="编辑">
+              <Edit3 size={14} />
             </button>
-            <button onClick={onDelete} className="p-2 text-[var(--text-secondary)] hover:text-red-600 hover:bg-red-50 rounded-lg" title="删除">
-              <Trash2 size={16} />
+            <button onClick={onDelete} className="p-1.5 md:p-2 text-[var(--text-secondary)] hover:text-red-600 hover:bg-red-50 rounded-lg" title="删除">
+              <Trash2 size={14} />
             </button>
           </div>
         </td>
       </tr>
       {expanded && (
         <tr>
-          <td colSpan={5} className="bg-[var(--surface)]/50 px-6 py-4">
-            <div className="grid grid-cols-2 gap-6">
+          <td colSpan={5} className="bg-[var(--surface)]/50 px-3 md:px-6 py-3 md:py-4">
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4 md:gap-6">
               {/* 账号列表 */}
               <div className="bg-[var(--surface-card)] rounded-xl p-4 border border-[var(--border-soft)]">
                 <div className="flex items-center justify-between mb-3">
@@ -134,16 +134,18 @@ const ChannelRow: React.FC<{
                 ) : (
                   <div className="space-y-2">
                     {accounts.map(acc => (
-                      <div key={acc.id} className="flex items-center justify-between p-2 bg-[var(--surface)] rounded-lg group/acc gap-3">
+                      <div key={acc.id} className="flex items-center justify-between p-2 bg-[var(--surface)] rounded-lg group/acc gap-2">
                         <div className="min-w-0 flex-1">
-                          <div className="text-sm font-medium text-[var(--text-primary)]">{acc.name}</div>
+                          <div className="flex items-center gap-2">
+                            <span className="text-sm font-medium text-[var(--text-primary)]">{acc.name}</span>
+                            <span className={`px-1.5 py-0.5 rounded text-[10px] font-bold ${acc.status === 1 ? 'bg-green-100 text-green-700' : 'bg-[var(--primary-lighter)] text-[var(--text-secondary)]'}`}>
+                              {acc.status === 1 ? '启用' : '禁用'}
+                            </span>
+                          </div>
                           <div className="text-xs text-[var(--text-secondary)] font-mono break-all mt-1">{acc.apiKey || acc.maskedKey || '-'}</div>
                           <div className={`text-xs mt-1 ${acc.maxTasks > 0 && acc.currentTasks >= acc.maxTasks ? 'text-red-500 font-bold' : 'text-[var(--text-secondary)]'}`}>权重: {acc.weight} | 并发: {acc.currentTasks}/{acc.maxTasks || '∞'}</div>
                         </div>
-                        <div className="flex items-center gap-1 opacity-0 group-hover/acc:opacity-100 shrink-0">
-                          <span className={`px-1.5 py-0.5 rounded text-[10px] font-bold ${acc.status === 1 ? 'bg-green-100 text-green-700' : 'bg-[var(--primary-lighter)] text-[var(--text-secondary)]'}`}>
-                            {acc.status === 1 ? '启用' : '禁用'}
-                          </span>
+                        <div className="flex items-center gap-1 md:opacity-0 md:group-hover/acc:opacity-100 shrink-0">
                           <button onClick={() => handleCopyApiKey(acc.id, acc.apiKey || acc.maskedKey || '')} className="p-1 hover:bg-gray-200 rounded" title="复制 API Key"><Copy size={12} /></button>
                           {copiedAccountId === acc.id && <span className="text-[10px] font-medium text-green-600 px-1">已复制</span>}
                           <button onClick={() => onToggleAccountStatus(acc)} className="p-1 hover:bg-gray-200 rounded"><Power size={12} /></button>
@@ -173,10 +175,13 @@ const ChannelRow: React.FC<{
                   <div className="space-y-2">
                       {capabilities.map(c => (
                           <div key={c.id}
-                               className="flex items-center justify-between p-2 bg-[var(--surface)] rounded-lg group/cap">
-                        <div>
-                            <div className="flex items-center gap-2">
+                               className="flex items-center justify-between p-2 bg-[var(--surface)] rounded-lg group/cap gap-2">
+                        <div className="min-w-0 flex-1">
+                            <div className="flex items-center gap-2 flex-wrap">
                                 <span className="text-sm font-medium text-[var(--text-primary)]">{c.name || c.model || c.capabilityCode}</span>
+                                <span className={`px-1.5 py-0.5 rounded text-[10px] font-bold ${c.status === 1 ? 'bg-green-100 text-green-700' : 'bg-[var(--primary-lighter)] text-[var(--text-secondary)]'}`}>
+                                  {c.status === 1 ? '启用' : '禁用'}
+                                </span>
                                 {c.modelType && (
                                     <span className={`px-1.5 py-0.5 rounded text-[10px] font-bold ${
                                         c.modelType === 'chat' ? 'bg-sky-100 text-sky-700' :
@@ -190,11 +195,7 @@ const ChannelRow: React.FC<{
                               {c.capabilityCode}{c.model ? ` → ${c.model}` : ''} | ¥{c.price}
                           </div>
                         </div>
-                              <div className="flex items-center gap-1 opacity-0 group-hover/cap:opacity-100">
-                          <span
-                              className={`px-1.5 py-0.5 rounded text-[10px] font-bold ${c.status === 1 ? 'bg-green-100 text-green-700' : 'bg-[var(--primary-lighter)] text-[var(--text-secondary)]'}`}>
-                            {c.status === 1 ? '启用' : '禁用'}
-                          </span>
+                              <div className="flex items-center gap-1 md:opacity-0 md:group-hover/cap:opacity-100 shrink-0">
                                   <button onClick={() => onToggleCapabilityStatus(c)}
                                           className="p-1 hover:bg-gray-200 rounded"><Power size={12}/></button>
                                   <button onClick={() => onEditCapability(c)} className="p-1 hover:bg-gray-200 rounded">
@@ -325,52 +326,51 @@ const Channels: React.FC = () => {
   );
 
   return (
-    <div className="space-y-6">
-      <div className="flex items-center justify-between">
+    <div className="space-y-4 md:space-y-6">
+      <div className="flex items-start sm:items-center justify-between gap-3 flex-wrap">
         <div>
-          <h1 className="text-2xl font-bold text-[var(--text-primary)]">渠道管理</h1>
-          <p className="text-[var(--text-secondary)] mt-1">配置上游服务商、账号池及模型映射</p>
+          <h1 className="text-xl md:text-2xl font-bold text-[var(--text-primary)]">渠道管理</h1>
+          <p className="text-[var(--text-secondary)] mt-1 text-sm hidden sm:block">配置上游服务商、账号池及模型映射</p>
         </div>
         <button
           onClick={() => setChannelModal({ open: true, channel: null })}
-          className="flex items-center gap-2 px-6 py-2 bg-[var(--primary)] text-white rounded-lg text-sm font-bold hover:opacity-90 transition-all shadow-sm"
+          className="flex items-center gap-2 px-4 md:px-6 py-2 bg-[var(--primary)] text-white rounded-lg text-sm font-bold hover:opacity-90 transition-all shadow-sm"
         >
           <Plus size={18} />
-          新建渠道
+          <span className="hidden sm:inline">新建渠道</span><span className="sm:hidden">新建</span>
         </button>
       </div>
 
       <div className="bg-[var(--surface-card)] rounded-2xl shadow-sm border border-[var(--border-soft)] overflow-hidden">
-        <div className="p-4 border-b border-[var(--border-soft)] flex items-center gap-4 bg-[var(--surface)]/50">
-          <div className="relative flex-1 max-w-md">
-            <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-[var(--text-secondary)]" size={18} />
+        <div className="p-3 md:p-4 border-b border-[var(--border-soft)] flex items-center gap-3 md:gap-4 bg-[var(--surface)]/50">
+          <div className="relative flex-1">
+            <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-[var(--text-secondary)]" size={16} />
             <input
               type="text"
               value={searchTerm}
               onChange={e => setSearchTerm(e.target.value)}
-              placeholder="搜索名称或类型..."
-              className="w-full pl-10 pr-4 py-2 bg-[var(--surface-card)] border border-[var(--border-soft)] rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-[var(--primary)] focus:border-transparent"
+              placeholder="搜索..."
+              className="w-full pl-9 pr-3 py-2 bg-[var(--surface-card)] border border-[var(--border-soft)] rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-[var(--primary)] focus:border-transparent"
             />
           </div>
-          <div className="flex-1"></div>
           <button
             onClick={loadData}
-            className="flex items-center gap-2 px-3 py-1.5 text-xs font-semibold text-[var(--text-secondary)] hover:text-[var(--text-primary)] transition-colors"
+            className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold text-[var(--text-secondary)] hover:text-[var(--text-primary)] transition-colors flex-shrink-0"
           >
             <RefreshCw size={14} className={isLoading ? 'animate-spin' : ''} />
-            刷新
+            <span className="hidden sm:inline">刷新</span>
           </button>
         </div>
 
         <div className="overflow-x-auto">
-          <table className="w-full text-left">
+          <table className="w-full text-left min-w-[480px]">
             <thead>
               <tr className="border-b border-[var(--border-soft)]">
-                <th className="px-6 py-4 w-12"></th>
-                <th className="px-6 py-4 text-xs font-bold text-[var(--text-secondary)] uppercase tracking-wider">名称 / 类型</th>
-                <th className="px-6 py-4 text-xs font-bold text-[var(--text-secondary)] uppercase tracking-wider">状态</th>
-                <th className="px-6 py-4 text-xs font-bold text-[var(--text-secondary)] uppercase tracking-wider text-center">账号数</th>
-                <th className="px-6 py-4 text-xs font-bold text-[var(--text-secondary)] uppercase tracking-wider text-right">操作</th>
+                <th className="px-3 md:px-6 py-3 md:py-4 w-10"></th>
+                <th className="px-3 md:px-6 py-3 md:py-4 text-xs font-bold text-[var(--text-secondary)] uppercase tracking-wider">名称 / 类型</th>
+                <th className="px-3 md:px-6 py-3 md:py-4 text-xs font-bold text-[var(--text-secondary)] uppercase tracking-wider">状态</th>
+                <th className="px-3 md:px-6 py-3 md:py-4 text-xs font-bold text-[var(--text-secondary)] uppercase tracking-wider text-center hidden sm:table-cell">账号数</th>
+                <th className="px-3 md:px-6 py-3 md:py-4 text-xs font-bold text-[var(--text-secondary)] uppercase tracking-wider text-right">操作</th>
               </tr>
             </thead>
             <tbody>

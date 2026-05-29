@@ -59,7 +59,7 @@ const Home: React.FC<HomeProps> = ({onLogin, onPricing}) => {
     ];
 
     return (
-        <div className="min-h-screen bg-gradient-to-b from-[var(--surface)] to-[var(--surface-card)]">
+        <div className="min-h-screen bg-gradient-to-b from-[var(--surface)] to-[var(--surface-card)] overflow-x-hidden">
             {/* Header */}
             <header className="fixed top-0 left-0 right-0 bg-[var(--surface-card)]/80 backdrop-blur-md z-50 border-b border-[var(--border-soft)]">
                 <div className="max-w-7xl mx-auto px-6 py-4 flex items-center justify-between">

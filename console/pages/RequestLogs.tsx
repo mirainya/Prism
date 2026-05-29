@@ -113,32 +113,32 @@ const RequestLogs: React.FC = () => {
   };
 
   return (
-    <div className="space-y-6">
-      <div className="flex items-center justify-between">
+    <div className="space-y-4 md:space-y-6">
+      <div className="flex items-center justify-between flex-wrap gap-3">
         <div>
-          <h1 className="text-2xl font-bold text-[var(--text-primary)]">渠道请求日志</h1>
-          <p className="text-[var(--text-secondary)] mt-1">查看所有与第三方渠道的 HTTP 交互记录</p>
+          <h1 className="text-xl md:text-2xl font-bold text-[var(--text-primary)]">渠道请求日志</h1>
+          <p className="text-[var(--text-secondary)] mt-1 text-sm md:text-base">查看所有与第三方渠道的 HTTP 交互记录</p>
         </div>
         <button
           onClick={() => loadLogs()}
-          className="px-4 py-2 bg-[var(--surface-card)] border border-[var(--border-soft)] rounded-lg text-sm font-medium hover:bg-[var(--surface)] transition-colors flex items-center gap-2"
+          className="px-3 md:px-4 py-2 bg-[var(--surface-card)] border border-[var(--border-soft)] rounded-lg text-sm font-medium hover:bg-[var(--surface)] transition-colors flex items-center gap-2"
         >
           <RefreshCw size={16} className={isLoading ? 'animate-spin' : ''} />
-          刷新
+          <span className="hidden md:inline">刷新</span>
         </button>
       </div>
 
       <div className="bg-[var(--surface-card)] rounded-2xl shadow-sm border border-[var(--border-soft)] overflow-hidden">
-        <div className="p-4 border-b border-[var(--border-soft)] bg-[var(--surface)]/50 flex items-center gap-4 flex-wrap">
-          <div className="relative flex-1 min-w-[200px] max-w-md">
-            <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-[var(--text-secondary)]" size={18} />
+        <div className="p-3 md:p-4 border-b border-[var(--border-soft)] bg-[var(--surface)]/50 flex items-center gap-3 md:gap-4 flex-wrap">
+          <div className="relative flex-1 min-w-[160px] md:max-w-md">
+            <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-[var(--text-secondary)]" size={16} />
             <input
               type="text"
               value={keyword}
               onChange={e => setKeyword(e.target.value)}
               onKeyDown={e => e.key === 'Enter' && handleSearch()}
               placeholder="搜索任务编号..."
-              className="w-full pl-10 pr-4 py-2 bg-[var(--surface-card)] border border-[var(--border-soft)] rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-[var(--primary)]"
+              className="w-full pl-9 pr-4 py-2 bg-[var(--surface-card)] border border-[var(--border-soft)] rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-[var(--primary)]"
             />
           </div>
           <select
@@ -175,27 +175,27 @@ const RequestLogs: React.FC = () => {
         </div>
 
         <div className="overflow-x-auto">
-          <table className="w-full text-left">
+          <table className="w-full text-left min-w-[600px]">
             <thead>
               <tr className="border-b border-[var(--border-soft)]">
-                <th className="px-6 py-4 text-xs font-bold text-[var(--text-secondary)] uppercase tracking-wider">任务编号 / 时间</th>
-                <th className="px-6 py-4 text-xs font-bold text-[var(--text-secondary)] uppercase tracking-wider">渠道 / 能力</th>
-                <th className="px-6 py-4 text-xs font-bold text-[var(--text-secondary)] uppercase tracking-wider text-center">类型</th>
-                <th className="px-6 py-4 text-xs font-bold text-[var(--text-secondary)] uppercase tracking-wider text-center">状态码</th>
-                <th className="px-6 py-4 text-xs font-bold text-[var(--text-secondary)] uppercase tracking-wider text-right">耗时</th>
-                <th className="px-6 py-4 text-xs font-bold text-[var(--text-secondary)] uppercase tracking-wider text-right">操作</th>
+                <th className="px-3 md:px-6 py-3 md:py-4 text-xs font-bold text-[var(--text-secondary)] uppercase tracking-wider">任务 / 时间</th>
+                <th className="px-3 md:px-6 py-3 md:py-4 text-xs font-bold text-[var(--text-secondary)] uppercase tracking-wider">渠道</th>
+                <th className="px-3 md:px-6 py-3 md:py-4 text-xs font-bold text-[var(--text-secondary)] uppercase tracking-wider text-center">类型</th>
+                <th className="px-3 md:px-6 py-3 md:py-4 text-xs font-bold text-[var(--text-secondary)] uppercase tracking-wider text-center">状态</th>
+                <th className="px-3 md:px-6 py-3 md:py-4 text-xs font-bold text-[var(--text-secondary)] uppercase tracking-wider text-right hidden sm:table-cell">耗时</th>
+                <th className="px-3 md:px-6 py-3 md:py-4 text-xs font-bold text-[var(--text-secondary)] uppercase tracking-wider text-right">操作</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-gray-100">
               {isLoading ? (
                 Array.from({ length: 8 }).map((_, i) => (
                   <tr key={i} className="animate-pulse">
-                    <td colSpan={6} className="px-6 py-4"><div className="h-4 bg-[var(--primary-lighter)] rounded w-full"></div></td>
+                    <td colSpan={6} className="px-3 md:px-6 py-4"><div className="h-4 bg-[var(--primary-lighter)] rounded w-full"></div></td>
                   </tr>
                 ))
               ) : logs.length === 0 ? (
                 <tr>
-                  <td colSpan={6} className="px-6 py-12 text-center text-[var(--text-secondary)]">暂无数据</td>
+                  <td colSpan={6} className="px-3 md:px-6 py-12 text-center text-[var(--text-secondary)]">暂无数据</td>
                 </tr>
               ) : logs.map(log => {
                 const typeInfo = REQUEST_TYPE_MAP[log.request_type] || { label: log.request_type, color: 'bg-[var(--primary-lighter)] text-[var(--text-primary)]' };
@@ -203,22 +203,22 @@ const RequestLogs: React.FC = () => {
                 const hasError = !!log.error_message;
                 return (
                   <tr key={log.id} className="hover:bg-[var(--primary-lighter)]/30 transition-colors cursor-pointer group" onClick={() => openDetails(log)}>
-                    <td className="px-6 py-4">
-                        <div className="text-xs font-bold text-[var(--primary)] font-mono">
+                    <td className="px-3 md:px-6 py-3 md:py-4">
+                        <div className="text-xs font-bold text-[var(--primary)] font-mono truncate max-w-[100px] md:max-w-none">
                             {log.request_type === 'chat' ? (log.conversation_id ? `对话#${log.conversation_id}` : `LOG#${log.id}`) : log.task_no}
                         </div>
                       <div className="text-[10px] text-[var(--text-secondary)] mt-0.5">{log.request_at}</div>
                     </td>
-                    <td className="px-6 py-4">
+                    <td className="px-3 md:px-6 py-3 md:py-4">
                       <div className="text-sm font-medium text-[var(--text-primary)]">{log.channel_name || '-'}</div>
                       <div className="text-[10px] text-[var(--text-secondary)]">{log.capability_name || log.capability_code}</div>
                     </td>
-                    <td className="px-6 py-4 text-center">
+                    <td className="px-3 md:px-6 py-3 md:py-4 text-center">
                       <span className={`inline-flex px-2 py-0.5 rounded-full text-[10px] font-bold ${typeInfo.color}`}>
                         {typeInfo.label}
                       </span>
                     </td>
-                    <td className="px-6 py-4 text-center">
+                    <td className="px-3 md:px-6 py-3 md:py-4 text-center">
                       <div className="flex items-center justify-center gap-1">
                         {hasError ? (
                           <AlertCircle size={14} className="text-red-500" />
@@ -232,22 +232,22 @@ const RequestLogs: React.FC = () => {
                         </span>
                       </div>
                     </td>
-                    <td className="px-6 py-4 text-right">
+                    <td className="px-3 md:px-6 py-3 md:py-4 text-right hidden sm:table-cell">
                       <div className="text-xs text-[var(--text-secondary)] flex items-center justify-end gap-1">
                         <Clock size={10} />
                         {log.duration_ms}ms
                       </div>
                     </td>
-                    <td className="px-6 py-4 text-right">
+                    <td className="px-3 md:px-6 py-3 md:py-4 text-right">
                         <div className="flex items-center justify-end gap-2">
                             <button
                                 onClick={(e) => handleRetry(e, log.id)}
                                 disabled={retryingId === log.id}
-                                className="px-3 py-1.5 bg-[var(--surface-card)] border border-[var(--border-soft)] text-xs font-bold text-[var(--text-secondary)] rounded-lg hover:border-indigo-600 hover:text-[var(--primary)] transition-colors flex items-center gap-1.5 disabled:opacity-50"
+                                className="p-1.5 md:px-3 md:py-1.5 bg-[var(--surface-card)] border border-[var(--border-soft)] text-xs font-bold text-[var(--text-secondary)] rounded-lg hover:border-indigo-600 hover:text-[var(--primary)] transition-colors flex items-center gap-1 disabled:opacity-50"
                                 title="重试"
                             >
                                 <RotateCw size={12} className={retryingId === log.id ? 'animate-spin' : ''}/>
-                                重试
+                                <span className="hidden md:inline">重试</span>
                             </button>
                             <ChevronRight size={16}
                                           className="text-gray-300 group-hover:text-indigo-500 group-hover:translate-x-1 transition-all"/>
@@ -262,9 +262,9 @@ const RequestLogs: React.FC = () => {
 
         {/* Pagination */}
         {totalPages > 1 && (
-          <div className="p-4 border-t border-[var(--border-soft)] flex items-center justify-between">
-            <div className="text-sm text-[var(--text-secondary)]">
-              共 {total} 条记录，第 {page}/{totalPages} 页
+          <div className="p-3 md:p-4 border-t border-[var(--border-soft)] flex items-center justify-between">
+            <div className="text-xs md:text-sm text-[var(--text-secondary)]">
+              共 {total} 条，第 {page}/{totalPages} 页
             </div>
             <div className="flex items-center gap-2">
               <button
@@ -289,10 +289,10 @@ const RequestLogs: React.FC = () => {
       {/* Details Drawer */}
       {isDrawerOpen && selectedLog && (
         <div className="fixed inset-0 z-50 flex justify-end bg-black/50 backdrop-blur-sm" onClick={() => setIsDrawerOpen(false)}>
-          <div className="w-full max-w-3xl bg-[var(--surface-card)] shadow-2xl h-full flex flex-col" onClick={e => e.stopPropagation()}>
-            <div className="p-6 border-b border-[var(--border-soft)] flex items-center justify-between">
+          <div className="w-full md:max-w-3xl bg-[var(--surface-card)] shadow-2xl h-full flex flex-col" onClick={e => e.stopPropagation()}>
+            <div className="p-4 md:p-6 border-b border-[var(--border-soft)] flex items-center justify-between">
               <div>
-                <h2 className="text-xl font-bold text-[var(--text-primary)]">请求详情</h2>
+                <h2 className="text-lg md:text-xl font-bold text-[var(--text-primary)]">请求详情</h2>
                 <p className="text-xs text-indigo-500 font-mono mt-1">{selectedLog.task_no}</p>
               </div>
                 <div className="flex items-center gap-3">

@@ -56,17 +56,17 @@ const Users: React.FC = () => {
     };
 
   return (
-    <div className="space-y-6">
-      <div className="flex items-center justify-between">
+    <div className="space-y-4 md:space-y-6">
+      <div className="flex items-center justify-between flex-wrap gap-3">
         <div>
-          <h1 className="text-2xl font-bold text-[var(--text-primary)]">用户管理</h1>
-          <p className="text-[var(--text-secondary)] mt-1">管理系统注册用户、角色分配及账户余额</p>
+          <h1 className="text-xl md:text-2xl font-bold text-[var(--text-primary)]">用户管理</h1>
+          <p className="text-[var(--text-secondary)] mt-1 text-sm md:text-base">管理系统注册用户、角色分配及账户余额</p>
         </div>
       </div>
 
       <div className="bg-[var(--surface-card)] rounded-2xl shadow-sm border border-[var(--border-soft)] overflow-hidden">
-        <div className="p-4 border-b border-[var(--border-soft)] bg-[var(--surface)]/50 flex items-center justify-between">
-          <div className="relative w-72">
+        <div className="p-3 md:p-4 border-b border-[var(--border-soft)] bg-[var(--surface)]/50 flex items-center justify-between flex-wrap gap-3">
+          <div className="relative w-full md:w-72">
             <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-[var(--text-secondary)]" size={16} />
             <input
               type="text"
@@ -82,29 +82,29 @@ const Users: React.FC = () => {
         </div>
 
         <div className="overflow-x-auto">
-          <table className="w-full text-left">
+          <table className="w-full text-left min-w-[600px]">
             <thead>
               <tr className="border-b border-[var(--border-soft)]">
-                <th className="px-6 py-4 text-xs font-bold text-[var(--text-secondary)] uppercase tracking-wider">用户信息</th>
-                <th className="px-6 py-4 text-xs font-bold text-[var(--text-secondary)] uppercase tracking-wider">角色权限</th>
-                <th className="px-6 py-4 text-xs font-bold text-[var(--text-secondary)] uppercase tracking-wider">当前余额</th>
-                <th className="px-6 py-4 text-xs font-bold text-[var(--text-secondary)] uppercase tracking-wider">注册日期</th>
-                <th className="px-6 py-4 text-xs font-bold text-[var(--text-secondary)] uppercase tracking-wider text-right">管理操作</th>
+                <th className="px-3 md:px-6 py-3 md:py-4 text-xs font-bold text-[var(--text-secondary)] uppercase tracking-wider">用户信息</th>
+                <th className="px-3 md:px-6 py-3 md:py-4 text-xs font-bold text-[var(--text-secondary)] uppercase tracking-wider">角色</th>
+                <th className="px-3 md:px-6 py-3 md:py-4 text-xs font-bold text-[var(--text-secondary)] uppercase tracking-wider">余额</th>
+                <th className="px-3 md:px-6 py-3 md:py-4 text-xs font-bold text-[var(--text-secondary)] uppercase tracking-wider hidden sm:table-cell">注册日期</th>
+                <th className="px-3 md:px-6 py-3 md:py-4 text-xs font-bold text-[var(--text-secondary)] uppercase tracking-wider text-right">操作</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-gray-100">
               {isLoading ? (
                 Array.from({ length: 4 }).map((_, i) => (
                   <tr key={i} className="animate-pulse">
-                    <td colSpan={5} className="px-6 py-6"><div className="h-4 bg-[var(--primary-lighter)] rounded w-full"></div></td>
+                    <td colSpan={5} className="px-3 md:px-6 py-4 md:py-6"><div className="h-4 bg-[var(--primary-lighter)] rounded w-full"></div></td>
                   </tr>
                 ))
               ) : users.map(user => (
                 <tr key={user.id} className="hover:bg-[var(--surface)] transition-colors group">
-                  <td className="px-6 py-4">
-                    <div className="flex items-center gap-3">
-                      <div className="w-9 h-9 bg-[var(--primary-lighter)] rounded-full flex items-center justify-center text-[var(--primary)]">
-                        <UsersIcon size={18} />
+                  <td className="px-3 md:px-6 py-3 md:py-4">
+                    <div className="flex items-center gap-2 md:gap-3">
+                      <div className="w-8 h-8 md:w-9 md:h-9 bg-[var(--primary-lighter)] rounded-full flex items-center justify-center text-[var(--primary)]">
+                        <UsersIcon size={16} />
                       </div>
                       <div>
                         <div className="text-sm font-bold text-[var(--text-primary)]">{user.username}</div>
@@ -112,25 +112,25 @@ const Users: React.FC = () => {
                       </div>
                     </div>
                   </td>
-                  <td className="px-6 py-4">
+                  <td className="px-3 md:px-6 py-3 md:py-4">
                     <div className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-[10px] font-bold uppercase ${user.role === UserRole.ADMIN ? 'bg-indigo-100 text-[var(--primary)]' : 'bg-[var(--primary-lighter)] text-[var(--text-secondary)]'}`}>
                       <Shield size={10} />
-                      {user.role === UserRole.ADMIN ? '管理员' : '普通用户'}
+                      {user.role === UserRole.ADMIN ? '管理员' : '用户'}
                     </div>
                   </td>
-                  <td className="px-6 py-4">
+                  <td className="px-3 md:px-6 py-3 md:py-4">
                     <span className="text-sm font-bold text-[var(--text-primary)]">{user.balance}</span>
                   </td>
-                  <td className="px-6 py-4 text-sm text-[var(--text-secondary)]">
+                  <td className="px-3 md:px-6 py-3 md:py-4 text-sm text-[var(--text-secondary)] hidden sm:table-cell">
                     <div className="flex items-center gap-1.5">
                       <Calendar size={14} className="text-gray-300" />
                       {user.createdAt}
                     </div>
                   </td>
-                  <td className="px-6 py-4 text-right">
-                    <div className="flex items-center justify-end gap-2">
+                  <td className="px-3 md:px-6 py-3 md:py-4 text-right">
+                    <div className="flex items-center justify-end gap-2 md:opacity-0 md:group-hover:opacity-100 transition-opacity">
                       <button
-                          className="px-3 py-1.5 bg-[var(--surface-card)] border border-[var(--border-soft)] text-xs font-bold text-[var(--text-secondary)] rounded-lg hover:border-emerald-600 hover:text-emerald-600 transition-colors flex items-center gap-1.5"
+                          className="px-2 md:px-3 py-1.5 bg-[var(--surface-card)] border border-[var(--border-soft)] text-xs font-bold text-[var(--text-secondary)] rounded-lg hover:border-emerald-600 hover:text-emerald-600 transition-colors flex items-center gap-1"
                           onClick={() => {
                               setRechargeTarget(user);
                               setRechargeAmount('');
@@ -140,11 +140,12 @@ const Users: React.FC = () => {
                           充值
                       </button>
                         <button
-                        className="px-3 py-1.5 bg-[var(--surface-card)] border border-[var(--border-soft)] text-xs font-bold text-[var(--text-secondary)] rounded-lg hover:border-indigo-600 hover:text-[var(--primary)] transition-colors flex items-center gap-1.5"
+                        className="px-2 md:px-3 py-1.5 bg-[var(--surface-card)] border border-[var(--border-soft)] text-xs font-bold text-[var(--text-secondary)] rounded-lg hover:border-indigo-600 hover:text-[var(--primary)] transition-colors flex items-center gap-1"
                         onClick={() => handleRoleChange(user)}
                       >
                         <Shield size={12} />
-                        {user.role === UserRole.ADMIN ? '设为普通用户' : '设为管理员'}
+                        <span className="hidden md:inline">{user.role === UserRole.ADMIN ? '设为用户' : '设为管理员'}</span>
+                        <span className="md:hidden">角色</span>
                       </button>
                     </div>
                   </td>

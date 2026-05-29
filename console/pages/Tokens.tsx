@@ -186,18 +186,19 @@ const Tokens: React.FC = () => {
 
 
   return (
-    <div className="space-y-6">
-      <div className="flex items-center justify-between">
+    <div className="space-y-4 md:space-y-6">
+      <div className="flex items-center justify-between flex-wrap gap-3">
         <div>
-          <h1 className="text-2xl font-bold text-[var(--text-primary)]">API 令牌管理</h1>
-          <p className="text-[var(--text-secondary)] mt-1">创建和管理用于调用 Prism API 的密钥</p>
+          <h1 className="text-xl md:text-2xl font-bold text-[var(--text-primary)]">API 令牌管理</h1>
+          <p className="text-[var(--text-secondary)] mt-1 text-sm md:text-base">创建和管理用于调用 Prism API 的密钥</p>
         </div>
         <button
           onClick={() => setShowCreateModal(true)}
-          className="flex items-center gap-2 px-6 py-2 bg-[var(--primary)] text-white rounded-lg text-sm font-bold hover:opacity-90 transition-all shadow-sm"
+          className="flex items-center gap-2 px-4 md:px-6 py-2 bg-[var(--primary)] text-white rounded-lg text-sm font-bold hover:opacity-90 transition-all shadow-sm"
         >
           <Plus size={18} />
-          创建新令牌
+          <span className="hidden md:inline">创建新令牌</span>
+          <span className="md:hidden">创建</span>
         </button>
       </div>
 
@@ -212,8 +213,8 @@ const Tokens: React.FC = () => {
             <p className="text-[var(--text-secondary)]">暂无令牌，点击上方按钮创建</p>
           </div>
         ) : tokens.map(token => (
-          <div key={token.id} className="bg-[var(--surface-card)] p-6 rounded-2xl border border-[var(--border-soft)] shadow-sm flex flex-col md:flex-row items-center gap-6 group">
-            <div className="p-4 bg-[var(--surface)] rounded-2xl text-[var(--primary)]">
+          <div key={token.id} className="bg-[var(--surface-card)] p-4 md:p-6 rounded-2xl border border-[var(--border-soft)] shadow-sm flex flex-col md:flex-row items-start md:items-center gap-4 md:gap-6 group">
+            <div className="p-3 md:p-4 bg-[var(--surface)] rounded-2xl text-[var(--primary)] hidden md:block">
               <Key size={24} />
             </div>
 
@@ -229,8 +230,8 @@ const Tokens: React.FC = () => {
                       </span>
                   )}
               </div>
-              <div className="flex items-center gap-2 text-sm text-[var(--text-secondary)] font-mono">
-                <code>{token.key}</code>
+              <div className="flex items-center gap-2 text-xs md:text-sm text-[var(--text-secondary)] font-mono overflow-hidden">
+                <code className="truncate max-w-[180px] md:max-w-none">{token.key}</code>
                 <button
                   onClick={() => handleCopy(token.id, token.key)}
                   className={`p-1 rounded hover:bg-[var(--primary-lighter)] transition-colors ${copiedId === token.id ? 'text-green-500' : 'text-[var(--text-secondary)]'}`}
@@ -240,21 +241,21 @@ const Tokens: React.FC = () => {
               </div>
             </div>
 
-              <div className="flex items-center gap-6">
+              <div className="flex items-center gap-4 md:gap-6">
                   <div className="text-center">
                       <div className="flex items-center gap-1 text-[10px] font-bold text-[var(--text-secondary)] uppercase mb-1">
                           <Wallet size={12}/>
-                          <span>可用余额</span>
+                          <span>余额</span>
                       </div>
-                      <p className="text-lg font-bold text-green-600">¥{token.balance.toFixed(4)}</p>
+                      <p className="text-base md:text-lg font-bold text-green-600">¥{token.balance.toFixed(4)}</p>
               </div>
                   <div className="text-center">
                       <div className="text-[10px] font-bold text-[var(--text-secondary)] uppercase mb-1">已使用</div>
-                      <p className="text-lg font-bold text-[var(--text-secondary)]">¥{token.totalUsed.toFixed(4)}</p>
+                      <p className="text-base md:text-lg font-bold text-[var(--text-secondary)]">¥{token.totalUsed.toFixed(4)}</p>
               </div>
             </div>
 
-            <div className="flex gap-2 opacity-0 group-hover:opacity-100 transition-opacity">
+            <div className="flex gap-2 md:opacity-0 md:group-hover:opacity-100 transition-opacity">
                 <button
                     onClick={() => openEditModal(token)}
                     className="p-2 text-[var(--text-secondary)] hover:text-indigo-500 hover:bg-[var(--primary-lighter)] rounded-lg"

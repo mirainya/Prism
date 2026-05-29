@@ -149,32 +149,32 @@ const ChatLogs: React.FC = () => {
     const totalPages = Math.ceil(total / pageSize);
 
     return (
-        <div className="space-y-6">
-            <div className="flex items-center justify-between">
+        <div className="space-y-4 md:space-y-6">
+            <div className="flex items-center justify-between flex-wrap gap-3">
                 <div>
-                    <h1 className="text-2xl font-bold text-[var(--text-primary)]">对话记录</h1>
-                    <p className="text-[var(--text-secondary)] mt-1">查看所有 Chat 对话历史和费用明细</p>
+                    <h1 className="text-xl md:text-2xl font-bold text-[var(--text-primary)]">对话记录</h1>
+                    <p className="text-[var(--text-secondary)] mt-1 text-sm md:text-base">查看所有 Chat 对话历史和费用明细</p>
                 </div>
                 <button
                     onClick={() => loadConversations()}
-                    className="px-4 py-2 bg-[var(--surface-card)] border border-[var(--border-soft)] rounded-lg text-sm font-medium hover:bg-[var(--surface)] transition-colors flex items-center gap-2"
+                    className="px-3 md:px-4 py-2 bg-[var(--surface-card)] border border-[var(--border-soft)] rounded-lg text-sm font-medium hover:bg-[var(--surface)] transition-colors flex items-center gap-2"
                 >
                     <RefreshCw size={16} className={isLoading ? 'animate-spin' : ''}/>
-                    刷新
+                    <span className="hidden md:inline">刷新</span>
                 </button>
             </div>
 
             <div className="bg-[var(--surface-card)] rounded-2xl shadow-sm border border-[var(--border-soft)] overflow-hidden">
-                <div className="p-4 border-b border-[var(--border-soft)] bg-[var(--surface)]/50 flex items-center gap-4 flex-wrap">
-                    <div className="relative flex-1 min-w-[200px] max-w-md">
-                        <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-[var(--text-secondary)]" size={18}/>
+                <div className="p-3 md:p-4 border-b border-[var(--border-soft)] bg-[var(--surface)]/50 flex items-center gap-3 md:gap-4 flex-wrap">
+                    <div className="relative flex-1 min-w-[160px] md:max-w-md">
+                        <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-[var(--text-secondary)]" size={16}/>
                         <input
                             type="text"
                             value={keyword}
                             onChange={e => setKeyword(e.target.value)}
                             onKeyDown={e => e.key === 'Enter' && handleSearch()}
                             placeholder="搜索对话标题..."
-                            className="w-full pl-10 pr-4 py-2 bg-[var(--surface-card)] border border-[var(--border-soft)] rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-[var(--primary)]"
+                            className="w-full pl-9 pr-4 py-2 bg-[var(--surface-card)] border border-[var(--border-soft)] rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-[var(--primary)]"
                         />
                     </div>
                     {isAdmin() && models.length > 0 && (
@@ -188,64 +188,62 @@ const ChatLogs: React.FC = () => {
                 </div>
 
                 <div className="overflow-x-auto">
-                    <table className="w-full text-left">
+                    <table className="w-full text-left min-w-[600px]">
                         <thead>
                         <tr className="border-b border-[var(--border-soft)]">
-                            <th className="px-6 py-4 text-xs font-bold text-[var(--text-secondary)] uppercase tracking-wider">对话标题</th>
-                            <th className="px-6 py-4 text-xs font-bold text-[var(--text-secondary)] uppercase tracking-wider">模型</th>
-                            <th className="px-6 py-4 text-xs font-bold text-[var(--text-secondary)] uppercase tracking-wider text-center">消息数</th>
-                            <th className="px-6 py-4 text-xs font-bold text-[var(--text-secondary)] uppercase tracking-wider text-center">Token
-                                用量
-                            </th>
-                            <th className="px-6 py-4 text-xs font-bold text-[var(--text-secondary)] uppercase tracking-wider text-right">费用</th>
-                            <th className="px-6 py-4 text-xs font-bold text-[var(--text-secondary)] uppercase tracking-wider">创建时间</th>
-                            <th className="px-6 py-4 text-xs font-bold text-[var(--text-secondary)] uppercase tracking-wider text-right">操作</th>
+                            <th className="px-3 md:px-6 py-3 md:py-4 text-xs font-bold text-[var(--text-secondary)] uppercase tracking-wider">对话标题</th>
+                            <th className="px-3 md:px-6 py-3 md:py-4 text-xs font-bold text-[var(--text-secondary)] uppercase tracking-wider">模型</th>
+                            <th className="px-3 md:px-6 py-3 md:py-4 text-xs font-bold text-[var(--text-secondary)] uppercase tracking-wider text-center hidden sm:table-cell">消息</th>
+                            <th className="px-3 md:px-6 py-3 md:py-4 text-xs font-bold text-[var(--text-secondary)] uppercase tracking-wider text-center hidden sm:table-cell">Tokens</th>
+                            <th className="px-3 md:px-6 py-3 md:py-4 text-xs font-bold text-[var(--text-secondary)] uppercase tracking-wider text-right">费用</th>
+                            <th className="px-3 md:px-6 py-3 md:py-4 text-xs font-bold text-[var(--text-secondary)] uppercase tracking-wider hidden md:table-cell">时间</th>
+                            <th className="px-3 md:px-6 py-3 md:py-4 text-xs font-bold text-[var(--text-secondary)] uppercase tracking-wider text-right">操作</th>
                         </tr>
                         </thead>
                         <tbody className="divide-y divide-gray-100">
                         {isLoading ? (
                             Array.from({length: 8}).map((_, i) => (
                                 <tr key={i} className="animate-pulse">
-                                    <td colSpan={7} className="px-6 py-4">
+                                    <td colSpan={7} className="px-3 md:px-6 py-4">
                                         <div className="h-4 bg-[var(--primary-lighter)] rounded w-full"></div>
                                     </td>
                                 </tr>
                             ))
                         ) : conversations.length === 0 ? (
                             <tr>
-                                <td colSpan={7} className="px-6 py-12 text-center text-[var(--text-secondary)]">暂无对话记录</td>
+                                <td colSpan={7} className="px-3 md:px-6 py-12 text-center text-[var(--text-secondary)]">暂无对话记录</td>
                             </tr>
                         ) : conversations.map(conv => (
                             <tr key={conv.id} className="hover:bg-[var(--primary-lighter)]/30 transition-colors cursor-pointer group"
                                 onClick={() => openDetails(conv)}>
-                                <td className="px-6 py-4">
-                                    <div className="text-sm font-medium text-[var(--text-primary)] truncate max-w-[200px]"
+                                <td className="px-3 md:px-6 py-3 md:py-4">
+                                    <div className="text-sm font-medium text-[var(--text-primary)] truncate max-w-[120px] md:max-w-[200px]"
                                          title={conv.title}>
                                         {conv.title}
                                     </div>
                                 </td>
-                                <td className="px-6 py-4">
+                                <td className="px-3 md:px-6 py-3 md:py-4">
                     <span
                         className="inline-flex px-2 py-0.5 rounded-full text-[10px] font-bold bg-indigo-100 text-[var(--primary)]">
                       {conv.model}
                     </span>
                                 </td>
-                                <td className="px-6 py-4 text-center">
+                                <td className="px-3 md:px-6 py-3 md:py-4 text-center hidden sm:table-cell">
                                     <span className="text-sm text-[var(--text-secondary)]">{conv.messageCount}</span>
                                 </td>
-                                <td className="px-6 py-4 text-center">
+                                <td className="px-3 md:px-6 py-3 md:py-4 text-center hidden sm:table-cell">
                                     <span className="text-sm text-[var(--text-secondary)]">{conv.totalTokens.toLocaleString()}</span>
                                 </td>
-                                <td className="px-6 py-4 text-right">
+                                <td className="px-3 md:px-6 py-3 md:py-4 text-right">
                                     <div className="text-xs text-[var(--text-secondary)] flex items-center justify-end gap-1">
                                         <DollarSign size={10}/>
                                         {Number(conv.totalCost || 0).toFixed(4)}
                                     </div>
                                 </td>
-                                <td className="px-6 py-4">
+                                <td className="px-3 md:px-6 py-3 md:py-4 hidden md:table-cell">
                                     <div className="text-[10px] text-[var(--text-secondary)]">{formatTime(conv.createdAt)}</div>
                                 </td>
-                                <td className="px-6 py-4 text-right">
+                                <td className="px-3 md:px-6 py-3 md:py-4 text-right">
                                     <ChevronRight size={16}
                                                   className="text-gray-300 group-hover:text-indigo-500 group-hover:translate-x-1 transition-all"/>
                                 </td>
@@ -256,9 +254,9 @@ const ChatLogs: React.FC = () => {
                 </div>
 
                 {totalPages > 1 && (
-                    <div className="p-4 border-t border-[var(--border-soft)] flex items-center justify-between">
-                        <div className="text-sm text-[var(--text-secondary)]">
-                            共 {total} 条记录，第 {page}/{totalPages} 页
+                    <div className="p-3 md:p-4 border-t border-[var(--border-soft)] flex items-center justify-between">
+                        <div className="text-xs md:text-sm text-[var(--text-secondary)]">
+                            共 {total} 条，第 {page}/{totalPages} 页
                         </div>
                         <div className="flex items-center gap-2">
                             <button
@@ -285,11 +283,11 @@ const ChatLogs: React.FC = () => {
                      onClick={() => setIsDrawerOpen(false)}>
                     <div className="w-full max-w-2xl bg-[var(--surface-card)] shadow-2xl h-full flex flex-col"
                          onClick={e => e.stopPropagation()}>
-                        <div className="p-6 border-b border-[var(--border-soft)] flex items-center justify-between">
+                        <div className="p-4 md:p-6 border-b border-[var(--border-soft)] flex items-center justify-between">
                             <div>
-                                <h2 className="text-xl font-bold text-[var(--text-primary)]">对话详情</h2>
+                                <h2 className="text-lg md:text-xl font-bold text-[var(--text-primary)]">对话详情</h2>
                                 {selectedConversation && (
-                                    <p className="text-xs text-[var(--text-secondary)] mt-1 truncate max-w-[400px]">{selectedConversation.title}</p>
+                                    <p className="text-xs text-[var(--text-secondary)] mt-1 truncate max-w-[200px] md:max-w-[400px]">{selectedConversation.title}</p>
                                 )}
                             </div>
                             <button onClick={() => setIsDrawerOpen(false)}

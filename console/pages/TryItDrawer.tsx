@@ -119,7 +119,7 @@ export const TryItDrawer: React.FC<TryItDrawerProps> = ({ open, onClose, method,
       {/* 遮罩 */}
       <div className="fixed inset-0 bg-black/30 z-40" onClick={onClose} />
       {/* 抽屉 */}
-      <div className="fixed top-0 right-0 h-full w-[480px] max-w-full bg-[var(--surface-card)] shadow-2xl z-50 flex flex-col border-l border-[var(--border-soft)] animate-slide-in-right">
+      <div className="fixed top-0 right-0 h-full w-full sm:w-[480px] sm:max-w-full bg-[var(--surface-card)] shadow-2xl z-50 flex flex-col border-l border-[var(--border-soft)] animate-slide-in-right">
         {/* 头部 */}
         <div className="flex items-center justify-between px-5 py-4 border-b border-[var(--border-soft)]">
           <div>

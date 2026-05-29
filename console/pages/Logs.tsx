@@ -79,32 +79,32 @@ const Logs: React.FC = () => {
   const totalPages = Math.ceil(total / pageSize);
 
   return (
-    <div className="space-y-6">
-      <div className="flex items-center justify-between">
+    <div className="space-y-4 md:space-y-6">
+      <div className="flex items-center justify-between flex-wrap gap-3">
         <div>
-          <h1 className="text-2xl font-bold text-[var(--text-primary)]">调用日志</h1>
-          <p className="text-[var(--text-secondary)] mt-1">查看所有任务的调用记录和状态</p>
+          <h1 className="text-xl md:text-2xl font-bold text-[var(--text-primary)]">调用日志</h1>
+          <p className="text-[var(--text-secondary)] mt-1 text-sm md:text-base">查看所有任务的调用记录和状态</p>
         </div>
         <button
           onClick={() => loadLogs()}
-          className="px-4 py-2 bg-[var(--surface-card)] border border-[var(--border-soft)] rounded-lg text-sm font-medium hover:bg-[var(--surface)] transition-colors flex items-center gap-2"
+          className="px-3 md:px-4 py-2 bg-[var(--surface-card)] border border-[var(--border-soft)] rounded-lg text-sm font-medium hover:bg-[var(--surface)] transition-colors flex items-center gap-2"
         >
           <RefreshCw size={16} className={isLoading ? 'animate-spin' : ''} />
-          刷新
+          <span className="hidden md:inline">刷新</span>
         </button>
       </div>
 
       <div className="bg-[var(--surface-card)] rounded-2xl shadow-sm border border-[var(--border-soft)] overflow-hidden">
-        <div className="p-4 border-b border-[var(--border-soft)] bg-[var(--surface)]/50 flex items-center gap-4 flex-wrap">
-          <div className="relative flex-1 min-w-[200px] max-w-md">
-            <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-[var(--text-secondary)]" size={18} />
+        <div className="p-3 md:p-4 border-b border-[var(--border-soft)] bg-[var(--surface)]/50 flex items-center gap-3 md:gap-4 flex-wrap">
+          <div className="relative flex-1 min-w-[160px] md:max-w-md">
+            <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-[var(--text-secondary)]" size={16} />
             <input
               type="text"
               value={keyword}
               onChange={e => setKeyword(e.target.value)}
               onKeyDown={e => e.key === 'Enter' && handleSearch()}
               placeholder="搜索任务ID..."
-              className="w-full pl-10 pr-4 py-2 bg-[var(--surface-card)] border border-[var(--border-soft)] rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-[var(--primary)]"
+              className="w-full pl-9 pr-4 py-2 bg-[var(--surface-card)] border border-[var(--border-soft)] rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-[var(--primary)]"
             />
           </div>
           <select
@@ -131,49 +131,49 @@ const Logs: React.FC = () => {
         </div>
 
         <div className="overflow-x-auto">
-          <table className="w-full text-left">
+          <table className="w-full text-left min-w-[600px]">
             <thead>
               <tr className="border-b border-[var(--border-soft)]">
-                <th className="px-6 py-4 text-xs font-bold text-[var(--text-secondary)] uppercase tracking-wider">任务ID / 时间</th>
-                <th className="px-6 py-4 text-xs font-bold text-[var(--text-secondary)] uppercase tracking-wider">能力 / 渠道</th>
-                <th className="px-6 py-4 text-xs font-bold text-[var(--text-secondary)] uppercase tracking-wider text-center">状态</th>
-                <th className="px-6 py-4 text-xs font-bold text-[var(--text-secondary)] uppercase tracking-wider text-center">进度</th>
-                <th className="px-6 py-4 text-xs font-bold text-[var(--text-secondary)] uppercase tracking-wider text-right">费用</th>
-                <th className="px-6 py-4 text-xs font-bold text-[var(--text-secondary)] uppercase tracking-wider text-right">操作</th>
+                <th className="px-3 md:px-6 py-3 md:py-4 text-xs font-bold text-[var(--text-secondary)] uppercase tracking-wider">任务 / 时间</th>
+                <th className="px-3 md:px-6 py-3 md:py-4 text-xs font-bold text-[var(--text-secondary)] uppercase tracking-wider">能力</th>
+                <th className="px-3 md:px-6 py-3 md:py-4 text-xs font-bold text-[var(--text-secondary)] uppercase tracking-wider text-center">状态</th>
+                <th className="px-3 md:px-6 py-3 md:py-4 text-xs font-bold text-[var(--text-secondary)] uppercase tracking-wider text-center hidden sm:table-cell">进度</th>
+                <th className="px-3 md:px-6 py-3 md:py-4 text-xs font-bold text-[var(--text-secondary)] uppercase tracking-wider text-right hidden sm:table-cell">费用</th>
+                <th className="px-3 md:px-6 py-3 md:py-4 text-xs font-bold text-[var(--text-secondary)] uppercase tracking-wider text-right">操作</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-gray-100">
               {isLoading ? (
                 Array.from({ length: 8 }).map((_, i) => (
                   <tr key={i} className="animate-pulse">
-                    <td colSpan={6} className="px-6 py-4"><div className="h-4 bg-[var(--primary-lighter)] rounded w-full"></div></td>
+                    <td colSpan={6} className="px-3 md:px-6 py-4"><div className="h-4 bg-[var(--primary-lighter)] rounded w-full"></div></td>
                   </tr>
                 ))
               ) : logs.length === 0 ? (
                 <tr>
-                  <td colSpan={6} className="px-6 py-12 text-center text-[var(--text-secondary)]">暂无数据</td>
+                  <td colSpan={6} className="px-3 md:px-6 py-12 text-center text-[var(--text-secondary)]">暂无数据</td>
                 </tr>
               ) : logs.map(log => {
                 const statusInfo = STATUS_MAP[log.status] || { label: log.status, color: 'bg-[var(--primary-lighter)] text-[var(--text-primary)]' };
                 return (
                   <tr key={log.id} className="hover:bg-[var(--primary-lighter)]/30 transition-colors cursor-pointer group" onClick={() => openDetails(log)}>
-                    <td className="px-6 py-4">
-                      <div className="text-xs font-bold text-[var(--primary)] font-mono">{log.task_no}</div>
+                    <td className="px-3 md:px-6 py-3 md:py-4">
+                      <div className="text-xs font-bold text-[var(--primary)] font-mono truncate max-w-[120px] md:max-w-none">{log.task_no}</div>
                       <div className="text-[10px] text-[var(--text-secondary)] mt-0.5">{log.created_at}</div>
                     </td>
-                    <td className="px-6 py-4">
+                    <td className="px-3 md:px-6 py-3 md:py-4">
                       <div className="text-sm font-medium text-[var(--text-primary)]">{log.capability_name || log.capability}</div>
                       <div className="text-[10px] text-[var(--text-secondary)]">{log.channel}</div>
                     </td>
-                    <td className="px-6 py-4 text-center">
+                    <td className="px-3 md:px-6 py-3 md:py-4 text-center">
                       <span className={`inline-flex px-2 py-0.5 rounded-full text-[10px] font-bold ${statusInfo.color}`}>
                         {statusInfo.label}
                       </span>
                     </td>
-                    <td className="px-6 py-4 text-center">
+                    <td className="px-3 md:px-6 py-3 md:py-4 text-center hidden sm:table-cell">
                       <span className="text-sm text-[var(--text-secondary)]">{log.progress}%</span>
                     </td>
-                    <td className="px-6 py-4 text-right">
+                    <td className="px-3 md:px-6 py-3 md:py-4 text-right hidden sm:table-cell">
                       <div className="text-xs text-[var(--text-secondary)] flex items-center justify-end gap-1">
                         <DollarSign size={10} />
                         ¥{Number(log.cost || 0).toFixed(4)}
@@ -183,7 +183,7 @@ const Logs: React.FC = () => {
                           )}
                       </div>
                     </td>
-                    <td className="px-6 py-4 text-right">
+                    <td className="px-3 md:px-6 py-3 md:py-4 text-right">
                       <ChevronRight size={16} className="text-gray-300 group-hover:text-indigo-500 group-hover:translate-x-1 transition-all" />
                     </td>
                   </tr>
@@ -195,9 +195,9 @@ const Logs: React.FC = () => {
 
         {/* Pagination */}
         {totalPages > 1 && (
-          <div className="p-4 border-t border-[var(--border-soft)] flex items-center justify-between">
-            <div className="text-sm text-[var(--text-secondary)]">
-              共 {total} 条记录，第 {page}/{totalPages} 页
+          <div className="p-3 md:p-4 border-t border-[var(--border-soft)] flex items-center justify-between">
+            <div className="text-xs md:text-sm text-[var(--text-secondary)]">
+              共 {total} 条，第 {page}/{totalPages} 页
             </div>
             <div className="flex items-center gap-2">
               <button
@@ -222,10 +222,10 @@ const Logs: React.FC = () => {
       {/* Task Details Drawer */}
       {isDrawerOpen && (
         <div className="fixed inset-0 z-50 flex justify-end bg-black/50 backdrop-blur-sm" onClick={() => setIsDrawerOpen(false)}>
-          <div className="w-full max-w-2xl bg-[var(--surface-card)] shadow-2xl h-full flex flex-col" onClick={e => e.stopPropagation()}>
-            <div className="p-6 border-b border-[var(--border-soft)] flex items-center justify-between">
+          <div className="w-full md:max-w-2xl bg-[var(--surface-card)] shadow-2xl h-full flex flex-col" onClick={e => e.stopPropagation()}>
+            <div className="p-4 md:p-6 border-b border-[var(--border-soft)] flex items-center justify-between">
               <div>
-                <h2 className="text-xl font-bold text-[var(--text-primary)]">任务详情</h2>
+                <h2 className="text-lg md:text-xl font-bold text-[var(--text-primary)]">任务详情</h2>
                 {selectedTask && (
                   <p className="text-xs text-indigo-500 font-mono mt-1">{selectedTask.task_no}</p>
                 )}

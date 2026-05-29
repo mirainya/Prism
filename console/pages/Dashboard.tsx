@@ -32,14 +32,14 @@ const Dashboard: React.FC = () => {
 
   if (loading || !stats) {
     return (
-      <div className="space-y-8">
+      <div className="space-y-4 md:space-y-8">
         <div>
-          <h1 className="text-2xl font-bold text-[var(--text-primary)]">系统概览</h1>
-          <p className="text-[var(--text-secondary)] mt-1">实时监控及用量统计数据</p>
+          <h1 className="text-xl md:text-2xl font-bold text-[var(--text-primary)]">系统概览</h1>
+          <p className="text-[var(--text-secondary)] mt-1 text-sm md:text-base">实时监控及用量统计数据</p>
         </div>
-        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
+        <div className="grid grid-cols-2 md:grid-cols-2 lg:grid-cols-4 gap-3 md:gap-6">
           {[1, 2, 3, 4].map(i => (
-            <div key={i} className="glass-card p-6 animate-pulse">
+            <div key={i} className="glass-card p-4 md:p-6 animate-pulse">
               <div className="h-4 bg-[var(--border-soft)] rounded w-1/2 mb-3"></div>
               <div className="h-8 bg-[var(--border-soft)] rounded w-3/4"></div>
             </div>
@@ -100,28 +100,28 @@ const Dashboard: React.FC = () => {
   ];
 
   return (
-    <div className="space-y-8">
-      <div className="flex items-center justify-between">
+    <div className="space-y-4 md:space-y-8">
+      <div className="flex items-center justify-between flex-wrap gap-3">
         <div>
-          <h1 className="text-2xl font-bold text-[var(--text-primary)]">系统概览</h1>
-          <p className="text-[var(--text-secondary)] mt-1">实时监控及用量统计数据</p>
+          <h1 className="text-xl md:text-2xl font-bold text-[var(--text-primary)]">系统概览</h1>
+          <p className="text-[var(--text-secondary)] mt-1 text-sm md:text-base">实时监控及用量统计数据</p>
         </div>
         <button
           onClick={loadStats}
-          className="px-4 py-2 glass-card text-sm font-medium text-[var(--text-secondary)] hover:text-[var(--primary)] transition-colors flex items-center gap-2"
+          className="px-3 md:px-4 py-2 glass-card text-sm font-medium text-[var(--text-secondary)] hover:text-[var(--primary)] transition-colors flex items-center gap-2"
         >
           <RefreshCw size={16} className={loading ? 'animate-spin' : ''} />
-          刷新
+          <span className="hidden md:inline">刷新</span>
         </button>
       </div>
 
       {/* Stats Cards */}
-      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
+      <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 md:gap-6">
         {statCards.map((card, i) => (
-          <div key={i} className="glass-card hover-lift p-6 card-enter flex items-start justify-between">
+          <div key={i} className="glass-card hover-lift p-4 md:p-6 card-enter flex items-start justify-between">
             <div>
-              <p className="text-sm text-[var(--text-secondary)] font-medium">{card.label}</p>
-              <h3 className="text-2xl font-bold text-[var(--text-primary)] mt-1">{card.value}</h3>
+              <p className="text-xs md:text-sm text-[var(--text-secondary)] font-medium">{card.label}</p>
+              <h3 className="text-lg md:text-2xl font-bold text-[var(--text-primary)] mt-1">{card.value}</h3>
               <div className={`flex items-center mt-2 text-xs font-medium ${card.trend >= 0 ? 'text-emerald-600' : 'text-rose-600'}`}>
                 {card.trend >= 0 ? <ArrowUpRight size={14} className="mr-1" /> : <ArrowDownRight size={14} className="mr-1" />}
                 {card.trendLabel}
@@ -135,11 +135,11 @@ const Dashboard: React.FC = () => {
       </div>
 
       {/* Charts */}
-      <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+      <div className="grid grid-cols-1 lg:grid-cols-3 gap-3 md:gap-6">
         {/* Weekly Trend */}
-        <div className="lg:col-span-2 glass-card p-6">
-          <h3 className="text-lg font-semibold text-[var(--text-primary)] mb-4">近 7 日趋势</h3>
-          <div className="h-[280px]">
+        <div className="lg:col-span-2 glass-card p-4 md:p-6">
+          <h3 className="text-base md:text-lg font-semibold text-[var(--text-primary)] mb-4">近 7 日趋势</h3>
+          <div className="h-[200px] md:h-[280px]">
             <ResponsiveContainer width="100%" height="100%">
               <AreaChart data={weeklyTrend}>
                 <defs>
@@ -171,8 +171,8 @@ const Dashboard: React.FC = () => {
         </div>
 
         {/* Capability Distribution */}
-        <div className="glass-card p-6">
-          <h3 className="text-lg font-semibold text-[var(--text-primary)] mb-4">能力调用分布</h3>
+        <div className="glass-card p-4 md:p-6">
+          <h3 className="text-base md:text-lg font-semibold text-[var(--text-primary)] mb-4">能力调用分布</h3>
           {!capability_dist || capability_dist.length === 0 ? (
             <div className="h-[220px] flex items-center justify-center text-[var(--text-secondary)] text-sm">
               暂无数据

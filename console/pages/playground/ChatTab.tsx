@@ -4,7 +4,7 @@ import {
   AlertCircle, User as UserIcon,
   ChevronDown, Bug,
   SlidersHorizontal, PanelLeft, FileJson, Plus,
-  Paperclip, X, CheckCircle2, XCircle, Upload
+  Paperclip, X, CheckCircle2, XCircle, Upload, MoreHorizontal
 } from 'lucide-react';
 import {
   playgroundListModels, playgroundChatCompletions,
@@ -44,6 +44,7 @@ const ChatTab: React.FC<{ tokenId: string }> = ({ tokenId }) => {
   const [showDebugDrawer, setShowDebugDrawer] = useState(false);
   const [showSystemPrompt, setShowSystemPrompt] = useState(false);
   const [showFullDebug, setShowFullDebug] = useState(false);
+  const [showMobileMenu, setShowMobileMenu] = useState(false);
   const [pendingModel, setPendingModel] = useState<string | null>(null);
   const [stream, setStream] = useState(false);
   const [input, setInput] = useState('');
@@ -414,7 +415,7 @@ const ChatTab: React.FC<{ tokenId: string }> = ({ tokenId }) => {
     if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); handleSend(); }
   };
   return (
-    <div className="relative h-[calc(100vh-220px)] overflow-hidden">
+    <div className="relative h-[calc(100dvh-180px)] md:h-[calc(100dvh-220px)] overflow-hidden">
       {(showHistoryDrawer || showAdvancedDrawer || showDebugDrawer) && (
         <div className="absolute inset-0 z-20 bg-black/20" onClick={() => { setShowHistoryDrawer(false); setShowAdvancedDrawer(false); setShowDebugDrawer(false); }} />
       )}
@@ -462,11 +463,38 @@ const ChatTab: React.FC<{ tokenId: string }> = ({ tokenId }) => {
       )}
       <div className="h-full flex gap-4">
         <div className="flex-1 flex flex-col bg-[var(--surface-card)] rounded-xl border border-[var(--border-soft)] overflow-hidden min-w-0">
-          <div className="px-4 py-2 border-b border-[var(--border-soft)] flex items-center justify-between gap-3 flex-wrap">
-            <div className="flex items-center gap-2 min-w-0">
+          {/* Mobile: 极简顶栏 */}
+          <div className="px-3 py-2 border-b border-[var(--border-soft)] flex items-center justify-between gap-2 md:hidden">
+            <ModelSelector options={models.map(m => ({ id: m.id, provider: m.owned_by }))} value={selectedModel} onChange={handleModelSelect} className="min-w-0 flex-1" />
+            <button type="button" onClick={() => setShowMobileMenu(true)} className="p-2 rounded-lg text-[var(--text-secondary)] hover:bg-[var(--surface)]"><MoreHorizontal size={18} /></button>
+          </div>
+          {/* Mobile: 底部菜单 */}
+          {showMobileMenu && (
+            <>
+              <div className="fixed inset-0 z-50 bg-black/30 md:hidden" onClick={() => setShowMobileMenu(false)} />
+              <div className="fixed bottom-0 left-0 right-0 z-50 bg-[var(--surface-card)] rounded-t-2xl border-t border-[var(--border-soft)] p-4 space-y-1 md:hidden animate-slide-in-right">
+                <div className="w-10 h-1 bg-gray-300 rounded-full mx-auto mb-3" />
+                <button type="button" onClick={() => { setShowMobileMenu(false); setShowHistoryDrawer(true); }} className="w-full flex items-center gap-3 px-4 py-3 rounded-xl hover:bg-[var(--surface)] text-sm text-[var(--text-primary)]"><Plus size={16} className="text-[var(--text-secondary)]" /> 历史会话</button>
+                <button type="button" onClick={() => { setShowMobileMenu(false); setShowSystemPrompt(prev => !prev); }} className="w-full flex items-center gap-3 px-4 py-3 rounded-xl hover:bg-[var(--surface)] text-sm text-[var(--text-primary)]"><FileJson size={16} className="text-[var(--text-secondary)]" /> System Prompt</button>
+                <button type="button" onClick={() => { setShowMobileMenu(false); setShowAdvancedDrawer(true); }} className="w-full flex items-center gap-3 px-4 py-3 rounded-xl hover:bg-[var(--surface)] text-sm text-[var(--text-primary)]"><SlidersHorizontal size={16} className="text-[var(--text-secondary)]" /> 参数设置</button>
+                <button type="button" onClick={() => { setShowMobileMenu(false); setShowDebugDrawer(true); setShowFullDebug(false); }} className="w-full flex items-center gap-3 px-4 py-3 rounded-xl hover:bg-[var(--surface)] text-sm text-[var(--text-primary)]"><Bug size={16} className="text-[var(--text-secondary)]" /> 调试信息</button>
+                <div className="flex items-center justify-between px-4 py-3 rounded-xl">
+                  <span className="text-sm text-[var(--text-primary)]">Stream 模式</span>
+                  <button type="button" aria-label="切换 Stream" disabled={streamDisabled} onClick={() => !streamDisabled && setStream(prev => !prev)}
+                    className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors ${streamDisabled ? 'bg-gray-200 cursor-not-allowed' : stream ? 'bg-[var(--primary)]' : 'bg-gray-300'}`}>
+                    <span className={`inline-block h-5 w-5 transform rounded-full bg-[var(--surface-card)] shadow-sm transition-transform ${stream ? 'translate-x-5' : 'translate-x-1'}`} />
+                  </button>
+                </div>
+                <button type="button" onClick={() => { setShowMobileMenu(false); handleClear(); }} className="w-full flex items-center gap-3 px-4 py-3 rounded-xl hover:bg-red-50 text-sm text-red-500"><Trash2 size={16} /> 清空对话</button>
+              </div>
+            </>
+          )}
+          {/* Desktop: 完整工具栏 */}
+          <div className="hidden md:flex px-4 py-2 border-b border-[var(--border-soft)] items-center justify-between gap-2 flex-wrap">
+            <div className="flex items-center gap-2 min-w-0 flex-1">
               <ModelSelector options={models.map(m => ({ id: m.id, provider: m.owned_by }))} value={selectedModel} onChange={handleModelSelect} />
             </div>
-            <div className="flex items-center gap-2 flex-wrap">
+            <div className="flex items-center gap-1.5 flex-wrap">
               <button type="button" onClick={() => setShowHistoryDrawer(prev => !prev)} className="inline-flex items-center gap-1.5 px-2 py-1 rounded-lg border border-[var(--border-soft)] text-[11px] text-[var(--text-secondary)] hover:bg-[var(--surface)]"><Plus size={12} /> 历史</button>
               <button type="button" onClick={() => setShowSystemPrompt(prev => !prev)} className="inline-flex items-center gap-1.5 px-2 py-1 rounded-lg border border-[var(--border-soft)] text-[11px] text-[var(--text-secondary)] hover:bg-[var(--surface)]">System</button>
               <button type="button" onClick={() => setShowAdvancedDrawer(prev => !prev)} className="inline-flex items-center gap-1.5 px-2 py-1 rounded-lg border border-[var(--border-soft)] text-[11px] text-[var(--text-secondary)] hover:bg-[var(--surface)]"><SlidersHorizontal size={12} /> 参数</button>
@@ -476,16 +504,17 @@ const ChatTab: React.FC<{ tokenId: string }> = ({ tokenId }) => {
           </div>
 
           {pendingModel && (
-            <div className="mx-4 mt-2 px-3 py-2 bg-amber-50 border border-amber-200 text-amber-700 text-sm rounded-lg flex items-center justify-between gap-2">
-              <span>已切换到 {pendingModel}，当前会话使用 {conversationModel}</span>
-              <div className="flex gap-2">
-                <button type="button" onClick={startFreshConversationWithModel} className="px-2 py-1 text-xs bg-amber-100 hover:bg-amber-200 rounded-lg">新建会话</button>
-                <button type="button" onClick={() => { setSelectedModel(conversationModel!); setPendingModel(null); setError(''); }} className="px-2 py-1 text-xs bg-amber-100 hover:bg-amber-200 rounded-lg">恢复原模型</button>
+            <div className="mx-3 md:mx-4 mt-2 px-3 py-2 bg-amber-50 border border-amber-200 text-amber-700 text-sm rounded-lg flex items-center justify-between gap-2">
+              <span className="text-xs">已切换到 {pendingModel}</span>
+              <div className="flex gap-1">
+                <button type="button" onClick={startFreshConversationWithModel} className="px-2 py-1 text-xs bg-amber-100 hover:bg-amber-200 rounded-lg">新建</button>
+                <button type="button" onClick={() => { setSelectedModel(conversationModel!); setPendingModel(null); setError(''); }} className="px-2 py-1 text-xs bg-amber-100 hover:bg-amber-200 rounded-lg">恢复</button>
               </div>
             </div>
           )}
 
-          <div className="px-4 py-1 border-b border-[var(--border-soft)] flex items-center gap-3 flex-wrap">
+          {/* Desktop: Stream & status bars */}
+          <div className="hidden md:flex px-4 py-1 border-b border-[var(--border-soft)] items-center gap-3 flex-wrap">
             <label className="flex items-center gap-2 cursor-pointer select-none">
               <span className="text-xs text-[var(--text-secondary)]">Stream</span>
               <button type="button" aria-label="切换 Stream" disabled={streamDisabled} onClick={() => !streamDisabled && setStream(prev => !prev)}
@@ -494,25 +523,25 @@ const ChatTab: React.FC<{ tokenId: string }> = ({ tokenId }) => {
               </button>
             </label>
             <div className={`rounded-lg border px-3 py-1 text-[11px] ${streamDisabled ? 'border-amber-200 bg-amber-50 text-amber-700' : 'border-[var(--border-soft)] bg-[var(--surface)] text-[var(--text-secondary)]'}`}>
-              {streamDisabled ? '当前模型渠道声明为不支持流式，已自动关闭 stream。' : `当前模型默认 stream: ${selectedModelInfo?.default_stream ? '开启' : '关闭'}`}
+              {streamDisabled ? '不支持流式' : `stream: ${selectedModelInfo?.default_stream ? '开启' : '关闭'}`}
             </div>
           </div>
 
           {(showSystemPrompt || systemPrompt.trim()) && (
-            <div className="px-4 py-1.5 border-b border-[var(--border-soft)]">
+            <div className="px-3 md:px-4 py-1.5 border-b border-[var(--border-soft)]">
               <label className="block text-[11px] font-medium text-[var(--text-secondary)] mb-1">System Prompt</label>
               <textarea value={systemPrompt} onChange={e => setSystemPrompt(e.target.value)} rows={2} className="w-full px-3 py-2 border border-[var(--border-soft)] rounded-lg text-sm resize-none focus:outline-none focus:ring-2 focus:ring-[var(--primary)]" />
             </div>
           )}
 
-          <div className="px-4 py-1 border-b border-[var(--border-soft)] text-[11px] text-[var(--text-secondary)] flex items-center gap-3 flex-wrap">
+          <div className="hidden md:flex px-4 py-1 border-b border-[var(--border-soft)] text-[11px] text-[var(--text-secondary)] items-center gap-3 flex-wrap">
             <span>{chat.statusText}</span>
             {conversationModel ? <span>会话模型 {conversationModel}</span> : null}
             {chat.latencyMs ? <span>耗时 {(chat.latencyMs / 1000).toFixed(2)}s</span> : null}
             {chat.usage ? <span>Tokens {chat.usage.input}/{chat.usage.output}/{chat.usage.total || (chat.usage.input + chat.usage.output)}</span> : null}
             {effectiveConversationId ? <span>会话 #{effectiveConversationId}</span> : null}
           </div>
-          <div className="flex-1 overflow-y-auto p-4 space-y-4 min-h-0">
+          <div className="flex-1 overflow-y-auto p-3 md:p-4 space-y-4 min-h-0">
             {chat.messages.length === 0 && (
               <div className="flex flex-col items-center justify-center h-full text-gray-300">
                 <Bot size={56} strokeWidth={1} />
@@ -598,7 +627,7 @@ const ChatTab: React.FC<{ tokenId: string }> = ({ tokenId }) => {
                           {att.uploading && <div className="absolute inset-0 bg-black/40 flex items-center justify-center"><Loader2 size={16} className="animate-spin text-white" /></div>}
                           {att.error && <div className="absolute inset-0 bg-red-500/60 flex items-center justify-center"><XCircle size={16} className="text-white" /></div>}
                           {att.uploaded && <div className="absolute bottom-0.5 right-0.5 w-4 h-4 bg-emerald-500 rounded-full flex items-center justify-center"><CheckCircle2 size={10} className="text-white" /></div>}
-                          <button onClick={() => removeAttachment(att.id)} className="absolute -top-1.5 -right-1.5 w-5 h-5 bg-black/60 hover:bg-red-500 text-white rounded-full flex items-center justify-center opacity-0 group-hover:opacity-100 transition-all shadow-sm"><X size={10} /></button>
+                          <button onClick={() => removeAttachment(att.id)} className="absolute -top-1.5 -right-1.5 w-5 h-5 bg-black/60 hover:bg-red-500 text-white rounded-full flex items-center justify-center md:opacity-0 md:group-hover:opacity-100 transition-all shadow-sm"><X size={10} /></button>
                         </div>
                       ) : (
                         <div className="relative flex items-center gap-2.5 pl-2.5 pr-7 py-2 rounded-xl border border-[var(--border-soft)] bg-[var(--surface)] hover:bg-[var(--primary-lighter)] transition-colors max-w-[200px]">
@@ -611,7 +640,7 @@ const ChatTab: React.FC<{ tokenId: string }> = ({ tokenId }) => {
                               {att.error && <><XCircle size={8} className="text-red-500" /><span className="text-red-500 truncate">{att.error}</span></>}
                             </div>
                           </div>
-                          <button onClick={() => removeAttachment(att.id)} className="absolute -top-1.5 -right-1.5 w-5 h-5 bg-black/60 hover:bg-red-500 text-white rounded-full flex items-center justify-center opacity-0 group-hover:opacity-100 transition-all shadow-sm"><X size={10} /></button>
+                          <button onClick={() => removeAttachment(att.id)} className="absolute -top-1.5 -right-1.5 w-5 h-5 bg-black/60 hover:bg-red-500 text-white rounded-full flex items-center justify-center md:opacity-0 md:group-hover:opacity-100 transition-all shadow-sm"><X size={10} /></button>
                         </div>
                       )}
                     </div>
@@ -624,8 +653,8 @@ const ChatTab: React.FC<{ tokenId: string }> = ({ tokenId }) => {
                 {chat.isStreaming ? (
                   <button onClick={handleStop} className="px-4 py-2.5 bg-red-500 text-white rounded-xl hover:bg-red-600 transition-colors flex-shrink-0"><Square size={18} /></button>
                 ) : (
-                  <button onClick={handleSend} disabled={(!input.trim() && attachments.filter(a => a.uploaded).length === 0) || !selectedModel} className="px-4 py-2.5 bg-[var(--primary)] text-white rounded-xl hover:opacity-90 disabled:opacity-30 disabled:cursor-not-allowed transition-colors flex-shrink-0 flex items-center gap-1.5">
-                    <Send size={16} /><span className="text-sm font-medium">发送</span>
+                  <button onClick={handleSend} disabled={(!input.trim() && attachments.filter(a => a.uploaded).length === 0) || !selectedModel} className="px-3 md:px-4 py-2.5 bg-[var(--primary)] text-white rounded-xl hover:opacity-90 disabled:opacity-30 disabled:cursor-not-allowed transition-colors flex-shrink-0 flex items-center gap-1.5">
+                    <Send size={16} /><span className="text-sm font-medium hidden sm:inline">发送</span>
                   </button>
                 )}
               </div>

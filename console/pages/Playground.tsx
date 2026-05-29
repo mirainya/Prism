@@ -33,28 +33,28 @@ const Playground: React.FC = () => {
   ];
 
   return (
-    <div className="h-[calc(100vh-8rem)] flex flex-col">
-      <div className="flex items-center justify-between mb-4">
+    <div className="h-[calc(100dvh-7rem)] md:h-[calc(100dvh-8rem)] flex flex-col">
+      <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2 mb-3 md:mb-4">
         <div className="flex items-center gap-1 bg-[var(--primary-lighter)] rounded-xl p-1">
           {tabs.map(tab => (
             <button
               key={tab.key}
               onClick={() => setActiveTab(tab.key)}
-              className={`flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium transition-all ${activeTab === tab.key ? 'bg-[var(--surface-card)] text-[var(--primary)] shadow-sm' : 'text-[var(--text-secondary)] hover:text-[var(--text-primary)]'}`}
+              className={`flex items-center gap-1.5 px-3 md:px-4 py-2 rounded-lg text-sm font-medium transition-all ${activeTab === tab.key ? 'bg-[var(--surface-card)] text-[var(--primary)] shadow-sm' : 'text-[var(--text-secondary)] hover:text-[var(--text-primary)]'}`}
             >
               {tab.icon} {tab.label}
             </button>
           ))}
         </div>
 
-        <div className="flex items-center gap-3">
-          <label className="text-sm text-[var(--text-secondary)]">令牌：</label>
+        <div className="flex items-center gap-2 min-w-0">
+          <label className="text-sm text-[var(--text-secondary)] flex-shrink-0">令牌：</label>
           {isLoadingTokens ? (
             <div className="flex items-center gap-2 text-sm text-[var(--text-secondary)]"><Loader2 size={14} className="animate-spin" /> 加载中...</div>
           ) : tokens.length === 0 ? (
             <span className="text-sm text-red-500">暂无可用令牌，请先创建</span>
           ) : (
-            <select value={selectedTokenId} onChange={e => setSelectedTokenId(e.target.value)} className="px-3 py-1.5 border border-[var(--border-soft)] rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-[var(--primary)]">
+            <select value={selectedTokenId} onChange={e => setSelectedTokenId(e.target.value)} className="px-3 py-1.5 border border-[var(--border-soft)] rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-[var(--primary)] min-w-0 flex-1 max-w-[260px]">
               {tokens.map(t => <option key={t.id} value={t.id}>{t.name} (余额: ¥{t.balance.toFixed(2)})</option>)}
             </select>
           )}
