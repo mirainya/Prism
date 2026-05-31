@@ -224,7 +224,11 @@ func (s *DashboardService) ListTasks(req *ListTasksRequest, userID uint, isAdmin
 	db.Count(&total)
 
 	var tasks []model.Task
-	db.Order("created_at DESC").
+	// 列表页只需展示字段,显式 Select 排除 request_params/mapped_params/vendor_response/result
+	// 这几个 JSON 列可能存有 MB 级的 base64 图片/视频数据,SELECT * 会拉取巨量数据导致接口卡死
+	db.Select("id", "task_no", "model_code", "status", "progress", "cost",
+		"refunded", "error_message", "created_at", "completed_at", "channel_id").
+		Order("created_at DESC").
 		Offset((req.Page - 1) * req.PageSize).
 		Limit(req.PageSize).
 		Preload("Channel").

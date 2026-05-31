@@ -118,7 +118,10 @@ func (s *RequestLogService) ListRequestLogs(req *ListRequestLogsRequest) (*ListR
 	// 分页查询
 	var items []model.ChannelRequestLog
 	offset := (req.Page - 1) * req.PageSize
-	if err := query.Preload("Channel").Preload("Model").
+	// 列表页不展示完整 body,Omit 掉 request_body/response_body/request_headers 这几个 mediumtext 大字段
+	// (单行可达数 MB),避免一次拉取整页大数据导致接口卡死;完整内容在详情接口 GetRequestLog 返回
+	if err := query.Omit("request_body", "response_body", "request_headers").
+		Preload("Channel").Preload("Model").
 		Order("id DESC").
 		Offset(offset).Limit(req.PageSize).
 		Find(&items).Error; err != nil {
@@ -136,7 +139,7 @@ func (s *RequestLogService) ListRequestLogs(req *ListRequestLogsRequest) (*ListR
 // GetRequestLog 获取单个请求日志详情
 func (s *RequestLogService) GetRequestLog(id uint) (*model.ChannelRequestLog, error) {
 	var log model.ChannelRequestLog
-	if err := model.DB().Preload("Channel").Preload("Capability").First(&log, id).Error; err != nil {
+	if err := model.DB().Preload("Channel").Preload("Model").First(&log, id).Error; err != nil {
 		return nil, err
 	}
 	return &log, nil
