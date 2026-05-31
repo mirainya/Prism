@@ -1,5 +1,13 @@
 @import "tailwindcss";
 
+/* Nunito 自托管(仅 latin 子集,各字重约 16KB),消除对 Google Fonts 的外部依赖,
+   避免国内网络下 fonts.googleapis.com 阻塞首屏渲染。中文走系统字体(PingFang/雅黑)兜底 */
+@import "@fontsource/nunito/latin-300.css";
+@import "@fontsource/nunito/latin-400.css";
+@import "@fontsource/nunito/latin-500.css";
+@import "@fontsource/nunito/latin-600.css";
+@import "@fontsource/nunito/latin-700.css";
+
 /* ===== 主题系统 ===== */
 :root {
   --primary: #8b5cf6;

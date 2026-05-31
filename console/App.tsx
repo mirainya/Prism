@@ -1,22 +1,23 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, Suspense, lazy } from 'react';
 import { HashRouter as Router, Routes, Route, Navigate } from 'react-router-dom';
 import { ThemeProvider } from './theme/ThemeProvider';
 import Layout from './components/Layout';
 import ErrorBoundary from './components/ErrorBoundary';
 import Home from './pages/Home';
 import Pricing from './pages/Pricing';
-import Dashboard from './pages/Dashboard';
-import Channels from './pages/Channels';
-import Capabilities from './pages/Capabilities';
-import Users from './pages/Users';
-import Tokens from './pages/Tokens';
-import Logs from './pages/Logs';
-import RequestLogs from './pages/RequestLogs';
-import ApiDocs from './pages/ApiDocs';
-import ChatLogs from './pages/ChatLogs';
-import ChatModels from './pages/ChatModels';
-import ChangePassword from './pages/ChangePassword';
-import Playground from './pages/Playground';
+// 登录后的页面按路由懒加载,避免全部打进首屏主 bundle
+const Dashboard = lazy(() => import('./pages/Dashboard'));
+const Channels = lazy(() => import('./pages/Channels'));
+const Capabilities = lazy(() => import('./pages/Capabilities'));
+const Users = lazy(() => import('./pages/Users'));
+const Tokens = lazy(() => import('./pages/Tokens'));
+const Logs = lazy(() => import('./pages/Logs'));
+const RequestLogs = lazy(() => import('./pages/RequestLogs'));
+const ApiDocs = lazy(() => import('./pages/ApiDocs'));
+const ChatLogs = lazy(() => import('./pages/ChatLogs'));
+const ChatModels = lazy(() => import('./pages/ChatModels'));
+const ChangePassword = lazy(() => import('./pages/ChangePassword'));
+const Playground = lazy(() => import('./pages/Playground'));
 import { User, UserRole } from './types';
 import { login, register, logout, getCurrentUser } from './services/api';
 import {LogIn, UserPlus, ArrowLeft} from 'lucide-react';
@@ -242,6 +243,11 @@ const App: React.FC = () => {
     <Router>
       <Layout user={user} onLogout={handleLogout}>
         <ErrorBoundary>
+        <Suspense fallback={
+          <div className="flex items-center justify-center py-32">
+            <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-[var(--primary)]"></div>
+          </div>
+        }>
         <Routes>
           <Route path="/" element={<Navigate to="/dashboard" replace />} />
           <Route path="/dashboard" element={<Dashboard />} />
@@ -265,6 +271,7 @@ const App: React.FC = () => {
 
           <Route path="*" element={<div className="text-center py-20 text-gray-400 font-medium italic">页面正在开发中</div>} />
         </Routes>
+        </Suspense>
         </ErrorBoundary>
       </Layout>
     </Router>

@@ -4,7 +4,9 @@ import (
 	"io"
 	"io/fs"
 	"net/http"
+	"strings"
 
+	"github.com/gin-contrib/gzip"
 	"github.com/gin-gonic/gin"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 	consolefs "github.com/mirainya/Prism/console"
@@ -27,6 +29,14 @@ func SetupRouter() *gin.Engine {
 	r.Use(middleware.RequestID())
 	r.Use(middleware.RequestLogger())
 	r.Use(middleware.ErrorHandler())
+
+	// Gzip 压缩: 压缩控制台静态资源与 JSON API 响应。
+	// 排除 AI 调用路径(/v1 流式 SSE)、内部回调与指标端点,避免破坏流式实时性。
+	r.Use(gzip.Gzip(gzip.DefaultCompression, gzip.WithExcludedPaths([]string{
+		"/v1",
+		"/internal",
+		"/metrics",
+	})))
 
 	// 健康检查
 	r.GET("/health", healthCheck)
@@ -65,17 +75,20 @@ func SetupRouter() *gin.Engine {
 	distFS, _ := fs.Sub(consolefs.DistFS, "dist")
 	fileServer := http.FileServer(http.FS(distFS))
 
-	// 静态资源
-	r.GET("/assets/*filepath", gin.WrapH(fileServer))
+	// 静态资源: 文件名含内容 hash(Vite 产物),可安全长期缓存
+	r.GET("/assets/*filepath", func(c *gin.Context) {
+		c.Header("Cache-Control", "public, max-age=31536000, immutable")
+		fileServer.ServeHTTP(c.Writer, c.Request)
+	})
 
 	// SPA 路由: 所有未匹配的路由返回 index.html
 	r.NoRoute(func(c *gin.Context) {
 		// API 路由返回 404
-		if len(c.Request.URL.Path) >= 4 && c.Request.URL.Path[:4] == "/api" {
+		if strings.HasPrefix(c.Request.URL.Path, "/api") {
 			c.JSON(http.StatusNotFound, gin.H{"error": "not found"})
 			return
 		}
-		if len(c.Request.URL.Path) >= 3 && c.Request.URL.Path[:3] == "/v1" {
+		if strings.HasPrefix(c.Request.URL.Path, "/v1") {
 			c.JSON(http.StatusNotFound, gin.H{"error": "not found"})
 			return
 		}
@@ -89,6 +102,8 @@ func SetupRouter() *gin.Engine {
 		defer indexFile.Close()
 
 		stat, _ := indexFile.Stat()
+		// index.html 引用带 hash 的资源,自身绝不能缓存,否则发版后用户拿到旧引用
+		c.Header("Cache-Control", "no-cache, no-store, must-revalidate")
 		http.ServeContent(c.Writer, c.Request, "index.html", stat.ModTime(), indexFile.(io.ReadSeeker))
 	})
 
