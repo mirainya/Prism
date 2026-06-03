@@ -72,6 +72,7 @@ type BaseProvider struct {
 	ResponseMapping     *ResponseMapping
 	PollResponseMapping *ResponseMapping
 	CallbackMapping     *ResponseMapping
+	Timeout             int // endpoint 级请求超时(秒),0 用全局
 }
 
 // resolvePath 替换路径中的 {variable} 模板变量
@@ -187,7 +188,13 @@ func (p *BaseProvider) Submit(ctx context.Context, req SubmitRequest) (SubmitRes
 	httpReq.Header.Set("Content-Type", contentType)
 	p.setAuth(httpReq)
 
-	resp, err := sharedHTTPClient.Do(httpReq)
+	client := sharedHTTPClient
+	if p.Timeout > 0 && time.Duration(p.Timeout)*time.Second > client.Timeout {
+		c := *sharedHTTPClient
+		c.Timeout = time.Duration(p.Timeout) * time.Second
+		client = &c
+	}
+	resp, err := client.Do(httpReq)
 	if err != nil {
 		return SubmitResult{}, fmt.Errorf("do request: %w", err)
 	}

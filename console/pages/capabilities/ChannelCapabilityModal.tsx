@@ -382,9 +382,9 @@ const ChannelCapabilityModal: React.FC<{
                                         placeholder="Bearer " />
                                 </div>
                             </div>
-                            {form.result_mode === 'poll' && (
+                            {(form.result_mode === 'poll' || form.result_mode === 'callback') && (
                                 <div className="border-t border-[var(--border-soft)] pt-4 mt-4 space-y-4">
-                                    <h4 className="text-sm font-medium text-[var(--text-primary)]">轮询配置</h4>
+                                    <h4 className="text-sm font-medium text-[var(--text-primary)]">轮询配置{form.result_mode === 'callback' && '（回调兜底，选填）'}</h4>
                                     <div>
                                         <label className="block text-sm font-medium text-[var(--text-primary)] mb-1">轮询路径</label>
                                         <input type="text" value={form.poll_path} onChange={e => setForm({...form, poll_path: e.target.value})}

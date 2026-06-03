@@ -306,7 +306,7 @@ const CapabilityTab: React.FC<{ tokenId: string }> = ({ tokenId }) => {
           if (value) {
             const [ch, mode] = String(value).split('::');
             acc.channel = ch;
-            if (mode && mode !== 'sync') acc.interaction_mode = mode;
+            if (mode) acc.interaction_mode = mode;
           }
           return acc;
         }

@@ -100,7 +100,21 @@ func HandleTaskSubmit(ctx context.Context, t *asynq.Task) error {
 			logger.Info("enqueue poll ok", zap.Uint("task_id", task.ID), zap.String("queue", info.Queue))
 		}
 	case model.ModeCallback:
+		// 伪异步上游：提交响应已直接返回结果(无 task_id 但有图片 URL),直接结算成功，不傻等回调
+		if result.ProviderTaskID == "" && len(result.URLs) > 0 {
+			taskService.UpdateTaskSuccess(task.ID, map[string]any{"urls": result.URLs}, endpoint.InputPrice)
+			decrementAccountTasks(task.ID)
+			break
+		}
 		taskService.UpdateTaskStatus(task.ID, model.TaskStatusProcessing, result.ProviderTaskID)
+		// 兜底轮询：OOJJ 回调可能丢失/延迟，配了 poll_path 则同时主动轮询(poll 幂等,不会与回调重复结算)
+		if endpoint.PollPath != "" && result.ProviderTaskID != "" {
+			interval := endpoint.PollInterval
+			if interval <= 0 {
+				interval = DefaultPollInterval
+			}
+			requeuePoll(task.ID, 0, interval)
+		}
 	default:
 		// sync/stream: submit 响应即为最终结果
 		taskService.UpdateTaskSuccess(task.ID, map[string]any{"data": result.ProviderTaskID, "urls": result.URLs}, endpoint.InputPrice)
