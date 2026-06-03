@@ -16,6 +16,12 @@ type ResponseMapping struct {
 	StatusMapping map[string]string `json:"status_mapping"`
 }
 
+// IsEmpty 判断映射是否无任何有效字段（含 nil 与空对象 {} 两种情况）
+func (m *ResponseMapping) IsEmpty() bool {
+	return m == nil || (m.TaskID == "" && m.Status == "" && m.Progress == "" &&
+		m.OutputURL == "" && m.Error == "" && len(m.StatusMapping) == 0)
+}
+
 type ResponseParser interface {
 	ParseSubmitResponse(body []byte, mapping *ResponseMapping) (SubmitResult, error)
 	ParseProgressResponse(body []byte, mapping *ResponseMapping) (ProgressResult, error)

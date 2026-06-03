@@ -43,3 +43,15 @@ func EnqueueTaskSubmit(taskID uint) error {
 	_, err = Client.Enqueue(task, asynq.Queue("critical"))
 	return err
 }
+
+// EnqueueTaskUpload 入队上传任务（回调/轮询成功后复用同一上传流水线）
+func EnqueueTaskUpload(taskID uint, originURL string, urls []string) error {
+	payload := TaskUploadPayload{TaskID: taskID, OriginURL: originURL, URLs: urls}
+	payloadBytes, err := json.Marshal(payload)
+	if err != nil {
+		return err
+	}
+	task := asynq.NewTask(TypeTaskUpload, payloadBytes)
+	_, err = Client.Enqueue(task, asynq.Queue("default"))
+	return err
+}

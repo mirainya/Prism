@@ -251,7 +251,7 @@ func (p *BaseProvider) GetProgress(ctx context.Context, providerTaskID string) (
 	}
 
 	mapping := p.PollResponseMapping
-	if mapping == nil {
+	if mapping.IsEmpty() {
 		mapping = p.ResponseMapping
 	}
 	return p.Parser.ParseProgressResponse(respBody, mapping)
@@ -259,9 +259,9 @@ func (p *BaseProvider) GetProgress(ctx context.Context, providerTaskID string) (
 
 // ParseCallback 使用独立的 CallbackMapping 解析回调
 func (p *BaseProvider) ParseCallback(ctx context.Context, body []byte) (ProgressResult, string, error) {
-	// 优先使用 CallbackMapping，如果没有配置则回退到 ResponseMapping
+	// 优先使用 CallbackMapping，未配置（nil 或空对象 {}）则回退到 ResponseMapping
 	mapping := p.CallbackMapping
-	if mapping == nil {
+	if mapping.IsEmpty() {
 		mapping = p.ResponseMapping
 	}
 

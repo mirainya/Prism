@@ -161,9 +161,47 @@ func (s *UnifiedService) HandleCallback(ctx context.Context, channelType string,
 		return err
 	}
 
-	result := extractCallbackResult(body, endpoint.CallbackMapping)
-	taskSvc.UpdateTaskSuccess(task.ID, result, endpoint.InputPrice)
-	s.decrementAccountTasks(task.AccountID)
+	// 用配置驱动的解析器解析回调（读取 response/callback mapping 的 value_mapping、url、error）
+	var channel model.Channel
+	if err := model.DB().First(&channel, task.ChannelID).Error; err != nil {
+		return err
+	}
+	var account model.ChannelAccount
+	model.DB().First(&account, task.AccountID)
+
+	bodyBytes, _ := json.Marshal(body)
+	prov, err := provider.NewProvider(&channel, &account, &endpoint)
+	if err != nil {
+		return err
+	}
+	parsed, _, err := prov.ParseCallback(ctx, bodyBytes)
+	if err != nil {
+		return err
+	}
+
+	switch parsed.Status {
+	case provider.StatusFail:
+		errMsg := parsed.Error
+		if errMsg == "" {
+			errMsg = "upstream task failed"
+		}
+		taskSvc.UpdateTaskFail(task.ID, errMsg) // 内部自动退款
+		s.decrementAccountTasks(task.AccountID)
+	case provider.StatusSuccess:
+		// 复用上传流水线（转存+通知），与轮询成功路径保持一致
+		originURL := ""
+		if len(parsed.URLs) > 0 {
+			originURL = parsed.URLs[0]
+		}
+		taskSvc.UpdateTaskProgress(task.ID, 100)
+		if err := queue.EnqueueTaskUpload(task.ID, originURL, parsed.URLs); err != nil {
+			logger.Error("enqueue upload from callback failed", zap.Uint("task_id", task.ID), zap.Error(err))
+		}
+		s.decrementAccountTasks(task.AccountID)
+	default:
+		// 处理中：仅更新进度，不结算
+		taskSvc.UpdateTaskProgress(task.ID, parsed.Progress)
+	}
 
 	return nil
 }
@@ -230,26 +268,6 @@ func mapParams(params map[string]any, mapping datatypes.JSON) map[string]any {
 		} else {
 			result[k] = v
 		}
-	}
-	return result
-}
-
-func extractCallbackResult(body map[string]any, mapping datatypes.JSON) map[string]any {
-	if len(mapping) == 0 {
-		return body
-	}
-	var m map[string]string
-	if err := json.Unmarshal(mapping, &m); err != nil {
-		return body
-	}
-	result := make(map[string]any)
-	for target, source := range m {
-		if v, ok := body[source]; ok {
-			result[target] = v
-		}
-	}
-	if len(result) == 0 {
-		return body
 	}
 	return result
 }
