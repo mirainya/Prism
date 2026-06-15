@@ -16,6 +16,7 @@ type Conversation struct {
 	SystemPrompt     string `gorm:"type:text;comment:系统提示词" json:"system_prompt"`
 	LastRequestLogID uint   `gorm:"default:0;index;comment:最近一次请求日志ID" json:"last_request_log_id"`
 	LastStatus       string `gorm:"type:varchar(20);comment:最近一次请求状态" json:"last_status"`
+	ProviderResponseID string `gorm:"type:varchar(128);default:'';comment:上游有状态对话ID(如火山response_id)" json:"provider_response_id"`
 	TotalTokens      int    `gorm:"default:0;comment:累计token" json:"total_tokens"`
 	MessageCount     int    `gorm:"default:0;comment:消息数量" json:"message_count"`
 	Status           int8   `gorm:"default:1;comment:状态(1启用/0禁用)" json:"status"`

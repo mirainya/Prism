@@ -44,10 +44,11 @@ func (Model) TableName() string {
 type Protocol string
 
 const (
-	ProtocolOpenAI    Protocol = "openai"
-	ProtocolAnthropic Protocol = "anthropic"
-	ProtocolGoogle    Protocol = "google"
-	ProtocolCustom    Protocol = "custom"
+	ProtocolOpenAI     Protocol = "openai"
+	ProtocolAnthropic  Protocol = "anthropic"
+	ProtocolGoogle     Protocol = "google"
+	ProtocolVolcengine Protocol = "volcengine" // 火山方舟 Responses API (/api/v3/responses)
+	ProtocolCustom     Protocol = "custom"
 )
 
 // InteractionMode 交互模式

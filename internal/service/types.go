@@ -24,6 +24,10 @@ type CompletionRequest struct {
 	Seed             *int
 	User             string
 	ConversationID   string
+
+	// --- 内部字段：火山 Responses 有状态对话(B模式) ---
+	PreviousResponseID string             // 非空时启用 B 模式(只发新消息)
+	NewMessages        []chat.ChatMessage // B 模式下本轮要发送的新消息
 }
 
 // CompletionResponse 对话补全响应
@@ -36,6 +40,9 @@ type CompletionResponse struct {
 	Choices        []chat.ChatChoice     `json:"choices"`
 	Usage          *chat.ChatUsage       `json:"usage,omitempty"`
 	Debug          *PlaygroundDebugDetail `json:"debug,omitempty"`
+
+	// ProviderResponseID 火山 Responses 返回的 response_id(内部用于 B 模式回写,不对外输出)
+	ProviderResponseID string `json:"-"`
 }
 
 // StreamAggregationResult 流式聚合结果
@@ -50,6 +57,7 @@ type StreamAggregationResult struct {
 	CompletionTokens int
 	TotalTokens      int
 	Usage            *chat.ChatUsage
+	ProviderResponseID string // 火山 Responses 的 response_id(B模式回写用)
 }
 
 // PlaygroundDebugDetail 调试详情

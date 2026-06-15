@@ -260,6 +260,7 @@ export interface ChatModelChannel {
   modelCode: string;
   channelId: number;
   vendorModel: string;
+  protocol?: string;
   priority: number;
   priceMode: 'token' | 'request';
   inputPrice: number;
@@ -406,6 +407,7 @@ export const CHAT_PROVIDERS = [
   {value: 'openai', label: 'OpenAI'},
   {value: 'anthropic', label: 'Anthropic (Claude)'},
   {value: 'google', label: 'Google (Gemini)'},
+  {value: 'volcengine', label: '火山引擎 (豆包)'},
 ];
 
 // 计价模式

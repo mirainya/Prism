@@ -15,6 +15,7 @@ const ChatModelChannelModal: React.FC<{
     const [form, setForm] = useState({
         channel_id: 0,
         vendor_model: '',
+        protocol: 'openai',
         priority: 0,
         price_mode: 'token' as 'token' | 'request',
         input_price: 0,
@@ -32,6 +33,7 @@ const ChatModelChannelModal: React.FC<{
             setForm({
                 channel_id: Number(channel.channelId),
                 vendor_model: channel.vendorModel || '',
+                protocol: channel.protocol || 'openai',
                 priority: channel.priority || 0,
                 price_mode: channel.priceMode || 'token',
                 input_price: channel.inputPrice || 0,
@@ -46,6 +48,7 @@ const ChatModelChannelModal: React.FC<{
             setForm({
                 channel_id: 0,
                 vendor_model: '',
+                protocol: 'openai',
                 priority: 0,
                 price_mode: 'token',
                 input_price: 0,
@@ -65,6 +68,7 @@ const ChatModelChannelModal: React.FC<{
         try {
             const payload = {
                 vendor_model: form.vendor_model,
+                protocol: form.protocol,
                 priority: form.priority,
                 price_mode: form.price_mode,
                 input_price: form.input_price,
@@ -113,6 +117,15 @@ const ChatModelChannelModal: React.FC<{
                             <input type="number" value={form.priority} onChange={e => setForm({ ...form, priority: Number(e.target.value) })}
                                 className="w-full px-3 py-2 border border-[var(--border-soft)] rounded-lg" />
                         </div>
+                    </div>
+                    <div>
+                        <label className="block text-sm font-medium text-[var(--text-primary)] mb-1">协议</label>
+                        <select value={form.protocol} onChange={e => setForm({ ...form, protocol: e.target.value })}
+                            className="w-full px-3 py-2 border border-[var(--border-soft)] rounded-lg">
+                            <option value="openai">OpenAI 兼容 (chat/completions)</option>
+                            <option value="anthropic">Anthropic (Claude)</option>
+                            <option value="volcengine">火山引擎 (豆包 Responses)</option>
+                        </select>
                     </div>
                     <div>
                         <label className="block text-sm font-medium text-[var(--text-primary)] mb-1">请求路径</label>

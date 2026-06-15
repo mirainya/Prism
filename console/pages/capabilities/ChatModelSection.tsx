@@ -327,6 +327,7 @@ const ChatModelSection: React.FC<{ channels: Channel[] }> = ({ channels }) => {
                                         <option value="openai">OpenAI 兼容</option>
                                         <option value="anthropic">Anthropic (Claude)</option>
                                         <option value="google">Google (Gemini)</option>
+                                        <option value="volcengine">火山引擎 (豆包)</option>
                                     </datalist>
                                 </div>
                             </div>

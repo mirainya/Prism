@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"math/rand"
 	"net/http"
 	"sort"
@@ -112,6 +113,11 @@ func (s *UnifiedService) Complete(ctx context.Context, req *CompletionRequest) (
 				history = append([]chat.ChatMessage{{Role: model.RoleSystem, Content: conv.SystemPrompt}}, history...)
 			}
 			req.Messages = append(history, req.Messages...)
+			// 有状态对话(B模式)：存在有效 response_id 时只发新消息，历史由上游维护
+			if conv.ProviderResponseID != "" {
+				req.PreviousResponseID = conv.ProviderResponseID
+				req.NewMessages = newMessages
+			}
 		}
 	}
 
@@ -132,6 +138,14 @@ func (s *UnifiedService) Complete(ctx context.Context, req *CompletionRequest) (
 		if err != nil {
 			route.Cleanup()
 			lastErr = err
+			// B模式自愈：previous_response_id 失效 → 清空并用本地全量历史(A)重试同一渠道
+			if IsPreviousResponseNotFound(err) && req.PreviousResponseID != "" {
+				logger.Warn("previous_response_id expired, falling back to full history (A)",
+					zap.String("conversation_id", req.ConversationID))
+				req.PreviousResponseID = ""
+				req.NewMessages = nil
+				continue
+			}
 			if strings.Contains(err.Error(), "http error: 4") {
 				return nil, err
 			}
@@ -164,6 +178,11 @@ func (s *UnifiedService) Complete(ctx context.Context, req *CompletionRequest) (
 			if reqLog != nil {
 				model.DB().Model(reqLog).Update("conversation_id", conv.ID)
 			}
+			// 有状态对话：回写本轮返回的 response_id，供下一轮 B 模式使用
+			if resp.ProviderResponseID != "" && resp.ProviderResponseID != conv.ProviderResponseID {
+				model.DB().Model(&model.Conversation{}).Where("id = ?", conv.ID).
+					Update("provider_response_id", resp.ProviderResponseID)
+			}
 		}
 
 		return resp, nil
@@ -188,6 +207,11 @@ func (s *UnifiedService) StreamComplete(ctx context.Context, req *CompletionRequ
 				history = append([]chat.ChatMessage{{Role: model.RoleSystem, Content: conv.SystemPrompt}}, history...)
 			}
 			req.Messages = append(history, req.Messages...)
+			// 有状态对话(B模式)：存在有效 response_id 时只发新消息，历史由上游维护
+			if conv.ProviderResponseID != "" {
+				req.PreviousResponseID = conv.ProviderResponseID
+				req.NewMessages = newMessages
+			}
 		}
 	}
 
@@ -208,6 +232,14 @@ func (s *UnifiedService) StreamComplete(ctx context.Context, req *CompletionRequ
 		if err != nil {
 			route.Cleanup()
 			lastErr = err
+			// B模式自愈：previous_response_id 失效 → 清空并用本地全量历史(A)重试同一渠道
+			if IsPreviousResponseNotFound(err) && req.PreviousResponseID != "" {
+				logger.Warn("previous_response_id expired (stream), falling back to full history (A)",
+					zap.String("conversation_id", req.ConversationID))
+				req.PreviousResponseID = ""
+				req.NewMessages = nil
+				continue
+			}
 			if strings.Contains(err.Error(), "http error: 4") {
 				return nil, err
 			}
@@ -281,6 +313,11 @@ func (s *UnifiedService) FinalizeStream(session *StreamSession, result *StreamAg
 		}
 		logID := requestLogID(session.RequestLog)
 		s.saveConversationMessages(conv, newMsgs, chatResp, session.Route.Endpoint, session.Route.Account, latency, decimal.Zero, logID)
+		// 有状态对话：回写本轮返回的 response_id，供下一轮 B 模式使用
+		if result.ProviderResponseID != "" && result.ProviderResponseID != conv.ProviderResponseID {
+			model.DB().Model(&model.Conversation{}).Where("id = ?", conv.ID).
+				Update("provider_response_id", result.ProviderResponseID)
+		}
 		// 回写 conversation_id 到请求日志
 		if session.RequestLog != nil {
 			model.DB().Model(session.RequestLog).Update("conversation_id", conv.ID)
@@ -396,6 +433,8 @@ func (s *UnifiedService) doComplete(ctx context.Context, req *CompletionRequest,
 	var reqBody any = chatReq
 	if isAnthropicProtocol(route.Endpoint) {
 		reqBody = toAnthropicRequestBody(chatReq)
+	} else if isVolcengineProtocol(route.Endpoint) {
+		reqBody = toVolcengineRequestBody(chatReq, req.PreviousResponseID, req.NewMessages)
 	}
 
 	url := route.Channel.BaseURL + resolveRequestPath(route.Endpoint)
@@ -420,6 +459,18 @@ func (s *UnifiedService) doComplete(ctx context.Context, req *CompletionRequest,
 			s.finalizeRequestLog(reqLog, route.Channel, route.Endpoint, nil, nil, latency, err)
 			return nil, nil, err
 		}
+		s.finalizeRequestLog(reqLog, route.Channel, route.Endpoint, chatResp, nil, latency, nil)
+		return compResp, reqLog, nil
+	}
+
+	// 协议适配：Volcengine Responses 响应解析
+	if isVolcengineProtocol(route.Endpoint) {
+		compResp, chatResp, respID, err := parseVolcengineNonStreamResponse(respBody, req.Model)
+		if err != nil {
+			s.finalizeRequestLog(reqLog, route.Channel, route.Endpoint, nil, nil, latency, err)
+			return nil, nil, err
+		}
+		compResp.ProviderResponseID = respID
 		s.finalizeRequestLog(reqLog, route.Channel, route.Endpoint, chatResp, nil, latency, nil)
 		return compResp, reqLog, nil
 	}
@@ -453,6 +504,8 @@ func (s *UnifiedService) doStreamComplete(ctx context.Context, req *CompletionRe
 	var reqBody any = chatReq
 	if isAnthropicProtocol(route.Endpoint) {
 		reqBody = toAnthropicRequestBody(chatReq)
+	} else if isVolcengineProtocol(route.Endpoint) {
+		reqBody = toVolcengineRequestBody(chatReq, req.PreviousResponseID, req.NewMessages)
 	}
 
 	url := route.Channel.BaseURL + resolveRequestPath(route.Endpoint)
@@ -465,8 +518,9 @@ func (s *UnifiedService) doStreamComplete(ctx context.Context, req *CompletionRe
 	}
 
 	if resp.StatusCode != http.StatusOK {
+		errBody, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
 		resp.Body.Close()
-		streamErr := fmt.Errorf("upstream returned status %d", resp.StatusCode)
+		streamErr := fmt.Errorf("upstream returned status %d, body: %s", resp.StatusCode, string(errBody))
 		s.finalizeRequestLog(reqLog, route.Channel, route.Endpoint, nil, nil, 0, streamErr)
 		return nil, nil, streamErr
 	}
@@ -474,6 +528,8 @@ func (s *UnifiedService) doStreamComplete(ctx context.Context, req *CompletionRe
 	// 协议适配：将 Anthropic SSE 事件流转换为 OpenAI SSE 格式
 	if isAnthropicProtocol(route.Endpoint) {
 		resp.Body = newAnthropicStreamAdapter(resp.Body, req.Model)
+	} else if isVolcengineProtocol(route.Endpoint) {
+		resp.Body = newVolcengineStreamAdapter(resp.Body, req.Model)
 	}
 
 	return resp, reqLog, nil
@@ -710,6 +766,10 @@ func resolveProtocol(endpoint *model.Endpoint) model.Protocol {
 
 func isAnthropicProtocol(endpoint *model.Endpoint) bool {
 	return resolveProtocol(endpoint) == model.ProtocolAnthropic
+}
+
+func isVolcengineProtocol(endpoint *model.Endpoint) bool {
+	return resolveProtocol(endpoint) == model.ProtocolVolcengine
 }
 
 func channelConfigBool(ch *model.Channel, key string) bool {

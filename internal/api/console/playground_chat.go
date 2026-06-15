@@ -145,9 +145,13 @@ func mergeSSEChunk(aggregation *service.StreamAggregationResult, payload string)
 		} `json:"choices"`
 		Usage *chat.ChatUsage `json:"usage"`
 		Error any             `json:"error"`
+		ProviderResponseID string `json:"provider_response_id"`
 	}
 	if err := json.Unmarshal([]byte(payload), &parsed); err != nil {
 		return
+	}
+	if parsed.ProviderResponseID != "" {
+		aggregation.ProviderResponseID = parsed.ProviderResponseID
 	}
 	if len(parsed.Choices) > 0 {
 		choice := parsed.Choices[0]

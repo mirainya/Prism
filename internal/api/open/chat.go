@@ -209,10 +209,14 @@ func mergeOpenSSEChunk(aggregation *service.StreamAggregationResult, payload str
 			} `json:"delta"`
 			FinishReason string `json:"finish_reason"`
 		} `json:"choices"`
-		Usage *chat.ChatUsage `json:"usage"`
+		Usage              *chat.ChatUsage `json:"usage"`
+		ProviderResponseID string          `json:"provider_response_id"`
 	}
 	if err := json.Unmarshal([]byte(payload), &parsed); err != nil {
 		return
+	}
+	if parsed.ProviderResponseID != "" {
+		aggregation.ProviderResponseID = parsed.ProviderResponseID
 	}
 	if len(parsed.Choices) > 0 {
 		choice := parsed.Choices[0]
