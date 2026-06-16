@@ -344,6 +344,8 @@ export interface PlaygroundDebugDetail {
   statusCode?: number;
   errorMessage?: string;
   finishReason?: string;
+  contextMode?: string;        // 上下文策略: stateful(B/有状态) | full_history(A/全量历史)
+  providerResponseId?: string; // 上游有状态对话ID(火山 response_id)
   responsePreview?: string;
   requestHeaders?: Record<string, any>;
   requestBody?: Record<string, any>;

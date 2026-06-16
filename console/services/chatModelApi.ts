@@ -124,6 +124,7 @@ export const fetchChatModelChannels = async (
         modelCode: mc.model_code,
         channelId: mc.channel_id,
         vendorModel: mc.vendor_model,
+        protocol: mc.protocol,
         priority: mc.priority,
         priceMode: mc.price_mode,
         inputPrice: mc.input_price,
@@ -158,6 +159,7 @@ export const getChatModelChannel = async (id: number): Promise<ChatModelChannel>
         modelCode: mc.model_code,
         channelId: mc.channel_id,
         vendorModel: mc.vendor_model,
+        protocol: mc.protocol,
         priority: mc.priority,
         priceMode: mc.price_mode,
         inputPrice: mc.input_price,
@@ -189,6 +191,7 @@ export const createChatModelChannel = async (data: {
     model_code: string;
     channel_id: number;
     vendor_model: string;
+    protocol?: string;
     priority?: number;
     price_mode?: string;
     input_price?: number;
@@ -209,6 +212,7 @@ export const createChatModelChannel = async (data: {
         modelCode: mc.model_code,
         channelId: mc.channel_id,
         vendorModel: mc.vendor_model,
+        protocol: mc.protocol,
         priority: mc.priority,
         priceMode: mc.price_mode,
         inputPrice: mc.input_price,
@@ -229,6 +233,7 @@ export const updateChatModelChannel = async (
     id: number,
     data: {
         vendor_model?: string;
+        protocol?: string;
         priority?: number;
         price_mode?: string;
         input_price?: number;

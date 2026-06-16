@@ -297,6 +297,20 @@ func PlaygroundGetDebug(c *gin.Context) {
 		}
 	}
 
+	// 上下文策略状态：有状态对话(B模式)依赖 conversation 上的 provider_response_id
+	contextMode := ""
+	providerResponseID := ""
+	if logDetail.ConversationID > 0 {
+		if conv, err := conversationService.GetConversation(logDetail.ConversationID); err == nil {
+			providerResponseID = conv.ProviderResponseID
+			if providerResponseID != "" {
+				contextMode = "stateful" // B模式：历史由上游维护，仅发新消息
+			} else {
+				contextMode = "full_history" // A模式：发送本地全量历史
+			}
+		}
+	}
+
 	resp.Success(c, gin.H{
 		"request_log_id":  logDetail.ID,
 		"conversation_id": logDetail.ConversationID,
@@ -330,5 +344,7 @@ func PlaygroundGetDebug(c *gin.Context) {
 		"request_body":            requestBody,
 		"response_body":           responseBody,
 		"request_at":              logDetail.RequestAt,
+		"context_mode":            contextMode,
+		"provider_response_id":    providerResponseID,
 	})
 }

@@ -57,6 +57,7 @@ func UpdateChatModelChannel(c *gin.Context) {
 
 	var req struct {
 		VendorModel    string           `json:"vendor_model"`
+		Protocol       string           `json:"protocol"`
 		Priority       *int             `json:"priority"`
 		PriceMode      string           `json:"price_mode"`
 		InputPrice     *decimal.Decimal `json:"input_price"`
@@ -78,6 +79,9 @@ func UpdateChatModelChannel(c *gin.Context) {
 	updates := make(map[string]any)
 	if req.VendorModel != "" {
 		updates["vendor_model"] = req.VendorModel
+	}
+	if req.Protocol != "" {
+		updates["protocol"] = req.Protocol
 	}
 	if req.Priority != nil {
 		updates["priority"] = *req.Priority

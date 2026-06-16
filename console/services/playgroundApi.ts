@@ -214,6 +214,8 @@ export const playgroundGetDebug = async (
         statusCode: data.status_code,
         errorMessage: data.error_message,
         finishReason: data.finish_reason,
+        contextMode: data.context_mode,
+        providerResponseId: data.provider_response_id,
         responsePreview: data.response_preview,
         requestHeaders: data.request_headers,
         requestBody: data.request_body,

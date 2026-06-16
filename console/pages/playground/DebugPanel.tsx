@@ -13,6 +13,9 @@ const DebugPanel: React.FC<{
   onExpandFull?: () => void;
   currentConversationMeta?: PlaygroundConversation | null;
 }> = ({ debugDetail, lastPayload, compact = false, showAllDetails = false, onExpandFull, currentConversationMeta }) => {
+  const contextModeLabel = (m?: string) =>
+    m === 'stateful' ? 'B · 有状态(仅发新消息)' : m === 'full_history' ? 'A · 全量历史' : '';
+
   const summaryRows = [
     { label: '日志 ID', value: debugDetail?.requestLogId || currentConversationMeta?.lastRequestLogId || '-' },
     { label: '会话 ID', value: debugDetail?.conversationId || currentConversationMeta?.id || '-' },
@@ -21,6 +24,8 @@ const DebugPanel: React.FC<{
     { label: '供应商模型', value: debugDetail?.vendorModel || '-' },
     { label: '请求路径', value: debugDetail?.requestPath || '-' },
     { label: '模式', value: debugDetail?.isStream ? '流式' : '非流式' },
+    ...(debugDetail?.contextMode ? [{ label: '上下文策略', value: contextModeLabel(debugDetail.contextMode) }] : []),
+    ...(debugDetail?.providerResponseId ? [{ label: 'Response ID', value: debugDetail.providerResponseId }] : []),
     { label: '耗时', value: debugDetail?.latencyMs ? `${(debugDetail.latencyMs / 1000).toFixed(2)}s` : '-' },
     { label: 'Finish Reason', value: debugDetail?.finishReason || '-' },
   ];
