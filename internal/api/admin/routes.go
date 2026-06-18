@@ -12,6 +12,7 @@ func RegisterRoutes(group *gin.RouterGroup) {
 
 	// 渠道管理
 	group.GET("/channels", ListChannels)
+	group.POST("/channels/reorder", ReorderChannels)
 	group.GET("/channels/:id", GetChannel)
 	group.POST("/channels", CreateChannel)
 	group.PUT("/channels/:id", UpdateChannel)

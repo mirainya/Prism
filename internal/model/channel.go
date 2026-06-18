@@ -10,6 +10,7 @@ type Channel struct {
 	CallbackSecret string         `gorm:"type:varchar(128);comment:回调签名密钥" json:"callback_secret,omitempty"`
 	Config         datatypes.JSON `gorm:"type:json;comment:渠道配置(JSON)" json:"config"`
 	Status         int8           `gorm:"default:1;comment:状态(1启用/0禁用)" json:"status"`
+	Sort           int            `gorm:"default:0;index;comment:排序(降序)" json:"sort"`
 }
 
 func (Channel) TableName() string {

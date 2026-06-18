@@ -1,10 +1,14 @@
 import React, { useEffect, useState } from 'react';
-import { Plus, Search, RefreshCw, Edit3, Trash2, Shield, ChevronDown, ChevronRight, Key, Cpu, X, Power, Copy } from 'lucide-react';
+import { Plus, Search, RefreshCw, Edit3, Trash2, Shield, ChevronDown, ChevronRight, Key, Cpu, X, Power, Copy, GripVertical } from 'lucide-react';
+import { DndContext, PointerSensor, closestCenter, useSensor, useSensors, DragStartEvent, DragEndEvent } from '@dnd-kit/core';
+import { SortableContext, arrayMove, useSortable, verticalListSortingStrategy } from '@dnd-kit/sortable';
+import { CSS } from '@dnd-kit/utilities';
 import {
     fetchChannels,
     createChannel,
     updateChannel,
     deleteChannel,
+    reorderChannels,
     fetchChannelAccounts,
     createChannelAccount,
     updateChannelAccount,
@@ -12,10 +16,12 @@ import {
     fetchChannelCapabilities,
     createChannelCapability,
     updateChannelCapability,
-    deleteChannelCapability
+    deleteChannelCapability,
+    fetchCapabilities
 } from '../services/api';
-import {Channel, ChannelAccount, ChannelCapability} from '../types';
+import {Channel, ChannelAccount, ChannelCapability, Capability} from '../types';
 import { ChannelModal, AccountModal } from './ChannelModals';
+import ChannelCapabilityModal from './capabilities/ChannelCapabilityModal';
 
 const STATUS_MAP: Record<number, { label: string; color: string }> = {
   1: { label: '已启用', color: 'bg-green-100 text-green-700' },
@@ -31,6 +37,7 @@ const RESULT_MODES = [
 // 渠道行组件
 const ChannelRow: React.FC<{
   channel: Channel;
+  canDrag: boolean;
   expanded: boolean;
   onToggle: () => void;
   onEdit: () => void;
@@ -47,12 +54,14 @@ const ChannelRow: React.FC<{
     onDeleteCapability: (id: string) => void;
     onToggleCapabilityStatus: (c: ChannelCapability) => void;
 }> = ({
-  channel, expanded, onToggle, onEdit, onDelete, onToggleStatus,
+  channel, canDrag, expanded, onToggle, onEdit, onDelete, onToggleStatus,
           accounts, capabilities, onAddAccount, onEditAccount, onDeleteAccount, onToggleAccountStatus,
           onAddCapability, onEditCapability, onDeleteCapability, onToggleCapabilityStatus
 }) => {
   const status = STATUS_MAP[channel.status] || STATUS_MAP[0];
   const [copiedAccountId, setCopiedAccountId] = useState<string | null>(null);
+  const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({ id: channel.id, disabled: !canDrag });
+  const rowStyle = { transform: CSS.Transform.toString(transform), transition, opacity: isDragging ? 0.4 : 1 };
 
   const getResultModeLabel = (mode: string) => {
     return RESULT_MODES.find(m => m.value === mode)?.label || mode;
@@ -73,11 +82,20 @@ const ChannelRow: React.FC<{
 
   return (
     <>
-      <tr className="hover:bg-[var(--surface)] transition-colors group border-b border-[var(--border-soft)]">
+      <tr ref={setNodeRef} style={rowStyle} className="hover:bg-[var(--surface)] transition-colors group border-b border-[var(--border-soft)]">
         <td className="px-3 md:px-6 py-3 md:py-4">
-          <button onClick={onToggle} className="p-1 hover:bg-[var(--primary-lighter)] rounded">
-            {expanded ? <ChevronDown size={16} /> : <ChevronRight size={16} />}
-          </button>
+          <div className="flex items-center gap-1">
+            {canDrag && (
+              <span {...attributes} {...listeners}
+                className="p-1 text-[var(--text-secondary)] hover:text-[var(--primary)] cursor-grab active:cursor-grabbing touch-none"
+                title="拖拽排序">
+                <GripVertical size={14} />
+              </span>
+            )}
+            <button onClick={onToggle} className="p-1 hover:bg-[var(--primary-lighter)] rounded">
+              {expanded ? <ChevronDown size={16} /> : <ChevronRight size={16} />}
+            </button>
+          </div>
         </td>
         <td className="px-3 md:px-6 py-3 md:py-4">
           <div className="flex items-center gap-2 md:gap-3">
@@ -224,16 +242,19 @@ const Channels: React.FC = () => {
   const [isLoading, setIsLoading] = useState(true);
   const [expandedChannels, setExpandedChannels] = useState<Set<string>>(new Set());
   const [searchTerm, setSearchTerm] = useState('');
+  const [capabilityDefs, setCapabilityDefs] = useState<Capability[]>([]);
 
   // Modal states
   const [channelModal, setChannelModal] = useState<{ open: boolean; channel: Channel | null }>({ open: false, channel: null });
   const [accountModal, setAccountModal] = useState<{ open: boolean; channelId: string; account: ChannelAccount | null }>({ open: false, channelId: '', account: null });
+  const [ccModal, setCcModal] = useState<{ open: boolean; channelId: string; cc: ChannelCapability | null }>({ open: false, channelId: '', cc: null });
 
   const loadData = async () => {
     setIsLoading(true);
     try {
-      const channelsData = await fetchChannels();
+      const [channelsData, capDefs] = await Promise.all([fetchChannels(), fetchCapabilities()]);
       setChannels(channelsData);
+      setCapabilityDefs(capDefs);
     } finally {
       setIsLoading(false);
     }
@@ -325,6 +346,28 @@ const Channels: React.FC = () => {
     ch.type.toLowerCase().includes(searchTerm.toLowerCase())
   );
 
+  const sensors = useSensors(useSensor(PointerSensor, { activationConstraint: { distance: 5 } }));
+  const canDrag = !searchTerm.trim();
+
+  const handleDragStart = (_e: DragStartEvent) => {
+    setExpandedChannels(new Set()); // 拖拽时收起展开行，避免行错位
+  };
+
+  const handleDragEnd = async (e: DragEndEvent) => {
+    const { active, over } = e;
+    if (!over || active.id === over.id) return;
+    const oldIndex = channels.findIndex(ch => ch.id === active.id);
+    const newIndex = channels.findIndex(ch => ch.id === over.id);
+    if (oldIndex < 0 || newIndex < 0) return;
+    const reordered = arrayMove<Channel>(channels, oldIndex, newIndex);
+    setChannels(reordered); // 乐观更新
+    try {
+      await reorderChannels(reordered.map(ch => Number(ch.id)));
+    } catch {
+      loadData(); // 失败回滚
+    }
+  };
+
   return (
     <div className="space-y-4 md:space-y-6">
       <div className="flex items-start sm:items-center justify-between gap-3 flex-wrap">
@@ -363,6 +406,7 @@ const Channels: React.FC = () => {
         </div>
 
         <div className="overflow-x-auto">
+          <DndContext sensors={sensors} collisionDetection={closestCenter} onDragStart={handleDragStart} onDragEnd={handleDragEnd}>
           <table className="w-full text-left min-w-[480px]">
             <thead>
               <tr className="border-b border-[var(--border-soft)]">
@@ -392,10 +436,12 @@ const Channels: React.FC = () => {
                   </td>
                 </tr>
               ) : (
-                filteredChannels.map(channel => (
+                <SortableContext items={filteredChannels.map(ch => ch.id)} strategy={verticalListSortingStrategy}>
+                {filteredChannels.map(channel => (
                   <ChannelRow
                     key={channel.id}
                     channel={channel}
+                    canDrag={canDrag}
                     expanded={expandedChannels.has(channel.id)}
                     onToggle={() => toggleExpand(channel.id)}
                     onEdit={() => setChannelModal({ open: true, channel })}
@@ -407,15 +453,17 @@ const Channels: React.FC = () => {
                     onEditAccount={acc => setAccountModal({ open: true, channelId: channel.id, account: acc })}
                     onDeleteAccount={id => handleDeleteAccount(channel.id, id)}
                     onToggleAccountStatus={acc => handleToggleAccountStatus(channel.id, acc)}
-                    onAddCapability={() => window.location.hash = '#/capabilities'}
-                    onEditCapability={() => window.location.hash = '#/capabilities'}
+                    onAddCapability={() => setCcModal({ open: true, channelId: channel.id, cc: null })}
+                    onEditCapability={c => setCcModal({ open: true, channelId: channel.id, cc: c })}
                     onDeleteCapability={id => handleDeleteCapability(channel.id, id)}
                     onToggleCapabilityStatus={c => handleToggleCapabilityStatus(channel.id, c)}
                   />
-                ))
+                ))}
+                </SortableContext>
               )}
             </tbody>
           </table>
+          </DndContext>
         </div>
       </div>
 
@@ -432,6 +480,21 @@ const Channels: React.FC = () => {
         account={accountModal.account}
         onClose={() => setAccountModal({ open: false, channelId: '', account: null })}
         onSave={handleSaveAccount}
+      />
+      <ChannelCapabilityModal
+        isOpen={ccModal.open}
+        capabilityCode={ccModal.cc?.capabilityCode || ''}
+        channelCapability={ccModal.cc}
+        channels={channels}
+        capabilities={capabilityDefs}
+        defaultChannelId={ccModal.channelId ? Number(ccModal.channelId) : undefined}
+        onClose={() => setCcModal({ open: false, channelId: '', cc: null })}
+        onSave={async () => {
+          const cid = ccModal.channelId;
+          setCcModal({ open: false, channelId: '', cc: null });
+          if (cid) await loadChannelDetails(cid);
+          await loadData();
+        }}
       />
     </div>
   );

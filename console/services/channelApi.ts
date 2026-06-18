@@ -10,10 +10,18 @@ export const fetchChannels = async (): Promise<Channel[]> => {
     baseUrl: ch.base_url,
     config: ch.config || {},
     status: ch.status,
+    sort: ch.sort || 0,
     accountsCount: ch.accounts_count || 0,
     createdAt: ch.created_at,
     updatedAt: ch.updated_at,
   }));
+};
+
+export const reorderChannels = async (ids: number[]): Promise<void> => {
+  await request('/admin/channels/reorder', {
+    method: 'POST',
+    body: JSON.stringify({ ids }),
+  });
 };
 
 export const getChannel = async (id: string): Promise<Channel> => {
@@ -25,6 +33,7 @@ export const getChannel = async (id: string): Promise<Channel> => {
     baseUrl: ch.base_url,
     config: ch.config || {},
     status: ch.status,
+    sort: ch.sort || 0,
     accountsCount: ch.accounts_count || 0,
     createdAt: ch.created_at,
     updatedAt: ch.updated_at,
@@ -48,6 +57,7 @@ export const createChannel = async (data: {
     baseUrl: ch.base_url,
     config: {},
     status: ch.status,
+    sort: ch.sort || 0,
     accountsCount: 0,
     createdAt: new Date().toISOString(),
     updatedAt: new Date().toISOString(),

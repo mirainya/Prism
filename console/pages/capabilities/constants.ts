@@ -47,12 +47,13 @@ export const POLL_PARAMS: Record<string, { name: string; type: string }> = {
 export const STANDARD_STATUS_VALUES = ['pending', 'processing', 'success', 'failed', 'cancelled'];
 
 export const CAPABILITY_TYPES = [
+    {value: 'chat', label: '对话'},
     {value: 'image', label: '图片'},
     {value: 'video', label: '视频'},
     {value: 'other', label: '其他'},
 ];
 
-export const CAPABILITY_TYPE_ORDER = ['image', 'video', 'other'] as const;
+export const CAPABILITY_TYPE_ORDER = ['chat', 'image', 'video', 'other'] as const;
 
 export const PARAM_TYPES = ['string', 'number', 'enum', 'array'];
 

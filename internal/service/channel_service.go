@@ -82,10 +82,23 @@ func (s *ChannelService) GetChannelByID(id uint) (*model.Channel, error) {
 
 func (s *ChannelService) ListChannels() ([]model.Channel, error) {
 	var channels []model.Channel
-	if err := model.DB().Model(&model.Channel{}).Order("id ASC").Find(&channels).Error; err != nil {
+	if err := model.DB().Model(&model.Channel{}).Order("sort DESC, id ASC").Find(&channels).Error; err != nil {
 		return nil, err
 	}
 	return channels, nil
+}
+
+// UpdateChannelSorts 按传入的 id 顺序重排渠道(对齐 ModelAdminService.UpdateModelSorts)
+func (s *ChannelService) UpdateChannelSorts(ids []uint) error {
+	return model.DB().Transaction(func(tx *gorm.DB) error {
+		n := len(ids)
+		for i, id := range ids {
+			if err := tx.Model(&model.Channel{}).Where("id = ?", id).Update("sort", n-i).Error; err != nil {
+				return err
+			}
+		}
+		return nil
+	})
 }
 
 func (s *ChannelService) UpdateChannel(id uint, req *UpdateChannelRequest) error {

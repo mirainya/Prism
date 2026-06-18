@@ -30,6 +30,7 @@ func ListChannels(c *gin.Context) {
 			"base_url":       ch.BaseURL,
 			"config":         ch.Config,
 			"status":         ch.Status,
+			"sort":           ch.Sort,
 			"accounts_count": accountCount,
 			"created_at":     ch.CreatedAt,
 			"updated_at":     ch.UpdatedAt,
@@ -37,6 +38,22 @@ func ListChannels(c *gin.Context) {
 	}
 
 	resp.Success(c, result)
+}
+
+// ReorderChannels POST /api/admin/channels/reorder
+func ReorderChannels(c *gin.Context) {
+	var req struct {
+		IDs []uint `json:"ids" binding:"required"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		resp.BadRequest(c, pkgErrors.ErrInvalidParams)
+		return
+	}
+	if err := channelService.UpdateChannelSorts(req.IDs); err != nil {
+		resp.InternalError(c, pkgErrors.ErrInternalError)
+		return
+	}
+	resp.Success(c, nil)
 }
 
 func GetChannel(c *gin.Context) {
@@ -64,6 +81,7 @@ func GetChannel(c *gin.Context) {
 		"base_url":       channel.BaseURL,
 		"config":         channel.Config,
 		"status":         channel.Status,
+		"sort":           channel.Sort,
 		"accounts_count": accountCount,
 		"created_at":     channel.CreatedAt,
 		"updated_at":     channel.UpdatedAt,

@@ -20,6 +20,7 @@ export interface Channel {
   baseUrl: string;
   config: Record<string, any>;
   status: number;
+  sort: number;
   accountsCount: number;
   createdAt: string;
   updatedAt: string;

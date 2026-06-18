@@ -11,7 +11,7 @@ import {
 import { FieldMappingRow, ValueMappingRow, FixedParamRow } from './MappingRows';
 import {
     FieldMapping, ValueMapping, FixedParam, TypeConvert, SuccessCondition,
-    SUCCESS_CONDITION_OPERATORS, CONFIG_TEMPLATES,
+    SUCCESS_CONDITION_OPERATORS,
     parseParamMapping, parseResponseMapping, buildParamMapping, buildResponseMapping,
 } from './mappingUtils';
 
@@ -22,10 +22,10 @@ const ChannelCapabilityModal: React.FC<{
     channelCapability: ChannelCapability | null;
     channels: Channel[];
     capabilities: Capability[];
+    defaultChannelId?: number;
     onClose: () => void;
     onSave: () => void;
-}> = ({isOpen, capabilityCode, channelCapability, channels, capabilities, onClose, onSave}) => {
-    const [templateSelected, setTemplateSelected] = useState(!!channelCapability);
+}> = ({isOpen, capabilityCode, channelCapability, channels, capabilities, defaultChannelId, onClose, onSave}) => {
     const [activeTab, setActiveTab] = useState<'basic' | 'request' | 'param' | 'response' | 'poll_response' | 'callback' | 'schema'>('basic');
     const [form, setForm] = useState({
         channel_id: 0, capability_code: '', model: '', name: '', price: 0, price_unit: 'request',
@@ -119,7 +119,7 @@ const ChannelCapabilityModal: React.FC<{
             setParamSchemaJson(ps && Object.keys(ps).length > 0 ? JSON.stringify(ps, null, 2) : '');
         } else {
             setForm({
-                channel_id: channels[0]?.id ? Number(channels[0].id) : 0,
+                channel_id: defaultChannelId || (channels[0]?.id ? Number(channels[0].id) : 0),
                 capability_code: capabilityCode, model: '', name: '', price: 0, price_unit: 'request',
                 result_mode: 'poll', request_path: '', request_method: 'POST', content_type: 'application/json',
                 auth_location: 'header', auth_key: 'Authorization', auth_value_prefix: 'Bearer ',
@@ -133,8 +133,7 @@ const ChannelCapabilityModal: React.FC<{
             setParamSchemaJson('');
         }
         setActiveTab('basic');
-        setTemplateSelected(!!channelCapability);
-    }, [channelCapability, capabilityCode, channels, isOpen]);
+    }, [channelCapability, capabilityCode, channels, isOpen, defaultChannelId]);
 
     if (!isOpen) return null;
 
@@ -226,30 +225,6 @@ const ChannelCapabilityModal: React.FC<{
 
     return (
         <Modal open={true} onClose={onClose} title={channelCapability ? '编辑渠道能力配置' : '新建渠道能力配置'} width="max-w-3xl">
-                {!templateSelected && !channelCapability ? (
-                    <div className="max-h-[70vh] overflow-y-auto">
-                        <p className="text-sm text-[var(--text-secondary)] mb-4">选择一个模板快速开始，或从空白自定义配置</p>
-                        <div className="grid grid-cols-2 gap-3">
-                            {Object.entries(CONFIG_TEMPLATES).map(([key, tpl]) => (
-                                <button key={key} type="button"
-                                    onClick={() => {
-                                        setForm(prev => ({...prev, ...tpl.form}));
-                                        if (tpl.paramFieldMappings) setParamFieldMappings(tpl.paramFieldMappings);
-                                        if (tpl.respFieldMappings) setRespFieldMappings(tpl.respFieldMappings);
-                                        if (tpl.respSuccessCondition !== undefined) setRespSuccessCondition(tpl.respSuccessCondition);
-                                        if (tpl.paramFixedParams) setParamFixedParams(tpl.paramFixedParams);
-                                        setTemplateSelected(true);
-                                    }}
-                                    className="text-left p-4 rounded-xl border border-[var(--border-soft)] hover:border-indigo-300 hover:bg-[var(--primary-lighter)] transition-colors"
-                                >
-                                    <div className="font-medium text-sm text-[var(--text-primary)]">{tpl.label}</div>
-                                    <div className="text-xs text-[var(--text-secondary)] mt-1">{tpl.description}</div>
-                                </button>
-                            ))}
-                        </div>
-                    </div>
-                ) : (
-                <>
                 <div className="flex border-b border-[var(--border-soft)] mb-4 overflow-x-auto">
                     {tabs.map(tab => (
                         <button key={tab.key} type="button" onClick={() => setActiveTab(tab.key as any)}
@@ -957,8 +932,6 @@ const ChannelCapabilityModal: React.FC<{
                         </button>
                     </div>
                 </form>
-                </>
-                )}
         </Modal>
     );
 };
