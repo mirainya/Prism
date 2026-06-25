@@ -96,6 +96,13 @@ func PlaygroundChatCompletions(c *gin.Context) {
 		if streamErr != nil {
 			return
 		}
+		// 流式结束后下发 prism-debug 事件,前端据 request_log_id 拉取完整调试详情
+		// (与历史会话载入同源,确保"模式/上下文策略"等字段正确)
+		if session.RequestLog != nil && session.RequestLog.ID > 0 {
+			debugPayload, _ := json.Marshal(gin.H{"request_log_id": session.RequestLog.ID})
+			fmt.Fprintf(c.Writer, "event: prism-debug\ndata: %s\n\n", debugPayload)
+			c.Writer.Flush()
+		}
 		return
 	}
 

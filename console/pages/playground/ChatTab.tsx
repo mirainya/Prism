@@ -224,6 +224,7 @@ const ChatTab: React.FC<{ tokenId: string }> = ({ tokenId }) => {
       let usage: ChatState['usage'] = null;
       let finalStatus: ChatMessage['status'] = 'completed';
       let debug: PlaygroundDebugDetail | null = null;
+      let pendingDebugLogId: number | null = null;
       let finishReason = '';
       if (stream) {
         if (!res.body) throw new Error('无响应流');
@@ -259,7 +260,10 @@ const ChatTab: React.FC<{ tokenId: string }> = ({ tokenId }) => {
             }
             const data = dataLines.join('\n');
             if (!data || data === '[DONE]') continue;
-            if (eventName === 'prism-debug') { debug = JSON.parse(data) as PlaygroundDebugDetail; setDebugDetail(debug); continue; }
+            if (eventName === 'prism-debug') {
+              try { pendingDebugLogId = JSON.parse(data).request_log_id ?? null; } catch { /* ignore */ }
+              continue;
+            }
             try {
               const parsed = JSON.parse(data);
               const delta = parsed.choices?.[0]?.delta;
@@ -272,6 +276,11 @@ const ChatTab: React.FC<{ tokenId: string }> = ({ tokenId }) => {
           }
         }
         if (streamFlushTimerRef.current !== null) { window.clearTimeout(streamFlushTimerRef.current); streamFlushTimerRef.current = null; }
+        // 流式结束后据 request_log_id 拉取完整调试详情(与历史载入同源)
+        if (pendingDebugLogId !== null) {
+          debug = await playgroundGetDebug(tokenId, pendingDebugLogId).catch(() => null);
+          if (debug) setDebugDetail(debug);
+        }
       } else {
         const parsed = await res.json();
         assistantContent = extractAssistantText(parsed.choices?.[0]?.message?.content);
