@@ -25,6 +25,10 @@ type CompletionRequest struct {
 	User             string
 	ConversationID   string
 
+	// ReasoningEffort 请求级思考档位覆盖(nil=未指定,用模型默认)
+	// 值为模型 thinking_config.options 里的某个 value
+	ReasoningEffort *string
+
 	// --- 内部字段：火山 Responses 有状态对话(B模式) ---
 	PreviousResponseID string             // 非空时启用 B 模式(只发新消息)
 	NewMessages        []chat.ChatMessage // B 模式下本轮要发送的新消息

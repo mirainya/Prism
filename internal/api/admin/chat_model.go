@@ -61,6 +61,8 @@ func UpdateChatModel(c *gin.Context) {
 		MaxTokens   *int    `json:"max_tokens"`
 		Sort        *int    `json:"sort"`
 		Status      *int8   `json:"status"`
+
+		ThinkingConfig *datatypes.JSON `json:"thinking_config"`
 	}
 
 	if err := c.ShouldBindJSON(&req); err != nil {
@@ -90,6 +92,9 @@ func UpdateChatModel(c *gin.Context) {
 	}
 	if req.Status != nil {
 		updates["status"] = *req.Status
+	}
+	if req.ThinkingConfig != nil {
+		updates["thinking_config"] = *req.ThinkingConfig
 	}
 
 	_, err := modelAdminService.UpdateModel(code, updates)

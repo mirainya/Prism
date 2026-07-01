@@ -11,6 +11,7 @@ export const fetchChatModels = async (): Promise<ChatModel[]> => {
         description: m.description,
         features: m.features || [],
         maxTokens: m.max_tokens || 0,
+        thinkingConfig: m.thinking_config || null,
         sort: m.sort || 0,
         status: m.status,
         createdAt: m.created_at,
@@ -28,6 +29,7 @@ export const getChatModel = async (code: string): Promise<ChatModel> => {
         description: m.description,
         features: m.features || [],
         maxTokens: m.max_tokens || 0,
+        thinkingConfig: m.thinking_config || null,
         sort: m.sort || 0,
         status: m.status,
         createdAt: m.created_at,
@@ -42,6 +44,7 @@ export const createChatModel = async (data: {
     description?: string;
     features?: string[];
     max_tokens?: number;
+    thinking_config?: any;
     sort?: number;
 }): Promise<ChatModel> => {
     const m = await request<any>('/admin/chat-models', {
@@ -56,6 +59,7 @@ export const createChatModel = async (data: {
         description: m.description,
         features: m.features || [],
         maxTokens: m.max_tokens || 0,
+        thinkingConfig: m.thinking_config || null,
         sort: m.sort || 0,
         status: m.status,
         createdAt: m.created_at,
@@ -69,6 +73,7 @@ export const updateChatModel = async (code: string, data: {
     description?: string;
     features?: string[];
     max_tokens?: number;
+    thinking_config?: any;
     sort?: number;
     status?: number;
 }): Promise<void> => {

@@ -26,6 +26,8 @@ type CreateModelRequest struct {
 	ParamSchema datatypes.JSON `json:"param_schema"`
 	MaxTokens   int            `json:"max_tokens"`
 	Status      int8           `json:"status"`
+
+	ThinkingConfig datatypes.JSON `json:"thinking_config"`
 }
 
 var (
@@ -69,6 +71,8 @@ func (s *ModelAdminService) CreateModel(req *CreateModelRequest) (*model.Model, 
 		ParamSchema: req.ParamSchema,
 		MaxTokens:   req.MaxTokens,
 		Status:      req.Status,
+
+		ThinkingConfig: req.ThinkingConfig,
 	}
 	if m.Type == "" {
 		m.Type = model.ModelTypeChat

@@ -26,6 +26,7 @@ import {
 const ChatTab: React.FC<{ tokenId: string }> = ({ tokenId }) => {
   const [models, setModels] = useState<PlaygroundModelInfo[]>([]);
   const [selectedModel, setSelectedModel] = useState('');
+  const [thinkingLevel, setThinkingLevel] = useState('');
   const [systemPrompt, setSystemPrompt] = useState('');
   const [temperature, setTemperature] = useState(0.7);
   const [maxTokens, setMaxTokens] = useState(200000);
@@ -112,6 +113,11 @@ const ChatTab: React.FC<{ tokenId: string }> = ({ tokenId }) => {
     if (selectedModelInfo.supports_stream === false) { setStream(false); return; }
     setStream(Boolean(selectedModelInfo.default_stream));
   }, [selectedModelInfo?.id, selectedModelInfo?.supports_stream, selectedModelInfo?.default_stream]);
+
+  // 切换模型时,思考档位重置为该模型默认
+  useEffect(() => {
+    setThinkingLevel(selectedModelInfo?.thinking?.default || '');
+  }, [selectedModelInfo?.id]);
 
   useEffect(() => {
     const now = Date.now();
@@ -201,6 +207,10 @@ const ChatTab: React.FC<{ tokenId: string }> = ({ tokenId }) => {
     if (topP !== 1) payload.top_p = topP;
     if (presencePenalty !== 0) payload.presence_penalty = presencePenalty;
     if (frequencyPenalty !== 0) payload.frequency_penalty = frequencyPenalty;
+    // 思考档位:未锁定且选了非默认档时透传覆盖
+    if (thinkingLevel && !selectedModelInfo?.thinking?.locked && thinkingLevel !== selectedModelInfo?.thinking?.default) {
+      payload.reasoning_effort = thinkingLevel;
+    }
     setLastPayload(payload);
     setChat(prev => ({
       ...prev,
@@ -534,6 +544,19 @@ const ChatTab: React.FC<{ tokenId: string }> = ({ tokenId }) => {
             <div className={`rounded-lg border px-3 py-1 text-[11px] ${streamDisabled ? 'border-amber-200 bg-amber-50 text-amber-700' : 'border-[var(--border-soft)] bg-[var(--surface)] text-[var(--text-secondary)]'}`}>
               {streamDisabled ? '不支持流式' : `stream: ${selectedModelInfo?.default_stream ? '开启' : '关闭'}`}
             </div>
+            {selectedModelInfo?.thinking && selectedModelInfo.thinking.options.length > 0 && (
+              <label className="flex items-center gap-1.5">
+                <span className="text-xs text-[var(--text-secondary)]">思考</span>
+                <select value={thinkingLevel} disabled={selectedModelInfo.thinking.locked}
+                  onChange={e => setThinkingLevel(e.target.value)}
+                  className="px-2 py-1 text-xs border border-[var(--border-soft)] rounded bg-[var(--surface)] disabled:opacity-50">
+                  {selectedModelInfo.thinking.options.map(o => (
+                    <option key={o.value} value={o.value}>{o.label || o.value}</option>
+                  ))}
+                </select>
+                {selectedModelInfo.thinking.locked && <span className="text-[10px] text-amber-600">已锁定</span>}
+              </label>
+            )}
           </div>
 
           {(showSystemPrompt || systemPrompt.trim()) && (

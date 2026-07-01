@@ -33,6 +33,7 @@ func ChatCompletions(c *gin.Context) {
 		Seed             *int                  `json:"seed"`
 		User             string                `json:"user"`
 		ConversationID   string                `json:"conversation_id"`
+		ReasoningEffort  *string               `json:"reasoning_effort"`
 	}
 
 	if err := c.ShouldBindJSON(&req); err != nil {
@@ -60,6 +61,7 @@ func ChatCompletions(c *gin.Context) {
 		Seed:             req.Seed,
 		User:             req.User,
 		ConversationID:   req.ConversationID,
+		ReasoningEffort:  req.ReasoningEffort,
 	}
 
 	svc := service.NewUnifiedService()

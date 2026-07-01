@@ -8,8 +8,9 @@ import {
     fetchChatModels, createChatModel, updateChatModel, deleteChatModel, reorderChatModels,
     fetchChatModelChannels, deleteChatModelChannel, updateChatModelChannel,
 } from '../../services/api';
-import { ChatModel, ChatModelChannel, Channel } from '../../types';
+import { ChatModel, ChatModelChannel, Channel, ThinkingConfig } from '../../types';
 import ChatModelChannelModal from './ChatModelChannelModal';
+import ThinkingConfigEditor from './ThinkingConfigEditor';
 
 const SortableModelRow: React.FC<{ id: string; disabled: boolean; children: React.ReactNode }> = ({ id, disabled, children }) => {
     const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({ id, disabled });
@@ -38,7 +39,7 @@ const ChatModelSection: React.FC<{ channels: Channel[] }> = ({ channels }) => {
 
     // Model form
     const [modelModal, setModelModal] = useState<{ open: boolean; model: ChatModel | null }>({ open: false, model: null });
-    const [modelForm, setModelForm] = useState({ code: '', name: '', provider: '', description: '', features: [] as string[], max_tokens: 0 });
+    const [modelForm, setModelForm] = useState({ code: '', name: '', provider: '', description: '', features: [] as string[], max_tokens: 0, thinking_config: null as ThinkingConfig | null });
     const [modelFormLoading, setModelFormLoading] = useState(false);
 
     // Channel modal
@@ -128,9 +129,9 @@ const ChatModelSection: React.FC<{ channels: Channel[] }> = ({ channels }) => {
         setModelFormLoading(true);
         try {
             if (modelModal.model) {
-                await updateChatModel(modelModal.model.code, { name: modelForm.name, provider: modelForm.provider, description: modelForm.description, features: modelForm.features, max_tokens: modelForm.max_tokens });
+                await updateChatModel(modelModal.model.code, { name: modelForm.name, provider: modelForm.provider, description: modelForm.description, features: modelForm.features, max_tokens: modelForm.max_tokens, thinking_config: modelForm.thinking_config });
             } else {
-                await createChatModel({ ...modelForm, max_tokens: modelForm.max_tokens });
+                await createChatModel({ ...modelForm, max_tokens: modelForm.max_tokens, thinking_config: modelForm.thinking_config });
             }
             setModelModal({ open: false, model: null });
             loadData();
@@ -141,9 +142,9 @@ const ChatModelSection: React.FC<{ channels: Channel[] }> = ({ channels }) => {
 
     const openModelModal = (model: ChatModel | null) => {
         if (model) {
-            setModelForm({ code: model.code, name: model.name, provider: model.provider, description: model.description, features: model.features || [], max_tokens: model.maxTokens || 0 });
+            setModelForm({ code: model.code, name: model.name, provider: model.provider, description: model.description, features: model.features || [], max_tokens: model.maxTokens || 0, thinking_config: model.thinkingConfig || null });
         } else {
-            setModelForm({ code: '', name: '', provider: '', description: '', features: [], max_tokens: 0 });
+            setModelForm({ code: '', name: '', provider: '', description: '', features: [], max_tokens: 0, thinking_config: null });
         }
         setModelModal({ open: true, model });
     };
@@ -353,6 +354,11 @@ const ChatModelSection: React.FC<{ channels: Channel[] }> = ({ channels }) => {
                                 <label className="block text-sm font-medium text-[var(--text-primary)] mb-1">最大 Tokens</label>
                                 <input type="number" value={modelForm.max_tokens || ''} onChange={e => setModelForm({ ...modelForm, max_tokens: parseInt(e.target.value) || 0 })}
                                     className="w-full px-3 py-2 border border-[var(--border-soft)] rounded-lg bg-[var(--surface)] text-[var(--text-primary)]" placeholder="如: 128000" />
+                            </div>
+                            <div>
+                                <label className="block text-sm font-medium text-[var(--text-primary)] mb-1">思考模式</label>
+                                <ThinkingConfigEditor value={modelForm.thinking_config} provider={modelForm.provider}
+                                    onChange={cfg => setModelForm({ ...modelForm, thinking_config: cfg })} />
                             </div>
                             <div className="flex justify-end gap-3 pt-4">
                                 <button type="button" onClick={() => setModelModal({ open: false, model: null })}

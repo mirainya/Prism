@@ -400,6 +400,14 @@ func (s *UnifiedService) ListPlaygroundModels(ctx context.Context, tokenID uint)
 				}
 			}
 		}
+		// 暴露思考档位供 playground 渲染选择器
+		if cfg := parseThinkingConfig(m.ThinkingConfig); cfg != nil {
+			ti := &ThinkingInfo{Default: cfg.Default, Locked: cfg.Locked}
+			for _, o := range cfg.Options {
+				ti.Options = append(ti.Options, ThinkingLevelInfo{Label: o.Label, Value: o.Value})
+			}
+			mi.Thinking = ti
+		}
 		result = append(result, mi)
 	}
 	return result, nil
@@ -415,6 +423,19 @@ type ModelInfo struct {
 	SupportsTools          bool   `json:"supports_tools"`
 	SupportsResponseFormat bool   `json:"supports_response_format"`
 	SupportsMultimodal     bool   `json:"supports_multimodal"`
+	Thinking               *ThinkingInfo `json:"thinking,omitempty"`
+}
+
+// ThinkingInfo 暴露给前端的思考档位信息(不含 body)
+type ThinkingInfo struct {
+	Default string              `json:"default"`
+	Locked  bool                `json:"locked"`
+	Options []ThinkingLevelInfo `json:"options"`
+}
+
+type ThinkingLevelInfo struct {
+	Label string `json:"label"`
+	Value string `json:"value"`
 }
 
 // --- 内部方法 ---
@@ -538,9 +559,9 @@ func (s *UnifiedService) doStreamComplete(ctx context.Context, req *CompletionRe
 func (s *UnifiedService) buildChatRequest(req *CompletionRequest, route *RoutingResult) *chat.ChatRequest {
 	maxTokens := req.MaxTokens
 
-	// 查询模型的 max_tokens 限制，如果设置了则裁剪
+	// 查询模型的 max_tokens 限制和思考配置
 	var mdl model.Model
-	if err := model.DB().Select("max_tokens").Where("code = ?", req.Model).First(&mdl).Error; err == nil {
+	if err := model.DB().Select("max_tokens", "thinking_config").Where("code = ?", req.Model).First(&mdl).Error; err == nil {
 		if mdl.MaxTokens > 0 && (maxTokens == 0 || maxTokens > mdl.MaxTokens) {
 			maxTokens = mdl.MaxTokens
 		}
@@ -581,6 +602,9 @@ func (s *UnifiedService) buildChatRequest(req *CompletionRequest, route *Routing
 			}
 		}
 	}
+
+	// 思考模式:模型默认档位 + 请求级覆盖(未锁定时)。thinking_config 为空则不注入
+	applyThinking(chatReq, parseThinkingConfig(mdl.ThinkingConfig), req.ReasoningEffort)
 
 	return chatReq
 }

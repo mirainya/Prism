@@ -242,6 +242,18 @@ export interface ChannelRequestLog {
 
 // ========== Chat 模型相关 ==========
 
+// 思考模式配置
+export interface ThinkingOption {
+  label: string;
+  value: string;
+  body?: Record<string, any>; // 合并进上游请求体的原始 JSON,空=不注入
+}
+export interface ThinkingConfig {
+  locked?: boolean;
+  default?: string;
+  options: ThinkingOption[];
+}
+
 export interface ChatModel {
   id: number;
   code: string;
@@ -250,6 +262,7 @@ export interface ChatModel {
   description: string;
   features?: string[];
   maxTokens?: number;
+  thinkingConfig?: ThinkingConfig | null;
   sort?: number;
   status: number;
   createdAt: string;
@@ -287,6 +300,11 @@ export interface PlaygroundModelInfo {
   supports_tools?: boolean;
   supports_response_format?: boolean;
   supports_multimodal?: boolean;
+  thinking?: {
+    default: string;
+    locked: boolean;
+    options: { label: string; value: string }[];
+  } | null;
 }
 
 export interface Conversation {

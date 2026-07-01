@@ -29,6 +29,10 @@ type Model struct {
 	Features    datatypes.JSON `gorm:"type:json;comment:能力标签" json:"features"`
 	ParamSchema datatypes.JSON `gorm:"type:json;comment:参数schema" json:"param_schema"`
 	MaxTokens   int            `gorm:"default:0;comment:最大token数" json:"max_tokens"`
+
+	// 思考模式配置 (JSON,空=不支持思考)。结构见 service.ThinkingConfig
+	ThinkingConfig datatypes.JSON `gorm:"type:json;comment:思考模式配置(档位/默认/锁定)" json:"thinking_config"`
+
 	Sort        int            `gorm:"default:0;index;comment:排序(降序)" json:"sort"`
 	Status      int8           `gorm:"default:1;comment:状态(1启用/0禁用)" json:"status"`
 	CreatedAt   time.Time      `gorm:"index;comment:创建时间" json:"created_at"`
