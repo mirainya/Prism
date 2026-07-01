@@ -77,6 +77,7 @@ func PlaygroundListModels(c *gin.Context) {
 			"supports_tools":           m.SupportsTools,
 			"supports_response_format": m.SupportsResponseFormat,
 			"supports_multimodal":      m.SupportsMultimodal,
+			"thinking":                 m.Thinking,
 		})
 	}
 

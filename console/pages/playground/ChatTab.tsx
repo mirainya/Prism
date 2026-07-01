@@ -18,6 +18,7 @@ import StatusBadge from './StatusBadge';
 import HistoryPanel from './HistoryPanel';
 import DebugPanel from './DebugPanel';
 import ModelSelector from './ModelSelector';
+import ThinkingSelect from './ThinkingSelect';
 import {
   parseJsonField, getFileIcon, parseStopSequences, extractAssistantText,
   formatFileSize, ACCEPTED_FILE_TYPES, MAX_FILE_SIZE,
@@ -545,17 +546,12 @@ const ChatTab: React.FC<{ tokenId: string }> = ({ tokenId }) => {
               {streamDisabled ? '不支持流式' : `stream: ${selectedModelInfo?.default_stream ? '开启' : '关闭'}`}
             </div>
             {selectedModelInfo?.thinking && selectedModelInfo.thinking.options.length > 0 && (
-              <label className="flex items-center gap-1.5">
+              <div className="flex items-center gap-1.5">
                 <span className="text-xs text-[var(--text-secondary)]">思考</span>
-                <select value={thinkingLevel} disabled={selectedModelInfo.thinking.locked}
-                  onChange={e => setThinkingLevel(e.target.value)}
-                  className="px-2 py-1 text-xs border border-[var(--border-soft)] rounded bg-[var(--surface)] disabled:opacity-50">
-                  {selectedModelInfo.thinking.options.map(o => (
-                    <option key={o.value} value={o.value}>{o.label || o.value}</option>
-                  ))}
-                </select>
+                <ThinkingSelect options={selectedModelInfo.thinking.options} value={thinkingLevel}
+                  onChange={setThinkingLevel} locked={selectedModelInfo.thinking.locked} />
                 {selectedModelInfo.thinking.locked && <span className="text-[10px] text-amber-600">已锁定</span>}
-              </label>
+              </div>
             )}
           </div>
 
