@@ -168,6 +168,7 @@ func (a *anthropicStreamAdapter) translate(body io.Reader, pw *io.PipeWriter, mo
 	var eventType string
 	created := time.Now().Unix()
 	toolCallIndex := -1
+	inputTokens := 0 // message_start 携带,message_delta 组装 usage 时补入 PromptTokens
 
 	for scanner.Scan() {
 		line := scanner.Text()
@@ -195,6 +196,9 @@ func (a *anthropicStreamAdapter) translate(body io.Reader, pw *io.PipeWriter, mo
 			}
 			if json.Unmarshal([]byte(data), &evt) == nil {
 				msgID = evt.Message.ID
+				if evt.Message.Usage != nil {
+					inputTokens = evt.Message.Usage.InputTokens
+				}
 				chunk := openAIChunk(msgID, modelName, created, map[string]any{"role": "assistant"}, "", nil)
 				writeSSELine(pw, chunk)
 			}
@@ -286,7 +290,9 @@ func (a *anthropicStreamAdapter) translate(body io.Reader, pw *io.PipeWriter, mo
 			var usage *chat.ChatUsage
 			if evt.Usage != nil {
 				usage = &chat.ChatUsage{
+					PromptTokens:     inputTokens,
 					CompletionTokens: evt.Usage.OutputTokens,
+					TotalTokens:      inputTokens + evt.Usage.OutputTokens,
 				}
 			}
 			chunk := openAIChunk(msgID, modelName, created, map[string]any{}, finishReason, usage)

@@ -24,9 +24,10 @@ type TaskPollPayload struct {
 }
 
 type TaskUploadPayload struct {
-	TaskID    uint     `json:"task_id"`
-	OriginURL string   `json:"origin_url"`
-	URLs      []string `json:"urls"`
+	TaskID        uint     `json:"task_id"`
+	OriginURL     string   `json:"origin_url"`
+	URLs          []string `json:"urls"`
+	RevisedPrompt string   `json:"revised_prompt,omitempty"`
 }
 
 type TaskNotifyPayload struct {
@@ -45,8 +46,11 @@ func EnqueueTaskSubmit(taskID uint) error {
 }
 
 // EnqueueTaskUpload 入队上传任务（回调/轮询成功后复用同一上传流水线）
-func EnqueueTaskUpload(taskID uint, originURL string, urls []string) error {
+func EnqueueTaskUpload(taskID uint, originURL string, urls []string, revisedPrompt ...string) error {
 	payload := TaskUploadPayload{TaskID: taskID, OriginURL: originURL, URLs: urls}
+	if len(revisedPrompt) > 0 {
+		payload.RevisedPrompt = revisedPrompt[0]
+	}
 	payloadBytes, err := json.Marshal(payload)
 	if err != nil {
 		return err

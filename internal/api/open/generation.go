@@ -1,13 +1,15 @@
 package open
 
 import (
+	"encoding/json"
+	"errors"
 	"net/http"
 
 	"github.com/gin-gonic/gin"
 	"github.com/mirainya/Prism/internal/api/middleware"
 	"github.com/mirainya/Prism/internal/api/resp"
 	"github.com/mirainya/Prism/internal/service"
-	"github.com/mirainya/Prism/pkg/errors"
+	perrors "github.com/mirainya/Prism/pkg/errors"
 )
 
 type GenerationRequest struct {
@@ -32,11 +34,19 @@ func CreateVideoGeneration(c *gin.Context) {
 }
 
 func createGeneration(c *gin.Context, capabilityCode string) {
-	var req GenerationRequest
-	if err := c.ShouldBindJSON(&req); err != nil {
-		resp.BadRequest(c, errors.WithMessage(errors.ErrInvalidParams, err.Error()))
+	var raw map[string]any
+	if err := c.ShouldBindJSON(&raw); err != nil {
+		resp.BadRequest(c, perrors.WithMessage(perrors.ErrInvalidParams, err.Error()))
 		return
 	}
+
+	model, _ := raw["model"].(string)
+	prompt, _ := raw["prompt"].(string)
+	if model == "" || prompt == "" {
+		resp.BadRequest(c, perrors.WithMessage(perrors.ErrInvalidParams, "model and prompt are required"))
+		return
+	}
+	callbackURL, _ := raw["callback_url"].(string)
 
 	token := middleware.GetToken(c)
 	if token == nil {
@@ -44,25 +54,37 @@ func createGeneration(c *gin.Context, capabilityCode string) {
 		return
 	}
 
-	params := map[string]any{
-		"prompt": req.Prompt,
-		"model":  req.Model,
-	}
-	for k, v := range req.Params {
+	params := make(map[string]any, len(raw))
+	for k, v := range raw {
+		if k == "callback_url" || k == "params" {
+			continue
+		}
 		params[k] = v
+	}
+	if nested, ok := raw["params"].(map[string]any); ok {
+		for k, v := range nested {
+			params[k] = v
+		}
+	} else if rawParams, ok := raw["params"].(json.RawMessage); ok && len(rawParams) > 0 {
+		var nested map[string]any
+		if json.Unmarshal(rawParams, &nested) == nil {
+			for k, v := range nested {
+				params[k] = v
+			}
+		}
 	}
 
 	invokeResp, err := capabilityService.Invoke(c.Request.Context(), &service.InvokeRequest{
 		UserID:      token.UserID,
 		TokenID:     token.ID,
 		Capability:  capabilityCode,
-		Model:       req.Model,
-		CallbackURL: req.CallbackURL,
+		Model:       model,
+		CallbackURL: callbackURL,
 		Params:      params,
 	})
 	if err != nil {
-		if err.Error() == "insufficient balance" {
-			resp.BadRequest(c, errors.WithMessage(errors.ErrInsufficientQuota, err.Error()))
+		if errors.Is(err, service.ErrInsufficientTokenBalance) || errors.Is(err, service.ErrInsufficientUserBalance) {
+			resp.BadRequest(c, perrors.WithMessage(perrors.ErrInsufficientQuota, err.Error()))
 			return
 		}
 		resp.ErrorMsg(c, http.StatusInternalServerError, 500, err.Error())

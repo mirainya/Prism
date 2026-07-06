@@ -4,9 +4,11 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"net/http"
 	"time"
 
 	"github.com/hibiken/asynq"
+	"github.com/mirainya/Prism/internal/domain"
 	"github.com/mirainya/Prism/internal/model"
 	"github.com/mirainya/Prism/internal/provider"
 	"github.com/mirainya/Prism/pkg/logger"
@@ -32,14 +34,21 @@ func HandleTaskPoll(ctx context.Context, t *asynq.Task) error {
 		return fmt.Errorf("get task: %w", err)
 	}
 
-	// 任务已完成，不再轮询
-	if task.Status == model.TaskStatusSuccess || task.Status == model.TaskStatusFailed {
+	// 任务已进入终态(成功/失败/取消),不再轮询
+	if task.Status == model.TaskStatusSuccess || task.Status == model.TaskStatusFailed || task.Status == model.TaskStatusCancelled {
 		return nil
 	}
 
 	// 2. 获取端点配置（读取轮询参数）
 	var endpoint model.Endpoint
-	model.DB().First(&endpoint, task.EndpointID)
+	if err := model.DB().First(&endpoint, task.EndpointID).Error; err != nil {
+		// 端点配置缺失(被删/DB异常)则无法正确轮询,直接判失败,避免用零值配置空转
+		logger.Error("poll: load endpoint failed", zap.Uint("task_id", task.ID), zap.Uint("endpoint_id", task.EndpointID), zap.Error(err))
+		if committed, _ := taskService.UpdateTaskFail(task.ID, "poll: endpoint config not found"); committed {
+			decrementAccountTasks(task.ID)
+		}
+		return nil
+	}
 
 	maxPollCount := endpoint.PollMaxAttempts
 	if maxPollCount <= 0 {
@@ -53,17 +62,30 @@ func HandleTaskPoll(ctx context.Context, t *asynq.Task) error {
 
 	// 超时保护
 	if payload.PollCount >= maxPollCount {
-		taskService.UpdateTaskFail(payload.TaskID, "poll timeout")
-		decrementAccountTasks(payload.TaskID)
+		if committed, _ := taskService.UpdateTaskFail(payload.TaskID, "poll timeout"); committed {
+			decrementAccountTasks(payload.TaskID)
+		}
 		return nil
 	}
 
 	// 3. 获取渠道信息
 	var channel model.Channel
-	model.DB().First(&channel, task.ChannelID)
+	if err := model.DB().First(&channel, task.ChannelID).Error; err != nil {
+		logger.Error("poll: load channel failed", zap.Uint("task_id", task.ID), zap.Uint("channel_id", task.ChannelID), zap.Error(err))
+		if committed, _ := taskService.UpdateTaskFail(task.ID, "poll: channel not found"); committed {
+			decrementAccountTasks(task.ID)
+		}
+		return nil
+	}
 
 	var account model.ChannelAccount
-	model.DB().First(&account, task.AccountID)
+	if err := model.DB().First(&account, task.AccountID).Error; err != nil {
+		logger.Error("poll: load account failed", zap.Uint("task_id", task.ID), zap.Uint("account_id", task.AccountID), zap.Error(err))
+		if committed, _ := taskService.UpdateTaskFail(task.ID, "poll: account not found"); committed {
+			decrementAccountTasks(task.ID)
+		}
+		return nil
+	}
 
 	// 4. 创建 Provider 并查询进度
 	prov, err := provider.NewProvider(&channel, &account, &endpoint)
@@ -73,9 +95,16 @@ func HandleTaskPoll(ctx context.Context, t *asynq.Task) error {
 
 	result, err := prov.GetProgress(ctx, task.VendorTaskID)
 	if err != nil {
-		logger.Error("get progress error", zap.Error(err))
-		// 继续轮询
-		return requeuePoll(payload.TaskID, payload.PollCount+1, pollInterval)
+		// 错误分级: 可恢复错误(网络抖动/408/429/5xx)继续轮询; 不可恢复(4xx 硬错误)快速失败
+		if isRetryablePollError(err) {
+			logger.Warn("get progress transient error, retry poll", zap.Uint("task_id", payload.TaskID), zap.Error(err))
+			return requeuePoll(payload.TaskID, payload.PollCount+1, pollInterval)
+		}
+		logger.Error("get progress fatal error, fail task", zap.Uint("task_id", payload.TaskID), zap.Error(err))
+		if committed, _ := taskService.UpdateTaskFail(payload.TaskID, "poll error: "+err.Error()); committed {
+			decrementAccountTasks(payload.TaskID)
+		}
+		return nil
 	}
 
 	logger.Info("poll result", zap.String("status", string(result.Status)), zap.Int("progress", result.Progress))
@@ -86,15 +115,18 @@ func HandleTaskPoll(ctx context.Context, t *asynq.Task) error {
 		// 更新进度
 		taskService.UpdateTaskProgress(task.ID, 100)
 		// 入队上传任务
+		originURLs := append([]string{}, result.URLs...)
+		originURLs = append(originURLs, result.B64Data...)
 		originURL := ""
-		if len(result.URLs) > 0 {
-			originURL = result.URLs[0]
+		if len(originURLs) > 0 {
+			originURL = originURLs[0]
 		}
-		return enqueueUpload(task.ID, originURL, result.URLs)
+		return enqueueUpload(task.ID, originURL, originURLs, result.RevisedPrompt)
 
 	case provider.StatusFail:
-		taskService.UpdateTaskFail(task.ID, result.Error)
-		decrementAccountTasks(task.ID)
+		if committed, _ := taskService.UpdateTaskFail(task.ID, result.Error); committed {
+			decrementAccountTasks(task.ID)
+		}
 		return nil
 
 	case provider.StatusProcessing, provider.StatusSubmitted, provider.StatusPending:
@@ -107,6 +139,21 @@ func HandleTaskPoll(ctx context.Context, t *asynq.Task) error {
 		// 未知状态，继续轮询
 		return requeuePoll(payload.TaskID, payload.PollCount+1, pollInterval)
 	}
+}
+
+// isRetryablePollError 判断轮询错误是否可恢复(应继续轮询)
+// 可恢复: 网络抖动/超时(无状态码)、408 请求超时、429 限流、5xx 上游故障
+// 不可恢复: 400/401/403/404/422 等 4xx 硬错误(配置/鉴权/任务不存在),快速失败避免空转到 maxPollCount
+func isRetryablePollError(err error) bool {
+	code := domain.UpstreamStatusCode(err)
+	if code == 0 {
+		// 无状态码 → 网络层错误(连接失败/超时/读取中断),视为瞬时可恢复
+		return true
+	}
+	if code == http.StatusRequestTimeout || code == http.StatusTooManyRequests {
+		return true
+	}
+	return code >= 500
 }
 
 func requeuePoll(taskID uint, pollCount int, intervalSeconds int) error {
@@ -125,11 +172,14 @@ func requeuePoll(taskID uint, pollCount int, intervalSeconds int) error {
 	return err
 }
 
-func enqueueUpload(taskID uint, originURL string, urls []string) error {
+func enqueueUpload(taskID uint, originURL string, urls []string, revisedPrompt ...string) error {
 	payload := TaskUploadPayload{
 		TaskID:    taskID,
 		OriginURL: originURL,
 		URLs:      urls,
+	}
+	if len(revisedPrompt) > 0 {
+		payload.RevisedPrompt = revisedPrompt[0]
 	}
 	payloadBytes, _ := json.Marshal(payload)
 	task := asynq.NewTask(TypeTaskUpload, payloadBytes)

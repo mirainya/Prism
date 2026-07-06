@@ -183,11 +183,22 @@ func convertToGeminiParts(content any) []map[string]any {
 			case "image_url":
 				if imgURL, ok := pm["image_url"].(map[string]any); ok {
 					url, _ := imgURL["url"].(string)
-					parts = append(parts, map[string]any{
-						"fileData": map[string]any{
-							"fileUri": url,
-						},
-					})
+					// data: URL 走 inlineData(内联 base64); http(s) URL 才用 fileData.fileUri
+					// Gemini 的 fileUri 只接受 File API/GCS URI,直接塞 data: URL 会失效
+					if mime, b64, ok := parseDataURL(url); ok {
+						parts = append(parts, map[string]any{
+							"inlineData": map[string]any{
+								"mimeType": mime,
+								"data":     b64,
+							},
+						})
+					} else {
+						parts = append(parts, map[string]any{
+							"fileData": map[string]any{
+								"fileUri": url,
+							},
+						})
+					}
 				}
 			case "file_url":
 				if fileURL, ok := pm["file_url"].(map[string]any); ok {

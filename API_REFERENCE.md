@@ -190,7 +190,50 @@ ContentPart 类型:
 
 ### POST /v1/images/generations
 
-图片生成（兼容旧接口，内部调用 capabilities/text2img）。
+图片生成。**OpenAI 标准协议**，任何 OpenAI 图像客户端/SDK 可即插即用。
+对外统一同步返图：同步渠道直接返回，异步渠道网关内部轮询等待（默认上限 300s）。
+
+```json
+// Request (OpenAI 标准，字段平铺在顶层)
+{
+  "model": "string (required)",
+  "prompt": "string (required)",
+  "n": 1,
+  "size": "1024x1024",
+  "quality": "auto|low|medium|high",
+  "response_format": "url|b64_json",
+  "output_format": "png|jpeg|webp",
+  "output_compression": 80,
+  "moderation": "auto|low",
+  "style": "string?",
+  "user": "string?"
+}
+```
+
+响应**不套** `{code,data}` 外壳，直接返回 OpenAI 原生结构：
+
+```json
+// 成功 (HTTP 200)
+{
+  "created": 1700000000,
+  "data": [
+    {"url": "https://...", "revised_prompt": "..."}
+  ]
+}
+
+// 失败 (HTTP 4xx/5xx，OpenAI 错误格式)
+{"error": {"message": "reason", "type": "invalid_request_error|api_error|authentication_error"}}
+
+// 超时降级 (HTTP 202，异步渠道超过等待上限仍未出图)
+{"status": "processing", "task_id": "xxx", "message": "query via GET /v1/tasks/{task_id}"}
+```
+
+> `prompt` 之外的参数经渠道 `param_mapping`（含 `computed_params` 计算）映射后透传给上游。
+> 超时上限内出图直接返，超限返 202 + task_id，客户端用 `GET /v1/tasks/{task_id}` 后续查询。
+
+### POST /v1/images/generations/async
+
+图片生成（旧版异步接口）。提交即返 task_id，不等待结果，需自行轮询/回调。
 
 ```json
 // Request
@@ -202,7 +245,7 @@ ContentPart 类型:
 
 ### POST /v1/videos/generations
 
-视频生成（同上，调用 capabilities/text2video）。
+视频生成（异步，调用 capabilities/text2video，返回 task_id）。
 
 ### GET /v1/tasks/:task_no
 

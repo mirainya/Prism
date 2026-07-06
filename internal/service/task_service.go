@@ -11,6 +11,7 @@ import (
 	"github.com/mirainya/Prism/pkg/logger"
 	"github.com/shopspring/decimal"
 	"go.uber.org/zap"
+	"gorm.io/gorm"
 )
 
 var (
@@ -144,25 +145,38 @@ func (s *TaskService) UpdateTaskProgress(taskID uint, progress int) error {
 		Update("progress", progress).Error
 }
 
-func (s *TaskService) UpdateTaskSuccess(taskID uint, result map[string]any, cost decimal.Decimal) error {
+// UpdateTaskSuccess 将任务置为成功。
+// 返回 committed=true 表示本次调用真正抢到了终态流转(RowsAffected>0),
+// 调用方应据此决定是否递减账号计数,避免多路径并发对同一任务重复递减。
+func (s *TaskService) UpdateTaskSuccess(taskID uint, result map[string]any, cost decimal.Decimal) (committed bool, err error) {
 	resultJSON, err := json.Marshal(result)
 	if err != nil {
-		return fmt.Errorf("marshal task result: %w", err)
+		return false, fmt.Errorf("marshal task result: %w", err)
 	}
 	now := time.Now()
 
 	logger.Info("task succeeded", zap.Uint("task_id", taskID))
 
-	return model.DB().Model(&model.Task{}).Where("id = ?", taskID).Updates(map[string]any{
-		"status":       model.TaskStatusSuccess,
-		"progress":     100,
-		"result":       resultJSON,
-		"cost":         cost,
-		"completed_at": now,
-	}).Error
+	// 终态守卫: 仅当任务尚未进入终态时才置成功,避免覆盖已被 timeout 判失败/用户取消的任务
+	res := model.DB().Model(&model.Task{}).
+		Where("id = ? AND status NOT IN ?", taskID,
+			[]model.TaskStatus{model.TaskStatusSuccess, model.TaskStatusFailed, model.TaskStatusCancelled}).
+		Updates(map[string]any{
+			"status":       model.TaskStatusSuccess,
+			"progress":     100,
+			"result":       resultJSON,
+			"cost":         cost,
+			"completed_at": now,
+		})
+	if res.Error != nil {
+		return false, res.Error
+	}
+	return res.RowsAffected > 0, nil
 }
 
-func (s *TaskService) UpdateTaskFail(taskID uint, errMsg string) error {
+// UpdateTaskFail 将任务置为失败并(在真正抢到终态流转时)退款。
+// 返回 committed=true 表示本次调用真正抢到了终态流转,调用方应据此决定是否递减账号计数。
+func (s *TaskService) UpdateTaskFail(taskID uint, errMsg string) (committed bool, err error) {
 	now := time.Now()
 
 	logger.Warn("task failed",
@@ -171,29 +185,57 @@ func (s *TaskService) UpdateTaskFail(taskID uint, errMsg string) error {
 
 	var task model.Task
 	if err := model.DB().First(&task, taskID).Error; err != nil {
-		return ErrTaskNotFound
+		return false, ErrTaskNotFound
 	}
 
-	updates := map[string]any{
-		"status":        model.TaskStatusFailed,
-		"error_message": errMsg,
-		"completed_at":  now,
+	// 终态守卫: 仅当任务尚未进入终态时才置为 failed,避免与 timeout/upload 等并发路径竞态覆盖
+	result := model.DB().Model(&model.Task{}).
+		Where("id = ? AND status NOT IN ?", taskID,
+			[]model.TaskStatus{model.TaskStatusSuccess, model.TaskStatusFailed, model.TaskStatusCancelled}).
+		Updates(map[string]any{
+			"status":        model.TaskStatusFailed,
+			"error_message": errMsg,
+			"completed_at":  now,
+		})
+	if result.Error != nil {
+		return false, result.Error
+	}
+	// 未抢到流转(已是终态或已被其他路径处理)则不退款、不递减,避免重复
+	if result.RowsAffected == 0 {
+		return false, nil
 	}
 
-	if task.Cost.GreaterThan(decimal.Zero) && !task.Refunded {
-		if err := billingService.Refund(task.TokenID, task.UserID, task.Cost); err != nil {
-			logger.Error("refund failed",
-				zap.Uint("task_id", task.ID),
-				zap.Uint("token_id", task.TokenID),
-				zap.Uint("user_id", task.UserID),
-				zap.String("cost", task.Cost.String()),
-				zap.Error(err))
-		} else {
-			updates["refunded"] = true
-		}
+	s.refundTask(&task)
+	return true, nil
+}
+
+// refundTask 退款并保证幂等:
+//   - 用 "id=? AND refunded=false" 原子抢占退款闸门,只有抢到的调用方才执行退款
+//   - 退款走 RefundWithKey(task_no 作幂等键),即便闸门失效也不会重复加钱
+//   - 退款失败则回滚 refunded 标记,让后续路径/对账可重试
+func (s *TaskService) refundTask(task *model.Task) {
+	if !task.Cost.GreaterThan(decimal.Zero) {
+		return
 	}
 
-	return model.DB().Model(&model.Task{}).Where("id = ?", taskID).Updates(updates).Error
+	// 原子抢占退款闸门
+	gate := model.DB().Model(&model.Task{}).
+		Where("id = ? AND refunded = ?", task.ID, false).
+		Update("refunded", true)
+	if gate.Error != nil || gate.RowsAffected == 0 {
+		return // 未抢到,已有其他路径负责退款
+	}
+
+	if err := billingService.RefundWithKey(task.TokenID, task.UserID, task.Cost, task.TaskNo); err != nil {
+		logger.Error("refund failed, rolling back gate",
+			zap.Uint("task_id", task.ID),
+			zap.Uint("token_id", task.TokenID),
+			zap.Uint("user_id", task.UserID),
+			zap.String("cost", task.Cost.String()),
+			zap.Error(err))
+		// 回滚闸门,使退款可被后续重试
+		model.DB().Model(&model.Task{}).Where("id = ?", task.ID).Update("refunded", false)
+	}
 }
 
 func (s *TaskService) UpdateVendorResponse(taskID uint, resp json.RawMessage) error {
@@ -202,14 +244,35 @@ func (s *TaskService) UpdateVendorResponse(taskID uint, resp json.RawMessage) er
 }
 
 func (s *TaskService) CancelTask(taskNo string, userID uint) error {
+	// 先读出任务(用于取消后退款与计数递减)
+	var task model.Task
+	if err := model.DB().Where("task_no = ? AND user_id = ?", taskNo, userID).First(&task).Error; err != nil {
+		return errors.New("task not found or cannot be cancelled")
+	}
+
+	// 原子抢占: 仅 pending/processing 可被取消
 	result := model.DB().Model(&model.Task{}).
-		Where("task_no = ? AND user_id = ? AND status IN ?", taskNo, userID,
+		Where("id = ? AND status IN ?", task.ID,
 			[]model.TaskStatus{model.TaskStatusPending, model.TaskStatusProcessing}).
 		Update("status", model.TaskStatusCancelled)
+	if result.Error != nil {
+		return result.Error
+	}
 	if result.RowsAffected == 0 {
 		return errors.New("task not found or cannot be cancelled")
 	}
-	return result.Error
+
+	// 抢到取消流转: 退款(幂等) + 递减账号计数
+	s.refundTask(&task)
+	decrementAccountTasksByID(task.AccountID)
+	return nil
+}
+
+// decrementAccountTasksByID 递减账号并发计数(与 UnifiedService.decrementAccountTasks 同逻辑)
+func decrementAccountTasksByID(accountID uint) {
+	model.DB().Model(&model.ChannelAccount{}).
+		Where("id = ? AND current_tasks > 0", accountID).
+		UpdateColumn("current_tasks", gorm.Expr("current_tasks - 1"))
 }
 
 func (s *TaskService) UpdateCallbackStatus(taskID uint, status model.CallbackStatus, attempts int) error {

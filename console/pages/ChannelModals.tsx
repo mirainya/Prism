@@ -130,10 +130,12 @@ export const AccountModal: React.FC<{
   isOpen: boolean;
   channelId: string;
   account?: ChannelAccount | null;
+  availableModels?: { code: string; name: string; type?: string }[];
   onClose: () => void;
   onSave: (data: any) => Promise<void>;
-}> = ({ isOpen, channelId, account, onClose, onSave }) => {
+}> = ({ isOpen, channelId, account, availableModels = [], onClose, onSave }) => {
   const [form, setForm] = useState({ name: '', api_key: '', weight: 10, max_tasks: 0, config: '{}' });
+  const [supportedModels, setSupportedModels] = useState<string[]>([]);
   const [loading, setLoading] = useState(false);
   const [jsonError, setJsonError] = useState('');
 
@@ -146,13 +148,21 @@ export const AccountModal: React.FC<{
         max_tasks: account.maxTasks || 0,
         config: JSON.stringify(account.config || {}, null, 2)
       });
+      setSupportedModels(account.supportedModels || []);
     } else {
       setForm({ name: '', api_key: '', weight: 10, max_tasks: 0, config: '{}' });
+      setSupportedModels([]);
     }
     setJsonError('');
   }, [account, isOpen]);
 
   if (!isOpen) return null;
+
+  const toggleModel = (code: string) => {
+    setSupportedModels(prev =>
+      prev.includes(code) ? prev.filter(c => c !== code) : [...prev, code]
+    );
+  };
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -170,7 +180,8 @@ export const AccountModal: React.FC<{
         name: form.name,
         weight: form.weight,
         max_tasks: form.max_tasks,
-        config: JSON.parse(form.config)
+        config: JSON.parse(form.config),
+        supported_models: supportedModels,
       };
       if (form.api_key) data.api_key = form.api_key;
       await onSave(data);
@@ -226,6 +237,37 @@ export const AccountModal: React.FC<{
               min={0}
               placeholder="0 表示不限制"
             />
+          </div>
+          <div>
+            <label className="block text-sm font-medium text-[var(--text-primary)] mb-1">
+              支持模型
+              <span className="ml-2 text-xs text-[var(--text-secondary)] font-normal">留空 = 支持全部；勾选后仅该 key 支持的模型会命中此账号</span>
+            </label>
+            {availableModels.length === 0 ? (
+              <p className="text-xs text-[var(--text-secondary)] py-2">暂无模型可选</p>
+            ) : (
+              <div className="max-h-36 overflow-y-auto flex flex-wrap gap-2 p-2 border border-[var(--border-soft)] rounded-lg">
+                {availableModels.map(m => {
+                  const checked = supportedModels.includes(m.code);
+                  return (
+                    <button
+                      key={m.code}
+                      type="button"
+                      onClick={() => toggleModel(m.code)}
+                      className={`px-2 py-1 rounded-lg text-xs border transition-colors ${checked
+                        ? 'bg-[var(--primary)] text-white border-[var(--primary)]'
+                        : 'bg-[var(--surface)] text-[var(--text-secondary)] border-[var(--border-soft)] hover:border-[var(--primary)]'}`}
+                      title={m.code}
+                    >
+                      {m.name || m.code}
+                    </button>
+                  );
+                })}
+              </div>
+            )}
+            {supportedModels.length > 0 && (
+              <p className="text-xs text-[var(--text-secondary)] mt-1">已选 {supportedModels.length} 个（白名单模式）</p>
+            )}
           </div>
           <div>
             <label className="block text-sm font-medium text-[var(--text-primary)] mb-1">账号配置 (JSON)</label>

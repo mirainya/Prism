@@ -14,8 +14,34 @@ import (
 	"strings"
 	"time"
 
+	"github.com/mirainya/Prism/internal/domain"
 	"github.com/mirainya/Prism/pkg/config"
+	"github.com/tidwall/gjson"
 )
+
+// upstreamErrorPaths 常见上游错误消息字段路径,按优先级探测
+var upstreamErrorPaths = []string{"error.message", "error.msg", "message", "msg", "error", "detail"}
+
+// extractUpstreamErrorMessage 从上游错误响应体中提取人类可读的错误消息
+// 按优先级探测常见字段,取不到则回退原始 body(截断避免过长)
+func extractUpstreamErrorMessage(body []byte) string {
+	s := string(body)
+	if gjson.Valid(s) {
+		for _, path := range upstreamErrorPaths {
+			if v := gjson.Get(s, path); v.Exists() {
+				if msg := strings.TrimSpace(v.String()); msg != "" {
+					return msg
+				}
+			}
+		}
+	}
+	// 回退: 原始 body,截断到 512 字符避免超长
+	s = strings.TrimSpace(s)
+	if len(s) > 512 {
+		return s[:512]
+	}
+	return s
+}
 
 // 全局 http.Client，复用 TCP 连接池
 var sharedHTTPClient *http.Client
@@ -67,7 +93,6 @@ type BaseProvider struct {
 	PollMethod          string // GET / POST
 	SubmitPath          string
 	ProgressPath        string
-	Converter           ParamConverter
 	Parser              ResponseParser
 	ResponseMapping     *ResponseMapping
 	PollResponseMapping *ResponseMapping
@@ -206,7 +231,7 @@ func (p *BaseProvider) Submit(ctx context.Context, req SubmitRequest) (SubmitRes
 	}
 
 	if resp.StatusCode >= 400 {
-		return SubmitResult{}, fmt.Errorf("api error: %s", string(respBody))
+		return SubmitResult{}, &domain.UpstreamError{StatusCode: resp.StatusCode, Body: extractUpstreamErrorMessage(respBody)}
 	}
 
 	return p.Parser.ParseSubmitResponse(respBody, p.ResponseMapping)
@@ -254,7 +279,8 @@ func (p *BaseProvider) GetProgress(ctx context.Context, providerTaskID string) (
 	}
 
 	if resp.StatusCode >= 400 {
-		return ProgressResult{Error: string(respBody)}, nil
+		// 返回结构化错误(保留 status code),交由 poll_worker 分级决定继续轮询或快速失败
+		return ProgressResult{}, &domain.UpstreamError{StatusCode: resp.StatusCode, Body: extractUpstreamErrorMessage(respBody)}
 	}
 
 	mapping := p.PollResponseMapping

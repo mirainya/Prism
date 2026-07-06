@@ -24,6 +24,8 @@ func RegisterRoutes(group *gin.RouterGroup) {
 	group.POST("/channel-accounts", CreateChannelAccount)
 	group.PUT("/channel-accounts/:id", UpdateChannelAccount)
 	group.DELETE("/channel-accounts/:id", DeleteChannelAccount)
+	group.GET("/channel-accounts/:id/circuit-states", ListAccountCircuitStates)
+	group.DELETE("/channel-accounts/:id/circuit-states/:model_code", ClearAccountCircuitState)
 
 	// 能力管理
 	group.GET("/capabilities", ListCapabilities)

@@ -6,7 +6,8 @@ import (
 )
 
 var (
-	taskService = service.NewTaskService()
+	taskService    = service.NewTaskService()
+	circuitService = service.NewAccountCircuitService()
 )
 
 func RegisterHandlers(mux *asynq.ServeMux) {

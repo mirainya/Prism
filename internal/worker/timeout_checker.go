@@ -30,11 +30,19 @@ func HandleTaskTimeoutCheck(ctx context.Context, t *asynq.Task) error {
 
 	for _, task := range tasks {
 		logger.Warn("task timeout", zap.Uint("task_id", task.ID), zap.String("task_no", task.TaskNo))
-		taskService.UpdateTaskFail(task.ID, "task timeout")
-		decrementAccountTasks(task.ID)
+		if committed, _ := taskService.UpdateTaskFail(task.ID, "task timeout"); committed {
+			decrementAccountTasks(task.ID)
+		}
 	}
 
 	logger.Info("timeout check completed", zap.Int("count", len(tasks)))
+
+	// 顺带清理已到期的账号熔断记录,避免表膨胀
+	if n, err := circuitService.CleanExpired(); err != nil {
+		logger.Error("clean expired circuit states error", zap.Error(err))
+	} else if n > 0 {
+		logger.Info("cleaned expired circuit states", zap.Int64("count", n))
+	}
 
 	return nil
 }

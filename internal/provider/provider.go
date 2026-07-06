@@ -31,13 +31,17 @@ type SubmitResult struct {
 	Status         TaskStatus
 	Progress       int
 	URLs           []string
+	B64Data        []string // base64 图片数据(如 OpenAI images b64_json),需转存为 URL
+	RevisedPrompt  string   // 上游优化后的提示词(如 OpenAI images revised_prompt)
 }
 
 type ProgressResult struct {
-	Status   TaskStatus
-	Progress int
-	URLs     []string
-	Error    string
+	Status        TaskStatus
+	Progress      int
+	URLs          []string
+	B64Data       []string // base64 图片数据,需转存为 URL
+	RevisedPrompt string
+	Error         string
 }
 
 type Provider interface {

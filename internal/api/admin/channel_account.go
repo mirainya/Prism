@@ -9,6 +9,8 @@ import (
 	pkgErrors "github.com/mirainya/Prism/pkg/errors"
 )
 
+var accountCircuitService = service.NewAccountCircuitService()
+
 // maskAPIKey 脱敏 API Key，保留最后 4 位
 func maskAPIKey(key string) string {
 	if len(key) <= 4 {
@@ -30,18 +32,22 @@ func ListChannelAccounts(c *gin.Context) {
 
 	result := make([]gin.H, len(accounts))
 	for i, acc := range accounts {
+		states, _ := accountCircuitService.ListByAccount(acc.ID)
 		result[i] = gin.H{
-			"id":            acc.ID,
-			"channel_id":    acc.ChannelID,
-			"name":          acc.Name,
-			"api_key":       acc.APIKey,
-			"masked_key":    maskAPIKey(acc.APIKey),
-			"config":        acc.Config,
-			"weight":        acc.Weight,
-			"status":        acc.Status,
-			"current_tasks": acc.CurrentTasks,
-			"created_at":    acc.CreatedAt,
-			"updated_at":    acc.UpdatedAt,
+			"id":               acc.ID,
+			"channel_id":       acc.ChannelID,
+			"name":             acc.Name,
+			"api_key":          acc.APIKey,
+			"masked_key":       maskAPIKey(acc.APIKey),
+			"config":           acc.Config,
+			"weight":           acc.Weight,
+			"status":           acc.Status,
+			"max_tasks":        acc.MaxTasks,
+			"current_tasks":    acc.CurrentTasks,
+			"supported_models": acc.SupportedModels,
+			"circuit_states":   states,
+			"created_at":       acc.CreatedAt,
+			"updated_at":       acc.UpdatedAt,
 		}
 	}
 
@@ -64,19 +70,55 @@ func GetChannelAccount(c *gin.Context) {
 		return
 	}
 
+	states, _ := accountCircuitService.ListByAccount(account.ID)
 	resp.Success(c, gin.H{
-		"id":            account.ID,
-		"channel_id":    account.ChannelID,
-		"name":          account.Name,
-		"api_key":       account.APIKey,
-		"masked_key":    maskAPIKey(account.APIKey),
-		"config":        account.Config,
-		"weight":        account.Weight,
-		"status":        account.Status,
-		"current_tasks": account.CurrentTasks,
-		"created_at":    account.CreatedAt,
-		"updated_at":    account.UpdatedAt,
+		"id":               account.ID,
+		"channel_id":       account.ChannelID,
+		"name":             account.Name,
+		"api_key":          account.APIKey,
+		"masked_key":       maskAPIKey(account.APIKey),
+		"config":           account.Config,
+		"weight":           account.Weight,
+		"status":           account.Status,
+		"max_tasks":        account.MaxTasks,
+		"current_tasks":    account.CurrentTasks,
+		"supported_models": account.SupportedModels,
+		"circuit_states":   states,
+		"created_at":       account.CreatedAt,
+		"updated_at":       account.UpdatedAt,
 	})
+}
+
+// ListAccountCircuitStates 列出账号当前生效的熔断状态
+func ListAccountCircuitStates(c *gin.Context) {
+	id, err := resp.ParseUintParam(c, "id")
+	if err != nil {
+		return
+	}
+	states, err := accountCircuitService.ListByAccount(id)
+	if err != nil {
+		resp.InternalError(c, pkgErrors.ErrInternalError)
+		return
+	}
+	resp.Success(c, states)
+}
+
+// ClearAccountCircuitState 手动解除账号对某模型的熔断
+func ClearAccountCircuitState(c *gin.Context) {
+	id, err := resp.ParseUintParam(c, "id")
+	if err != nil {
+		return
+	}
+	modelCode := c.Param("model_code")
+	if modelCode == "" {
+		resp.BadRequest(c, pkgErrors.WithMessage(pkgErrors.ErrInvalidParams, "model_code required"))
+		return
+	}
+	if err := accountCircuitService.Clear(id, modelCode); err != nil {
+		resp.InternalError(c, pkgErrors.ErrInternalError)
+		return
+	}
+	resp.Success(c, gin.H{"cleared": true})
 }
 
 func CreateChannelAccount(c *gin.Context) {

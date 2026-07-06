@@ -29,5 +29,6 @@ func AutoMigrate() error {
 		&Conversation{},
 		&Message{},
 		&BillingLog{},
+		&AccountModelState{},
 	)
 }

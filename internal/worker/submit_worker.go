@@ -10,6 +10,7 @@ import (
 	"github.com/mirainya/Prism/internal/model"
 	"github.com/mirainya/Prism/internal/provider"
 	"github.com/mirainya/Prism/pkg/config"
+	"github.com/mirainya/Prism/pkg/filestorage"
 	"github.com/mirainya/Prism/pkg/logger"
 	"github.com/mirainya/Prism/pkg/queue"
 	"go.uber.org/zap"
@@ -48,7 +49,9 @@ func HandleTaskSubmit(ctx context.Context, t *asynq.Task) error {
 	// 3. 创建 Provider
 	prov, err := provider.NewProvider(&channel, &account, &endpoint)
 	if err != nil {
-		taskService.UpdateTaskFail(task.ID, "create provider error: "+err.Error())
+		if committed, _ := taskService.UpdateTaskFail(task.ID, "create provider error: "+err.Error()); committed {
+			decrementAccountTasks(task.ID)
+		}
 		return nil
 	}
 
@@ -73,8 +76,9 @@ func HandleTaskSubmit(ctx context.Context, t *asynq.Task) error {
 
 	result, err := prov.Submit(ctx, submitReq)
 	if err != nil {
-		taskService.UpdateTaskFail(task.ID, "submit error: "+err.Error())
-		decrementAccountTasks(task.ID)
+		if committed, _ := taskService.UpdateTaskFail(task.ID, "submit error: "+err.Error()); committed {
+			decrementAccountTasks(task.ID)
+		}
 		return nil
 	}
 
@@ -83,8 +87,9 @@ func HandleTaskSubmit(ctx context.Context, t *asynq.Task) error {
 	case model.ModePoll:
 		taskService.UpdateTaskStatus(task.ID, model.TaskStatusProcessing, result.ProviderTaskID)
 		if result.ProviderTaskID == "" {
-			taskService.UpdateTaskFail(task.ID, "upstream returned empty task_id, cannot poll")
-			decrementAccountTasks(task.ID)
+			if committed, _ := taskService.UpdateTaskFail(task.ID, "upstream returned empty task_id, cannot poll"); committed {
+				decrementAccountTasks(task.ID)
+			}
 			return nil
 		}
 		pollPayload := TaskPollPayload{
@@ -95,19 +100,41 @@ func HandleTaskSubmit(ctx context.Context, t *asynq.Task) error {
 		pollTask := asynq.NewTask(TypeTaskPoll, payloadBytes)
 		info, enqErr := queue.Client.Enqueue(pollTask, asynq.ProcessIn(time.Duration(endpoint.PollInterval)*time.Second), asynq.Queue("default"))
 		if enqErr != nil {
+			// 入队轮询失败: 任务已提交上游但无法被跟踪,判失败并递减计数,避免卡 Processing 永久泄漏
 			logger.Error("enqueue poll failed", zap.Uint("task_id", task.ID), zap.Error(enqErr))
-		} else {
-			logger.Info("enqueue poll ok", zap.Uint("task_id", task.ID), zap.String("queue", info.Queue))
+			if committed, _ := taskService.UpdateTaskFail(task.ID, "enqueue poll failed: "+enqErr.Error()); committed {
+				decrementAccountTasks(task.ID)
+			}
+			return nil
 		}
+		logger.Info("enqueue poll ok", zap.Uint("task_id", task.ID), zap.String("queue", info.Queue))
 	case model.ModeCallback:
-		// 伪异步上游：提交响应已直接返回结果(无 task_id 但有图片 URL),直接结算成功，不傻等回调
-		if result.ProviderTaskID == "" && len(result.URLs) > 0 {
-			taskService.UpdateTaskSuccess(task.ID, map[string]any{"urls": result.URLs}, endpoint.InputPrice)
-			decrementAccountTasks(task.ID)
+		if result.ProviderTaskID == "" && (len(result.URLs) > 0 || len(result.B64Data) > 0) {
+			originURLs := append([]string{}, result.URLs...)
+			originURLs = append(originURLs, result.B64Data...)
+			originURL := ""
+			if len(originURLs) > 0 {
+				originURL = originURLs[0]
+			}
+			if len(result.B64Data) > 0 {
+				taskService.UpdateTaskProgress(task.ID, 100)
+				if err := enqueueUpload(task.ID, originURL, originURLs, result.RevisedPrompt); err != nil {
+					if committed, _ := taskService.UpdateTaskFail(task.ID, "enqueue upload error: "+err.Error()); committed {
+						decrementAccountTasks(task.ID)
+					}
+				}
+				break
+			}
+			successResult := buildResult(originURL, originURLs)
+			if result.RevisedPrompt != "" {
+				successResult["revised_prompt"] = result.RevisedPrompt
+			}
+			if committed, _ := taskService.UpdateTaskSuccess(task.ID, successResult, task.Cost); committed {
+				decrementAccountTasks(task.ID)
+			}
 			break
 		}
 		taskService.UpdateTaskStatus(task.ID, model.TaskStatusProcessing, result.ProviderTaskID)
-		// 兜底轮询：OOJJ 回调可能丢失/延迟，配了 poll_path 则同时主动轮询(poll 幂等,不会与回调重复结算)
 		if endpoint.PollPath != "" && result.ProviderTaskID != "" {
 			interval := endpoint.PollInterval
 			if interval <= 0 {
@@ -116,14 +143,54 @@ func HandleTaskSubmit(ctx context.Context, t *asynq.Task) error {
 			requeuePoll(task.ID, 0, interval)
 		}
 	default:
-		// sync/stream: submit 响应即为最终结果
-		taskService.UpdateTaskSuccess(task.ID, map[string]any{"data": result.ProviderTaskID, "urls": result.URLs}, endpoint.InputPrice)
-		decrementAccountTasks(task.ID)
+		if result.ProviderTaskID == "" && len(result.URLs) == 0 && len(result.B64Data) == 0 {
+			if committed, _ := taskService.UpdateTaskFail(task.ID, "upstream returned empty result"); committed {
+				decrementAccountTasks(task.ID)
+			}
+			break
+		}
+		urls := append([]string{}, result.URLs...)
+		if len(result.B64Data) > 0 {
+			transferred, err := resolveSubmitB64ToURLs(ctx, result.B64Data, task.ModelCode)
+			if err != nil {
+				if committed, _ := taskService.UpdateTaskFail(task.ID, err.Error()); committed {
+					decrementAccountTasks(task.ID)
+				}
+				break
+			}
+			urls = append(urls, transferred...)
+		}
+		successResult := map[string]any{"data": result.ProviderTaskID}
+		if len(urls) > 0 {
+			successResult["url"] = urls[0]
+			successResult["urls"] = urls
+		}
+		if result.RevisedPrompt != "" {
+			successResult["revised_prompt"] = result.RevisedPrompt
+		}
+		if committed, _ := taskService.UpdateTaskSuccess(task.ID, successResult, task.Cost); committed {
+			decrementAccountTasks(task.ID)
+		}
 	}
 
 	logger.Info("task submitted", zap.Uint("task_id", task.ID), zap.String("vendor_task_id", result.ProviderTaskID))
 
 	return nil
+}
+
+func resolveSubmitB64ToURLs(ctx context.Context, b64List []string, capabilityCode string) ([]string, error) {
+	urls := make([]string, 0, len(b64List))
+	for _, b64 := range b64List {
+		if b64 == "" {
+			continue
+		}
+		url, err := filestorage.TransferBase64(ctx, b64, capabilityCode)
+		if err != nil {
+			return nil, fmt.Errorf("transfer base64: %w", err)
+		}
+		urls = append(urls, url)
+	}
+	return urls, nil
 }
 
 func NewTaskSubmit(taskID uint) (*asynq.Task, error) {

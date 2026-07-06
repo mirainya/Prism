@@ -15,6 +15,7 @@ import (
 	"github.com/mirainya/Prism/internal/model"
 	"github.com/mirainya/Prism/internal/provider/chat"
 	"github.com/mirainya/Prism/pkg/httputil"
+	"github.com/mirainya/Prism/internal/domain"
 	"github.com/mirainya/Prism/pkg/logger"
 	"github.com/shopspring/decimal"
 	"go.uber.org/zap"
@@ -26,12 +27,14 @@ import (
 type UnifiedService struct {
 	billingService    *BillingService
 	requestLogService *RequestLogService
+	circuitService    *AccountCircuitService
 }
 
 func NewUnifiedService() *UnifiedService {
 	return &UnifiedService{
 		billingService:    NewBillingService(),
 		requestLogService: NewRequestLogService(),
+		circuitService:    NewAccountCircuitService(),
 	}
 }
 
@@ -68,7 +71,7 @@ func NewCapabilityService() *UnifiedService {
 }
 
 // Route 根据 model_code 选择 endpoint + channel + account
-func (s *UnifiedService) Route(tokenID uint, modelCode string, excludeChannelIDs []uint) (*RoutingResult, error) {
+func (s *UnifiedService) Route(tokenID uint, modelCode string, excludeChannelIDs []uint, excludeAccountIDs []uint) (*RoutingResult, error) {
 	endpoint, err := s.selectEndpoint(tokenID, modelCode, excludeChannelIDs)
 	if err != nil {
 		return nil, err
@@ -79,7 +82,7 @@ func (s *UnifiedService) Route(tokenID uint, modelCode string, excludeChannelIDs
 		return nil, fmt.Errorf("channel not found: %d", endpoint.ChannelID)
 	}
 
-	account, err := s.selectAccount(channel.ID)
+	account, err := s.selectAccount(channel.ID, modelCode, excludeAccountIDs)
 	if err != nil {
 		return nil, fmt.Errorf("no available account for channel: %s", channel.Type)
 	}
@@ -122,11 +125,12 @@ func (s *UnifiedService) Complete(ctx context.Context, req *CompletionRequest) (
 	}
 
 	var excludeChannelIDs []uint
+	var excludeAccountIDs []uint
 	maxRetries := 3
 	var lastErr error
 
 	for attempt := 0; attempt < maxRetries; attempt++ {
-		route, err := s.Route(req.TokenID, req.Model, excludeChannelIDs)
+		route, err := s.Route(req.TokenID, req.Model, excludeChannelIDs, excludeAccountIDs)
 		if err != nil {
 			if lastErr != nil {
 				return nil, lastErr
@@ -146,6 +150,15 @@ func (s *UnifiedService) Complete(ctx context.Context, req *CompletionRequest) (
 				req.NewMessages = nil
 				continue
 			}
+			// 账号级熔断: 401/403/404/429 视为该 key 对该模型不可用 → 熔断+排除该账号重试
+			if shouldBreak, _ := domain.ClassifyUpstreamError(err); shouldBreak {
+				s.circuitService.MarkUnavailable(route.Account.ID, req.Model, err)
+				excludeAccountIDs = append(excludeAccountIDs, route.Account.ID)
+				logger.Warn("complete attempt failed (account circuit), trying next account",
+					zap.Int("attempt", attempt+1), zap.Uint("account_id", route.Account.ID), zap.Error(err))
+				continue
+			}
+			// 其他 4xx(如 400/422 请求本身问题): 立即返回,重试无益
 			if strings.Contains(err.Error(), "http error: 4") {
 				return nil, err
 			}
@@ -216,11 +229,12 @@ func (s *UnifiedService) StreamComplete(ctx context.Context, req *CompletionRequ
 	}
 
 	var excludeChannelIDs []uint
+	var excludeAccountIDs []uint
 	maxRetries := 3
 	var lastErr error
 
 	for attempt := 0; attempt < maxRetries; attempt++ {
-		route, err := s.Route(req.TokenID, req.Model, excludeChannelIDs)
+		route, err := s.Route(req.TokenID, req.Model, excludeChannelIDs, excludeAccountIDs)
 		if err != nil {
 			if lastErr != nil {
 				return nil, lastErr
@@ -240,6 +254,15 @@ func (s *UnifiedService) StreamComplete(ctx context.Context, req *CompletionRequ
 				req.NewMessages = nil
 				continue
 			}
+			// 账号级熔断: 401/403/404/429 视为该 key 对该模型不可用 → 熔断+排除该账号重试
+			if shouldBreak, _ := domain.ClassifyUpstreamError(err); shouldBreak {
+				s.circuitService.MarkUnavailable(route.Account.ID, req.Model, err)
+				excludeAccountIDs = append(excludeAccountIDs, route.Account.ID)
+				logger.Warn("stream attempt failed (account circuit), trying next account",
+					zap.Int("attempt", attempt+1), zap.Uint("account_id", route.Account.ID), zap.Error(err))
+				continue
+			}
+			// 其他 4xx(如 400/422 请求本身问题): 立即返回,重试无益
 			if strings.Contains(err.Error(), "http error: 4") {
 				return nil, err
 			}
@@ -706,14 +729,35 @@ func (s *UnifiedService) selectEndpoint(tokenID uint, modelCode string, excludeC
 	return &selected, nil
 }
 
-func (s *UnifiedService) selectAccount(channelID uint) (*model.ChannelAccount, error) {
+// selectAccount 在渠道内选择一个可用账号
+// modelCode: 用于按账号 supported_models 白名单过滤 + 排除对该模型熔断中的账号
+// excludeAccountIDs: 本轮重试已尝试过的账号,避免重复命中
+func (s *UnifiedService) selectAccount(channelID uint, modelCode string, excludeAccountIDs []uint) (*model.ChannelAccount, error) {
 	var accounts []model.ChannelAccount
 
 	err := model.DB().Transaction(func(tx *gorm.DB) error {
-		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).
+		q := tx.Clauses(clause.Locking{Strength: "UPDATE"}).
 			Where("channel_id = ? AND status = 1", channelID).
-			Where("max_tasks = 0 OR current_tasks < max_tasks").
-			Find(&accounts).Error; err != nil {
+			Where("max_tasks = 0 OR current_tasks < max_tasks")
+
+		// 白名单: supported_models 为空(NULL/[]/null)=支持所有; 非空则必须包含 modelCode
+		if modelCode != "" {
+			q = q.Where(
+				"supported_models IS NULL OR JSON_LENGTH(supported_models) = 0 OR JSON_CONTAINS(supported_models, ?)",
+				fmt.Sprintf("%q", modelCode),
+			)
+			// 排除对该模型熔断中的账号
+			q = q.Where(
+				"id NOT IN (SELECT account_id FROM account_model_states WHERE model_code = ? AND disabled_until > ?)",
+				modelCode, time.Now(),
+			)
+		}
+		// 排除本轮已尝试的账号
+		if len(excludeAccountIDs) > 0 {
+			q = q.Where("id NOT IN ?", excludeAccountIDs)
+		}
+
+		if err := q.Find(&accounts).Error; err != nil {
 			return err
 		}
 		if len(accounts) == 0 {

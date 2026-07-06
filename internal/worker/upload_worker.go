@@ -43,8 +43,17 @@ func HandleTaskUpload(ctx context.Context, t *asynq.Task) error {
 			continue
 		}
 		finalURL := originURL
-		if transferEnabled {
+		// 裸 base64 绝不落库：无视 transfer_enabled 开关强制转存，失败即判任务失败并退款
+		isB64 := filestorage.IsBase64Data(originURL)
+		if transferEnabled || isB64 {
 			if transferred, err := transferResultFile(ctx, originURL, task.ModelCode); err != nil {
+				if isB64 {
+					logger.Error("base64 transfer failed", zap.Uint("task_id", task.ID), zap.Error(err))
+					if committed, _ := taskService.UpdateTaskFail(task.ID, "transfer base64 failed: "+err.Error()); committed {
+						decrementAccountTasks(task.ID)
+					}
+					return nil
+				}
 				logger.Error("file transfer failed", zap.Uint("task_id", task.ID), zap.Error(err))
 			} else {
 				finalURL = transferred
@@ -60,8 +69,14 @@ func HandleTaskUpload(ctx context.Context, t *asynq.Task) error {
 		primaryURL = finalURLs[0]
 	}
 	result := buildResult(primaryURL, finalURLs)
-	taskService.UpdateTaskSuccess(task.ID, result, ep.InputPrice)
-	decrementAccountTasks(task.ID)
+	if payload.RevisedPrompt != "" {
+		result["revised_prompt"] = payload.RevisedPrompt
+	}
+	// 结算价统一用扣款时记录的 task.Cost(按 primary 端点价扣的),避免 fallback 到异价端点导致账目不符
+	committed, _ := taskService.UpdateTaskSuccess(task.ID, result, task.Cost)
+	if committed {
+		decrementAccountTasks(task.ID)
+	}
 
 	// 如果有回调地址，入队通知任务
 	if task.CallbackURL != "" {

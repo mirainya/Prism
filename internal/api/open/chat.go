@@ -3,7 +3,6 @@ package open
 import (
 	"bufio"
 	"encoding/json"
-	"fmt"
 	"io"
 	"net/http"
 	"strings"
@@ -240,5 +239,8 @@ func mergeOpenSSEChunk(aggregation *service.StreamAggregationResult, payload str
 	} else {
 		aggregation.ResponsePreview = string(runes[:500]) + "..."
 	}
-	aggregation.ResponseBody = fmt.Sprintf("{\"content\":\"%s\"}", payload)
+	// ResponseBody 存聚合后的完整助手内容(而非最后一个 chunk),用 json.Marshal 正确转义,避免拼出非法 JSON
+	if body, err := json.Marshal(map[string]string{"content": aggregation.AssistantContent}); err == nil {
+		aggregation.ResponseBody = string(body)
+	}
 }

@@ -36,6 +36,8 @@ export const STANDARD_RESPONSE: Record<string, { name: string; type: string; enu
     progress: {name: '进度', type: 'number'},
     url: {name: '结果URL', type: 'string'},
     urls: {name: '结果URL列表', type: 'array'},
+    b64_json: {name: 'Base64\u56fe\u7247\u6570\u636e', type: 'string'},
+    revised_prompt: {name: '\u4e0a\u6e38\u4f18\u5316\u63d0\u793a\u8bcd', type: 'string'},
     data: {name: '结果数据', type: 'string'},
     error: {name: '错误信息', type: 'string'},
 };

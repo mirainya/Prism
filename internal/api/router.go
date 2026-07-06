@@ -27,16 +27,18 @@ func SetupRouter() *gin.Engine {
 	r.Use(gin.Recovery())
 	r.Use(middleware.CORS())
 	r.Use(middleware.RequestID())
-	r.Use(middleware.RequestLogger())
-	r.Use(middleware.ErrorHandler())
 
 	// Gzip 压缩: 压缩控制台静态资源与 JSON API 响应。
 	// 排除 AI 调用路径(/v1 流式 SSE)、内部回调与指标端点,避免破坏流式实时性。
+	// 注册在 RequestLogger 之前(成为更外层),确保日志中间件捕获到的是未压缩的响应体。
 	r.Use(gzip.Gzip(gzip.DefaultCompression, gzip.WithExcludedPaths([]string{
 		"/v1",
 		"/internal",
 		"/metrics",
 	})))
+
+	r.Use(middleware.RequestLogger())
+	r.Use(middleware.ErrorHandler())
 
 	// 健康检查
 	r.GET("/health", healthCheck)

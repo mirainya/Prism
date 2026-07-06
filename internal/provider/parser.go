@@ -12,6 +12,8 @@ type ResponseMapping struct {
 	Status        string            `json:"status"`
 	Progress      string            `json:"progress"`
 	OutputURL     string            `json:"output_url"`
+	OutputB64     string            `json:"output_b64"` // base64 图片提取路径(如 data.0.b64_json)
+	RevisedPrompt string            `json:"revised_prompt"`
 	Error         string            `json:"error"`
 	StatusMapping map[string]string `json:"status_mapping"`
 }
@@ -19,7 +21,7 @@ type ResponseMapping struct {
 // IsEmpty 判断映射是否无任何有效字段（含 nil 与空对象 {} 两种情况）
 func (m *ResponseMapping) IsEmpty() bool {
 	return m == nil || (m.TaskID == "" && m.Status == "" && m.Progress == "" &&
-		m.OutputURL == "" && m.Error == "" && len(m.StatusMapping) == 0)
+		m.OutputURL == "" && m.OutputB64 == "" && m.RevisedPrompt == "" && m.Error == "" && len(m.StatusMapping) == 0)
 }
 
 type ResponseParser interface {
@@ -75,6 +77,12 @@ func extractURLs(jsonStr, path string) []string {
 	return nil
 }
 
+// extractStrings 从 gjson 结果中提取字符串列表，支持单值和数组
+// 与 extractURLs 相同，但不含 URL 语义，用于提取 base64 等任意字符串
+func extractStrings(jsonStr, path string) []string {
+	return extractURLs(jsonStr, path)
+}
+
 func (p *DefaultParser) ParseSubmitResponse(body []byte, mapping *ResponseMapping) (SubmitResult, error) {
 	var result SubmitResult
 
@@ -101,6 +109,14 @@ func (p *DefaultParser) ParseSubmitResponse(body []byte, mapping *ResponseMappin
 		result.URLs = extractURLs(jsonStr, mapping.OutputURL)
 	}
 
+	if mapping.OutputB64 != "" {
+		result.B64Data = extractStrings(jsonStr, mapping.OutputB64)
+	}
+
+	if mapping.RevisedPrompt != "" {
+		result.RevisedPrompt = gjson.Get(jsonStr, normalizeGjsonPath(mapping.RevisedPrompt)).String()
+	}
+
 	return result, nil
 }
 
@@ -124,6 +140,14 @@ func (p *DefaultParser) ParseProgressResponse(body []byte, mapping *ResponseMapp
 
 	if mapping.OutputURL != "" {
 		result.URLs = extractURLs(jsonStr, mapping.OutputURL)
+	}
+
+	if mapping.OutputB64 != "" {
+		result.B64Data = extractStrings(jsonStr, mapping.OutputB64)
+	}
+
+	if mapping.RevisedPrompt != "" {
+		result.RevisedPrompt = gjson.Get(jsonStr, normalizeGjsonPath(mapping.RevisedPrompt)).String()
 	}
 
 	if mapping.Error != "" {
@@ -159,6 +183,14 @@ func (p *DefaultParser) ParseCallbackResponse(body []byte, mapping *ResponseMapp
 
 	if mapping.OutputURL != "" {
 		result.URLs = extractURLs(jsonStr, mapping.OutputURL)
+	}
+
+	if mapping.OutputB64 != "" {
+		result.B64Data = extractStrings(jsonStr, mapping.OutputB64)
+	}
+
+	if mapping.RevisedPrompt != "" {
+		result.RevisedPrompt = gjson.Get(jsonStr, normalizeGjsonPath(mapping.RevisedPrompt)).String()
 	}
 
 	if mapping.Error != "" {
@@ -207,6 +239,15 @@ func ParseResponseMapping(data []byte) (*ResponseMapping, error) {
 		}
 		if v, ok := raw.FieldMapping["urls"]; ok && mapping.OutputURL == "" {
 			mapping.OutputURL = v
+		}
+		if v, ok := raw.FieldMapping["b64"]; ok && mapping.OutputB64 == "" {
+			mapping.OutputB64 = v
+		}
+		if v, ok := raw.FieldMapping["b64_json"]; ok && mapping.OutputB64 == "" {
+			mapping.OutputB64 = v
+		}
+		if v, ok := raw.FieldMapping["revised_prompt"]; ok && mapping.RevisedPrompt == "" {
+			mapping.RevisedPrompt = v
 		}
 		if v, ok := raw.FieldMapping["error"]; ok && mapping.Error == "" {
 			mapping.Error = v

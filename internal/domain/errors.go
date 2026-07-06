@@ -4,6 +4,8 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"strings"
+	"time"
 )
 
 // 通用业务错误
@@ -74,4 +76,62 @@ func IsAppError(err error) (*AppError, bool) {
 		return appErr, true
 	}
 	return nil, false
+}
+
+// UpstreamError 携带上游 HTTP 状态码的错误,供 per-model 熔断分类使用
+type UpstreamError struct {
+	StatusCode int
+	Body       string
+}
+
+func (e *UpstreamError) Error() string {
+	return fmt.Sprintf("upstream error: status=%d, body=%s", e.StatusCode, e.Body)
+}
+
+// UpstreamStatusCode 从错误链中提取上游状态码
+// 优先取结构化 UpstreamError; 否则从 "http error: <code>" 字符串兜底解析; 取不到返回 0
+func UpstreamStatusCode(err error) int {
+	if err == nil {
+		return 0
+	}
+	var ue *UpstreamError
+	if errors.As(err, &ue) {
+		return ue.StatusCode
+	}
+	return parseStatusFromString(err.Error())
+}
+
+// ClassifyUpstreamError 根据上游错误决定是否熔断该账号及退避时长
+// 返回 (shouldBreak 是否熔断, backoff 退避时长)
+// 401/403/404 → 6h (key 不支持该模型/鉴权失败); 429 → 3min (限流,非能力问题);
+// 5xx → 不熔断(渠道整体故障,非账号问题); 其他 4xx → 6h
+func ClassifyUpstreamError(err error) (shouldBreak bool, backoff time.Duration) {
+	code := UpstreamStatusCode(err)
+	switch code {
+	case 401, 403, 404:
+		// 鉴权失败/无权限/模型不存在 → key 不支持该模型,长退避
+		return true, 6 * time.Hour
+	case 429:
+		// 限流 → 短退避,换账号规避
+		return true, 3 * time.Minute
+	default:
+		// 5xx(渠道故障)、400/422(请求本身问题)等 → 不熔断账号
+		return false, 0
+	}
+}
+
+// parseStatusFromString 兜底: 从 "http error: 401, body: ..." 或 "status 503" 提取状态码
+func parseStatusFromString(msg string) int {
+	for _, prefix := range []string{"http error: ", "status "} {
+		idx := strings.Index(msg, prefix)
+		if idx < 0 {
+			continue
+		}
+		rest := msg[idx+len(prefix):]
+		var code int
+		if _, e := fmt.Sscanf(rest, "%d", &code); e == nil && code >= 100 && code < 600 {
+			return code
+		}
+	}
+	return 0
 }

@@ -52,7 +52,6 @@ func NewProvider(channel *model.Channel, account *model.ChannelAccount, endpoint
 		PollMethod:          endpoint.PollMethod,
 		SubmitPath:          endpoint.RequestPath,
 		ProgressPath:        endpoint.PollPath,
-		Converter:           NewDefaultConverter(),
 		Parser:              NewDefaultParser(),
 		ResponseMapping:     responseMapping,
 		PollResponseMapping: pollResponseMapping,

@@ -15,7 +15,6 @@ import (
 	"github.com/mirainya/Prism/internal/api"
 	"github.com/mirainya/Prism/internal/model"
 	"github.com/mirainya/Prism/internal/provider"
-	"github.com/mirainya/Prism/internal/service"
 	"github.com/mirainya/Prism/internal/worker"
 	"github.com/mirainya/Prism/pkg/cache"
 	"github.com/mirainya/Prism/pkg/config"
@@ -74,9 +73,6 @@ func main() {
 		log.Fatalf("failed to connect database: %v", err)
 	}
 	model.SetDB(db)
-
-	// 初始化 Repository 层
-	service.InitRepos(db)
 
 	if err := model.AutoMigrate(); err != nil {
 		log.Fatalf("failed to migrate database: %v", err)

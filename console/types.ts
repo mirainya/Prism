@@ -26,6 +26,15 @@ export interface Channel {
   updatedAt: string;
 }
 
+// 账号级 per-model 熔断状态
+export interface AccountCircuitState {
+  modelCode: string;
+  disabledUntil: string;
+  reason: string;
+  statusCode: number;
+  failCount: number;
+}
+
 export interface ChannelAccount {
   id: string;
   channelId: string;
@@ -37,6 +46,8 @@ export interface ChannelAccount {
   maxTasks: number;
   status: number;
   currentTasks: number;
+  supportedModels: string[];
+  circuitStates: AccountCircuitState[];
   createdAt: string;
   updatedAt: string;
 }

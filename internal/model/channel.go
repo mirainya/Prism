@@ -1,6 +1,10 @@
 package model
 
-import "gorm.io/datatypes"
+import (
+	"time"
+
+	"gorm.io/datatypes"
+)
 
 type Channel struct {
 	BaseModel
@@ -28,8 +32,28 @@ type ChannelAccount struct {
 	Status       int8           `gorm:"default:1;comment:状态(1启用/0禁用)" json:"status"`
 	MaxTasks     int            `gorm:"default:0;comment:最大并发任务数(0=不限制)" json:"max_tasks"`
 	CurrentTasks int            `gorm:"default:0;comment:当前任务数" json:"current_tasks"`
+	// SupportedModels 支持的模型 Code 列表(JSON数组)。空(NULL/[])=支持所有模型; 非空=白名单
+	SupportedModels datatypes.JSON `gorm:"type:json;comment:支持的模型列表(空=全部)" json:"supported_models"`
 }
 
 func (ChannelAccount) TableName() string {
 	return "channel_accounts"
+}
+
+// AccountModelState 账号级 per-model 熔断状态
+// 记录某账号(key)对某模型不可用的退避状态,到期后由清理任务物理删除
+type AccountModelState struct {
+	ID            uint      `gorm:"primaryKey" json:"id"`
+	AccountID     uint      `gorm:"not null;uniqueIndex:idx_account_model;comment:账号ID" json:"account_id"`
+	ModelCode     string    `gorm:"type:varchar(80);not null;uniqueIndex:idx_account_model;comment:模型标识" json:"model_code"`
+	DisabledUntil time.Time `gorm:"not null;index;comment:熔断到期时间" json:"disabled_until"`
+	Reason        string    `gorm:"type:varchar(500);default:'';comment:熔断原因" json:"reason"`
+	StatusCode    int       `gorm:"default:0;comment:触发的HTTP状态码" json:"status_code"`
+	FailCount     int       `gorm:"default:1;comment:累计触发次数" json:"fail_count"`
+	CreatedAt     time.Time `json:"created_at"`
+	UpdatedAt     time.Time `json:"updated_at"`
+}
+
+func (AccountModelState) TableName() string {
+	return "account_model_states"
 }

@@ -116,7 +116,7 @@ func PlaygroundInvokeCapability(c *gin.Context) {
 		Model:           body.Model,
 		InteractionMode: body.InteractionMode,
 		CallbackURL:     body.CallbackURL,
-		Params:      body.Params,
+		Params:          body.Params,
 	})
 	if err != nil {
 		resp.ErrorMsg(c, http.StatusInternalServerError, 500, err.Error())

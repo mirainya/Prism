@@ -6,6 +6,7 @@ import (
 	"fmt"
 
 	"github.com/mirainya/Prism/internal/model"
+	"gorm.io/datatypes"
 	"gorm.io/gorm"
 )
 
@@ -28,7 +29,7 @@ type CreateChannelRequest struct {
 	Name    string         `json:"name" binding:"required,max=50"`
 	BaseURL string         `json:"base_url" binding:"required,max=255"`
 	Config  map[string]any `json:"config"`
-	Status  int8           `json:"status"`
+	Status  *int8          `json:"status"`
 }
 
 type UpdateChannelRequest struct {
@@ -59,8 +60,9 @@ func (s *ChannelService) CreateChannel(req *CreateChannelRequest) (*model.Channe
 		Config:  configJSON,
 		Status:  1,
 	}
-	if req.Status != 0 {
-		channel.Status = req.Status
+	// Status 用指针区分"未传"(默认1启用)与"显式传0"(禁用)
+	if req.Status != nil {
+		channel.Status = *req.Status
 	}
 
 	if err := model.DB().Model(&model.Channel{}).Create(channel).Error; err != nil {
@@ -157,22 +159,24 @@ func (s *ChannelService) GetChannelAccountCount(channelID uint) (int64, error) {
 // ========== ChannelAccount CRUD ==========
 
 type CreateChannelAccountRequest struct {
-	ChannelID uint           `json:"channel_id" binding:"required"`
-	Name      string         `json:"name" binding:"required,max=50"`
-	APIKey    string         `json:"api_key" binding:"required"`
-	Config    map[string]any `json:"config"`
-	Weight    int            `json:"weight"`
-	Status    int8           `json:"status"`
-	MaxTasks  int            `json:"max_tasks"`
+	ChannelID       uint           `json:"channel_id" binding:"required"`
+	Name            string         `json:"name" binding:"required,max=50"`
+	APIKey          string         `json:"api_key" binding:"required"`
+	Config          map[string]any `json:"config"`
+	Weight          int            `json:"weight"`
+	Status          *int8          `json:"status"`
+	MaxTasks        int            `json:"max_tasks"`
+	SupportedModels []string       `json:"supported_models"`
 }
 
 type UpdateChannelAccountRequest struct {
-	Name     string         `json:"name" binding:"max=50"`
-	APIKey   string         `json:"api_key"`
-	Config   map[string]any `json:"config"`
-	Weight   *int           `json:"weight"`
-	Status   *int8          `json:"status"`
-	MaxTasks *int           `json:"max_tasks"`
+	Name            string         `json:"name" binding:"max=50"`
+	APIKey          string         `json:"api_key"`
+	Config          map[string]any `json:"config"`
+	Weight          *int           `json:"weight"`
+	Status          *int8          `json:"status"`
+	MaxTasks        *int           `json:"max_tasks"`
+	SupportedModels *[]string      `json:"supported_models"`
 }
 
 func (s *ChannelService) CreateChannelAccount(req *CreateChannelAccountRequest) (*model.ChannelAccount, error) {
@@ -191,11 +195,14 @@ func (s *ChannelService) CreateChannelAccount(req *CreateChannelAccountRequest) 
 		Weight:    10,
 		Status:    1,
 	}
+	if len(req.SupportedModels) > 0 {
+		account.SupportedModels, _ = json.Marshal(req.SupportedModels)
+	}
 	if req.Weight > 0 {
 		account.Weight = req.Weight
 	}
-	if req.Status != 0 {
-		account.Status = req.Status
+	if req.Status != nil {
+		account.Status = *req.Status
 	}
 	if req.MaxTasks > 0 {
 		account.MaxTasks = req.MaxTasks
@@ -253,6 +260,14 @@ func (s *ChannelService) UpdateChannelAccount(id uint, req *UpdateChannelAccount
 	}
 	if req.MaxTasks != nil {
 		updates["max_tasks"] = *req.MaxTasks
+	}
+	if req.SupportedModels != nil {
+		// 空数组 → 存 "[]"(=支持所有),非空 → 白名单
+		modelsJSON, err := json.Marshal(*req.SupportedModels)
+		if err != nil {
+			return fmt.Errorf("marshal supported models: %w", err)
+		}
+		updates["supported_models"] = datatypes.JSON(modelsJSON)
 	}
 
 	if len(updates) == 0 {

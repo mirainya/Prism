@@ -15,8 +15,10 @@ func RegisterRoutes(group *gin.RouterGroup) {
 	group.GET("/tasks/:task_no", GetTaskByNo)
 	group.POST("/tasks/:task_no/cancel", CancelTask)
 
-	// 兼容旧接口
-	group.POST("/images/generations", CreateImageGeneration)
+	// OpenAI 标准图像接口(同步返图,自动适配同步/异步渠道)
+	group.POST("/images/generations", CreateImageGenerationOpenAI)
+	// 旧的非标准异步接口(返回 {id,status},保留向后兼容)
+	group.POST("/images/generations/async", CreateImageGeneration)
 	group.POST("/videos/generations", CreateVideoGeneration)
 
 	// Chat 接口

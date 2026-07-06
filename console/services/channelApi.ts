@@ -1,4 +1,4 @@
-import { Channel, ChannelAccount } from '../types';
+import { Channel, ChannelAccount, AccountCircuitState } from '../types';
 import { request } from './request';
 
 export const fetchChannels = async (): Promise<Channel[]> => {
@@ -81,41 +81,50 @@ export const deleteChannel = async (id: string): Promise<void> => {
 };
 
 // 渠道账号管理
+const mapCircuitStates = (raw: any[]): AccountCircuitState[] =>
+  (raw || []).map(s => ({
+    modelCode: s.model_code,
+    disabledUntil: s.disabled_until,
+    reason: s.reason || '',
+    statusCode: s.status_code || 0,
+    failCount: s.fail_count || 0,
+  }));
+
+const mapAccount = (acc: any): ChannelAccount => ({
+  id: String(acc.id),
+  channelId: String(acc.channel_id),
+  name: acc.name,
+  apiKey: acc.api_key,
+  maskedKey: acc.masked_key || '',
+  config: acc.config || {},
+  weight: acc.weight,
+  maxTasks: acc.max_tasks || 0,
+  status: acc.status,
+  currentTasks: acc.current_tasks || 0,
+  supportedModels: acc.supported_models || [],
+  circuitStates: mapCircuitStates(acc.circuit_states),
+  createdAt: acc.created_at,
+  updatedAt: acc.updated_at,
+});
+
 export const fetchChannelAccounts = async (channelId?: string): Promise<ChannelAccount[]> => {
   const url = channelId ? `/admin/channel-accounts?channel_id=${channelId}` : '/admin/channel-accounts';
   const data = await request<any[]>(url);
-  return data.map(acc => ({
-    id: String(acc.id),
-    channelId: String(acc.channel_id),
-    name: acc.name,
-    apiKey: acc.api_key,
-    maskedKey: acc.masked_key || '',
-    config: acc.config || {},
-    weight: acc.weight,
-    maxTasks: acc.max_tasks || 0,
-    status: acc.status,
-    currentTasks: acc.current_tasks || 0,
-    createdAt: acc.created_at,
-    updatedAt: acc.updated_at,
-  }));
+  return data.map(mapAccount);
 };
 
 export const getChannelAccount = async (id: string): Promise<ChannelAccount> => {
   const acc = await request<any>(`/admin/channel-accounts/${id}`);
-  return {
-    id: String(acc.id),
-    channelId: String(acc.channel_id),
-    name: acc.name,
-    apiKey: acc.api_key,
-    maskedKey: acc.masked_key || '',
-    config: acc.config || {},
-    weight: acc.weight,
-    maxTasks: acc.max_tasks || 0,
-    status: acc.status,
-    currentTasks: acc.current_tasks || 0,
-    createdAt: acc.created_at,
-    updatedAt: acc.updated_at,
-  };
+  return mapAccount(acc);
+};
+
+export const fetchAccountCircuitStates = async (id: string): Promise<AccountCircuitState[]> => {
+  const data = await request<any[]>(`/admin/channel-accounts/${id}/circuit-states`);
+  return mapCircuitStates(data);
+};
+
+export const clearCircuitState = async (id: string, modelCode: string): Promise<void> => {
+  await request(`/admin/channel-accounts/${id}/circuit-states/${encodeURIComponent(modelCode)}`, { method: 'DELETE' });
 };
 
 export const createChannelAccount = async (data: {
@@ -125,6 +134,7 @@ export const createChannelAccount = async (data: {
   config?: Record<string, any>;
   weight?: number;
   max_tasks?: number;
+  supported_models?: string[];
 }): Promise<ChannelAccount> => {
   const acc = await request<any>('/admin/channel-accounts', {
     method: 'POST',
@@ -141,6 +151,8 @@ export const createChannelAccount = async (data: {
     maxTasks: acc.max_tasks || 0,
     status: acc.status,
     currentTasks: 0,
+    supportedModels: data.supported_models || [],
+    circuitStates: [],
     createdAt: new Date().toISOString(),
     updatedAt: new Date().toISOString(),
   };
@@ -153,6 +165,7 @@ export const updateChannelAccount = async (id: string, data: {
   weight?: number;
   max_tasks?: number;
   status?: number;
+  supported_models?: string[];
 }): Promise<void> => {
   await request(`/admin/channel-accounts/${id}`, {
     method: 'PUT',

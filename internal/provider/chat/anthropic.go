@@ -107,6 +107,8 @@ func ConvertRequestToAnthropic(req *ChatRequest) map[string]any {
 		}
 
 		if msg.ToolCallID != "" {
+			// Anthropic 只接受 user/assistant,tool_result 必须放在 user 消息里
+			m["role"] = "user"
 			m["content"] = []map[string]any{{
 				"type":        "tool_result",
 				"tool_use_id": msg.ToolCallID,

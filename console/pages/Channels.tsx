@@ -17,7 +17,8 @@ import {
     createChannelCapability,
     updateChannelCapability,
     deleteChannelCapability,
-    fetchCapabilities
+    fetchCapabilities,
+    clearCircuitState
 } from '../services/api';
 import {Channel, ChannelAccount, ChannelCapability, Capability} from '../types';
 import { ChannelModal, AccountModal } from './ChannelModals';
@@ -33,6 +34,17 @@ const RESULT_MODES = [
   { value: 'poll', label: '轮询' },
   { value: 'callback', label: '回调' },
 ];
+
+// formatCircuitCountdown 距离熔断到期的剩余时间(人类可读)
+const formatCircuitCountdown = (disabledUntil: string): string => {
+  const ms = new Date(disabledUntil).getTime() - Date.now();
+  if (ms <= 0) return '即将';
+  const min = Math.ceil(ms / 60000);
+  if (min < 60) return `${min}分钟`;
+  const h = Math.floor(min / 60);
+  const m = min % 60;
+  return m > 0 ? `${h}时${m}分` : `${h}小时`;
+};
 
 // 渠道行组件
 const ChannelRow: React.FC<{
@@ -53,10 +65,11 @@ const ChannelRow: React.FC<{
     onEditCapability: (c: ChannelCapability) => void;
     onDeleteCapability: (id: string) => void;
     onToggleCapabilityStatus: (c: ChannelCapability) => void;
+    onClearCircuit: (accountId: string, modelCode: string) => void;
 }> = ({
   channel, canDrag, expanded, onToggle, onEdit, onDelete, onToggleStatus,
           accounts, capabilities, onAddAccount, onEditAccount, onDeleteAccount, onToggleAccountStatus,
-          onAddCapability, onEditCapability, onDeleteCapability, onToggleCapabilityStatus
+          onAddCapability, onEditCapability, onDeleteCapability, onToggleCapabilityStatus, onClearCircuit
 }) => {
   const status = STATUS_MAP[channel.status] || STATUS_MAP[0];
   const [copiedAccountId, setCopiedAccountId] = useState<string | null>(null);
@@ -162,6 +175,24 @@ const ChannelRow: React.FC<{
                           </div>
                           <div className="text-xs text-[var(--text-secondary)] font-mono break-all mt-1">{acc.apiKey || acc.maskedKey || '-'}</div>
                           <div className={`text-xs mt-1 ${acc.maxTasks > 0 && acc.currentTasks >= acc.maxTasks ? 'text-red-500 font-bold' : 'text-[var(--text-secondary)]'}`}>权重: {acc.weight} | 并发: {acc.currentTasks}/{acc.maxTasks || '∞'}</div>
+                          {acc.supportedModels && acc.supportedModels.length > 0 && (
+                            <div className="flex flex-wrap gap-1 mt-1">
+                              {acc.supportedModels.map(mc => (
+                                <span key={mc} className="px-1.5 py-0.5 rounded text-[10px] bg-sky-100 text-sky-700" title="仅支持的模型">{mc}</span>
+                              ))}
+                            </div>
+                          )}
+                          {acc.circuitStates && acc.circuitStates.length > 0 && (
+                            <div className="flex flex-col gap-0.5 mt-1">
+                              {acc.circuitStates.map(cs => (
+                                <div key={cs.modelCode} className="flex items-center gap-1 text-[10px] text-yellow-700">
+                                  <span className="px-1.5 py-0.5 rounded bg-yellow-100 font-medium">熔断 {cs.modelCode}</span>
+                                  <span>{cs.statusCode || '?'} · {formatCircuitCountdown(cs.disabledUntil)}后恢复</span>
+                                  <button onClick={() => onClearCircuit(acc.id, cs.modelCode)} className="text-[var(--text-secondary)] hover:text-red-500" title="立即解除熔断"><X size={10} /></button>
+                                </div>
+                              ))}
+                            </div>
+                          )}
                         </div>
                         <div className="flex items-center gap-1 md:opacity-0 md:group-hover/acc:opacity-100 shrink-0">
                           <button onClick={() => handleCopyApiKey(acc.id, acc.apiKey || acc.maskedKey || '')} className="p-1 hover:bg-gray-200 rounded" title="复制 API Key"><Copy size={12} /></button>
@@ -341,6 +372,11 @@ const Channels: React.FC = () => {
     await loadChannelDetails(channelId);
   };
 
+    const handleClearCircuit = async (channelId: string, accountId: string, modelCode: string) => {
+        await clearCircuitState(accountId, modelCode);
+        await loadChannelDetails(channelId);
+    };
+
   const filteredChannels = channels.filter(ch =>
     ch.name.toLowerCase().includes(searchTerm.toLowerCase()) ||
     ch.type.toLowerCase().includes(searchTerm.toLowerCase())
@@ -457,6 +493,7 @@ const Channels: React.FC = () => {
                     onEditCapability={c => setCcModal({ open: true, channelId: channel.id, cc: c })}
                     onDeleteCapability={id => handleDeleteCapability(channel.id, id)}
                     onToggleCapabilityStatus={c => handleToggleCapabilityStatus(channel.id, c)}
+                    onClearCircuit={(accountId, modelCode) => handleClearCircuit(channel.id, accountId, modelCode)}
                   />
                 ))}
                 </SortableContext>
@@ -478,6 +515,7 @@ const Channels: React.FC = () => {
         isOpen={accountModal.open}
         channelId={accountModal.channelId}
         account={accountModal.account}
+        availableModels={capabilityDefs.map(c => ({ code: c.code, name: c.name, type: c.type }))}
         onClose={() => setAccountModal({ open: false, channelId: '', account: null })}
         onSave={handleSaveAccount}
       />

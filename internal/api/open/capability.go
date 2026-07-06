@@ -1,6 +1,7 @@
 package open
 
 import (
+	"encoding/json"
 	"errors"
 	"net/http"
 
@@ -21,18 +22,36 @@ func InvokeCapability(c *gin.Context) {
 		return
 	}
 
-	var params map[string]any
-	if err := c.ShouldBindJSON(&params); err != nil {
+	var raw map[string]any
+	if err := c.ShouldBindJSON(&raw); err != nil {
 		resp.ErrorMsg(c, http.StatusBadRequest, 400, "invalid request body")
 		return
 	}
 
-	channel, _ := params["channel"].(string)
-	model, _ := params["model"].(string)
-	callbackURL, _ := params["callback_url"].(string)
+	channel, _ := raw["channel"].(string)
+	model, _ := raw["model"].(string)
+	interactionMode, _ := raw["interaction_mode"].(string)
+	callbackURL, _ := raw["callback_url"].(string)
 
-	delete(params, "channel")
-	delete(params, "callback_url")
+	params := make(map[string]any, len(raw))
+	for k, v := range raw {
+		if k == "channel" || k == "interaction_mode" || k == "callback_url" || k == "params" {
+			continue
+		}
+		params[k] = v
+	}
+	if nested, ok := raw["params"].(map[string]any); ok {
+		for k, v := range nested {
+			params[k] = v
+		}
+	} else if rawParams, ok := raw["params"].(json.RawMessage); ok && len(rawParams) > 0 {
+		var nested map[string]any
+		if json.Unmarshal(rawParams, &nested) == nil {
+			for k, v := range nested {
+				params[k] = v
+			}
+		}
+	}
 
 	token := middleware.GetToken(c)
 	if token == nil {
@@ -41,13 +60,14 @@ func InvokeCapability(c *gin.Context) {
 	}
 
 	req := &service.InvokeRequest{
-		UserID:      token.UserID,
-		TokenID:     token.ID,
-		Capability:  capability,
-		Channel:     channel,
-		Model:       model,
-		CallbackURL: callbackURL,
-		Params:      params,
+		UserID:          token.UserID,
+		TokenID:         token.ID,
+		Capability:      capability,
+		Channel:         channel,
+		Model:           model,
+		InteractionMode: interactionMode,
+		CallbackURL:     callbackURL,
+		Params:          params,
 	}
 
 	invokeResp, err := capabilityService.Invoke(c.Request.Context(), req)
