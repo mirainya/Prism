@@ -25,10 +25,6 @@ type GenerationResponse struct {
 	CreatedAt string `json:"created_at"`
 }
 
-func CreateImageGeneration(c *gin.Context) {
-	createGeneration(c, "text2img")
-}
-
 func CreateVideoGeneration(c *gin.Context) {
 	createGeneration(c, "text2video")
 }

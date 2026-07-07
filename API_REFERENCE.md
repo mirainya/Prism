@@ -231,18 +231,6 @@ ContentPart 类型:
 > `prompt` 之外的参数经渠道 `param_mapping`（含 `computed_params` 计算）映射后透传给上游。
 > 超时上限内出图直接返，超限返 202 + task_id，客户端用 `GET /v1/tasks/{task_id}` 后续查询。
 
-### POST /v1/images/generations/async
-
-图片生成（旧版异步接口）。提交即返 task_id，不等待结果，需自行轮询/回调。
-
-```json
-// Request
-{"model": "string (required)", "prompt": "string (required)", "params": {}, "callback_url": "string?"}
-
-// Response.data
-{"id": "task_id", "status": "pending"}
-```
-
 ### POST /v1/videos/generations
 
 视频生成（异步，调用 capabilities/text2video，返回 task_id）。

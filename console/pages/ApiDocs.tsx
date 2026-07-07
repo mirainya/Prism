@@ -178,6 +178,43 @@ const CHAT_COMPLETIONS_PARAMS = [
   { name: 'user', type: 'string', required: false, description: '终端用户标识' },
 ];
 
+// 兼容接口（图片/视频生成）——卡片渲染与 copyAllDocs 的单一数据源
+const COMPAT_ENDPOINTS: ApiEndpoint[] = [
+  {
+    id: 'ep-images-generations',
+    method: 'POST',
+    path: '/v1/images/generations',
+    name: '图片生成（OpenAI 标准）',
+    description: 'OpenAI 标准协议，同步返图。同步渠道直接返回，异步渠道网关内部轮询等待（默认上限 300s），超时返 202 + task_id。任何 OpenAI 图像 SDK 可即插即用。',
+    params: [
+      { name: 'model', type: 'string', required: true, description: '模型标识' },
+      { name: 'prompt', type: 'string', required: true, description: '提示词' },
+      { name: 'n', type: 'integer', required: false, description: '生成数量' },
+      { name: 'size', type: 'string', required: false, description: '图片尺寸，如 1024x1024' },
+      { name: 'quality', type: 'string', required: false, description: '图片质量' },
+      { name: 'response_format', type: 'string', required: false, description: 'url | b64_json' },
+      { name: 'output_format', type: 'string', required: false, description: '输出格式，如 png/jpeg/webp' },
+      { name: 'output_compression', type: 'integer', required: false, description: '压缩率 0-100' },
+      { name: 'style', type: 'string', required: false, description: '风格' },
+    ],
+    requestExample: JSON.stringify({ model: "gpt-image-1", prompt: "a cute corgi wearing sunglasses", n: 1, size: "1024x1024" }, null, 2),
+    responseExample: JSON.stringify({ created: 1704067200, data: [{ url: "https://...", revised_prompt: "..." }] }, null, 2),
+  },
+  {
+    id: 'ep-videos-generations',
+    method: 'POST',
+    path: '/v1/videos/generations',
+    name: '视频生成',
+    description: '兼容 OpenAI 格式的视频生成',
+    params: [
+      { name: 'model', type: 'string', required: true, description: '模型标识' },
+      { name: 'prompt', type: 'string', required: true, description: '提示词' },
+      { name: 'params', type: 'object', required: false, description: '额外参数' },
+      { name: 'callback_url', type: 'string', required: false, description: '回调地址' },
+    ],
+  },
+];
+
 // ===== 主组件 =====
 const ApiDocs: React.FC = () => {
   const [models, setModels] = useState<DocsModel[]>([]);
@@ -247,7 +284,14 @@ const ApiDocs: React.FC = () => {
       }
       md += '\n';
     });
-    md += `## 兼容接口\n\n### POST /v1/images/generations\n图片生成（兼容 OpenAI 格式）\n\n| 参数 | 类型 | 必填 | 说明 |\n|------|------|------|------|\n| model | string | 是 | 模型标识 |\n| prompt | string | 是 | 提示词 |\n| params | object | 否 | 额外参数 |\n| callback_url | string | 否 | 回调地址 |\n\n### POST /v1/videos/generations\n视频生成（兼容 OpenAI 格式）\n\n| 参数 | 类型 | 必填 | 说明 |\n|------|------|------|------|\n| model | string | 是 | 模型标识 |\n| prompt | string | 是 | 提示词 |\n| params | object | 否 | 额外参数 |\n| callback_url | string | 否 | 回调地址 |\n\n`;
+    md += `## 兼容接口\n\n`;
+    COMPAT_ENDPOINTS.forEach(ep => {
+      md += `### ${ep.method} ${ep.path}\n${ep.name}${ep.description ? ' - ' + ep.description : ''}\n\n| 参数 | 类型 | 必填 | 说明 |\n|------|------|------|------|\n`;
+      ep.params.forEach(p => { md += `| ${p.name} | ${p.type} | ${p.required ? '是' : '否'} | ${p.description} |\n`; });
+      if (ep.requestExample) md += `\n**请求示例:**\n\`\`\`json\n${ep.requestExample}\n\`\`\`\n`;
+      if (ep.responseExample) md += `\n**响应示例:**\n\`\`\`json\n${ep.responseExample}\n\`\`\`\n`;
+      md += '\n';
+    });
     md += `## 任务管理\n\n### GET /v1/tasks/:task_no\n查询任务状态和结果\n\n### POST /v1/tasks/:task_no/cancel\n取消正在处理中的任务\n\n`;
     md += `## 回调通知\n\n提交任务时传入 callback_url，任务完成后系统 POST 结果到该地址。最多重试 3 次。\n\n`;
     md += `## 错误码\n\n| 错误码 | 说明 |\n|--------|------|\n| 0 | 成功 |\n| 400 | 参数错误 |\n| 401 | 未认证/Token无效 |\n| 402 | 余额不足 |\n| 403 | 无权限 |\n| 404 | 资源不存在 |\n| 429 | 请求过于频繁 |\n| 500 | 服务器内部错误 |\n`;
@@ -508,32 +552,9 @@ const ApiDocs: React.FC = () => {
           <h2 className="text-lg font-bold text-[var(--text-primary)] mb-3 flex items-center gap-2"><RefreshCw size={18} /> 兼容接口</h2>
           <p className="text-sm text-[var(--text-secondary)] mb-4">兼容 OpenAI 格式的图片/视频生成接口</p>
           <div className="space-y-3">
-            <EndpointCard api={{
-              id: 'ep-images-generations',
-              method: 'POST',
-              path: '/v1/images/generations',
-              name: '图片生成',
-              description: '兼容 OpenAI 格式的图片生成',
-              params: [
-                { name: 'model', type: 'string', required: true, description: '模型标识' },
-                { name: 'prompt', type: 'string', required: true, description: '提示词' },
-                { name: 'params', type: 'object', required: false, description: '额外参数' },
-                { name: 'callback_url', type: 'string', required: false, description: '回调地址' },
-              ],
-            }} onTryIt={setTryItApi} />
-            <EndpointCard api={{
-              id: 'ep-videos-generations',
-              method: 'POST',
-              path: '/v1/videos/generations',
-              name: '视频生成',
-              description: '兼容 OpenAI 格式的视频生成',
-              params: [
-                { name: 'model', type: 'string', required: true, description: '模型标识' },
-                { name: 'prompt', type: 'string', required: true, description: '提示词' },
-                { name: 'params', type: 'object', required: false, description: '额外参数' },
-                { name: 'callback_url', type: 'string', required: false, description: '回调地址' },
-              ],
-            }} onTryIt={setTryItApi} />
+            {COMPAT_ENDPOINTS.map(ep => (
+              <EndpointCard key={ep.id} api={ep} onTryIt={setTryItApi} />
+            ))}
           </div>
         </section>
 
