@@ -51,7 +51,8 @@ func normalizeGjsonPath(path string) string {
 	}
 }
 
-// extractURLs 从 gjson 结果中提取 URL 列表，支持单值和数组
+// extractURLs 从 gjson 结果中提取字符串列表，支持单值和数组
+// 用于提取 URL、base64 等任意字符串值
 func extractURLs(jsonStr, path string) []string {
 	result := gjson.Get(jsonStr, normalizeGjsonPath(path))
 	if !result.Exists() {
@@ -75,12 +76,6 @@ func extractURLs(jsonStr, path string) []string {
 		return []string{s}
 	}
 	return nil
-}
-
-// extractStrings 从 gjson 结果中提取字符串列表，支持单值和数组
-// 与 extractURLs 相同，但不含 URL 语义，用于提取 base64 等任意字符串
-func extractStrings(jsonStr, path string) []string {
-	return extractURLs(jsonStr, path)
 }
 
 func (p *DefaultParser) ParseSubmitResponse(body []byte, mapping *ResponseMapping) (SubmitResult, error) {
@@ -110,7 +105,7 @@ func (p *DefaultParser) ParseSubmitResponse(body []byte, mapping *ResponseMappin
 	}
 
 	if mapping.OutputB64 != "" {
-		result.B64Data = extractStrings(jsonStr, mapping.OutputB64)
+		result.B64Data = extractURLs(jsonStr, mapping.OutputB64)
 	}
 
 	if mapping.RevisedPrompt != "" {
@@ -143,7 +138,7 @@ func (p *DefaultParser) ParseProgressResponse(body []byte, mapping *ResponseMapp
 	}
 
 	if mapping.OutputB64 != "" {
-		result.B64Data = extractStrings(jsonStr, mapping.OutputB64)
+		result.B64Data = extractURLs(jsonStr, mapping.OutputB64)
 	}
 
 	if mapping.RevisedPrompt != "" {
@@ -186,7 +181,7 @@ func (p *DefaultParser) ParseCallbackResponse(body []byte, mapping *ResponseMapp
 	}
 
 	if mapping.OutputB64 != "" {
-		result.B64Data = extractStrings(jsonStr, mapping.OutputB64)
+		result.B64Data = extractURLs(jsonStr, mapping.OutputB64)
 	}
 
 	if mapping.RevisedPrompt != "" {

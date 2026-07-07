@@ -12,10 +12,10 @@ import (
 	"sync"
 	"time"
 
+	"github.com/mirainya/Prism/internal/domain"
 	"github.com/mirainya/Prism/internal/model"
 	"github.com/mirainya/Prism/internal/provider/chat"
 	"github.com/mirainya/Prism/pkg/httputil"
-	"github.com/mirainya/Prism/internal/domain"
 	"github.com/mirainya/Prism/pkg/logger"
 	"github.com/shopspring/decimal"
 	"go.uber.org/zap"

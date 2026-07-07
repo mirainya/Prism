@@ -118,11 +118,6 @@ export const getChannelAccount = async (id: string): Promise<ChannelAccount> => 
   return mapAccount(acc);
 };
 
-export const fetchAccountCircuitStates = async (id: string): Promise<AccountCircuitState[]> => {
-  const data = await request<any[]>(`/admin/channel-accounts/${id}/circuit-states`);
-  return mapCircuitStates(data);
-};
-
 export const clearCircuitState = async (id: string, modelCode: string): Promise<void> => {
   await request(`/admin/channel-accounts/${id}/circuit-states/${encodeURIComponent(modelCode)}`, { method: 'DELETE' });
 };

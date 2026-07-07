@@ -373,8 +373,12 @@ const Channels: React.FC = () => {
   };
 
     const handleClearCircuit = async (channelId: string, accountId: string, modelCode: string) => {
-        await clearCircuitState(accountId, modelCode);
-        await loadChannelDetails(channelId);
+        try {
+            await clearCircuitState(accountId, modelCode);
+            await loadChannelDetails(channelId);
+        } catch (err) {
+            console.error('解除熔断失败:', err);
+        }
     };
 
   const filteredChannels = channels.filter(ch =>
