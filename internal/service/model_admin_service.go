@@ -3,9 +3,7 @@ package service
 import (
 	"errors"
 
-	"github.com/gin-gonic/gin"
 	"github.com/mirainya/Prism/internal/model"
-	"github.com/shopspring/decimal"
 	"gorm.io/datatypes"
 	"gorm.io/gorm"
 )
@@ -41,8 +39,22 @@ func (s *ModelAdminService) ListModels(status string) ([]model.Model, error) {
 		query = query.Where("status = ?", status)
 	}
 	var models []model.Model
-	err := query.Order("created_at DESC").Find(&models).Error
+	err := query.Order("sort DESC, created_at DESC").Find(&models).Error
 	return models, err
+}
+
+// ReorderCapabilities 按传入 code 顺序批量写 sort(首个最大,降序在前),对齐 ListModels 的 sort DESC。
+func (s *ModelAdminService) ReorderCapabilities(codes []string) error {
+	n := len(codes)
+	return model.DB().Transaction(func(tx *gorm.DB) error {
+		for i, code := range codes {
+			if err := tx.Model(&model.Model{}).Where("code = ?", code).
+				Update("sort", n-i).Error; err != nil {
+				return err
+			}
+		}
+		return nil
+	})
 }
 
 func (s *ModelAdminService) ListModelsByType(typ string) ([]model.Model, error) {
@@ -106,106 +118,7 @@ func (s *ModelAdminService) UpdateModel(code string, updates map[string]any) (*m
 	return &m, nil
 }
 
-// UpdateModelSorts 按顺序批量更新模型排序权重，codes[0] 权重最高
-func (s *ModelAdminService) UpdateModelSorts(codes []string) error {
-	return model.DB().Transaction(func(tx *gorm.DB) error {
-		n := len(codes)
-		for i, code := range codes {
-			if err := tx.Model(&model.Model{}).Where("code = ?", code).Update("sort", n-i).Error; err != nil {
-				return err
-			}
-		}
-		return nil
-	})
-}
-
 func (s *ModelAdminService) DeleteModel(code string) (int64, error) {
 	result := model.DB().Where("code = ?", code).Delete(&model.Model{})
 	return result.RowsAffected, result.Error
-}
-
-func (s *ModelAdminService) GetPresets(provider string) []gin.H {
-	return []gin.H{}
-}
-
-type QuickSetupModelItem struct {
-	Code        string `json:"code"`
-	Name        string `json:"name"`
-	VendorModel string `json:"vendor_model"`
-}
-
-type QuickSetupRequest struct {
-	Provider    string                `json:"provider" binding:"required"`
-	Models      []QuickSetupModelItem `json:"models" binding:"required"`
-	ChannelID   uint                  `json:"channel_id"`
-	PriceMode   string                `json:"price_mode"`
-	InputPrice  decimal.Decimal       `json:"input_price"`
-	OutputPrice decimal.Decimal       `json:"output_price"`
-	RequestPath string                `json:"request_path"`
-}
-
-type QuickSetupResult struct {
-	Created int `json:"created"`
-	Skipped int `json:"skipped"`
-	Mapped  int `json:"mapped"`
-}
-
-func (s *ModelAdminService) QuickSetup(req *QuickSetupRequest) (*QuickSetupResult, error) {
-	created := 0
-	skipped := 0
-	mapped := 0
-
-	requestPath := req.RequestPath
-	if requestPath == "" {
-		requestPath = "/v1/chat/completions"
-	}
-	priceMode := req.PriceMode
-	if priceMode == "" {
-		priceMode = "token"
-	}
-
-	for _, item := range req.Models {
-		m := &model.Model{
-			Code:     item.Code,
-			Name:     item.Name,
-			Type:     model.ModelTypeChat,
-			Provider: req.Provider,
-			Status:   1,
-		}
-		if err := model.DB().Create(m).Error; err != nil {
-			skipped++
-		} else {
-			created++
-		}
-
-		if req.ChannelID > 0 {
-			vendorModel := item.VendorModel
-			if vendorModel == "" {
-				vendorModel = item.Code
-			}
-			ep := &model.Endpoint{
-				ModelCode:       item.Code,
-				ChannelID:       req.ChannelID,
-				Protocol:        model.ProtocolOpenAI,
-				RequestPath:     requestPath,
-				RequestMethod:   "POST",
-				ContentType:     "application/json",
-				AuthLocation:    "header",
-				AuthKey:         "Authorization",
-				AuthValuePrefix: "Bearer ",
-				VendorModel:     vendorModel,
-				InteractionMode: model.ModeStream,
-				SupportsStream:  true,
-				PriceMode:       model.PriceMode(priceMode),
-				InputPrice:      req.InputPrice,
-				OutputPrice:     req.OutputPrice,
-				Status:          1,
-				Timeout:         120,
-			}
-			if err := model.DB().Create(ep).Error; err == nil {
-				mapped++
-			}
-		}
-	}
-	return &QuickSetupResult{Created: created, Skipped: skipped, Mapped: mapped}, nil
 }

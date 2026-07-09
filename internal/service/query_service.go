@@ -154,10 +154,6 @@ func (s *QueryService) ListCapabilityChannels() ([]gin.H, error) {
 	return result, nil
 }
 
-func (s *QueryService) ListChatModelChannelsForToken() ([]gin.H, error) {
-	return s.ListCapabilityChannels()
-}
-
 // ---------- PricingService ----------
 
 type PricingService struct{}

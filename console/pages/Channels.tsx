@@ -18,7 +18,7 @@ import {
     updateChannelCapability,
     deleteChannelCapability,
     fetchCapabilities,
-    clearCircuitState
+    clearCircuitState,
 } from '../services/api';
 import {Channel, ChannelAccount, ChannelCapability, Capability} from '../types';
 import { ChannelModal, AccountModal } from './ChannelModals';
@@ -61,7 +61,7 @@ const ChannelRow: React.FC<{
   onEditAccount: (acc: ChannelAccount) => void;
   onDeleteAccount: (id: string) => void;
   onToggleAccountStatus: (acc: ChannelAccount) => void;
-    onAddCapability: () => void;
+    onAddCapability: (acc: ChannelAccount) => void;
     onEditCapability: (c: ChannelCapability) => void;
     onDeleteCapability: (id: string) => void;
     onToggleCapabilityStatus: (c: ChannelCapability) => void;
@@ -73,8 +73,24 @@ const ChannelRow: React.FC<{
 }) => {
   const status = STATUS_MAP[channel.status] || STATUS_MAP[0];
   const [copiedAccountId, setCopiedAccountId] = useState<string | null>(null);
+  // 选中的 key: 选中后右侧「能力端点」区只展示该 key 的端点
+  const [selectedAccountId, setSelectedAccountId] = useState<string | null>(null);
   const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({ id: channel.id, disabled: !canDrag });
   const rowStyle = { transform: CSS.Transform.toString(transform), transition, opacity: isDragging ? 0.4 : 1 };
+
+  const handleSelectKey = (accId: string) => {
+    if (selectedAccountId === accId) {
+      setSelectedAccountId(null); // 再点一次取消选中
+    } else {
+      setSelectedAccountId(accId);
+    }
+  };
+
+  const selectedAccount = accounts.find(a => a.id === selectedAccountId) || null;
+  // 能力端点跟随选中 key: 只显示归属该 key 的端点(accountId 匹配)
+  const keyCapabilities = selectedAccountId
+    ? capabilities.filter(c => c.accountId === selectedAccountId)
+    : [];
 
   const getResultModeLabel = (mode: string) => {
     return RESULT_MODES.find(m => m.value === mode)?.label || mode;
@@ -150,11 +166,11 @@ const ChannelRow: React.FC<{
         <tr>
           <td colSpan={5} className="bg-[var(--surface)]/50 px-3 md:px-6 py-3 md:py-4">
             <div className="grid grid-cols-1 md:grid-cols-2 gap-4 md:gap-6">
-              {/* 账号列表 */}
+              {/* 账号列表(点击选中 → 右侧过滤该 key 的模型) */}
               <div className="bg-[var(--surface-card)] rounded-xl p-4 border border-[var(--border-soft)]">
                 <div className="flex items-center justify-between mb-3">
                   <h4 className="text-sm font-bold text-[var(--text-primary)] flex items-center gap-2">
-                    <Key size={14} /> 账号列表
+                    <Key size={14} /> 账号 (Key)
                   </h4>
                   <button onClick={onAddAccount} className="text-xs text-[var(--primary)] hover:text-[var(--primary)] flex items-center gap-1">
                     <Plus size={14} /> 添加
@@ -164,99 +180,106 @@ const ChannelRow: React.FC<{
                   <p className="text-xs text-[var(--text-secondary)] text-center py-4">暂无账号</p>
                 ) : (
                   <div className="space-y-2">
-                    {accounts.map(acc => (
-                      <div key={acc.id} className="flex items-center justify-between p-2 bg-[var(--surface)] rounded-lg group/acc gap-2">
+                    {accounts.map(acc => {
+                      const isSelected = selectedAccountId === acc.id;
+                      return (
+                      <div key={acc.id}
+                        onClick={() => handleSelectKey(acc.id)}
+                        className={`flex items-center justify-between p-2 rounded-lg group/acc gap-2 cursor-pointer transition-all ${isSelected ? 'bg-[var(--primary-lighter)] ring-2 ring-[var(--primary)]' : 'bg-[var(--surface)] hover:bg-[var(--primary-lighter)]/40'}`}>
                         <div className="min-w-0 flex-1">
                           <div className="flex items-center gap-2">
                             <span className="text-sm font-medium text-[var(--text-primary)]">{acc.name}</span>
                             <span className={`px-1.5 py-0.5 rounded text-[10px] font-bold ${acc.status === 1 ? 'bg-green-100 text-green-700' : 'bg-[var(--primary-lighter)] text-[var(--text-secondary)]'}`}>
                               {acc.status === 1 ? '启用' : '禁用'}
                             </span>
+                            {isSelected && <span className="text-[10px] text-[var(--primary)] font-medium">← 查看模型</span>}
                           </div>
                           <div className="text-xs text-[var(--text-secondary)] font-mono break-all mt-1">{acc.apiKey || acc.maskedKey || '-'}</div>
                           <div className={`text-xs mt-1 ${acc.maxTasks > 0 && acc.currentTasks >= acc.maxTasks ? 'text-red-500 font-bold' : 'text-[var(--text-secondary)]'}`}>权重: {acc.weight} | 并发: {acc.currentTasks}/{acc.maxTasks || '∞'}</div>
-                          {acc.supportedModels && acc.supportedModels.length > 0 && (
-                            <div className="flex flex-wrap gap-1 mt-1">
-                              {acc.supportedModels.map(mc => (
-                                <span key={mc} className="px-1.5 py-0.5 rounded text-[10px] bg-sky-100 text-sky-700" title="仅支持的模型">{mc}</span>
-                              ))}
-                            </div>
-                          )}
                           {acc.circuitStates && acc.circuitStates.length > 0 && (
                             <div className="flex flex-col gap-0.5 mt-1">
                               {acc.circuitStates.map(cs => (
                                 <div key={cs.modelCode} className="flex items-center gap-1 text-[10px] text-yellow-700">
                                   <span className="px-1.5 py-0.5 rounded bg-yellow-100 font-medium">熔断 {cs.modelCode}</span>
                                   <span>{cs.statusCode || '?'} · {formatCircuitCountdown(cs.disabledUntil)}后恢复</span>
-                                  <button onClick={() => onClearCircuit(acc.id, cs.modelCode)} className="text-[var(--text-secondary)] hover:text-red-500" title="立即解除熔断"><X size={10} /></button>
+                                  <button onClick={e => { e.stopPropagation(); onClearCircuit(acc.id, cs.modelCode); }} className="text-[var(--text-secondary)] hover:text-red-500" title="立即解除熔断"><X size={10} /></button>
                                 </div>
                               ))}
                             </div>
                           )}
                         </div>
                         <div className="flex items-center gap-1 md:opacity-0 md:group-hover/acc:opacity-100 shrink-0">
-                          <button onClick={() => handleCopyApiKey(acc.id, acc.apiKey || acc.maskedKey || '')} className="p-1 hover:bg-gray-200 rounded" title="复制 API Key"><Copy size={12} /></button>
+                          <button onClick={e => { e.stopPropagation(); handleCopyApiKey(acc.id, acc.apiKey || acc.maskedKey || ''); }} className="p-1 hover:bg-gray-200 rounded" title="复制 API Key"><Copy size={12} /></button>
                           {copiedAccountId === acc.id && <span className="text-[10px] font-medium text-green-600 px-1">已复制</span>}
-                          <button onClick={() => onToggleAccountStatus(acc)} className="p-1 hover:bg-gray-200 rounded"><Power size={12} /></button>
-                          <button onClick={() => onEditAccount(acc)} className="p-1 hover:bg-gray-200 rounded"><Edit3 size={12} /></button>
-                          <button onClick={() => onDeleteAccount(acc.id)} className="p-1 hover:bg-red-100 text-red-500 rounded"><Trash2 size={12} /></button>
+                          <button onClick={e => { e.stopPropagation(); onToggleAccountStatus(acc); }} className="p-1 hover:bg-gray-200 rounded"><Power size={12} /></button>
+                          <button onClick={e => { e.stopPropagation(); onEditAccount(acc); }} className="p-1 hover:bg-gray-200 rounded"><Edit3 size={12} /></button>
+                          <button onClick={e => { e.stopPropagation(); onDeleteAccount(acc.id); }} className="p-1 hover:bg-red-100 text-red-500 rounded"><Trash2 size={12} /></button>
                         </div>
                       </div>
-                    ))}
+                      );
+                    })}
                   </div>
                 )}
               </div>
 
-                {/* 端点列表 */}
-              <div className="bg-[var(--surface-card)] rounded-xl p-4 border border-[var(--border-soft)]">
-                <div className="flex items-center justify-between mb-3">
-                  <h4 className="text-sm font-bold text-[var(--text-primary)] flex items-center gap-2">
-                      <Cpu size={14}/> 端点列表
-                  </h4>
-                    <button onClick={onAddCapability}
-                            className="text-xs text-[var(--primary)] hover:text-[var(--primary)] flex items-center gap-1">
-                    <Plus size={14} /> 添加
-                  </button>
-                </div>
-                  {capabilities.length === 0 ? (
-                      <p className="text-xs text-[var(--text-secondary)] text-center py-4">暂无端点配置</p>
-                ) : (
-                  <div className="space-y-2">
-                      {capabilities.map(c => (
-                          <div key={c.id}
-                               className="flex items-center justify-between p-2 bg-[var(--surface)] rounded-lg group/cap gap-2">
-                        <div className="min-w-0 flex-1">
-                            <div className="flex items-center gap-2 flex-wrap">
-                                <span className="text-sm font-medium text-[var(--text-primary)]">{c.name || c.model || c.capabilityCode}</span>
-                                <span className={`px-1.5 py-0.5 rounded text-[10px] font-bold ${c.status === 1 ? 'bg-green-100 text-green-700' : 'bg-[var(--primary-lighter)] text-[var(--text-secondary)]'}`}>
-                                  {c.status === 1 ? '启用' : '禁用'}
-                                </span>
-                                {c.modelType && (
-                                    <span className={`px-1.5 py-0.5 rounded text-[10px] font-bold ${
-                                        c.modelType === 'chat' ? 'bg-sky-100 text-sky-700' :
-                                        c.modelType === 'image' ? 'bg-pink-100 text-pink-700' :
-                                        c.modelType === 'video' ? 'bg-violet-100 text-violet-700' :
-                                        'bg-gray-100 text-gray-600'
-                                    }`}>{c.modelType}</span>
-                                )}
+              {/* 右侧: 能力端点(image/video),跟随选中 key */}
+              <div className="space-y-4">
+                {/* 能力端点(image/video),跟随选中 key */}
+                <div className="bg-[var(--surface-card)] rounded-xl p-4 border border-[var(--border-soft)]">
+                  <div className="flex items-center justify-between mb-3">
+                    <h4 className="text-sm font-bold text-[var(--text-primary)] flex items-center gap-2">
+                        <Cpu size={14}/> 能力端点 <span className="text-[10px] font-normal px-1.5 py-0.5 rounded bg-[var(--primary-lighter)] text-[var(--text-secondary)]">图像/视频</span>
+                        {selectedAccount && <span className="text-xs font-normal text-[var(--text-secondary)]">· {selectedAccount.name}</span>}
+                    </h4>
+                      {selectedAccount && (
+                        <button onClick={() => onAddCapability(selectedAccount)}
+                                className="text-xs text-[var(--primary)] hover:text-[var(--primary)] flex items-center gap-1">
+                          <Plus size={14} /> 添加
+                        </button>
+                      )}
+                  </div>
+                    {!selectedAccount ? (
+                        <p className="text-xs text-[var(--text-secondary)] text-center py-4">← 选择一个账号查看/添加其能力端点</p>
+                    ) : keyCapabilities.length === 0 ? (
+                        <p className="text-xs text-[var(--text-secondary)] text-center py-4">该 key 暂无能力端点</p>
+                  ) : (
+                    <div className="space-y-2">
+                        {keyCapabilities.map(c => (
+                            <div key={c.id}
+                                 className="flex items-center justify-between p-2 bg-[var(--surface)] rounded-lg group/cap gap-2">
+                          <div className="min-w-0 flex-1">
+                              <div className="flex items-center gap-2 flex-wrap">
+                                  <span className="text-sm font-medium text-[var(--text-primary)]">{c.name || c.model || c.capabilityCode}</span>
+                                  <span className={`px-1.5 py-0.5 rounded text-[10px] font-bold ${c.status === 1 ? 'bg-green-100 text-green-700' : 'bg-[var(--primary-lighter)] text-[var(--text-secondary)]'}`}>
+                                    {c.status === 1 ? '启用' : '禁用'}
+                                  </span>
+                                  {c.modelType && (
+                                      <span className={`px-1.5 py-0.5 rounded text-[10px] font-bold ${
+                                          c.modelType === 'chat' ? 'bg-sky-100 text-sky-700' :
+                                          c.modelType === 'image' ? 'bg-pink-100 text-pink-700' :
+                                          c.modelType === 'video' ? 'bg-violet-100 text-violet-700' :
+                                          'bg-gray-100 text-gray-600'
+                                      }`}>{c.modelType}</span>
+                                  )}
+                              </div>
+                            <div className="text-xs text-[var(--text-secondary)]">
+                                {c.capabilityCode}{c.model ? ` → ${c.model}` : ''} | ¥{c.price}
                             </div>
-                          <div className="text-xs text-[var(--text-secondary)]">
-                              {c.capabilityCode}{c.model ? ` → ${c.model}` : ''} | ¥{c.price}
+                          </div>
+                                <div className="flex items-center gap-1 md:opacity-0 md:group-hover/cap:opacity-100 shrink-0">
+                                    <button onClick={() => onToggleCapabilityStatus(c)}
+                                            className="p-1 hover:bg-gray-200 rounded"><Power size={12}/></button>
+                                    <button onClick={() => onEditCapability(c)} className="p-1 hover:bg-gray-200 rounded">
+                                        <Edit3 size={12}/></button>
+                                    <button onClick={() => onDeleteCapability(c.id)}
+                                            className="p-1 hover:bg-red-100 text-red-500 rounded"><Trash2 size={12}/>
+                                    </button>
                           </div>
                         </div>
-                              <div className="flex items-center gap-1 md:opacity-0 md:group-hover/cap:opacity-100 shrink-0">
-                                  <button onClick={() => onToggleCapabilityStatus(c)}
-                                          className="p-1 hover:bg-gray-200 rounded"><Power size={12}/></button>
-                                  <button onClick={() => onEditCapability(c)} className="p-1 hover:bg-gray-200 rounded">
-                                      <Edit3 size={12}/></button>
-                                  <button onClick={() => onDeleteCapability(c.id)}
-                                          className="p-1 hover:bg-red-100 text-red-500 rounded"><Trash2 size={12}/>
-                                  </button>
-                        </div>
-                      </div>
-                    ))}
-                  </div>
-                )}
+                      ))}
+                    </div>
+                  )}
+                </div>
               </div>
             </div>
           </td>
@@ -278,16 +301,17 @@ const Channels: React.FC = () => {
   // Modal states
   const [channelModal, setChannelModal] = useState<{ open: boolean; channel: Channel | null }>({ open: false, channel: null });
   const [accountModal, setAccountModal] = useState<{ open: boolean; channelId: string; account: ChannelAccount | null }>({ open: false, channelId: '', account: null });
-  const [ccModal, setCcModal] = useState<{ open: boolean; channelId: string; cc: ChannelCapability | null }>({ open: false, channelId: '', cc: null });
+  const [ccModal, setCcModal] = useState<{ open: boolean; channelId: string; accountId: string; cc: ChannelCapability | null }>({ open: false, channelId: '', accountId: '', cc: null });
 
-  const loadData = async () => {
-    setIsLoading(true);
+  // showSkeleton=false: 静默刷新(不显示骨架屏),避免编辑/保存后表格整体重渲染导致滚动跳顶
+  const loadData = async (showSkeleton = true) => {
+    if (showSkeleton) setIsLoading(true);
     try {
       const [channelsData, capDefs] = await Promise.all([fetchChannels(), fetchCapabilities()]);
       setChannels(channelsData);
       setCapabilityDefs(capDefs);
     } finally {
-      setIsLoading(false);
+      if (showSkeleton) setIsLoading(false);
     }
   };
 
@@ -323,18 +347,18 @@ const Channels: React.FC = () => {
     } else {
       await createChannel(data);
     }
-    await loadData();
+    await loadData(false);
   };
 
   const handleDeleteChannel = async (id: string) => {
     if (!confirm('确定删除此渠道？')) return;
     await deleteChannel(id);
-    await loadData();
+    await loadData(false);
   };
 
   const handleToggleChannelStatus = async (channel: Channel) => {
     await updateChannel(channel.id, { status: channel.status === 1 ? 0 : 1 });
-    await loadData();
+    await loadData(false);
   };
 
   const handleSaveAccount = async (data: any) => {
@@ -345,14 +369,14 @@ const Channels: React.FC = () => {
       await createChannelAccount(data);
     }
     await loadChannelDetails(channelId);
-    await loadData();
+    await loadData(false);
   };
 
   const handleDeleteAccount = async (channelId: string, accountId: string) => {
     if (!confirm('确定删除此账号？')) return;
     await deleteChannelAccount(accountId);
     await loadChannelDetails(channelId);
-    await loadData();
+    await loadData(false);
   };
 
   const handleToggleAccountStatus = async (channelId: string, account: ChannelAccount) => {
@@ -364,7 +388,7 @@ const Channels: React.FC = () => {
         if (!confirm('确定删除此能力配置？')) return;
         await deleteChannelCapability(capabilityId);
     await loadChannelDetails(channelId);
-    await loadData();
+    await loadData(false);
   };
 
     const handleToggleCapabilityStatus = async (channelId: string, capability: ChannelCapability) => {
@@ -412,8 +436,8 @@ const Channels: React.FC = () => {
     <div className="space-y-4 md:space-y-6">
       <div className="flex items-start sm:items-center justify-between gap-3 flex-wrap">
         <div>
-          <h1 className="text-xl md:text-2xl font-bold text-[var(--text-primary)]">渠道管理</h1>
-          <p className="text-[var(--text-secondary)] mt-1 text-sm hidden sm:block">配置上游服务商、账号池及模型映射</p>
+          <h1 className="text-xl md:text-2xl font-bold text-[var(--text-primary)]">能力渠道</h1>
+          <p className="text-[var(--text-secondary)] mt-1 text-sm hidden sm:block">配置图像/视频等能力端点的上游服务商与账号池</p>
         </div>
         <button
           onClick={() => setChannelModal({ open: true, channel: null })}
@@ -493,8 +517,8 @@ const Channels: React.FC = () => {
                     onEditAccount={acc => setAccountModal({ open: true, channelId: channel.id, account: acc })}
                     onDeleteAccount={id => handleDeleteAccount(channel.id, id)}
                     onToggleAccountStatus={acc => handleToggleAccountStatus(channel.id, acc)}
-                    onAddCapability={() => setCcModal({ open: true, channelId: channel.id, cc: null })}
-                    onEditCapability={c => setCcModal({ open: true, channelId: channel.id, cc: c })}
+                    onAddCapability={acc => setCcModal({ open: true, channelId: channel.id, accountId: acc.id, cc: null })}
+                    onEditCapability={c => setCcModal({ open: true, channelId: channel.id, accountId: c.accountId, cc: c })}
                     onDeleteCapability={id => handleDeleteCapability(channel.id, id)}
                     onToggleCapabilityStatus={c => handleToggleCapabilityStatus(channel.id, c)}
                     onClearCircuit={(accountId, modelCode) => handleClearCircuit(channel.id, accountId, modelCode)}
@@ -530,12 +554,13 @@ const Channels: React.FC = () => {
         channels={channels}
         capabilities={capabilityDefs}
         defaultChannelId={ccModal.channelId ? Number(ccModal.channelId) : undefined}
-        onClose={() => setCcModal({ open: false, channelId: '', cc: null })}
+        defaultAccountId={ccModal.accountId ? Number(ccModal.accountId) : undefined}
+        onClose={() => setCcModal({ open: false, channelId: '', accountId: '', cc: null })}
         onSave={async () => {
           const cid = ccModal.channelId;
-          setCcModal({ open: false, channelId: '', cc: null });
+          setCcModal({ open: false, channelId: '', accountId: '', cc: null });
           if (cid) await loadChannelDetails(cid);
-          await loadData();
+          await loadData(false);
         }}
       />
     </div>

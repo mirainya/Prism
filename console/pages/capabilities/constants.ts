@@ -2,6 +2,7 @@ import { CapabilityStandardParamSchema } from '../../types';
 
 export const RESULT_MODES = [
     {value: 'sync', label: '同步'},
+    {value: 'stream', label: '流式'},
     {value: 'poll', label: '轮询'},
     {value: 'callback', label: '回调'},
 ];

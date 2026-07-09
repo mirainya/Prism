@@ -97,7 +97,8 @@ type BaseProvider struct {
 	ResponseMapping     *ResponseMapping
 	PollResponseMapping *ResponseMapping
 	CallbackMapping     *ResponseMapping
-	Timeout             int // endpoint 级请求超时(秒),0 用全局
+	Timeout             int  // endpoint 级请求超时(秒),0 用全局
+	Streaming           bool // 交互模式=stream: 自动注入 stream:true 并按 SSE 解析响应
 }
 
 // resolvePath 替换路径中的 {variable} 模板变量
@@ -198,11 +199,36 @@ func (p *BaseProvider) Submit(ctx context.Context, req SubmitRequest) (SubmitRes
 		params[p.AuthKey] = p.AuthValuePrefix + p.APIKey
 	}
 
+	// 流式判定: 交互模式=stream(p.Streaming) 或已注入 stream 参数(兼容旧 fixed_params)。
+	// 为真则强制 params["stream"]=true(真布尔),覆盖 fixed_params 可能存成的字符串 "true",
+	// 避免上游因类型不符拒绝。必须在 buildRequestBody 之前注入。
+	streaming := p.Streaming || params["stream"] == true
+	if streaming {
+		if params == nil {
+			params = make(map[string]any)
+		}
+		params["stream"] = true
+		// 上游(gpt-image 系)仅在设了 partial_images 时才在生成途中吐 partial 事件字节;
+		// 缺它则整段生成静默,挡在中间的 CDN(如 Cloudflare 100s 空闲阈值)判定源站无响应 → 524。
+		// 缺省注入 1(与参考实现一致),已显式配置则尊重。真整数,避免 fixed_params 字符串坑。
+		if _, ok := params["partial_images"]; !ok {
+			params["partial_images"] = 1
+		}
+	}
+
 	body, contentType := p.buildRequestBody(params)
 
 	method := p.RequestMethod
 	if method == "" {
 		method = "POST"
+	}
+
+	// 流式请求上游持续推 SSE 字节流, http.Client.Timeout 是整请求硬超时(含读 body),
+	// 会中途砍断流,故置 0; 改由 ctx deadline 兜底防永久挂起(endpoint.Timeout 派生,>0 时生效)。
+	if streaming && p.Timeout > 0 {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, time.Duration(p.Timeout)*time.Second)
+		defer cancel()
 	}
 
 	httpReq, err := http.NewRequestWithContext(ctx, method, reqURL, body)
@@ -214,7 +240,12 @@ func (p *BaseProvider) Submit(ctx context.Context, req SubmitRequest) (SubmitRes
 	p.setAuth(httpReq)
 
 	client := sharedHTTPClient
-	if p.Timeout > 0 && time.Duration(p.Timeout)*time.Second > client.Timeout {
+	switch {
+	case streaming:
+		c := *sharedHTTPClient
+		c.Timeout = 0
+		client = &c
+	case p.Timeout > 0 && time.Duration(p.Timeout)*time.Second > client.Timeout:
 		c := *sharedHTTPClient
 		c.Timeout = time.Duration(p.Timeout) * time.Second
 		client = &c
@@ -224,6 +255,16 @@ func (p *BaseProvider) Submit(ctx context.Context, req SubmitRequest) (SubmitRes
 		return SubmitResult{}, fmt.Errorf("do request: %w", err)
 	}
 	defer resp.Body.Close()
+
+	// SSE 流式响应: 边读边聚合,从 completed 事件提取图片(错误也走 SSE error 事件,
+	// 故先处理 status>=400 再交给流解析)。非流式渠道响应 application/json,不进此分支。
+	if strings.Contains(resp.Header.Get("Content-Type"), "text/event-stream") {
+		if resp.StatusCode >= 400 {
+			respBody, _ := io.ReadAll(resp.Body)
+			return SubmitResult{}, &domain.UpstreamError{StatusCode: resp.StatusCode, Body: extractUpstreamErrorMessage(respBody)}
+		}
+		return parseImageSSEStream(resp.Body)
+	}
 
 	respBody, err := io.ReadAll(resp.Body)
 	if err != nil {

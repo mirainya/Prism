@@ -1,20 +1,20 @@
 package console
 
 import (
-	"bufio"
 	"encoding/json"
 	"fmt"
-	"io"
 	"net/http"
-	"strings"
 
 	"github.com/gin-gonic/gin"
 	"github.com/mirainya/Prism/internal/api/resp"
+	gwstream "github.com/mirainya/Prism/internal/gateway/stream"
 	"github.com/mirainya/Prism/internal/provider/chat"
 	"github.com/mirainya/Prism/internal/service"
 )
 
 // PlaygroundChatCompletions POST /api/playground/:token_id/chat/completions
+// 走共享 gateway pipeline(与 /v1 同源)。会话续聊/历史/火山 B 模式由本 handler 编排,
+// pipeline 保持无状态。
 func PlaygroundChatCompletions(c *gin.Context) {
 	token, ok := getPlaygroundToken(c)
 	if !ok {
@@ -39,151 +39,112 @@ func PlaygroundChatCompletions(c *gin.Context) {
 		ConversationID   string                `json:"conversation_id"`
 		ReasoningEffort  *string               `json:"reasoning_effort"`
 	}
-
 	if err := c.ShouldBindJSON(&req); err != nil {
 		resp.ErrorMsg(c, http.StatusBadRequest, 400, err.Error())
 		return
 	}
-
-	streamValue := false
-	streamSpecified := false
-	if req.Stream != nil {
-		streamValue = *req.Stream
-		streamSpecified = true
+	if chatPipeline == nil {
+		resp.ErrorMsg(c, http.StatusInternalServerError, 500, "chat pipeline not initialized")
+		return
 	}
+
+	stream := req.Stream != nil && *req.Stream
+
+	// 会话编排:加载历史 + 火山 B 模式(previous_response_id)
+	newMessages := req.Messages
+	cc := service.LoadConversationContext(req.ConversationID, token.ID, req.Model)
+	fullMessages := append(append([]chat.ChatMessage{}, cc.History...), newMessages...)
 
 	completionReq := &service.CompletionRequest{
 		UserID:           token.UserID,
 		TokenID:          token.ID,
 		Model:            req.Model,
-		Messages:         req.Messages,
+		Messages:         fullMessages,
 		Temperature:      req.Temperature,
 		MaxTokens:        req.MaxTokens,
 		TopP:             req.TopP,
 		FrequencyPenalty: req.FrequencyPenalty,
 		PresencePenalty:  req.PresencePenalty,
 		Stop:             req.Stop,
-		Stream:           streamValue,
-		StreamSpecified:  streamSpecified,
+		Stream:           stream,
+		StreamSpecified:  req.Stream != nil,
 		Tools:            req.Tools,
 		ToolChoice:       req.ToolChoice,
 		ResponseFormat:   req.ResponseFormat,
 		Seed:             req.Seed,
 		User:             req.User,
-		ConversationID:   req.ConversationID,
 		ReasoningEffort:  req.ReasoningEffort,
 	}
+	// 有状态对话:只发新消息,历史由上游维护
+	if cc.PreviousResponseID != "" {
+		completionReq.PreviousResponseID = cc.PreviousResponseID
+		completionReq.NewMessages = newMessages
+	}
 
-	if completionReq.StreamSpecified && completionReq.Stream {
-		session, err := chatService.StreamComplete(c.Request.Context(), completionReq)
-		if err != nil {
-			resp.ErrorMsg(c, http.StatusInternalServerError, 500, err.Error())
-			return
-		}
-		defer session.CleanupFunc()
-		defer session.UpstreamResp.Body.Close()
+	if stream {
+		playgroundStream(c, completionReq, cc, newMessages)
+		return
+	}
+	playgroundNonStream(c, completionReq, cc, newMessages)
+}
 
-		c.Header("Content-Type", "text/event-stream")
-		c.Header("Cache-Control", "no-cache")
-		c.Header("Connection", "keep-alive")
-		c.Header("X-Accel-Buffering", "no")
-		c.Status(http.StatusOK)
+// playgroundStream 流式:转发 SSE + 聚合 + 存会话 + 下发 prism-debug。
+func playgroundStream(c *gin.Context, req *service.CompletionRequest, cc *service.ConversationContext, newMessages []chat.ChatMessage) {
+	session, err := chatPipeline.StreamComplete(c.Request.Context(), req)
+	if err != nil {
+		resp.ErrorMsg(c, http.StatusInternalServerError, 500, err.Error())
+		return
+	}
+	defer session.Cleanup()
 
-		aggregation, streamErr := proxyPlaygroundStream(c, session.UpstreamResp)
-		_, finalizeErr := chatService.FinalizeStream(session, aggregation, streamErr)
-		if finalizeErr != nil {
-			resp.ErrorMsg(c, http.StatusInternalServerError, 500, finalizeErr.Error())
-			return
-		}
-		if streamErr != nil {
-			return
-		}
-		// 流式结束后下发 prism-debug 事件,前端据 request_log_id 拉取完整调试详情
-		// (与历史会话载入同源,确保"模式/上下文策略"等字段正确)
-		if session.RequestLog != nil && session.RequestLog.ID > 0 {
-			debugPayload, _ := json.Marshal(gin.H{"request_log_id": session.RequestLog.ID})
-			fmt.Fprintf(c.Writer, "event: prism-debug\ndata: %s\n\n", debugPayload)
-			c.Writer.Flush()
-		}
+	c.Header("Content-Type", "text/event-stream")
+	c.Header("Cache-Control", "no-cache")
+	c.Header("Connection", "keep-alive")
+	c.Header("X-Accel-Buffering", "no")
+	c.Status(http.StatusOK)
+
+	agg, streamErr := gwstream.ProxyStream(c.Writer, session.UpstreamResp.Body)
+	provRespID := session.FinalizeStream(agg, streamErr)
+	if streamErr != nil {
 		return
 	}
 
-	chatResp, err := chatService.Complete(c.Request.Context(), completionReq)
+	reqLogID := session.RequestLogID()
+	if agg != nil {
+		assistant := chat.ChatMessage{
+			Role:             "assistant",
+			Content:          agg.AssistantContent,
+			ReasoningContent: agg.ReasoningContent,
+		}
+		service.SaveConversationTurn(cc, req.UserID, req.TokenID, req.Model,
+			newMessages, assistant, agg.Usage, agg.FinishReason, provRespID, reqLogID)
+	}
+
+	// 下发 prism-debug 事件,前端据 request_log_id 拉完整调试详情
+	if reqLogID > 0 {
+		debugPayload, _ := json.Marshal(gin.H{"request_log_id": reqLogID})
+		fmt.Fprintf(c.Writer, "event: prism-debug\ndata: %s\n\n", debugPayload)
+		c.Writer.Flush()
+	}
+}
+
+// playgroundNonStream 非流式:补全 + 存会话 + 返回(带 debug 供前端展示)。
+func playgroundNonStream(c *gin.Context, req *service.CompletionRequest, cc *service.ConversationContext, newMessages []chat.ChatMessage) {
+	chatResp, err := chatPipeline.Complete(c.Request.Context(), req)
 	if err != nil {
 		resp.ErrorMsg(c, http.StatusInternalServerError, 500, err.Error())
 		return
 	}
 
+	if len(chatResp.Choices) > 0 {
+		convID := service.SaveConversationTurn(cc, req.UserID, req.TokenID, req.Model,
+			newMessages, chatResp.Choices[0].Message, chatResp.Usage,
+			chatResp.Choices[0].FinishReason, chatResp.ProviderResponseID, chatResp.RequestLogID)
+		if convID > 0 {
+			chatResp.ConversationID = fmt.Sprint(convID)
+		}
+	}
+
 	c.JSON(http.StatusOK, chatResp)
 }
 
-func proxyPlaygroundStream(c *gin.Context, upstreamResp *http.Response) (*service.StreamAggregationResult, error) {
-	aggregation := &service.StreamAggregationResult{}
-	reader := bufio.NewReader(upstreamResp.Body)
-	for {
-		line, err := reader.ReadString('\n')
-		if line != "" {
-			_, _ = c.Writer.Write([]byte(line))
-			c.Writer.Flush()
-			trimmed := strings.TrimSpace(line)
-			if strings.HasPrefix(trimmed, "data: ") {
-				payload := strings.TrimPrefix(trimmed, "data: ")
-				if payload != "[DONE]" {
-					mergeSSEChunk(aggregation, payload)
-				}
-			}
-		}
-		if err != nil {
-			if err == io.EOF {
-				return aggregation, nil
-			}
-			aggregation.ErrorMessage = err.Error()
-			return aggregation, err
-		}
-	}
-}
-
-func mergeSSEChunk(aggregation *service.StreamAggregationResult, payload string) {
-	var parsed struct {
-		Choices []struct {
-			Delta struct {
-				Content          string `json:"content"`
-				ReasoningContent string `json:"reasoning_content"`
-			} `json:"delta"`
-			FinishReason string `json:"finish_reason"`
-		} `json:"choices"`
-		Usage *chat.ChatUsage `json:"usage"`
-		Error any             `json:"error"`
-		ProviderResponseID string `json:"provider_response_id"`
-	}
-	if err := json.Unmarshal([]byte(payload), &parsed); err != nil {
-		return
-	}
-	if parsed.ProviderResponseID != "" {
-		aggregation.ProviderResponseID = parsed.ProviderResponseID
-	}
-	if len(parsed.Choices) > 0 {
-		choice := parsed.Choices[0]
-		aggregation.AssistantContent += choice.Delta.Content
-		aggregation.ReasoningContent += choice.Delta.ReasoningContent
-		if choice.FinishReason != "" {
-			aggregation.FinishReason = choice.FinishReason
-		}
-	}
-	if parsed.Usage != nil {
-		aggregation.Usage = parsed.Usage
-	}
-	if parsed.Error != nil {
-		aggregation.ErrorMessage = fmt.Sprint(parsed.Error)
-	}
-	aggregation.ResponsePreview = truncateForStreamPreview(aggregation.AssistantContent)
-	aggregation.ResponseBody = payload
-}
-
-func truncateForStreamPreview(value string) string {
-	runes := []rune(value)
-	if len(runes) <= 500 {
-		return value
-	}
-	return string(runes[:500]) + "..."
-}

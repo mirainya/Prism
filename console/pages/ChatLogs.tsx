@@ -14,8 +14,9 @@ import {
     Image as ImageIcon,
     FileText
 } from 'lucide-react';
-import {fetchConversations, fetchConversationMessages, ConversationListParams, fetchChatModels} from '../services/api';
-import {Conversation, ChatMessage, ChatModel, UserRole} from '../types';
+import {fetchConversations, fetchConversationMessages, ConversationListParams} from '../services/api';
+import {fetchGwModels, GwModel} from '../services/gatewayApi';
+import {Conversation, ChatMessage, UserRole} from '../types';
 import ModelSelector from './playground/ModelSelector';
 
 const isAdmin = () => {
@@ -91,7 +92,7 @@ const ChatLogs: React.FC = () => {
     const [page, setPage] = useState(1);
     const [pageSize] = useState(20);
     const [isLoading, setIsLoading] = useState(true);
-    const [models, setModels] = useState<ChatModel[]>([]);
+    const [models, setModels] = useState<GwModel[]>([]);
 
     // 抽屉状态
     const [isDrawerOpen, setIsDrawerOpen] = useState(false);
@@ -105,7 +106,7 @@ const ChatLogs: React.FC = () => {
 
     useEffect(() => {
         if (isAdmin()) {
-            fetchChatModels().then(setModels).catch(() => {
+            fetchGwModels().then(setModels).catch(() => {
             });
         }
     }, []);
@@ -179,7 +180,7 @@ const ChatLogs: React.FC = () => {
                     </div>
                     {isAdmin() && models.length > 0 && (
                         <ModelSelector
-                            options={models.map(m => ({ id: m.code, label: m.name, provider: m.provider }))}
+                            options={models.map(m => ({ id: m.model_name, label: m.display_name || m.model_name }))}
                             value={filters.model ?? ''}
                             onChange={v => { setFilters({...filters, model: v}); setPage(1); }}
                             allOption="所有模型"

@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { Book, Search, Copy, Check, ChevronDown, ChevronRight, Play, Loader2, Zap, MessageSquare, ListChecks, Bell, AlertTriangle, RefreshCw } from 'lucide-react';
 import { fetchDocsModels, DocsModel } from '../services/docsApi';
+import { fetchGwModels } from '../services/gatewayApi';
 import { fetchTokens } from '../services/api';
 import { ApiToken } from '../types';
 import { TryItDrawer } from './TryItDrawer';
@@ -229,9 +230,21 @@ const ApiDocs: React.FC = () => {
   useEffect(() => {
     Promise.all([
       fetchDocsModels().catch(() => []),
+      fetchGwModels().catch(() => []),
       fetchTokens().then((list: ApiToken[]) => list.filter(t => t.status === 'active')).catch(() => []),
-    ]).then(([m, t]) => {
-      setModels(m);
+    ]).then(([caps, gwModels, t]) => {
+      // caps 是老 models 表(现只剩 image/video 能力);chat 模型已迁网关,从 gw 拉取补进来
+      const chatDocs: DocsModel[] = gwModels
+        .filter(g => g.key_available > 0)
+        .map(g => ({
+          code: g.model_name,
+          name: g.display_name || g.model_name,
+          type: 'chat',
+          description: '',
+          param_schema: null,
+          channels: [],
+        }));
+      setModels([...chatDocs, ...caps]);
       setTokens(t);
       setLoading(false);
     });

@@ -8,6 +8,7 @@ import Pricing from './pages/Pricing';
 // 登录后的页面按路由懒加载,避免全部打进首屏主 bundle
 const Dashboard = lazy(() => import('./pages/Dashboard'));
 const Channels = lazy(() => import('./pages/Channels'));
+const GatewayChannels = lazy(() => import('./pages/GatewayChannels'));
 const Capabilities = lazy(() => import('./pages/Capabilities'));
 const Users = lazy(() => import('./pages/Users'));
 const Tokens = lazy(() => import('./pages/Tokens'));
@@ -15,7 +16,7 @@ const Logs = lazy(() => import('./pages/Logs'));
 const RequestLogs = lazy(() => import('./pages/RequestLogs'));
 const ApiDocs = lazy(() => import('./pages/ApiDocs'));
 const ChatLogs = lazy(() => import('./pages/ChatLogs'));
-const ChatModels = lazy(() => import('./pages/ChatModels'));
+const ChatModels = lazy(() => import('./pages/GatewayModels'));
 const ChangePassword = lazy(() => import('./pages/ChangePassword'));
 const Playground = lazy(() => import('./pages/Playground'));
 import { User, UserRole } from './types';
@@ -255,6 +256,7 @@ const App: React.FC = () => {
           {isAdmin && (
             <>
               <Route path="/channels" element={<Channels />} />
+              <Route path="/gateway-channels" element={<GatewayChannels />} />
               <Route path="/chat-models" element={<ChatModels />} />
               <Route path="/capabilities" element={<Capabilities />} />
               <Route path="/users" element={<Users />} />

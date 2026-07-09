@@ -57,6 +57,7 @@ func NewProvider(channel *model.Channel, account *model.ChannelAccount, endpoint
 		PollResponseMapping: pollResponseMapping,
 		CallbackMapping:     callbackMapping,
 		Timeout:             endpoint.Timeout,
+		Streaming:           endpoint.InteractionMode == model.ModeStream,
 	}
 
 	return base, nil

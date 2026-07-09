@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"regexp"
 	"strings"
+	"time"
 
 	"github.com/mirainya/Prism/internal/model"
 	"github.com/mirainya/Prism/internal/provider"
@@ -28,6 +29,10 @@ type InvokeRequest struct {
 	InteractionMode string
 	CallbackURL     string
 	Params          map[string]any
+	// Async=true 时,sync/stream 模式不阻塞等待出图:立即返回 task_no+processing,
+	// 后台 goroutine 跑 executeSyncWithFallback,由前端轮询取终态。
+	// 仅 playground 置 true;对外 OpenAI 等接口须同步返图,保持 false。
+	Async bool
 }
 
 // InvokeResponse 能力调用响应
@@ -55,9 +60,9 @@ func (s *UnifiedService) Invoke(ctx context.Context, req *InvokeRequest) (*Invok
 		if err := model.DB().First(&ch, ep.ChannelID).Error; err != nil {
 			continue
 		}
-		acc, err := s.selectAccount(ch.ID, ep.ModelCode, nil)
+		acc, err := s.selectAccountForEndpoint(ep, nil)
 		if err != nil {
-			continue // 该端点渠道无可用账号,试下一个
+			continue // 该端点无可用账号(绑定 key 不可用 / 渠道池空),试下一个
 		}
 		channel, account, chosen = ch, acc, ep
 		break
@@ -105,6 +110,28 @@ func (s *UnifiedService) Invoke(ctx context.Context, req *InvokeRequest) (*Invok
 
 	// sync/stream 模式直接执行(含换账号 + 跨端点/渠道 fallback)
 	if chosen.InteractionMode == model.ModeSync || chosen.InteractionMode == model.ModeStream {
+		// Async: 不阻塞 HTTP 请求,后台跑同步执行,前端轮询取终态(用于 playground 慢上游体验)
+		if req.Async {
+			taskSvc.UpdateTaskStatus(task.ID, model.TaskStatusProcessing, "")
+			// HTTP ctx 会在响应返回后取消,后台须用独立 ctx;600s 上限兜底防 goroutine 永久挂起
+			// (stream 模式内部另有 endpoint.Timeout 派生的 deadline,此处仅是外层保险)。
+			go func(ep model.Endpoint, ch model.Channel, acc model.ChannelAccount) {
+				defer func() {
+					if r := recover(); r != nil {
+						logger.Error("async capability execution panicked",
+							zap.Uint("task_id", task.ID), zap.Any("panic", r))
+						taskSvc.UpdateTaskFail(task.ID, fmt.Sprintf("async execution panicked: %v", r))
+					}
+				}()
+				bgCtx, cancel := context.WithTimeout(context.Background(), 600*time.Second)
+				defer cancel()
+				if _, err := s.executeSyncWithFallback(bgCtx, task, req, endpoints, &ep, &ch, &acc); err != nil {
+					logger.Warn("async capability execution failed",
+						zap.Uint("task_id", task.ID), zap.Error(err))
+				}
+			}(*chosen, channel, *account)
+			return &InvokeResponse{TaskID: task.TaskNo, Status: string(model.TaskStatusProcessing)}, nil
+		}
 		return s.executeSyncWithFallback(ctx, task, req, endpoints, chosen, &channel, account)
 	}
 
@@ -155,7 +182,7 @@ func (s *UnifiedService) executeSyncWithFallback(ctx context.Context, task *mode
 
 		for attempt := 0; attempt < accountPerEndpoint; attempt++ {
 			if account == nil {
-				next, err := s.selectAccount(channel.ID, ep.ModelCode, excludeAccountIDs)
+				next, err := s.selectAccountForEndpoint(ep, excludeAccountIDs)
 				if err != nil {
 					break
 				}

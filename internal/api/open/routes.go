@@ -20,7 +20,8 @@ func RegisterRoutes(group *gin.RouterGroup) {
 	group.POST("/videos/generations", CreateVideoGeneration)
 
 	// Chat 接口
-	group.POST("/chat/completions", ChatCompletions)
+	// 注意: chat/completions 已切到网关 pipeline(见 router.go gw.RegisterChat),
+	// 此处只保留模型元数据查询接口。
 	group.GET("/models", ListChatModelsPublic)
 	group.GET("/models/:code", GetChatModelDetail)
 }

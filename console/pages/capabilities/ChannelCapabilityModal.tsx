@@ -23,15 +23,17 @@ const ChannelCapabilityModal: React.FC<{
     channels: Channel[];
     capabilities: Capability[];
     defaultChannelId?: number;
+    defaultAccountId?: number;
     onClose: () => void;
     onSave: () => void;
-}> = ({isOpen, capabilityCode, channelCapability, channels, capabilities, defaultChannelId, onClose, onSave}) => {
+}> = ({isOpen, capabilityCode, channelCapability, channels, capabilities, defaultChannelId, defaultAccountId, onClose, onSave}) => {
     const [activeTab, setActiveTab] = useState<'basic' | 'request' | 'param' | 'response' | 'poll_response' | 'callback' | 'schema'>('basic');
     const [form, setForm] = useState({
         channel_id: 0, capability_code: '', model: '', name: '', price: 0, price_unit: 'request',
         result_mode: 'poll', request_path: '', request_method: 'POST', content_type: 'application/json',
         auth_location: 'header', auth_key: 'Authorization', auth_value_prefix: 'Bearer ',
         poll_path: '', poll_method: 'GET', poll_interval: 5, poll_max_attempts: 60, transfer_enabled: false,
+        account_id: 0,
     });
     const [paramFieldMappings, setParamFieldMappings] = useState<FieldMapping[]>([]);
     const [paramValueMappings, setParamValueMappings] = useState<ValueMapping[]>([]);
@@ -58,6 +60,7 @@ const ChannelCapabilityModal: React.FC<{
         if (channelCapability) {
             setForm({
                 channel_id: Number(channelCapability.channelId),
+                account_id: Number(channelCapability.accountId) || 0,
                 capability_code: channelCapability.capabilityCode,
                 model: channelCapability.model || '',
                 name: channelCapability.name || '',
@@ -120,6 +123,7 @@ const ChannelCapabilityModal: React.FC<{
         } else {
             setForm({
                 channel_id: defaultChannelId || (channels[0]?.id ? Number(channels[0].id) : 0),
+                account_id: defaultAccountId || 0,
                 capability_code: capabilityCode, model: '', name: '', price: 0, price_unit: 'request',
                 result_mode: 'poll', request_path: '', request_method: 'POST', content_type: 'application/json',
                 auth_location: 'header', auth_key: 'Authorization', auth_value_prefix: 'Bearer ',
@@ -134,6 +138,32 @@ const ChannelCapabilityModal: React.FC<{
         }
         setActiveTab('basic');
     }, [channelCapability, capabilityCode, channels, isOpen, defaultChannelId]);
+
+    const baseTabs = [
+        {key: 'basic', label: '基本信息'},
+        {key: 'request', label: '请求配置'},
+        {key: 'schema', label: '参数Schema'},
+        {key: 'param', label: '参数映射'},
+        {key: 'response', label: '响应映射'},
+    ];
+    const tabs = (() => {
+        // 流式响应经 SSE 直接抠图,响应映射不生效,隐藏该 tab
+        if (form.result_mode === 'stream') return baseTabs.filter(t => t.key !== 'response');
+        if (form.result_mode === 'sync') return baseTabs;
+        if (form.result_mode === 'poll') {
+            const t = [...baseTabs];
+            if (useSeparatePollMapping) t.push({key: 'poll_response', label: '轮询响应'});
+            t.push({key: 'callback', label: '回调映射'});
+            return t;
+        }
+        return [...baseTabs, {key: 'callback', label: '回调映射'}];
+    })();
+
+    // 切换模式后当前 tab 若被隐藏(如流式隐去响应映射),回退到基本信息避免空白
+    // 注意: 必须在 early-return 之前,否则 isOpen 切换导致 hooks 数量变化(React #310)
+    useEffect(() => {
+        if (!tabs.some(t => t.key === activeTab)) setActiveTab('basic');
+    }, [tabs, activeTab]);
 
     if (!isOpen) return null;
 
@@ -156,8 +186,8 @@ const ChannelCapabilityModal: React.FC<{
                 if (Object.keys(statusMap).length > 0) callbackMapping.status_mapping = statusMap;
             }
             const data: Record<string, any> = {
-                channel_id: form.channel_id, model_code: form.capability_code, model: form.model, name: form.name,
-                price: form.price, price_unit: form.price_unit, result_mode: form.result_mode,
+                channel_id: form.channel_id, account_id: form.account_id, model_code: form.capability_code, model: form.model, name: form.name,
+                price: form.price, price_unit: form.price_unit, interaction_mode: form.result_mode,
                 request_path: form.request_path, request_method: form.request_method, content_type: form.content_type,
                 auth_location: form.auth_location, auth_key: form.auth_key, auth_value_prefix: form.auth_value_prefix,
                 poll_path: form.poll_path, poll_method: form.poll_method, poll_interval: form.poll_interval,
@@ -169,6 +199,7 @@ const ChannelCapabilityModal: React.FC<{
             } else {
                 data.param_schema = null;
             }
+            // 流式(stream)走 SSE 直抠 b64,不经 ResponseMapping,故不下发响应映射
             if (form.result_mode === 'sync' || form.result_mode === 'poll') data.response_mapping = responseMapping;
             if (form.result_mode === 'poll') {
                 if (pollResponseMapping) data.poll_response_mapping = pollResponseMapping;
@@ -187,24 +218,6 @@ const ChannelCapabilityModal: React.FC<{
             setLoading(false);
         }
     };
-
-    const baseTabs = [
-        {key: 'basic', label: '基本信息'},
-        {key: 'request', label: '请求配置'},
-        {key: 'schema', label: '参数Schema'},
-        {key: 'param', label: '参数映射'},
-        {key: 'response', label: '响应映射'},
-    ];
-    const tabs = (() => {
-        if (form.result_mode === 'sync') return baseTabs;
-        if (form.result_mode === 'poll') {
-            const t = [...baseTabs];
-            if (useSeparatePollMapping) t.push({key: 'poll_response', label: '轮询响应'});
-            t.push({key: 'callback', label: '回调映射'});
-            return t;
-        }
-        return [...baseTabs, {key: 'callback', label: '回调映射'}];
-    })();
 
     const addParamFieldMapping = (stdField: string) => {
         if (!paramFieldMappings.find(m => m.stdField === stdField))

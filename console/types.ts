@@ -74,6 +74,7 @@ export interface Capability {
   standardParams: CapabilityStandardParams;
   standardResponse: Record<string, any>;
   status: number;
+  sort: number;
   createdAt: string;
   updatedAt: string;
 }
@@ -82,6 +83,7 @@ export interface Capability {
 export interface ChannelCapability {
   id: string;
   channelId: string;
+  accountId: string;
   capabilityCode: string;
   model: string;
   name: string;
@@ -265,47 +267,10 @@ export interface ThinkingConfig {
   options: ThinkingOption[];
 }
 
-export interface ChatModel {
-  id: number;
-  code: string;
-  name: string;
-  provider: string;
-  description: string;
-  features?: string[];
-  maxTokens?: number;
-  thinkingConfig?: ThinkingConfig | null;
-  sort?: number;
-  status: number;
-  createdAt: string;
-  updatedAt: string;
-}
-
-export interface ChatModelChannel {
-  id: number;
-  modelCode: string;
-  channelId: number;
-  vendorModel: string;
-  protocol?: string;
-  priority: number;
-  priceMode: 'token' | 'request';
-  inputPrice: number;
-  outputPrice: number;
-  requestPath: string;
-  timeout: number;
-  supportsStream?: boolean;
-  defaultStream?: boolean;
-  extraHeaders: Record<string, string>;
-  extraConfig: Record<string, any>;
-  status: number;
-  createdAt: string;
-  updatedAt: string;
-  chatModel?: ChatModel;
-  channel?: Channel;
-}
-
 export interface PlaygroundModelInfo {
   id: string;
   owned_by: string;
+  group?: string; // 分组名(手动组名/源渠道/未分组),与对话模型页同频
   supports_stream?: boolean;
   default_stream?: boolean;
   supports_tools?: boolean;

@@ -3,6 +3,7 @@ package model
 import (
 	"time"
 
+	"github.com/shopspring/decimal"
 	"gorm.io/datatypes"
 )
 
@@ -56,4 +57,33 @@ type AccountModelState struct {
 
 func (AccountModelState) TableName() string {
 	return "account_model_states"
+}
+
+// AccountModel LLM 域路由关系表: 一行 = 某账号(key)能跑某 chat 模型 + per-key 请求/计费配置
+// 取代 chat 的 supported_models 白名单 + chat endpoints,成为 LLM 域唯一路由事实源。
+// 能力模型(image/video)不入此表,仍用 endpoints。
+type AccountModel struct {
+	ID        uint `gorm:"primaryKey" json:"id"`
+	AccountID uint `gorm:"not null;uniqueIndex:idx_am_account_model;comment:账号(key)ID" json:"account_id"`
+	// ModelCode 关联 models.code(type=chat)。协议不存这里——协议属 model(同模型协议固定),见 models.protocol
+	ModelCode string `gorm:"type:varchar(80);not null;uniqueIndex:idx_am_account_model;comment:模型标识" json:"model_code"`
+
+	// VendorModel 上游真实模型名(空=用 ModelCode)。同一模型不同 key 上游名可能不同(如 doubao 带版本号)
+	VendorModel string `gorm:"type:varchar(120);default:'';comment:上游模型名(空=用model_code)" json:"vendor_model"`
+
+	// Priority 候选排序(降序),降级轮换时按此取下一个候选
+	Priority int   `gorm:"default:0;index;comment:优先级(降序)" json:"priority"`
+	Status   int8  `gorm:"default:1;comment:状态(1启用/0禁用)" json:"status"`
+
+	// per-key 计费(chat 现价均为 0,迁移沿用现值)
+	PriceMode   string          `gorm:"type:varchar(10);default:'token';comment:计价模式" json:"price_mode"`
+	InputPrice  decimal.Decimal `gorm:"type:decimal(12,8);default:0;comment:输入价格" json:"input_price"`
+	OutputPrice decimal.Decimal `gorm:"type:decimal(12,8);default:0;comment:输出价格" json:"output_price"`
+
+	CreatedAt time.Time `json:"created_at"`
+	UpdatedAt time.Time `json:"updated_at"`
+}
+
+func (AccountModel) TableName() string {
+	return "account_models"
 }

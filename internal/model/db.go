@@ -30,5 +30,11 @@ func AutoMigrate() error {
 		&Message{},
 		&BillingLog{},
 		&AccountModelState{},
+		&AccountModel{},
+		// 网关 v2 路由表(与老表并存)
+		&GwChannel{},
+		&GwChannelKey{},
+		&GwAbility{},
+		&GwModelMeta{},
 	)
 }

@@ -45,8 +45,13 @@ type CompletionResponse struct {
 	Usage          *chat.ChatUsage       `json:"usage,omitempty"`
 	Debug          *PlaygroundDebugDetail `json:"debug,omitempty"`
 
-	// ProviderResponseID 火山 Responses 返回的 response_id(内部用于 B 模式回写,不对外输出)
-	ProviderResponseID string `json:"-"`
+	// ProviderResponseID 火山 Responses 返回的 response_id。
+	// 对外输出,供客户端托管的 B 模式续话:下轮请求带回 previous_response_id 即可只发新消息省 token。
+	ProviderResponseID string `json:"provider_response_id,omitempty"`
+
+	// RequestLogID 本次请求的 channel_request_logs 主键(内部用,不对外)。
+	// playground 据此下发 prism-debug 事件让前端拉完整调试详情。
+	RequestLogID uint `json:"-"`
 }
 
 // StreamAggregationResult 流式聚合结果

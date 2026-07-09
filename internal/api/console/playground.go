@@ -7,15 +7,23 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/mirainya/Prism/internal/api/middleware"
 	"github.com/mirainya/Prism/internal/api/resp"
+	"github.com/mirainya/Prism/internal/gateway/pipeline"
 	"github.com/mirainya/Prism/internal/model"
 	"github.com/mirainya/Prism/internal/service"
 	"github.com/mirainya/Prism/pkg/errors"
 )
 
-var chatService = service.NewUnifiedService()
 var capabilityService = service.NewUnifiedService()
 var queryService = service.NewQueryService()
 var playgroundDashboardService = service.NewDashboardService()
+
+// chatPipeline 由 router 注入的共享网关 pipeline(playground chat 走它,与 /v1 同源)。
+var chatPipeline *pipeline.Pipeline
+
+// SetChatPipeline 注入共享 pipeline(在 router SetupRouter 装配时调用一次)。
+func SetChatPipeline(p *pipeline.Pipeline) {
+	chatPipeline = p
+}
 
 func getPlaygroundToken(c *gin.Context) (*model.Token, bool) {
 	userID := middleware.GetUserID(c)
@@ -59,7 +67,7 @@ func PlaygroundListModels(c *gin.Context) {
 	}
 	_ = token
 
-	models, err := chatService.ListPlaygroundModels(c.Request.Context(), token.ID)
+	models, err := service.NewGatewayAdminService().ListPlaygroundModels()
 	if err != nil {
 		resp.InternalError(c, errors.ErrInternalError)
 		return
@@ -77,6 +85,7 @@ func PlaygroundListModels(c *gin.Context) {
 			"supports_tools":           m.SupportsTools,
 			"supports_response_format": m.SupportsResponseFormat,
 			"supports_multimodal":      m.SupportsMultimodal,
+			"group":                    m.Group,
 			"thinking":                 m.Thinking,
 		})
 	}
@@ -117,6 +126,8 @@ func PlaygroundInvokeCapability(c *gin.Context) {
 		InteractionMode: body.InteractionMode,
 		CallbackURL:     body.CallbackURL,
 		Params:          body.Params,
+		// playground: sync/stream 慢上游不阻塞按钮,立即返回 task_no 由前端轮询
+		Async: true,
 	})
 	if err != nil {
 		resp.ErrorMsg(c, http.StatusInternalServerError, 500, err.Error())

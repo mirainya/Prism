@@ -25,6 +25,8 @@ type Model struct {
 	Name        string         `gorm:"type:varchar(100);not null;comment:显示名称" json:"name"`
 	Type        ModelType      `gorm:"type:varchar(20);not null;default:'chat';comment:模型类型" json:"type"`
 	Provider    string         `gorm:"type:varchar(30);default:'';comment:来源标识" json:"provider"`
+	// Protocol chat 去端点化后的协议类型(openai/anthropic/google/volcengine)。仅 chat 走合成虚拟端点时使用;空=openai
+	Protocol    Protocol       `gorm:"type:varchar(20);default:'openai';comment:协议类型(chat虚拟端点用)" json:"protocol"`
 	Description string         `gorm:"type:varchar(500);default:'';comment:模型描述" json:"description"`
 	Features    datatypes.JSON `gorm:"type:json;comment:能力标签" json:"features"`
 	ParamSchema datatypes.JSON `gorm:"type:json;comment:参数schema" json:"param_schema"`
@@ -78,6 +80,8 @@ type Endpoint struct {
 	BaseModel
 	ModelCode string `gorm:"type:varchar(80);not null;index;comment:模型标识" json:"model_code"`
 	ChannelID uint   `gorm:"not null;index;comment:渠道ID" json:"channel_id"`
+	// AccountID 所属账号(key)ID。能力端点(image/video)绑定到具体 key;0=渠道级(遗留,走账号池)
+	AccountID uint `gorm:"index;default:0;comment:所属账号(key)ID,0=渠道级兼容" json:"account_id"`
 
 	// 协议
 	Protocol      Protocol `gorm:"type:varchar(20);not null;default:'openai';comment:协议类型" json:"protocol"`

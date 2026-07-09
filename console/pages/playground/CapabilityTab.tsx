@@ -1,9 +1,9 @@
 import React, { useState, useEffect, useRef, useMemo, useCallback } from 'react';
 import {
-  Send, Loader2, Zap, AlertCircle, User as UserIcon,
-  ChevronDown, ChevronRight, Bug,
-  SlidersHorizontal, Plus, Search,
-  X, CheckCircle2, XCircle, Upload
+  Send, Loader2, Zap, AlertCircle,
+  ChevronDown, ChevronRight,
+  SlidersHorizontal, Search,
+  X, CheckCircle2, XCircle, Upload, Image as ImageIcon
 } from 'lucide-react';
 import {
   playgroundListCapabilities, playgroundInvokeCapability,
@@ -14,13 +14,14 @@ import { TaskResult, Attachment } from './types';
 import StatusBadge from './StatusBadge';
 import ModelSelector from './ModelSelector';
 import EnumSelect from './EnumSelect';
-import { CapabilityDebugPanel, CapabilityResultCard } from './CapabilityResultCard';
+import { CapabilityDebugPanel } from './CapabilityResultCard';
+import { Modal } from '../../components/ui/Modal';
 import {
   ACCEPTED_FILE_TYPES, FALLBACK_STANDARD_PARAMS, LONG_TEXT_FIELDS, CONTROL_FIELDS,
-  CAPABILITY_TYPE_ORDER, formatTime, formatFileSize, getFileIcon,
-  extractCapabilityModel, extractCapabilityPrompt, getCapabilityPromptPreview,
+  CAPABILITY_TYPE_ORDER, formatFileSize, getFileIcon,
+  extractMediaItems, getCapabilityPromptPreview,
   getCapabilityTaskStatus, getCapabilityTypeBadgeClass, normalizeCapabilityValue,
-  extractCapabilitySchema, isUploadableField, buildResultSummary,
+  extractCapabilitySchema, isUploadableField,
 } from './utils';
 
 const CapabilityTab: React.FC<{ tokenId: string }> = ({ tokenId }) => {
@@ -35,7 +36,7 @@ const CapabilityTab: React.FC<{ tokenId: string }> = ({ tokenId }) => {
   const [selectedTaskNo, setSelectedTaskNo] = useState<string>('');
   const [taskFilter, setTaskFilter] = useState<'all' | 'current'>('current');
   const [taskSearch, setTaskSearch] = useState('');
-  const [showDebugDrawer, setShowDebugDrawer] = useState(false);
+  const [showDetailModal, setShowDetailModal] = useState(false);
   const [showParamPanel, setShowParamPanel] = useState(true);
   const [hasTouchedParamPanel, setHasTouchedParamPanel] = useState(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
@@ -238,7 +239,7 @@ const CapabilityTab: React.FC<{ tokenId: string }> = ({ tokenId }) => {
     });
   };
   useEffect(() => {
-    clearAllPolling(); setTasks([]); setSelectedTaskNo(''); setShowDebugDrawer(false);
+    clearAllPolling(); setTasks([]); setSelectedTaskNo(''); setShowDetailModal(false);
     setHasTouchedParamPanel(false); setShowParamPanel(true);
     if (!tokenId) return;
     loadCapabilityHistory().catch(() => setTasks([]));
@@ -358,24 +359,54 @@ const CapabilityTab: React.FC<{ tokenId: string }> = ({ tokenId }) => {
       setIsSubmitting(false);
     }
   };
+
+  const openTaskDetail = (taskNo: string) => { setSelectedTaskNo(taskNo); setShowDetailModal(true); };
+
+  // 画廊大图卡: 正方形大图 + 底部状态/prompt,点击弹出详情
+  const renderGalleryCard = (task: TaskResult) => {
+    const taskStatus = getCapabilityTaskStatus(task.status);
+    const isProcessing = ['pending', 'processing', 'running'].includes(task.status);
+    const isSuccess = ['completed', 'success'].includes(task.status) && !!task.result;
+    const isSelected = selectedTaskNo === task.taskNo;
+    const thumb = isSuccess ? extractMediaItems(task.result, 'result', [], { capabilityType: task.capabilityType }).find(m => m.type === 'image') : undefined;
+    return (
+      <button key={task.taskNo} type="button" onClick={() => openTaskDetail(task.taskNo)}
+        className={`group text-left rounded-xl border overflow-hidden bg-[var(--surface-card)] transition-colors ${isSelected ? 'border-indigo-300 ring-2 ring-indigo-100' : 'border-[var(--border-soft)] hover:border-gray-300'}`}>
+        {/* 大图区(正方形) */}
+        <div className="relative aspect-square bg-[var(--surface)] flex items-center justify-center overflow-hidden">
+          {isProcessing ? (
+            <div className="flex flex-col items-center gap-1.5 text-[var(--text-secondary)]">
+              <Loader2 size={26} className="animate-spin text-[var(--primary)]" />
+              <span className="text-xs">{task.progress || 0}%</span>
+              <button type="button" onClick={e => { e.stopPropagation(); if (tokenId) playgroundCancelTask(tokenId, task.taskNo).then(() => setTasks(prev => prev.map(t => t.taskNo === task.taskNo ? {...t, status: 'cancelled'} : t))); }} className="mt-1 px-2 py-0.5 text-[11px] text-red-600 hover:bg-red-50 rounded border border-red-200">取消</button>
+            </div>
+          ) : task.status === 'failed' ? (
+            <div className="flex flex-col items-center gap-1 px-2 text-center"><XCircle size={30} className="text-red-400" /><span className="text-[11px] text-red-400 line-clamp-2">{task.error || '任务失败'}</span></div>
+          ) : thumb ? (
+            <img src={thumb.url} alt="" className="w-full h-full object-cover transition-transform group-hover:scale-105" loading="lazy" />
+          ) : (
+            <ImageIcon size={32} strokeWidth={1.5} className="text-gray-300" />
+          )}
+          <span className="absolute top-1.5 left-1.5"><StatusBadge status={taskStatus} /></span>
+        </div>
+        {/* 底部信息 */}
+        <div className="p-2 space-y-1">
+          <div className="flex items-center gap-1.5 min-w-0">
+            <span className="text-xs font-medium text-[var(--text-primary)] truncate">{task.capabilityName || task.capability || '任务'}</span>
+            <span className="ml-auto shrink-0 text-[10px] text-[var(--text-tertiary)]">¥{Number(task.cost || 0).toFixed(4)}</span>
+          </div>
+          <p className="text-[11px] text-[var(--text-secondary)] leading-tight line-clamp-2 break-words">{getCapabilityPromptPreview(task)}</p>
+        </div>
+      </button>
+    );
+  };
   return (
     <div className="relative h-[calc(100dvh-180px)] md:h-[calc(100dvh-220px)] overflow-hidden">
       <input ref={capFileInputRef} type="file" accept={ACCEPTED_FILE_TYPES} className="hidden"
         onChange={e => { const file = e.target.files?.[0]; if (file && capUploadingField) handleFieldUpload(capUploadingField, file); e.target.value = ''; setCapUploadingField(null); }} />
-      {showDebugDrawer && (
-        <>
-          <div className="absolute inset-0 z-20 bg-black/20 xl:hidden" onClick={() => setShowDebugDrawer(false)} />
-          <div className="absolute inset-y-0 right-0 z-30 w-full max-w-[28rem] p-2 xl:hidden">
-            <div className="relative h-full">
-              <button type="button" onClick={() => setShowDebugDrawer(false)} className="absolute right-3 top-3 z-10 px-2 py-1 rounded-md bg-[var(--surface-card)]/90 border border-[var(--border-soft)] text-xs text-[var(--text-secondary)] hover:text-[var(--text-primary)]">关闭</button>
-              <CapabilityDebugPanel task={selectedTask} />
-            </div>
-          </div>
-        </>
-      )}
 
-      <div className="h-full flex gap-4">
-        <div className="flex-1 flex flex-col bg-[var(--surface-card)] rounded-xl border border-[var(--border-soft)] overflow-hidden min-w-0">
+      <div className="h-full">
+        <div className="h-full flex flex-col bg-[var(--surface-card)] rounded-xl border border-[var(--border-soft)] overflow-hidden min-w-0">
           <div className="px-3 md:px-4 py-2 border-b border-[var(--border-soft)] flex items-center justify-between gap-2">
             <div className="flex items-center gap-2 text-sm font-medium text-[var(--text-primary)] min-w-0">
               <Zap size={15} /> <span className="hidden sm:inline">能力任务</span>
@@ -387,7 +418,6 @@ const CapabilityTab: React.FC<{ tokenId: string }> = ({ tokenId }) => {
                 <button type="button" onClick={() => setTaskFilter('all')} className={`px-2 py-1 rounded-md text-[11px] font-medium transition-all ${taskFilter === 'all' ? 'bg-[var(--surface-card)] text-[var(--primary)] shadow-sm' : 'text-[var(--text-secondary)]'}`}>全部</button>
                 <button type="button" onClick={() => setTaskFilter('current')} className={`px-2 py-1 rounded-md text-[11px] font-medium transition-all ${taskFilter === 'current' ? 'bg-[var(--surface-card)] text-[var(--primary)] shadow-sm' : 'text-[var(--text-secondary)]'}`}>当前</button>
               </div>
-              <button type="button" onClick={() => setShowDebugDrawer(true)} className="inline-flex items-center gap-1 px-2 py-1 rounded-lg border border-[var(--border-soft)] text-[11px] text-[var(--text-secondary)] hover:bg-[var(--surface)] xl:hidden" disabled={!selectedTask}><Bug size={12} /></button>
             </div>
           </div>
 
@@ -461,80 +491,17 @@ const CapabilityTab: React.FC<{ tokenId: string }> = ({ tokenId }) => {
             </div>
           </div>
 
-          <div className="px-4 py-1 border-b border-[var(--border-soft)] text-[11px] text-[var(--text-secondary)] flex items-center gap-3 flex-wrap">
-            <span>{selectedTask ? `当前任务 #${selectedTask.taskNo}` : '等待提交任务'}</span>
-            {selectedTask?.capabilityName || selectedTask?.capability ? <span>能力 {selectedTask.capabilityName || selectedTask.capability}</span> : null}
-            {selectedTask ? <span>模型 {extractCapabilityModel(selectedTask)}</span> : null}
-            {selectedTask ? <span>渠道 {selectedTask.channel || '自动选择'}</span> : null}
-            {selectedTask ? <span>费用 ¥{Number(selectedTask.cost || 0).toFixed(4)}</span> : null}
-          </div>
-          <div className="flex-1 overflow-y-auto p-4 space-y-4 min-h-0">
+          {/* 画廊网格: 大图卡片,点击弹出详情 */}
+          <div className="flex-1 overflow-y-auto p-4 min-h-0">
             {filteredTasks.length === 0 ? (
               <div className="flex flex-col items-center justify-center h-full text-gray-300">
                 <Zap size={56} strokeWidth={1} />
                 <p className="mt-3 text-sm">{taskSearch.trim() ? '没有匹配到任务，试试换个关键词' : (taskFilter === 'current' ? '当前能力下暂无任务，试试切到"全部"查看历史任务' : '选择能力，在底部输入 Prompt 开始调用')}</p>
               </div>
             ) : (
-              filteredTasks.map(task => {
-                const promptPreview = getCapabilityPromptPreview(task);
-                const resolvedModel = extractCapabilityModel(task);
-                const taskStatus = getCapabilityTaskStatus(task.status);
-                const isProcessing = ['pending', 'processing', 'running'].includes(task.status);
-                const isSuccess = ['completed', 'success'].includes(task.status) && !!task.result;
-                const isSelected = selectedTaskNo === task.taskNo;
-                return (
-                  <button key={task.taskNo} type="button"
-                    onClick={() => { setSelectedTaskNo(task.taskNo); if (window.innerWidth < 1280) setShowDebugDrawer(true); }}
-                    className={`w-full text-left rounded-2xl border overflow-hidden transition-colors ${isSelected ? 'border-indigo-200 ring-2 ring-indigo-100' : 'border-[var(--border-soft)] hover:border-gray-300'}`}>
-                    <div className="px-4 py-4 bg-gradient-to-b from-white to-gray-50 space-y-3">
-                      <div className="flex items-start justify-between gap-3">
-                        <div className="min-w-0 flex-1 space-y-3">
-                          <div className="flex items-center gap-2 flex-wrap">
-                            <StatusBadge status={taskStatus} />
-                            <span className="text-sm font-medium text-gray-800">{task.capabilityName || task.capability || '能力任务'}</span>
-                            <span className="text-xs text-[var(--text-secondary)]">{task.taskNo}</span>
-                          </div>
-                          <div className="grid gap-2 text-xs text-[var(--text-secondary)] sm:grid-cols-2 xl:grid-cols-4">
-                            <span>渠道：{task.channel || '自动选择'}</span>
-                            <span>实际模型：{resolvedModel}</span>
-                            <span>进度：{task.progress || 0}%</span>
-                            <span>时间：{formatTime(task.createdAt)}</span>
-                          </div>
-                          <div className="rounded-xl bg-[var(--primary)] text-white px-4 py-3 text-sm whitespace-pre-wrap break-words">{promptPreview}</div>
-                        </div>
-                        <div className="flex items-center gap-2 text-[var(--text-secondary)] flex-shrink-0">
-                          <UserIcon size={16} />
-                          {isSelected ? <ChevronDown size={16} /> : <ChevronRight size={16} />}
-                        </div>
-                      </div>
-                      <div>
-                        {isProcessing ? (
-                          <div className="rounded-xl bg-[var(--surface)] border border-[var(--border-soft)] p-4 space-y-3">
-                            <div className="flex items-center justify-between">
-                              <div className="flex items-center gap-2 text-[var(--text-secondary)] text-sm"><Loader2 size={16} className="animate-spin" /><span>任务正在处理中，请稍候...</span></div>
-                              <button type="button" onClick={e => { e.stopPropagation(); if (tokenId) playgroundCancelTask(tokenId, task.taskNo).then(() => setTasks(prev => prev.map(t => t.taskNo === task.taskNo ? {...t, status: 'cancelled'} : t))); }} className="px-2 py-1 text-xs text-red-600 hover:bg-red-50 rounded-lg border border-red-200">取消</button>
-                            </div>
-                            <div className="w-full bg-[var(--surface-card)] rounded-full h-1.5">
-                              <div className="bg-[var(--primary-lighter)]0 h-1.5 rounded-full transition-all duration-500" style={{ width: `${Math.max(task.progress, 8)}%` }} />
-                            </div>
-                          </div>
-                        ) : task.status === 'failed' ? (
-                          <div className="rounded-xl bg-red-50 border border-red-200 p-4 text-sm text-red-600 whitespace-pre-wrap">{task.error || '任务失败'}</div>
-                        ) : isSuccess ? (
-                          <div className="rounded-xl bg-emerald-50 border border-emerald-200 px-4 py-3 text-sm text-emerald-800">{buildResultSummary(task.result)}</div>
-                        ) : (
-                          <div className="rounded-xl bg-[var(--surface)] border border-[var(--border-soft)] p-4 text-sm text-[var(--text-secondary)]">暂无结果</div>
-                        )}
-                      </div>
-                      <div className="flex items-center gap-3 text-xs text-[var(--text-secondary)] flex-wrap">
-                        <span>费用 ¥{Number(task.cost || 0).toFixed(4)}</span>
-                        {task.vendorTaskId ? <span>vendor #{task.vendorTaskId}</span> : null}
-                        {extractCapabilityPrompt(task) ? <span>提示词长度 {extractCapabilityPrompt(task).length}</span> : null}
-                      </div>
-                    </div>
-                  </button>
-                );
-              })
+              <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 gap-3">
+                {filteredTasks.map(task => renderGalleryCard(task))}
+              </div>
             )}
           </div>
           {error && (
@@ -693,11 +660,12 @@ const CapabilityTab: React.FC<{ tokenId: string }> = ({ tokenId }) => {
             )}
           </div>
         </div>
-
-        <div className="hidden xl:flex xl:w-[24rem] xl:flex-shrink-0 xl:self-stretch min-w-0">
-          <CapabilityDebugPanel task={selectedTask} />
-        </div>
       </div>
+
+      {/* 任务详情弹窗: 大图 + 参数/调试 */}
+      <Modal open={showDetailModal && !!selectedTask} onClose={() => setShowDetailModal(false)} title={selectedTask ? `任务详情 #${selectedTask.taskNo}` : ''} width="max-w-4xl">
+        {selectedTask && <CapabilityDebugPanel task={selectedTask} embedded />}
+      </Modal>
     </div>
   );
 };

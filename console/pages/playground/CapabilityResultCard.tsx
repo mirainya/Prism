@@ -83,8 +83,9 @@ export const CapabilityResultCard: React.FC<{ task: TaskResult }> = ({ task }) =
     </div>
   );
 };
-export const CapabilityDebugPanel: React.FC<{ task: TaskResult | null }> = ({ task }) => {
+export const CapabilityDebugPanel: React.FC<{ task: TaskResult | null; embedded?: boolean }> = ({ task, embedded = false }) => {
   if (!task) {
+    if (embedded) return <div className="p-5 text-[var(--text-secondary)] text-sm text-center">选择一个任务后，可在这里查看调试详情</div>;
     return (
       <div className="bg-[var(--surface-card)] rounded-xl border border-[var(--border-soft)] overflow-hidden flex flex-col min-w-0 w-full h-full">
         <div className="px-4 py-3 border-b border-[var(--border-soft)] flex items-center gap-2 text-sm font-semibold text-[var(--text-primary)]">
@@ -101,12 +102,9 @@ export const CapabilityDebugPanel: React.FC<{ task: TaskResult | null }> = ({ ta
   const fullPrompt = extractCapabilityPrompt(task);
   const hasResult = ['completed', 'success'].includes(task.status) && task.result;
 
-  return (
-    <div className="bg-[var(--surface-card)] rounded-xl border border-[var(--border-soft)] overflow-hidden flex flex-col min-w-0 w-full h-full">
-      <div className="px-4 py-3 border-b border-[var(--border-soft)] flex items-center gap-2 text-sm font-semibold text-[var(--text-primary)]">
-        <Bug size={16} /> 能力调试详情
-      </div>
-      <div className="flex-1 overflow-y-auto p-4 space-y-4">
+  // embedded: 供 Modal 内使用,去掉外框/自带标题/h-full(Modal 已提供标题与滚动)
+  const body = (
+    <>
         <div className="rounded-lg border border-[var(--border-soft)] p-3 space-y-3 text-sm">
           <div className="flex items-center justify-between">
             <span className="text-[var(--text-secondary)]">状态</span>
@@ -133,7 +131,19 @@ export const CapabilityDebugPanel: React.FC<{ task: TaskResult | null }> = ({ ta
         <DetailSection title="后端映射参数" icon={<FileJson size={14} />} content={formatJson(task.mappedParams)} />
         <DetailSection title="标准结果" icon={<FileJson size={14} />} content={formatJson(task.result)} />
         <DetailSection title="供应商原始响应" icon={<FileJson size={14} />} content={formatJson(task.vendorResponse)} />
+    </>
+  );
+
+  if (embedded) {
+    return <div className="space-y-3">{body}</div>;
+  }
+
+  return (
+    <div className="bg-[var(--surface-card)] rounded-xl border border-[var(--border-soft)] overflow-hidden flex flex-col min-w-0 w-full h-full">
+      <div className="px-4 py-3 border-b border-[var(--border-soft)] flex items-center gap-2 text-sm font-semibold text-[var(--text-primary)]">
+        <Bug size={16} /> 能力调试详情
       </div>
+      <div className="flex-1 overflow-y-auto p-4 space-y-3">{body}</div>
     </div>
   );
 };

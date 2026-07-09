@@ -15,6 +15,7 @@ import (
 	"github.com/mirainya/Prism/internal/api/console"
 	"github.com/mirainya/Prism/internal/api/middleware"
 	"github.com/mirainya/Prism/internal/api/open"
+	"github.com/mirainya/Prism/internal/gateway"
 	"github.com/mirainya/Prism/internal/model"
 	"github.com/mirainya/Prism/pkg/cache"
 	"github.com/mirainya/Prism/pkg/metrics"
@@ -33,6 +34,7 @@ func SetupRouter() *gin.Engine {
 	// 注册在 RequestLogger 之前(成为更外层),确保日志中间件捕获到的是未压缩的响应体。
 	r.Use(gzip.Gzip(gzip.DefaultCompression, gzip.WithExcludedPaths([]string{
 		"/v1",
+		"/v2",
 		"/internal",
 		"/metrics",
 	})))
@@ -53,6 +55,11 @@ func SetupRouter() *gin.Engine {
 	// 公开接口 (无需登录)
 	console.RegisterPublicRoutes(r.Group("/api/public"))
 
+	// 网关 v2 (新 Adapter 架构)。/v1 与 /v2 共享同一 pipeline 实例(熔断/计费统一)。
+	// 提前构造:playground(console) 也复用同一 pipeline,故先建再注入 console。
+	gw := gateway.New()
+	console.SetChatPipeline(gw.Pipeline())
+
 	// 控制台 API (需要 JWT 认证)
 	consoleGroup := r.Group("/api")
 	consoleGroup.Use(middleware.JWTAuth())
@@ -63,10 +70,17 @@ func SetupRouter() *gin.Engine {
 	adminGroup.Use(middleware.JWTAuth(), middleware.AdminOnly())
 	admin.RegisterRoutes(adminGroup)
 
-	// v1 API (Token 鉴权，用于 AI 调用)
+	// v1 API (Token 鉴权，用于 AI 调用)。chat/completions 已切到网关 pipeline,
+	// 其余(capabilities/images/videos/models)仍由 open 处理。
 	apiV1 := r.Group("/v1")
 	apiV1.Use(middleware.Auth(), middleware.RateLimitByToken())
+	gw.RegisterChat(apiV1)
 	open.RegisterRoutes(apiV1)
+
+	// v2 网关影子端点，与 /v1 并存供对比验证
+	apiV2 := r.Group("/v2")
+	apiV2.Use(middleware.Auth(), middleware.RateLimitByToken())
+	gw.RegisterRoutes(apiV2)
 
 	// 内部接口 (上游回调)
 	internalGroup := r.Group("/internal")
@@ -90,7 +104,7 @@ func SetupRouter() *gin.Engine {
 			c.JSON(http.StatusNotFound, gin.H{"error": "not found"})
 			return
 		}
-		if strings.HasPrefix(c.Request.URL.Path, "/v1") {
+		if strings.HasPrefix(c.Request.URL.Path, "/v1") || strings.HasPrefix(c.Request.URL.Path, "/v2") {
 			c.JSON(http.StatusNotFound, gin.H{"error": "not found"})
 			return
 		}

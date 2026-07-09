@@ -47,6 +47,7 @@ func (s *EndpointAdminService) GetEndpoint(id uint) (*model.Endpoint, error) {
 type CreateEndpointRequest struct {
 	ModelCode       string          `json:"model_code" binding:"required"`
 	ChannelID       uint            `json:"channel_id" binding:"required"`
+	AccountID       uint            `json:"account_id"`
 	Protocol        string          `json:"protocol"`
 	RequestPath     string          `json:"request_path"`
 	RequestMethod   string          `json:"request_method"`
@@ -88,6 +89,7 @@ func (s *EndpointAdminService) CreateEndpoint(req *CreateEndpointRequest) (*mode
 	ep := &model.Endpoint{
 		ModelCode:       req.ModelCode,
 		ChannelID:       req.ChannelID,
+		AccountID:       req.AccountID,
 		Protocol:        model.Protocol(req.Protocol),
 		RequestPath:     req.RequestPath,
 		RequestMethod:   req.RequestMethod,

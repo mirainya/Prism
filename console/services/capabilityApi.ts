@@ -23,6 +23,7 @@ export const fetchCapabilities = async (): Promise<Capability[]> => {
     standardParams: c.param_schema || c.standard_params || {},
     standardResponse: c.standard_response || {},
     status: c.status,
+    sort: c.sort ?? 0,
     createdAt: c.created_at,
     updatedAt: c.updated_at,
   }));
@@ -38,6 +39,7 @@ export const getCapability = async (code: string): Promise<Capability> => {
     standardParams: c.param_schema || c.standard_params || {},
     standardResponse: c.standard_response || {},
     status: c.status,
+    sort: c.sort ?? 0,
     createdAt: c.created_at,
     updatedAt: c.updated_at,
   };
@@ -63,6 +65,7 @@ export const createCapability = async (data: {
     standardParams: c.param_schema || c.standard_params || {},
     standardResponse: c.standard_response || {},
     status: c.status,
+    sort: c.sort ?? 0,
     createdAt: c.created_at,
     updatedAt: c.updated_at,
   };
@@ -87,6 +90,11 @@ export const deleteCapability = async (code: string): Promise<void> => {
   await request(`/admin/capabilities/${code}`, { method: 'DELETE' });
 };
 
+// 按传入 code 顺序调整能力排序(后端写 sort DESC)
+export const reorderCapabilities = async (codes: string[]): Promise<void> => {
+  await request('/admin/capabilities/reorder', { method: 'POST', body: JSON.stringify({ codes }) });
+};
+
 // 渠道能力配置管理
 export const fetchChannelCapabilities = async (channelId?: string, capabilityCode?: string): Promise<ChannelCapability[]> => {
   const params = new URLSearchParams();
@@ -98,6 +106,7 @@ export const fetchChannelCapabilities = async (channelId?: string, capabilityCod
   return data.map(cc => ({
     id: String(cc.id),
     channelId: String(cc.channel_id),
+    accountId: String(cc.account_id || 0),
     capabilityCode: cc.model_code || cc.capability_code,
     model: cc.vendor_model || '',
     name: cc.name || (cc.model && cc.model.name) || '',
@@ -135,6 +144,7 @@ export const getChannelCapability = async (id: string): Promise<ChannelCapabilit
   return {
     id: String(cc.id),
     channelId: String(cc.channel_id),
+    accountId: String(cc.account_id || 0),
     capabilityCode: cc.model_code || cc.capability_code,
     model: cc.vendor_model || '',
     name: cc.name || (cc.model && cc.model.name) || '',
@@ -169,12 +179,13 @@ export const getChannelCapability = async (id: string): Promise<ChannelCapabilit
 
 export const createChannelCapability = async (data: {
   channel_id: number;
+  account_id?: number;
   model_code: string;
   model?: string;
   name?: string;
   price?: number;
   price_unit?: string;
-  result_mode?: string;
+  interaction_mode?: string;
   request_path?: string;
   request_method?: string;
   content_type?: string;
@@ -193,6 +204,7 @@ export const createChannelCapability = async (data: {
   return {
     id: String(cc.id),
     channelId: String(cc.channel_id),
+    accountId: String(cc.account_id || 0),
     capabilityCode: cc.model_code || cc.capability_code,
     model: cc.vendor_model || '',
     name: cc.name || (cc.model && cc.model.name) || '',
@@ -252,29 +264,7 @@ export const fetchCapabilityChannels = async (): Promise<CapabilityWithChannels[
     }));
 };
 
-// 用户级 API - 获取 Chat 模型及可用渠道列表
-export const fetchChatModelChannelsForToken = async (): Promise<CapabilityWithChannels[]> => {
-    const data = await request<any[]>('/chat-model-channels');
-    return data.map(c => ({
-        code: c.code,
-        name: c.name,
-        type: c.type,
-        description: c.description,
-        channels: (c.channels || []).map((ch: any) => ({
-            channelId: ch.channel_id,
-      channelType: ch.channel_type,
-            channelName: ch.channel_name,
-            model: ch.model,
-            price: ch.price,
-    })),
-  }));
-};
-
-// 用户级 API - 获取所有能力和 Chat 模型的渠道列表（合并）
+// 用户级 API - 获取所有能力的渠道列表(chat 已迁网关,不再合并老 chat-model-channels)
 export const fetchAllCapabilityChannels = async (): Promise<CapabilityWithChannels[]> => {
-    const [capabilities, chatModels] = await Promise.all([
-        fetchCapabilityChannels(),
-        fetchChatModelChannelsForToken(),
-    ]);
-    return [...capabilities, ...chatModels];
+    return fetchCapabilityChannels();
 };

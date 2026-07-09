@@ -20,12 +20,3 @@ func ListCapabilityChannels(c *gin.Context) {
 	resp.Success(c, result)
 }
 
-// ListChatModelChannelsForToken 返回每个 Chat 模型可用的渠道列表
-func ListChatModelChannelsForToken(c *gin.Context) {
-	result, err := queryServiceConsole.ListChatModelChannelsForToken()
-	if err != nil {
-		resp.ErrorMsg(c, http.StatusInternalServerError, 500, "failed to get model channels")
-		return
-	}
-	resp.Success(c, result)
-}

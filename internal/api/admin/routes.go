@@ -29,6 +29,7 @@ func RegisterRoutes(group *gin.RouterGroup) {
 
 	// 能力管理
 	group.GET("/capabilities", ListCapabilities)
+	group.POST("/capabilities/reorder", ReorderCapabilities)
 	group.GET("/capabilities/:code", GetCapability)
 	group.POST("/capabilities", CreateCapability)
 	group.PUT("/capabilities/:code", UpdateCapability)
@@ -46,28 +47,31 @@ func RegisterRoutes(group *gin.RouterGroup) {
 	group.GET("/request-logs/:id", GetRequestLog)
 	group.POST("/request-logs/:id/retry", RetryRequest)
 
-	// Chat 模型管理
-	group.GET("/chat-models", ListChatModels)
-	group.GET("/chat-models/presets", GetChatModelPresets)
-	group.POST("/chat-models/quick-setup", QuickSetupChatModels)
-	group.POST("/chat-models/reorder", ReorderChatModels)
-	group.GET("/chat-models/:code", GetChatModel)
-	group.POST("/chat-models", CreateChatModel)
-	group.PUT("/chat-models/:code", UpdateChatModel)
-	group.DELETE("/chat-models/:code", DeleteChatModel)
+	// 网关 v2 路由表(gw_*)管理:渠道/key/能力/元数据 + 以 key 为单位拉取导入
+	gw := group.Group("/gw")
+	{
+		gw.GET("/channels", ListGwChannels)
+		gw.POST("/channels", CreateGwChannel)
+		gw.POST("/channels/reorder", ReorderGwChannels)
+		gw.GET("/channels/:id", GetGwChannel)
+		gw.PUT("/channels/:id", UpdateGwChannel)
+		gw.DELETE("/channels/:id", DeleteGwChannel)
+		gw.GET("/channels/:id/keys", ListGwKeys)
+		gw.GET("/keys/:id/discover", DiscoverGwKeyModels) // 用该 key 调上游 /v1/models
+		gw.POST("/keys/:id/import", ImportGwKeyModels)    // 导入选中模型到 gw_abilities
 
-	// Chat 模型渠道映射
-	group.GET("/chat-model-channels", ListChatModelChannels)
-	group.GET("/chat-model-channels/:id", GetChatModelChannel)
-	group.POST("/chat-model-channels", CreateChatModelChannel)
-	group.PUT("/chat-model-channels/:id", UpdateChatModelChannel)
-	group.DELETE("/chat-model-channels/:id", DeleteChatModelChannel)
+		gw.POST("/keys", CreateGwKey)
+		gw.PUT("/keys/:id", UpdateGwKey)
+		gw.DELETE("/keys/:id", DeleteGwKey)
 
-	// 模型发现
-	group.POST("/discovery/sync", SyncAllModels)
-	group.POST("/discovery/sync/:channel_id", SyncChannelModels)
-	group.GET("/discovery/pending", ListPendingModels)
-	group.POST("/discovery/approve", ApproveModels)
-	group.POST("/discovery/reject", RejectModels)
-	group.GET("/models/:code/meta", GetModelMeta)
+		gw.GET("/abilities", ListGwAbilities) // ?model=&channel_id=&key_id=
+		gw.PUT("/abilities/:id", UpdateGwAbility)
+		gw.DELETE("/abilities/:id", DeleteGwAbility)
+
+		gw.GET("/models", ListGwModels) // 对话模型页:可路由模型+元数据+可用性
+		gw.POST("/models/reorder", ReorderGwModels)
+		gw.GET("/model-meta", ListGwModelMeta)
+		gw.PUT("/model-meta/:model_name", UpsertGwModelMeta)
+		gw.DELETE("/model-meta/:model_name", DeleteGwModelMeta)
+	}
 }

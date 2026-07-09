@@ -485,7 +485,7 @@ const ChatTab: React.FC<{ tokenId: string }> = ({ tokenId }) => {
         <div className="flex-1 flex flex-col bg-[var(--surface-card)] rounded-xl border border-[var(--border-soft)] overflow-hidden min-w-0">
           {/* Mobile: 极简顶栏 */}
           <div className="px-3 py-2 border-b border-[var(--border-soft)] flex items-center justify-between gap-2 md:hidden">
-            <ModelSelector options={models.map(m => ({ id: m.id, provider: m.owned_by }))} value={selectedModel} onChange={handleModelSelect} className="min-w-0 flex-1" />
+            <ModelSelector options={models.map(m => ({ id: m.id, provider: m.group || m.owned_by }))} value={selectedModel} onChange={handleModelSelect} className="min-w-0 flex-1" />
             <button type="button" onClick={() => setShowMobileMenu(true)} className="p-2 rounded-lg text-[var(--text-secondary)] hover:bg-[var(--surface)]"><MoreHorizontal size={18} /></button>
           </div>
           {/* Mobile: 底部菜单 */}
@@ -512,7 +512,7 @@ const ChatTab: React.FC<{ tokenId: string }> = ({ tokenId }) => {
           {/* Desktop: 完整工具栏 */}
           <div className="hidden md:flex px-4 py-2 border-b border-[var(--border-soft)] items-center justify-between gap-2 flex-wrap">
             <div className="flex items-center gap-2 min-w-0 flex-1">
-              <ModelSelector options={models.map(m => ({ id: m.id, provider: m.owned_by }))} value={selectedModel} onChange={handleModelSelect} />
+              <ModelSelector options={models.map(m => ({ id: m.id, provider: m.group || m.owned_by }))} value={selectedModel} onChange={handleModelSelect} />
             </div>
             <div className="flex items-center gap-1.5 flex-wrap">
               <button type="button" onClick={() => setShowHistoryDrawer(prev => !prev)} className="inline-flex items-center gap-1.5 px-2 py-1 rounded-lg border border-[var(--border-soft)] text-[11px] text-[var(--text-secondary)] hover:bg-[var(--surface)]"><Plus size={12} /> 历史</button>

@@ -25,7 +25,6 @@ func RegisterRoutes(group *gin.RouterGroup) {
 	group.POST("/tokens/:id/recharge", RechargeToken)
 	group.DELETE("/tokens/:id", DeleteToken)
 	group.GET("/capability-channels", ListCapabilityChannels)
-	group.GET("/chat-model-channels", ListChatModelChannelsForToken)
 
 	// 仪表盘
 	group.GET("/dashboard/stats", DashboardStats)

@@ -108,6 +108,22 @@ func UpdateCapability(c *gin.Context) {
 	resp.Success(c, m)
 }
 
+// ReorderCapabilities 按传入 code 顺序调整能力排序 body: {"codes":["c1","c2"]}
+func ReorderCapabilities(c *gin.Context) {
+	var body struct {
+		Codes []string `json:"codes" binding:"required"`
+	}
+	if err := c.ShouldBindJSON(&body); err != nil {
+		resp.ErrorMsg(c, http.StatusBadRequest, 400, err.Error())
+		return
+	}
+	if err := modelAdminService.ReorderCapabilities(body.Codes); err != nil {
+		resp.ErrorMsg(c, http.StatusInternalServerError, 500, err.Error())
+		return
+	}
+	resp.Success(c, gin.H{"reordered": true})
+}
+
 // DeleteCapability 删除模型
 func DeleteCapability(c *gin.Context) {
 	rowsAffected, err := modelAdminService.DeleteModel(c.Param("code"))
