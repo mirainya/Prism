@@ -235,6 +235,17 @@ func (s *GatewayAdminService) DeleteModelMeta(modelName string) error {
 	return model.DB().Delete(&model.GwModelMeta{}, "model_name = ?", modelName).Error
 }
 
+// DeleteModel 删除模型:硬删该模型名下所有 abilities(路由索引) + 元数据。
+// abilities 删完后该模型不再出现在 ListModels 的结果中。
+func (s *GatewayAdminService) DeleteModel(modelName string) error {
+	return model.DB().Transaction(func(tx *gorm.DB) error {
+		if err := tx.Where("model_name = ?", modelName).Delete(&model.GwAbility{}).Error; err != nil {
+			return err
+		}
+		return tx.Where("model_name = ?", modelName).Delete(&model.GwModelMeta{}).Error
+	})
+}
+
 // GwModelRow 对话模型页一行:可路由模型(来自 gw_abilities) + 元数据 + 可用性统计。
 type GwModelRow struct {
 	ModelName      string         `json:"model_name"`

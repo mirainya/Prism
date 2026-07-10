@@ -6,7 +6,7 @@ import { CSS } from '@dnd-kit/utilities';
 import { Modal } from '../components/ui/Modal';
 import {
   GwModel, GwAbility,
-  fetchGwModels, fetchGwAbilities, upsertGwModelMeta, deleteGwModelMeta, reorderGwModels,
+  fetchGwModels, fetchGwAbilities, upsertGwModelMeta, deleteGwModelMeta, deleteGwModel, reorderGwModels,
 } from '../services/gatewayApi';
 import { ThinkingConfig } from '../types';
 import ThinkingConfigEditor from './capabilities/ThinkingConfigEditor';
@@ -174,6 +174,12 @@ const GatewayModels: React.FC = () => {
     load();
   };
 
+  const handleDeleteModel = async (name: string) => {
+    if (!confirm(`删除模型「${name}」？\n将移除该模型的所有路由能力(abilities)和元数据,模型从列表中消失,不可撤销。`)) return;
+    await deleteGwModel(name);
+    load();
+  };
+
   // 分组:手动组名优先,否则按源渠道,再兜底「未分组」。组内已按 sort 排(后端 Order sort)。
   const groups = useMemo(() => {
     const map = new Map<string, GwModel[]>();
@@ -299,7 +305,7 @@ const GatewayModels: React.FC = () => {
                               </div>
                               <div className="flex items-center gap-2 shrink-0">
                                 <button onClick={e => { e.stopPropagation(); setMetaModal({ open: true, model: m }); }} className="p-2 text-[var(--primary)] hover:bg-[var(--primary-lighter)] rounded-lg" title="编辑元数据"><Edit2 size={16} /></button>
-                                {m.meta_status !== null && <button onClick={e => { e.stopPropagation(); handleDeleteMeta(m.model_name); }} className="p-2 text-red-600 hover:bg-red-50 rounded-lg" title="清除元数据"><Trash2 size={16} /></button>}
+                                <button onClick={e => { e.stopPropagation(); handleDeleteModel(m.model_name); }} className="p-2 text-red-600 hover:bg-red-50 rounded-lg" title="删除模型"><Trash2 size={16} /></button>
                               </div>
                             </div>
                             {isExpanded && (

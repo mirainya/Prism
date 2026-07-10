@@ -279,6 +279,16 @@ func DeleteGwModelMeta(c *gin.Context) {
 	resp.Success(c, gin.H{"deleted": true})
 }
 
+// DeleteGwModel DELETE /api/admin/gw/models/:model_name
+// 删除模型:硬删所有 abilities + 元数据,模型从列表中消失。
+func DeleteGwModel(c *gin.Context) {
+	if err := gatewayAdminService.DeleteModel(c.Param("model_name")); err != nil {
+		resp.InternalError(c, pkgErrors.ErrInternalError)
+		return
+	}
+	resp.Success(c, gin.H{"deleted": true})
+}
+
 // ---------- 拉取 / 导入 ----------
 
 // DiscoverGwKeyModels GET /api/admin/gw/keys/:id/discover

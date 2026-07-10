@@ -151,6 +151,10 @@ export const deleteGwModelMeta = async (modelName: string): Promise<void> => {
   await request(`/admin/gw/model-meta/${encodeURIComponent(modelName)}`, { method: 'DELETE' });
 };
 
+export const deleteGwModel = async (modelName: string): Promise<void> => {
+  await request(`/admin/gw/models/${encodeURIComponent(modelName)}`, { method: 'DELETE' });
+};
+
 // ---------- 拉取 / 导入(以 key 为单位,写 gw_abilities) ----------
 export interface GwUpstreamModel {
   id: string;
