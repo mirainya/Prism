@@ -37,8 +37,13 @@ func parseImageSSEStream(r io.Reader) (SubmitResult, error) {
 			return // 无效 JSON,跳过继续
 		}
 
+		// 两种上游 SSE 格式:
+		//   A) OpenAI 风格: type=image_generation.completed, b64_json 在顶层
+		//   B) sub2api 风格: object=image.generation.result, b64_json 在 data[0]
 		typ := gjson.Get(payload, "type").String()
+		obj := gjson.Get(payload, "object").String()
 		switch {
+		// A) completed 事件(顶层 b64_json)
 		case strings.HasSuffix(typ, "completed"):
 			b64 := gjson.Get(payload, "b64_json").String()
 			revised := gjson.Get(payload, "revised_prompt").String()
@@ -51,7 +56,20 @@ func parseImageSSEStream(r io.Reader) (SubmitResult, error) {
 			}
 			return out, true, true, nil
 
-		case typ == "error" || strings.HasSuffix(typ, "failed"):
+		// B) result 事件(data[0].b64_json), 兼容 image.generation.result / image.edit.result
+		case strings.HasSuffix(obj, ".result"):
+			b64 := gjson.Get(payload, "data.0.b64_json").String()
+			revised := gjson.Get(payload, "data.0.revised_prompt").String()
+			if b64 == "" {
+				return // result 但无图,继续兜底
+			}
+			out := SubmitResult{Status: StatusSuccess, B64Data: []string{b64}}
+			if revised != "" {
+				out.RevisedPrompt = revised
+			}
+			return out, true, true, nil
+
+		case typ == "error" || strings.HasSuffix(typ, "failed") || obj == "error":
 			msg := gjson.Get(payload, "error.message").String()
 			if msg == "" {
 				msg = gjson.Get(payload, "message").String()
@@ -65,11 +83,21 @@ func parseImageSSEStream(r io.Reader) (SubmitResult, error) {
 			}
 			return SubmitResult{}, false, true, fmt.Errorf("%s", msg)
 
+		// A) partial_image 事件(顶层 b64_json)
 		case strings.HasSuffix(typ, "partial_image"):
 			if b64 := gjson.Get(payload, "b64_json").String(); b64 != "" {
 				lastPartialB64 = b64
 			}
 			if rp := gjson.Get(payload, "revised_prompt").String(); rp != "" {
+				partialRevised = rp
+			}
+
+		// B) chunk 事件(可能带 data[0].b64_json 的 partial 图)
+		case strings.HasSuffix(obj, ".chunk"):
+			if b64 := gjson.Get(payload, "data.0.b64_json").String(); b64 != "" {
+				lastPartialB64 = b64
+			}
+			if rp := gjson.Get(payload, "data.0.revised_prompt").String(); rp != "" {
 				partialRevised = rp
 			}
 		}

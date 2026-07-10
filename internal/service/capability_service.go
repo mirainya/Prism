@@ -254,13 +254,19 @@ func (s *UnifiedService) executeSyncWithFallback(ctx context.Context, task *mode
 
 // doSubmit 纯执行一次上游提交,不改 task 状态、不动账号计数(由调用方控制)
 func (s *UnifiedService) doSubmit(ctx context.Context, task *model.Task, endpoint *model.Endpoint, channel *model.Channel, account *model.ChannelAccount, mappedParams map[string]any) (provider.SubmitResult, error) {
+	// multipart 端点：将参数中的文件 URL 下载并转为 @base64:filename:data 格式
+	resolvedParams, err := resolveFileParams(ctx, mappedParams, endpoint)
+	if err != nil {
+		return provider.SubmitResult{}, fmt.Errorf("resolve file params: %w", err)
+	}
+
 	prov, err := provider.NewProvider(channel, account, endpoint)
 	if err != nil {
 		return provider.SubmitResult{}, fmt.Errorf("create provider error: %w", err)
 	}
 	return prov.Submit(ctx, provider.SubmitRequest{
 		TaskNo: task.TaskNo,
-		Params: mappedParams,
+		Params: resolvedParams,
 	})
 }
 

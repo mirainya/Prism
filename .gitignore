@@ -5,6 +5,8 @@
 *.so
 *.dylib
 prism
+prism-linux
+prism-windows.exe
 
 # Test binary
 *.test

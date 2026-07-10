@@ -99,6 +99,34 @@ type BaseProvider struct {
 	CallbackMapping     *ResponseMapping
 	Timeout             int  // endpoint 级请求超时(秒),0 用全局
 	Streaming           bool // 交互模式=stream: 自动注入 stream:true 并按 SSE 解析响应
+
+	// 图生图配置(端点 extra_config.image_edit,nil=不支持图生图)
+	// 请求带非空 ImageEditField 字段时:切 ImageEditPath 路径 + 强制 multipart 文件上传。
+	// 豆包/duomi 等 JSON 直传 URL 的渠道不配此项,走原路径不受影响。
+	ImageEditPath  string // 图生图请求路径,如 /v1/images/edits;空=不启用
+	ImageEditField string // 参考图字段名,如 image
+}
+
+// hasImageEditInput 判断请求是否携带参考图(图生图):
+// 端点配了 ImageEditPath/Field,且 params 里对应字段有非空值(字符串或非空数组)。
+func (p *BaseProvider) hasImageEditInput(params map[string]any) bool {
+	if p.ImageEditPath == "" || p.ImageEditField == "" {
+		return false
+	}
+	v, ok := params[p.ImageEditField]
+	if !ok {
+		return false
+	}
+	switch val := v.(type) {
+	case string:
+		return strings.TrimSpace(val) != ""
+	case []any:
+		return len(val) > 0
+	case []string:
+		return len(val) > 0
+	default:
+		return v != nil
+	}
 }
 
 // resolvePath 替换路径中的 {variable} 模板变量
@@ -113,9 +141,9 @@ func resolvePath(path string, params map[string]any) string {
 	return path
 }
 
-// buildRequestBody 根据 ContentType 构建请求体
-func (p *BaseProvider) buildRequestBody(params map[string]any) (io.Reader, string) {
-	ct := p.ContentType
+// buildRequestBody 根据 contentType 构建请求体
+func (p *BaseProvider) buildRequestBody(params map[string]any, contentType string) (io.Reader, string) {
+	ct := contentType
 	if ct == "application/x-www-form-urlencoded" {
 		form := url.Values{}
 		for k, v := range params {
@@ -134,32 +162,44 @@ func (p *BaseProvider) buildRequestBody(params map[string]any) (io.Reader, strin
 // buildMultipartBody 构建 multipart 请求体，支持文件上传
 // 文件字段约定：值以 "@base64:" 前缀表示 base64 编码的文件数据
 // 格式：@base64:filename.png:iVBORw0KGgo...
+// 值为数组时(多图)：逐个以同名字段写多份文件(如 image),兼容 OpenAI edits 多参考图。
 func (p *BaseProvider) buildMultipartBody(params map[string]any) (io.Reader, string) {
 	var buf bytes.Buffer
 	writer := multipart.NewWriter(&buf)
 
-	for k, v := range params {
-		strVal := fmt.Sprintf("%v", v)
-
+	writeFileOrField := func(key, strVal string) {
 		if strings.HasPrefix(strVal, "@base64:") {
 			// 解析格式：@base64:filename:base64data
 			rest := strVal[len("@base64:"):]
 			parts := strings.SplitN(rest, ":", 2)
 			if len(parts) == 2 {
-				filename := parts[0]
-				data, err := base64.StdEncoding.DecodeString(parts[1])
-				if err == nil {
-					part, err := writer.CreateFormFile(k, filename)
-					if err == nil {
+				if data, err := base64.StdEncoding.DecodeString(parts[1]); err == nil {
+					if part, err := writer.CreateFormFile(key, parts[0]); err == nil {
 						part.Write(data)
-						continue
+						return
 					}
 				}
 			}
 		}
-
 		// 普通字段
-		writer.WriteField(k, strVal)
+		writer.WriteField(key, strVal)
+	}
+
+	for k, v := range params {
+		// 数组值(如多张参考图): 同名字段写多份
+		switch arr := v.(type) {
+		case []any:
+			for _, item := range arr {
+				writeFileOrField(k, fmt.Sprintf("%v", item))
+			}
+			continue
+		case []string:
+			for _, item := range arr {
+				writeFileOrField(k, item)
+			}
+			continue
+		}
+		writeFileOrField(k, fmt.Sprintf("%v", v))
 	}
 
 	writer.Close()
@@ -186,12 +226,23 @@ func (p *BaseProvider) appendQueryAuth(rawURL string) string {
 }
 
 func (p *BaseProvider) Submit(ctx context.Context, req SubmitRequest) (SubmitResult, error) {
+	params := req.Params
+
+	// 图生图自动路由(配置驱动): 端点配了 image_edit 且请求带参考图字段
+	// → 切 ImageEditPath 路径 + 强制 multipart 文件上传。
+	// 未配 image_edit 的渠道(豆包/duomi)保持原路径/JSON,由 field_mapping 透传图 URL,不受影响。
+	effectivePath := p.SubmitPath
+	effectiveContentType := p.ContentType
+	if p.hasImageEditInput(params) {
+		effectivePath = p.ImageEditPath
+		effectiveContentType = "multipart/form-data"
+	}
+
 	// 路径模板变量替换
-	submitPath := resolvePath(p.SubmitPath, req.Params)
+	submitPath := resolvePath(effectivePath, params)
 	reqURL := p.appendQueryAuth(p.BaseURL + submitPath)
 
 	// body 认证：将 token 注入到请求参数中
-	params := req.Params
 	if p.AuthLocation == "body" {
 		if params == nil {
 			params = make(map[string]any)
@@ -216,7 +267,7 @@ func (p *BaseProvider) Submit(ctx context.Context, req SubmitRequest) (SubmitRes
 		}
 	}
 
-	body, contentType := p.buildRequestBody(params)
+	body, contentType := p.buildRequestBody(params, effectiveContentType)
 
 	method := p.RequestMethod
 	if method == "" {

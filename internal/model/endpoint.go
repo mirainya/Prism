@@ -1,6 +1,7 @@
 package model
 
 import (
+	"encoding/json"
 	"time"
 
 	"github.com/shopspring/decimal"
@@ -137,4 +138,34 @@ type Endpoint struct {
 
 func (Endpoint) TableName() string {
 	return "endpoints"
+}
+
+// ImageEditConfig 图生图配置(从 extra_config.image_edit 读取)
+// 声明该端点如何处理"带参考图"的请求:切换到 EditPath + multipart 文件上传,
+// 把 FileField 字段的图片 URL 下载成文件流上传(OpenAI /v1/images/edits 约定)。
+// 未配置(nil)的端点(如豆包/duomi)保持原路径 JSON,由 param_mapping 的 field_mapping 处理图 URL 透传。
+type ImageEditConfig struct {
+	Enabled   bool   `json:"enabled"`    // 是否启用图生图自动路由
+	EditPath  string `json:"edit_path"`  // 图生图请求路径,如 /v1/images/edits
+	FileField string `json:"file_field"` // 参考图字段名,如 image;该字段的 URL 会被下载转文件上传
+}
+
+// ImageEdit 从 ExtraConfig 解析图生图配置,未配置或未启用返回 nil
+func (e *Endpoint) ImageEdit() *ImageEditConfig {
+	if len(e.ExtraConfig) == 0 {
+		return nil
+	}
+	var cfg struct {
+		ImageEdit *ImageEditConfig `json:"image_edit"`
+	}
+	if err := json.Unmarshal(e.ExtraConfig, &cfg); err != nil {
+		return nil
+	}
+	if cfg.ImageEdit == nil || !cfg.ImageEdit.Enabled {
+		return nil
+	}
+	if cfg.ImageEdit.FileField == "" {
+		cfg.ImageEdit.FileField = "image"
+	}
+	return cfg.ImageEdit
 }

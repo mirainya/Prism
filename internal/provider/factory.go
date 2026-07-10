@@ -60,5 +60,11 @@ func NewProvider(channel *model.Channel, account *model.ChannelAccount, endpoint
 		Streaming:           endpoint.InteractionMode == model.ModeStream,
 	}
 
+	// 图生图配置(端点 extra_config.image_edit): 有则填充,provider 据此在带参考图时切 /edits+multipart
+	if ie := endpoint.ImageEdit(); ie != nil {
+		base.ImageEditPath = ie.EditPath
+		base.ImageEditField = ie.FileField
+	}
+
 	return base, nil
 }

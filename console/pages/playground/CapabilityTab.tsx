@@ -130,7 +130,7 @@ const CapabilityTab: React.FC<{ tokenId: string }> = ({ tokenId }) => {
   const currentCap = capabilities.find(c => c.code === selectedCap);
   const selectedChannel = useMemo(() => {
     if (!params.channel || !currentCap?.channels) return null;
-    return currentCap.channels.find(ch => `${ch.channelType}::${ch.interactionMode || 'sync'}` === params.channel) || null;
+    return currentCap.channels.find(ch => `${ch.channelType}::${ch.model}::${ch.interactionMode || 'sync'}` === params.channel) || null;
   }, [params.channel, currentCap]);
   const currentSchemaEntries = useMemo(() => {
     if (selectedChannel?.paramSchema && Object.keys(selectedChannel.paramSchema).length > 0) {
@@ -305,9 +305,20 @@ const CapabilityTab: React.FC<{ tokenId: string }> = ({ tokenId }) => {
       const requestParams = Object.entries(params).reduce<Record<string, any>>((acc, [key, value]) => {
         if (key === 'channel') {
           if (value) {
-            const [ch, mode] = String(value).split('::');
-            acc.channel = ch;
-            if (mode) acc.interaction_mode = mode;
+            const parts = String(value).split('::');
+            if (parts.length === 3) {
+              // 新格式: channelType::vendorModel::interactionMode
+              acc.channel = parts[0];
+              acc.model = parts[1];
+              acc.interaction_mode = parts[2];
+            } else if (parts.length === 2) {
+              // 旧格式: channelType::interactionMode (向后兼容)
+              acc.channel = parts[0];
+              acc.interaction_mode = parts[1];
+            } else {
+              // 仅channelType
+              acc.channel = parts[0];
+            }
           }
           return acc;
         }
@@ -323,7 +334,9 @@ const CapabilityTab: React.FC<{ tokenId: string }> = ({ tokenId }) => {
         const urls = list.filter(a => a.uploaded && a.url).map(a => a.url!);
         if (urls.length === 0) continue;
         const cap = capabilities.find(c => c.code === selectedCap);
-        const schema = cap?.standardParams?.[key] || FALLBACK_STANDARD_PARAMS[key];
+        // 端点级 schema 优先(与渲染逻辑 line 325 一致): 图生图的 image 数组字段
+        // 常只在端点级声明,能力级(model 表)没有,这里必须同源否则多图被降级成单图。
+        const schema = selectedChannel?.paramSchema?.[key] || cap?.standardParams?.[key] || FALLBACK_STANDARD_PARAMS[key];
         if (schema?.type === 'array' || key === 'image_urls') {
           const existing = Array.isArray(requestParams[key]) ? requestParams[key] as string[] : [];
           requestParams[key] = [...existing, ...urls];
@@ -332,8 +345,8 @@ const CapabilityTab: React.FC<{ tokenId: string }> = ({ tokenId }) => {
         }
       }
 
-      const { channel, interaction_mode, ...invokeParams } = requestParams;
-      const res = await playgroundInvokeCapability(tokenId, selectedCap, { channel, interaction_mode, params: invokeParams });
+      const { channel, interaction_mode, model, ...invokeParams } = requestParams;
+      const res = await playgroundInvokeCapability(tokenId, selectedCap, { channel, interaction_mode, model, params: invokeParams });
       const taskNo = res.data?.task_id || res.data?.task_no || res.task_id || '';
       if (taskNo) {
         const newTask: TaskResult = {
@@ -474,7 +487,7 @@ const CapabilityTab: React.FC<{ tokenId: string }> = ({ tokenId }) => {
               <div>
                 <label className="block text-[11px] font-medium text-[var(--text-secondary)] mb-1">渠道</label>
                 <ModelSelector
-                  options={currentCap?.channels?.map((ch: any) => ({ id: `${ch.channelType}::${ch.interactionMode || 'sync'}`, label: `${ch.model}${ch.interactionMode && ch.interactionMode !== 'sync' ? ` · ${ch.interactionMode}` : ''}`, provider: ch.channelName })) || []}
+                  options={currentCap?.channels?.map((ch: any) => ({ id: `${ch.channelType}::${ch.model}::${ch.interactionMode || 'sync'}`, label: `${ch.model}${ch.interactionMode && ch.interactionMode !== 'sync' ? ` · ${ch.interactionMode}` : ''}`, provider: ch.channelName })) || []}
                   value={params.channel || ''}
                   onChange={v => setParams(prev => ({ ...prev, channel: v }))}
                   placeholder="选择渠道"

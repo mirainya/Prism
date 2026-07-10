@@ -76,6 +76,25 @@ func TestParseImageSSEStream(t *testing.T) {
 			input:   "data: {\"type\":\"image_generation.completed\",\"b64_json\":\"ZW9m\"}",
 			wantB64: "ZW9m",
 		},
+		{
+			name: "sub2api object result event",
+			input: "data: {\"object\":\"image.generation.chunk\",\"index\":1,\"data\":[]}\n\n" +
+				"data: {\"object\":\"image.generation.result\",\"data\":[{\"b64_json\":\"c3ViMmFwaQ==\",\"revised_prompt\":\"a red apple\"}]}\n\n" +
+				"data: [DONE]\n\n",
+			wantB64: "c3ViMmFwaQ==",
+		},
+		{
+			name: "sub2api edit result event",
+			input: "data: {\"object\":\"image.edit.result\",\"data\":[{\"b64_json\":\"ZWRpdGVk\"}]}\n\n" +
+				"data: [DONE]\n\n",
+			wantB64: "ZWRpdGVk",
+		},
+		{
+			name: "sub2api chunk partial fallback",
+			input: "data: {\"object\":\"image.generation.chunk\",\"data\":[{\"b64_json\":\"cGFydA==\"}]}\n\n" +
+				"data: [DONE]\n\n",
+			wantB64: "cGFydA==",
+		},
 	}
 
 	for _, tt := range tests {
