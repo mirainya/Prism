@@ -136,6 +136,9 @@ const GatewayModels: React.FC = () => {
   // 元数据编辑弹窗
   const [metaModal, setMetaModal] = useState<{ open: boolean; model: GwModel | null }>({ open: false, model: null });
 
+  // 删除模型确认弹窗
+  const [confirmModal, setConfirmModal] = useState<{ open: boolean; modelName: string }>({ open: false, modelName: '' });
+
   const load = async () => {
     setIsLoading(true);
     try {
@@ -174,8 +177,13 @@ const GatewayModels: React.FC = () => {
     load();
   };
 
-  const handleDeleteModel = async (name: string) => {
-    if (!confirm(`删除模型「${name}」？\n将移除该模型的所有路由能力(abilities)和元数据,模型从列表中消失,不可撤销。`)) return;
+  const handleDeleteModel = (name: string) => {
+    setConfirmModal({ open: true, modelName: name });
+  };
+
+  const doDeleteModel = async () => {
+    const name = confirmModal.modelName;
+    setConfirmModal({ open: false, modelName: '' });
     await deleteGwModel(name);
     load();
   };
@@ -354,6 +362,17 @@ const GatewayModels: React.FC = () => {
       <MetaModal model={metaModal.model} isOpen={metaModal.open}
         onClose={() => setMetaModal({ open: false, model: null })}
         onSaved={() => { setMetaModal({ open: false, model: null }); load(); }} />
+
+      <Modal open={confirmModal.open} onClose={() => setConfirmModal({ open: false, modelName: '' })} title="删除模型" width="max-w-sm">
+        <p className="text-sm text-[var(--text-secondary)] mb-6">
+          确认删除模型 <code className="px-1.5 py-0.5 bg-[var(--primary-lighter)] rounded text-[var(--text-primary)]">{confirmModal.modelName}</code>？<br />
+          将移除所有路由能力和元数据，不可撤销。
+        </p>
+        <div className="flex gap-3 justify-end">
+          <button onClick={() => setConfirmModal({ open: false, modelName: '' })} className="px-4 py-2 text-sm rounded-xl border border-[var(--border-soft)] text-[var(--text-secondary)] hover:bg-[var(--surface)]">取消</button>
+          <button onClick={doDeleteModel} className="px-4 py-2 text-sm rounded-xl bg-red-500 text-white hover:bg-red-600 font-medium">删除</button>
+        </div>
+      </Modal>
     </div>
   );
 };
