@@ -279,10 +279,15 @@ func DeleteGwModelMeta(c *gin.Context) {
 	resp.Success(c, gin.H{"deleted": true})
 }
 
-// DeleteGwModel DELETE /api/admin/gw/models/:model_name
-// 删除模型:硬删所有 abilities + 元数据,模型从列表中消失。
+// DeleteGwModel DELETE /api/admin/gw/models?name=xxx
+// query string 传名避免 gin 把路径中的 %2F 解码成路径分隔符。
 func DeleteGwModel(c *gin.Context) {
-	if err := gatewayAdminService.DeleteModel(c.Param("model_name")); err != nil {
+	modelName := c.Query("name")
+	if modelName == "" {
+		resp.BadRequest(c, pkgErrors.WithMessage(pkgErrors.ErrInvalidParams, "name is required"))
+		return
+	}
+	if err := gatewayAdminService.DeleteModel(modelName); err != nil {
 		resp.InternalError(c, pkgErrors.ErrInternalError)
 		return
 	}

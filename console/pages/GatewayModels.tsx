@@ -368,9 +368,9 @@ const GatewayModels: React.FC = () => {
           确认删除模型 <code className="px-1.5 py-0.5 bg-[var(--primary-lighter)] rounded text-[var(--text-primary)]">{confirmModal.modelName}</code>？<br />
           将移除所有路由能力和元数据，不可撤销。
         </p>
-        <div className="flex gap-3 justify-end">
-          <button onClick={() => setConfirmModal({ open: false, modelName: '' })} className="px-4 py-2 text-sm rounded-xl border border-[var(--border-soft)] text-[var(--text-secondary)] hover:bg-[var(--surface)]">取消</button>
-          <button onClick={doDeleteModel} className="px-4 py-2 text-sm rounded-xl bg-red-500 text-white hover:bg-red-600 font-medium">删除</button>
+        <div className="flex justify-end gap-3 pt-2">
+          <button onClick={() => setConfirmModal({ open: false, modelName: '' })} className="px-4 py-2 text-sm font-bold text-[var(--text-secondary)] bg-[var(--primary-lighter)] rounded-lg hover:bg-gray-200">取消</button>
+          <button onClick={doDeleteModel} className="px-4 py-2 text-sm font-bold text-white bg-red-500 rounded-lg hover:opacity-90">删除</button>
         </div>
       </Modal>
     </div>

@@ -70,7 +70,7 @@ func RegisterRoutes(group *gin.RouterGroup) {
 
 		gw.GET("/models", ListGwModels) // 对话模型页:可路由模型+元数据+可用性
 		gw.POST("/models/reorder", ReorderGwModels)
-		gw.DELETE("/models/:model_name", DeleteGwModel)
+		gw.DELETE("/models", DeleteGwModel) // ?name=xxx 避免 gin 把%2F decode 成路径分隔符
 		gw.GET("/model-meta", ListGwModelMeta)
 		gw.PUT("/model-meta/:model_name", UpsertGwModelMeta)
 		gw.DELETE("/model-meta/:model_name", DeleteGwModelMeta)
