@@ -7,18 +7,54 @@ import (
 	"github.com/shopspring/decimal"
 )
 
+type Capability string
+
+const (
+	CapabilityChat             Capability = "chat"
+	CapabilityResponses        Capability = "responses"
+	CapabilityNativeResponses  Capability = "native_responses"
+	CapabilityVolcResponses    Capability = "volcengine_responses"
+	CapabilityStream           Capability = "stream"
+	CapabilityVision           Capability = "vision"
+	CapabilityFiles            Capability = "files"
+	CapabilityAudio            Capability = "audio"
+	CapabilityVideo            Capability = "video"
+	CapabilityTools            Capability = "tools"
+	CapabilityStructuredOutput Capability = "structured_output"
+	CapabilityReasoning        Capability = "reasoning"
+	CapabilityBackground       Capability = "background"
+	CapabilityWebSearch        Capability = "web_search"
+	CapabilityFileSearch       Capability = "file_search"
+	CapabilityCodeInterpreter  Capability = "code_interpreter"
+	CapabilityComputerUse      Capability = "computer_use"
+	CapabilityImageGeneration  Capability = "image_generation"
+)
+
+// RouteRequirements describes the features an upstream route must support.
+type RouteRequirements map[Capability]bool
+
+func (r RouteRequirements) Require(capability Capability) {
+	if r != nil {
+		r[capability] = true
+	}
+}
+
 // RouteResult 一次选路的结果:够 pipeline 构造上游请求。
 type RouteResult struct {
-	AbilityID   uint
-	KeyID       uint
-	ChannelID   uint
-	Protocol    model.Protocol
-	BaseURL     string
-	APIKey      string
-	VendorModel string
-	ModelName   string // 公开模型名(计费/熔断/日志用)
-	ExtraHeaders map[string]string
-	ChannelConfig map[string]any // gw_channels.config 解析(如 image_to_base64)
+	AbilityID       uint
+	KeyID           uint
+	ChannelID       uint
+	Protocol        model.Protocol
+	BaseURL         string
+	APIKey          string
+	VendorModel     string
+	ModelName       string // 公开模型名(计费/熔断/日志用)
+	ExtraHeaders    map[string]string
+	Capabilities    map[Capability]bool
+	Transport       model.UpstreamTransport
+	TransportConfig map[string]any
+	ExecutionMode   ExecutionMode
+	ChannelConfig   map[string]any // gw_channels.config 解析(如 image_to_base64)
 
 	PriceMode   string
 	InputPrice  decimal.Decimal

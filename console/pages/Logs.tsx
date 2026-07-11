@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react';
-import { Search, Clock, DollarSign, ChevronRight, X, Code, RefreshCw, ChevronLeft } from 'lucide-react';
+import { Search, DollarSign, ChevronRight, X, Code, RefreshCw, ChevronLeft } from 'lucide-react';
 import { fetchTaskLogs, fetchTaskDetail, fetchCapabilities, TaskListParams } from '../services/api';
 import {TaskLog, TaskDetail, Capability, UserRole} from '../types';
 

@@ -12,7 +12,7 @@ type Channel struct {
 	Type           string         `gorm:"type:varchar(20);uniqueIndex;not null;comment:渠道类型标识" json:"type"`
 	Name           string         `gorm:"type:varchar(50);comment:渠道名称" json:"name"`
 	BaseURL        string         `gorm:"type:varchar(255);comment:基础URL" json:"base_url"`
-	CallbackSecret string         `gorm:"type:varchar(128);comment:回调签名密钥" json:"callback_secret,omitempty"`
+	CallbackSecret string         `gorm:"type:varchar(128);comment:回调签名密钥" json:"-"`
 	Config         datatypes.JSON `gorm:"type:json;comment:渠道配置(JSON)" json:"config"`
 	Status         int8           `gorm:"default:1;comment:状态(1启用/0禁用)" json:"status"`
 	Sort           int            `gorm:"default:0;index;comment:排序(降序)" json:"sort"`
@@ -72,8 +72,8 @@ type AccountModel struct {
 	VendorModel string `gorm:"type:varchar(120);default:'';comment:上游模型名(空=用model_code)" json:"vendor_model"`
 
 	// Priority 候选排序(降序),降级轮换时按此取下一个候选
-	Priority int   `gorm:"default:0;index;comment:优先级(降序)" json:"priority"`
-	Status   int8  `gorm:"default:1;comment:状态(1启用/0禁用)" json:"status"`
+	Priority int  `gorm:"default:0;index;comment:优先级(降序)" json:"priority"`
+	Status   int8 `gorm:"default:1;comment:状态(1启用/0禁用)" json:"status"`
 
 	// per-key 计费(chat 现价均为 0,迁移沿用现值)
 	PriceMode   string          `gorm:"type:varchar(10);default:'token';comment:计价模式" json:"price_mode"`

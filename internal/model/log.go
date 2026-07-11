@@ -10,31 +10,33 @@ import (
 type RequestType string
 
 const (
-	RequestTypeSubmit   RequestType = "submit"
-	RequestTypePoll     RequestType = "poll"
-	RequestTypeCallback RequestType = "callback"
-	RequestTypeChat     RequestType = "chat"
+	RequestTypeSubmit    RequestType = "submit"
+	RequestTypePoll      RequestType = "poll"
+	RequestTypeCallback  RequestType = "callback"
+	RequestTypeChat      RequestType = "chat"
+	RequestTypeResponses RequestType = "responses"
 )
 
 // ChannelRequestLog 渠道请求日志
 type ChannelRequestLog struct {
 	BaseModel
-	TaskID                uint        `gorm:"index;comment:关联任务ID" json:"task_id"`
-	TaskNo                string      `gorm:"type:varchar(32);index;comment:任务编号" json:"task_no"`
-	ConversationID        uint        `gorm:"index;comment:关联对话ID(Chat)" json:"conversation_id"`
-	ChannelID             uint        `gorm:"index;index:idx_channel_request_at;comment:渠道ID" json:"channel_id"`
-	AccountID             uint        `gorm:"comment:渠道账号ID" json:"account_id"`
-	CapabilityCode        string      `gorm:"type:varchar(50);index;index:idx_capability_request_at;comment:能力编码或模型编码" json:"capability_code"`
-	RequestType           RequestType `gorm:"type:varchar(20);index;comment:请求类型" json:"request_type"`
-	IsStream              bool        `gorm:"default:false;comment:是否流式请求" json:"is_stream"`
-	ModelCode             string      `gorm:"type:varchar(50);comment:请求模型" json:"model_code"`
-	VendorModel           string      `gorm:"type:varchar(100);comment:供应商模型" json:"vendor_model"`
-	RequestPath           string      `gorm:"type:varchar(255);comment:实际上游请求路径" json:"request_path"`
-	FinishReason          string      `gorm:"type:varchar(50);comment:完成原因" json:"finish_reason"`
-	ResponsePreview       string      `gorm:"type:text;comment:响应摘要" json:"response_preview"`
-	UsagePromptTokens     int         `gorm:"default:0;comment:输入token摘要" json:"usage_prompt_tokens"`
-	UsageCompletionTokens int         `gorm:"default:0;comment:输出token摘要" json:"usage_completion_tokens"`
-	UsageTotalTokens      int         `gorm:"default:0;comment:总token摘要" json:"usage_total_tokens"`
+	TaskID                uint              `gorm:"index;comment:关联任务ID" json:"task_id"`
+	TaskNo                string            `gorm:"type:varchar(32);index;comment:任务编号" json:"task_no"`
+	ConversationID        uint              `gorm:"index;comment:关联对话ID(Chat)" json:"conversation_id"`
+	ChannelID             uint              `gorm:"index;index:idx_channel_request_at;comment:渠道ID" json:"channel_id"`
+	AccountID             uint              `gorm:"comment:渠道账号ID" json:"account_id"`
+	CapabilityCode        string            `gorm:"type:varchar(50);index;index:idx_capability_request_at;comment:能力编码或模型编码" json:"capability_code"`
+	RequestType           RequestType       `gorm:"type:varchar(20);index;comment:请求类型" json:"request_type"`
+	IsStream              bool              `gorm:"default:false;comment:是否流式请求" json:"is_stream"`
+	ModelCode             string            `gorm:"type:varchar(50);comment:请求模型" json:"model_code"`
+	VendorModel           string            `gorm:"type:varchar(100);comment:供应商模型" json:"vendor_model"`
+	UpstreamTransport     UpstreamTransport `gorm:"type:varchar(64);default:'';index;comment:实际上游传输协议" json:"upstream_transport"`
+	RequestPath           string            `gorm:"type:varchar(255);comment:实际上游请求路径" json:"request_path"`
+	FinishReason          string            `gorm:"type:varchar(50);comment:完成原因" json:"finish_reason"`
+	ResponsePreview       string            `gorm:"type:text;comment:响应摘要" json:"response_preview"`
+	UsagePromptTokens     int               `gorm:"default:0;comment:输入token摘要" json:"usage_prompt_tokens"`
+	UsageCompletionTokens int               `gorm:"default:0;comment:输出token摘要" json:"usage_completion_tokens"`
+	UsageTotalTokens      int               `gorm:"default:0;comment:总token摘要" json:"usage_total_tokens"`
 
 	Method         string `gorm:"type:varchar(10);comment:请求方法" json:"method"`
 	URL            string `gorm:"type:varchar(500);comment:请求URL" json:"url"`

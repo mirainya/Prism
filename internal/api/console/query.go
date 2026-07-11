@@ -19,4 +19,3 @@ func ListCapabilityChannels(c *gin.Context) {
 	}
 	resp.Success(c, result)
 }
-

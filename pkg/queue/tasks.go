@@ -2,16 +2,21 @@ package queue
 
 import (
 	"encoding/json"
+	"errors"
+	"fmt"
 
 	"github.com/hibiken/asynq"
 )
 
 const (
-	TypeTaskSubmit       = "task:submit"
-	TypeTaskPoll         = "task:poll"
-	TypeTaskUpload       = "task:upload"
-	TypeTaskNotify       = "task:notify"
-	TypeTaskTimeoutCheck = "task:timeout_check"
+	TypeTaskSubmit          = "task:submit"
+	TypeTaskPoll            = "task:poll"
+	TypeTaskUpload          = "task:upload"
+	TypeTaskNotify          = "task:notify"
+	TypeTaskTimeoutCheck    = "task:timeout_check"
+	TypeResponseBackground  = "response:background"
+	TypeResponseRecovery    = "response:recovery"
+	responseBackgroundQueue = "default"
 )
 
 type TaskSubmitPayload struct {
@@ -32,6 +37,78 @@ type TaskUploadPayload struct {
 
 type TaskNotifyPayload struct {
 	TaskID uint `json:"task_id"`
+}
+
+type ResponseBackgroundPayload struct {
+	ResponseID string `json:"response_id"`
+}
+
+func EnqueueResponseBackground(responseID string) error {
+	if Client == nil {
+		return errors.New("queue client is not initialized")
+	}
+	payload, err := json.Marshal(ResponseBackgroundPayload{ResponseID: responseID})
+	if err != nil {
+		return err
+	}
+	_, err = Client.Enqueue(asynq.NewTask(TypeResponseBackground, payload), asynq.Queue(responseBackgroundQueue), asynq.TaskID(responseBackgroundTaskID(responseID)), asynq.MaxRetry(DefaultMaxRetry()))
+	if errors.Is(err, asynq.ErrTaskIDConflict) {
+		return nil
+	}
+	return err
+}
+
+// RecoverResponseBackground ensures that a non-terminal response has a
+// runnable task. Retained terminal tasks are replaced during startup recovery.
+func RecoverResponseBackground(responseID string) error {
+	if Client == nil {
+		return errors.New("queue client is not initialized")
+	}
+	inspector := asynq.NewInspector(redisClientOpt())
+	defer inspector.Close()
+
+	taskID := responseBackgroundTaskID(responseID)
+	info, err := inspector.GetTaskInfo(responseBackgroundQueue, taskID)
+	if err != nil {
+		if errors.Is(err, asynq.ErrTaskNotFound) || errors.Is(err, asynq.ErrQueueNotFound) {
+			return EnqueueResponseBackground(responseID)
+		}
+		return fmt.Errorf("inspect response background task %s: %w", responseID, err)
+	}
+	if info.Type != TypeResponseBackground {
+		return fmt.Errorf("response background task ID %s belongs to type %s", taskID, info.Type)
+	}
+	switch info.State {
+	case asynq.TaskStateActive, asynq.TaskStatePending, asynq.TaskStateScheduled,
+		asynq.TaskStateRetry, asynq.TaskStateAggregating:
+		return nil
+	case asynq.TaskStateArchived, asynq.TaskStateCompleted:
+		if err := inspector.DeleteTask(responseBackgroundQueue, taskID); err != nil {
+			return recoverAfterDeleteRace(inspector, responseID, taskID, err)
+		}
+		return EnqueueResponseBackground(responseID)
+	default:
+		return fmt.Errorf("response background task %s has unsupported state %s", taskID, info.State)
+	}
+}
+
+func recoverAfterDeleteRace(inspector *asynq.Inspector, responseID, taskID string, deleteErr error) error {
+	info, err := inspector.GetTaskInfo(responseBackgroundQueue, taskID)
+	if errors.Is(err, asynq.ErrTaskNotFound) || errors.Is(err, asynq.ErrQueueNotFound) {
+		return EnqueueResponseBackground(responseID)
+	}
+	if err == nil && info.Type == TypeResponseBackground {
+		switch info.State {
+		case asynq.TaskStateActive, asynq.TaskStatePending, asynq.TaskStateScheduled,
+			asynq.TaskStateRetry, asynq.TaskStateAggregating:
+			return nil
+		}
+	}
+	return fmt.Errorf("replace stale response background task %s: %w", responseID, deleteErr)
+}
+
+func responseBackgroundTaskID(responseID string) string {
+	return "response-background-" + responseID
 }
 
 func EnqueueTaskSubmit(taskID uint) error {
@@ -56,6 +133,12 @@ func EnqueueTaskUpload(taskID uint, originURL string, urls []string, revisedProm
 		return err
 	}
 	task := asynq.NewTask(TypeTaskUpload, payloadBytes)
-	_, err = Client.Enqueue(task, asynq.Queue("default"))
+	_, err = Client.Enqueue(task,
+		asynq.Queue("default"),
+		asynq.TaskID(fmt.Sprintf("task-upload-%d", taskID)),
+	)
+	if errors.Is(err, asynq.ErrTaskIDConflict) {
+		return nil
+	}
 	return err
 }

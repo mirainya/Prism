@@ -98,6 +98,10 @@ func UpstreamStatusCode(err error) int {
 	if errors.As(err, &ue) {
 		return ue.StatusCode
 	}
+	var statusProvider interface{ HTTPStatus() int }
+	if errors.As(err, &statusProvider) {
+		return statusProvider.HTTPStatus()
+	}
 	return parseStatusFromString(err.Error())
 }
 

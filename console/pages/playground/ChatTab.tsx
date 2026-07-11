@@ -2,17 +2,17 @@ import React, { useState, useEffect, useRef, useMemo, useCallback } from 'react'
 import {
   Send, Bot, Loader2, Square, Trash2,
   AlertCircle, User as UserIcon,
-  ChevronDown, Bug,
+  Bug,
   SlidersHorizontal, PanelLeft, FileJson, Plus,
-  Paperclip, X, CheckCircle2, XCircle, Upload, MoreHorizontal
+  Paperclip, X, CheckCircle2, XCircle, Upload, MoreHorizontal, Wrench
 } from 'lucide-react';
 import {
-  playgroundListModels, playgroundChatCompletions,
+  playgroundListModels, playgroundChatCompletions, playgroundResponses, playgroundAnthropicMessages,
   playgroundGetConversationMessages, playgroundGetDebug,
   playgroundListConversations, playgroundUploadFile,
 } from '../../services/api';
 import { PlaygroundModelInfo, PlaygroundConversation, PlaygroundDebugDetail, PlaygroundMessage } from '../../types';
-import { ChatMessage, ChatState, ContentPart, Attachment } from './types';
+import { ChatMessage, ChatState, ContentPart, Attachment, PlaygroundProtocol } from './types';
 import ThinkingBlock from './ThinkingBlock';
 import StatusBadge from './StatusBadge';
 import HistoryPanel from './HistoryPanel';
@@ -20,17 +20,22 @@ import DebugPanel from './DebugPanel';
 import ModelSelector from './ModelSelector';
 import ThinkingSelect from './ThinkingSelect';
 import {
-  parseJsonField, getFileIcon, parseStopSequences, extractAssistantText,
-  formatFileSize, ACCEPTED_FILE_TYPES, MAX_FILE_SIZE,
+  parseJsonField, getFileIcon, parseStopSequences,
+  formatFileSize, ACCEPTED_FILE_TYPES, MAX_FILE_SIZE, getClipboardFiles,
 } from './utils';
+import {
+  PLAYGROUND_PROTOCOLS, buildProtocolPayload, consumeProtocolStreamEvent,
+  createProtocolStreamState, parseProtocolResponse,
+} from './protocol';
 
 const ChatTab: React.FC<{ tokenId: string }> = ({ tokenId }) => {
   const [models, setModels] = useState<PlaygroundModelInfo[]>([]);
   const [selectedModel, setSelectedModel] = useState('');
+  const [protocol, setProtocol] = useState<PlaygroundProtocol>('chat');
   const [thinkingLevel, setThinkingLevel] = useState('');
   const [systemPrompt, setSystemPrompt] = useState('');
   const [temperature, setTemperature] = useState(0.7);
-  const [maxTokens, setMaxTokens] = useState(200000);
+  const [maxTokens, setMaxTokens] = useState(4096);
   const [topP, setTopP] = useState(1);
   const [presencePenalty, setPresencePenalty] = useState(0);
   const [frequencyPenalty, setFrequencyPenalty] = useState(0);
@@ -81,6 +86,7 @@ const ChatTab: React.FC<{ tokenId: string }> = ({ tokenId }) => {
   const conversationModel = currentConversationMeta?.model;
   const hasConversationMessages = chat.messages.some(msg => msg.role === 'user' || msg.role === 'assistant');
   const modelChangedOnConversation = Boolean(selectedConversationId && conversationModel && selectedModel && conversationModel !== selectedModel && hasConversationMessages);
+  const protocolInfo = PLAYGROUND_PROTOCOLS.find(item => item.value === protocol)!;
 
   const loadHistory = async () => {
     if (!tokenId) return;
@@ -119,6 +125,11 @@ const ChatTab: React.FC<{ tokenId: string }> = ({ tokenId }) => {
   useEffect(() => {
     setThinkingLevel(selectedModelInfo?.thinking?.default || '');
   }, [selectedModelInfo?.id]);
+
+  useEffect(() => {
+    const limit = selectedModelInfo?.max_tokens || 0;
+    if (limit > 0) setMaxTokens(current => Math.min(current, limit));
+  }, [selectedModelInfo?.id, selectedModelInfo?.max_tokens]);
 
   useEffect(() => {
     const now = Date.now();
@@ -190,48 +201,66 @@ const ChatTab: React.FC<{ tokenId: string }> = ({ tokenId }) => {
     }
 
     const userMsg: ChatMessage = { role: 'user', content: userContent, status: 'completed' };
-    const hasConversation = Boolean(effectiveConversationId);
-    const allMessages: ChatMessage[] = hasConversation
-      ? [...chat.messages, userMsg]
-      : [...chat.messages.filter(msg => msg.role !== 'system'), userMsg];
-    const incrementalMessages = hasConversation ? [userMsg] : allMessages.map(m => ({ role: m.role, content: m.content }));
-    const requestMessages = systemPrompt.trim() && !hasConversation
-      ? [{ role: 'system', content: systemPrompt.trim() }, ...incrementalMessages]
-      : incrementalMessages;
-
-    const payload: Record<string, any> = {
-      model: selectedModel, messages: requestMessages, temperature, max_tokens: maxTokens,
-      stop: parseStopSequences(stop), stream, seed: seed.trim() ? Number(seed) : undefined,
-      user: userValue.trim() || undefined, conversation_id: effectiveConversationId || undefined,
-      response_format: responseFormat, tools, tool_choice: toolChoice,
-    };
-    if (topP !== 1) payload.top_p = topP;
-    if (presencePenalty !== 0) payload.presence_penalty = presencePenalty;
-    if (frequencyPenalty !== 0) payload.frequency_penalty = frequencyPenalty;
-    // 思考档位:未锁定且选了非默认档时透传覆盖
-    if (thinkingLevel && !selectedModelInfo?.thinking?.locked && thinkingLevel !== selectedModelInfo?.thinking?.default) {
-      payload.reasoning_effort = thinkingLevel;
-    }
+    const hasConversation = protocol === 'chat' && Boolean(effectiveConversationId);
+    const allMessages: ChatMessage[] = [
+      ...chat.messages.filter(msg => msg.role !== 'system' && msg.status !== 'failed' && msg.status !== 'aborted'),
+      userMsg,
+    ];
+    const reasoningEffort = thinkingLevel
+      && !selectedModelInfo?.thinking?.locked
+      && thinkingLevel !== selectedModelInfo?.thinking?.default
+      ? thinkingLevel
+      : undefined;
+    const payload = buildProtocolPayload({
+      protocol,
+      model: selectedModel,
+      messages: allMessages,
+      currentMessage: userMsg,
+      systemPrompt,
+      hasConversation,
+      conversationId: hasConversation ? effectiveConversationId : undefined,
+      temperature,
+      maxTokens,
+      topP,
+      presencePenalty,
+      frequencyPenalty,
+      stop: parseStopSequences(stop),
+      stream,
+      seed: seed.trim() ? Number(seed) : undefined,
+      user: userValue.trim() || undefined,
+      responseFormat,
+      tools,
+      toolChoice,
+      reasoningEffort,
+    });
     setLastPayload(payload);
     setChat(prev => ({
       ...prev,
       messages: [...prev.messages.filter(msg => msg.role !== 'system'), userMsg, { role: 'assistant', content: '', status: 'streaming' }],
-      isStreaming: stream, usage: null, latencyMs: null, statusText: stream ? '正在流式接收...' : '正在请求...',
+      isStreaming: true, usage: null, latencyMs: null, statusText: stream ? '正在流式接收...' : '正在请求...',
     }));
     setInput('');
+    clearChatAttachments();
 
     const startTime = Date.now();
     const controller = new AbortController();
     abortRef.current = controller;
 
     try {
-      const res = await playgroundChatCompletions(tokenId, payload, controller.signal);
+      const request = protocol === 'chat'
+        ? playgroundChatCompletions
+        : protocol === 'responses'
+          ? playgroundResponses
+          : playgroundAnthropicMessages;
+      const res = await request(tokenId, payload, controller.signal);
       if (!res.ok) {
         const data = await res.json().catch(() => ({}));
-        throw new Error(data.message || `请求失败 (${res.status})`);
+        throw new Error(data.error?.message || data.message || `请求失败 (${res.status})`);
       }
+      const headerDebugLogId = Number(res.headers.get('X-Prism-Request-Log-ID') || 0) || null;
 
       let assistantContent = '', reasoningContent = '';
+      let toolCalls: ChatMessage['toolCalls'] = [];
       let usage: ChatState['usage'] = null;
       let finalStatus: ChatMessage['status'] = 'completed';
       let debug: PlaygroundDebugDetail | null = null;
@@ -242,6 +271,7 @@ const ChatTab: React.FC<{ tokenId: string }> = ({ tokenId }) => {
         const reader = res.body.getReader();
         const decoder = new TextDecoder();
         let buffer = '';
+        const streamState = createProtocolStreamState();
 
         const flushStreamMessage = () => {
           if (streamFlushTimerRef.current !== null) return;
@@ -249,7 +279,10 @@ const ChatTab: React.FC<{ tokenId: string }> = ({ tokenId }) => {
             streamFlushTimerRef.current = null;
             setChat(prev => {
               const msgs = [...prev.messages];
-              msgs[msgs.length - 1] = { role: 'assistant', content: assistantContent, reasoningContent: reasoningContent || undefined, status: 'streaming', finishReason };
+              msgs[msgs.length - 1] = {
+                role: 'assistant', content: assistantContent, reasoningContent: reasoningContent || undefined,
+                toolCalls: toolCalls.length > 0 ? toolCalls.map(call => ({ ...call })) : undefined, status: 'streaming', finishReason,
+              };
               return { ...prev, messages: msgs, statusText: '正在流式接收...' };
             });
           }, 80);
@@ -259,6 +292,7 @@ const ChatTab: React.FC<{ tokenId: string }> = ({ tokenId }) => {
           const { done, value } = await reader.read();
           if (done) break;
           buffer += decoder.decode(value, { stream: true });
+          buffer = buffer.replace(/\r\n/g, '\n');
           const events = buffer.split('\n\n');
           buffer = events.pop() || '';
           for (const eventBlock of events) {
@@ -266,8 +300,8 @@ const ChatTab: React.FC<{ tokenId: string }> = ({ tokenId }) => {
             let eventName = 'message';
             const dataLines: string[] = [];
             for (const line of lines) {
-              if (line.startsWith('event: ')) eventName = line.slice(7).trim();
-              if (line.startsWith('data: ')) dataLines.push(line.slice(6));
+              if (line.startsWith('event:')) eventName = line.slice(6).trim();
+              if (line.startsWith('data:')) dataLines.push(line.slice(5).trimStart());
             }
             const data = dataLines.join('\n');
             if (!data || data === '[DONE]') continue;
@@ -275,38 +309,47 @@ const ChatTab: React.FC<{ tokenId: string }> = ({ tokenId }) => {
               try { pendingDebugLogId = JSON.parse(data).request_log_id ?? null; } catch { /* ignore */ }
               continue;
             }
-            try {
-              const parsed = JSON.parse(data);
-              const delta = parsed.choices?.[0]?.delta;
-              if (delta?.content) assistantContent += delta.content;
-              if (delta?.reasoning_content) reasoningContent += delta.reasoning_content;
-              if (parsed.choices?.[0]?.finish_reason) finishReason = parsed.choices[0].finish_reason;
-              if (parsed.usage) usage = { input: parsed.usage.prompt_tokens || 0, output: parsed.usage.completion_tokens || 0, total: parsed.usage.total_tokens || 0 };
-              flushStreamMessage();
-            } catch { /* ignore chunk parse errors */ }
+            let parsed: any;
+            try { parsed = JSON.parse(data); } catch { continue; }
+            consumeProtocolStreamEvent(protocol, eventName, parsed, streamState);
+            if (streamState.error) throw new Error(streamState.error);
+            assistantContent = streamState.content;
+            reasoningContent = streamState.reasoningContent;
+            toolCalls = streamState.toolCalls;
+            finishReason = streamState.finishReason;
+            usage = streamState.usage;
+            flushStreamMessage();
           }
         }
         if (streamFlushTimerRef.current !== null) { window.clearTimeout(streamFlushTimerRef.current); streamFlushTimerRef.current = null; }
         // 流式结束后据 request_log_id 拉取完整调试详情(与历史载入同源)
-        if (pendingDebugLogId !== null) {
-          debug = await playgroundGetDebug(tokenId, pendingDebugLogId).catch(() => null);
+        const streamDebugLogId = pendingDebugLogId ?? headerDebugLogId;
+        if (streamDebugLogId !== null) {
+          debug = await playgroundGetDebug(tokenId, streamDebugLogId).catch(() => null);
           if (debug) setDebugDetail(debug);
         }
       } else {
         const parsed = await res.json();
-        assistantContent = extractAssistantText(parsed.choices?.[0]?.message?.content);
-        reasoningContent = parsed.choices?.[0]?.message?.reasoning_content || '';
-        finishReason = parsed.choices?.[0]?.finish_reason || parsed.debug?.finishReason || '';
-        if (parsed.usage) usage = { input: parsed.usage.prompt_tokens || 0, output: parsed.usage.completion_tokens || 0, total: parsed.usage.total_tokens || 0 };
-        debug = parsed.debug || null;
+        if (parsed.error) throw new Error(parsed.error.message || parsed.error);
+        const result = parseProtocolResponse(protocol, parsed);
+        assistantContent = result.content;
+        reasoningContent = result.reasoningContent;
+        toolCalls = result.toolCalls;
+        finishReason = result.finishReason;
+        usage = result.usage;
+        debug = result.debug || null;
+        if (!debug && headerDebugLogId !== null) {
+          debug = await playgroundGetDebug(tokenId, headerDebugLogId).catch(() => null);
+        }
         setDebugDetail(debug);
-        if (parsed.conversation_id) { setConversationId(parsed.conversation_id); setSelectedConversationId(Number(parsed.conversation_id)); }
+        if (result.conversationId) { setConversationId(result.conversationId); setSelectedConversationId(Number(result.conversationId)); }
       }
 
       setChat(prev => {
         const msgs = [...prev.messages];
         msgs[msgs.length - 1] = {
           role: 'assistant', content: assistantContent, reasoningContent: reasoningContent || undefined,
+          toolCalls: toolCalls.length > 0 ? toolCalls.map(call => ({ ...call })) : undefined,
           status: finalStatus, finishReason, requestLogId: debug?.requestLogId,
         };
         return { ...prev, messages: msgs, isStreaming: false, usage, latencyMs: Date.now() - startTime, statusText: finalStatus === 'completed' ? '已完成' : '请求结束' };
@@ -336,6 +379,10 @@ const ChatTab: React.FC<{ tokenId: string }> = ({ tokenId }) => {
         void loadHistory();
       }
     } catch (err: any) {
+      if (streamFlushTimerRef.current !== null) {
+        window.clearTimeout(streamFlushTimerRef.current);
+        streamFlushTimerRef.current = null;
+      }
       const aborted = err.name === 'AbortError';
       setError(aborted ? '请求已中断' : (err.message || '请求失败'));
       setChat(prev => {
@@ -368,6 +415,36 @@ const ChatTab: React.FC<{ tokenId: string }> = ({ tokenId }) => {
     }
     setPendingModel(null);
   };
+
+  const handleProtocolChange = (nextProtocol: PlaygroundProtocol) => {
+    if (chat.isStreaming || nextProtocol === protocol) return;
+    setProtocol(nextProtocol);
+    setConversationId('');
+    setSelectedConversationId(undefined);
+    setCurrentConversationMeta(null);
+    setDebugDetail(null);
+    setLastPayload(null);
+    setError('');
+    const next = PLAYGROUND_PROTOCOLS.find(item => item.value === nextProtocol)!;
+    setChat(prev => ({ ...prev, statusText: `已切换至 ${next.label}` }));
+  };
+
+  const renderProtocolSwitch = (compact = false) => (
+    <div className="inline-flex items-center rounded-lg border border-[var(--border-soft)] bg-[var(--surface)] p-0.5 flex-shrink-0" role="group" aria-label="请求协议">
+      {PLAYGROUND_PROTOCOLS.map(item => (
+        <button
+          key={item.value}
+          type="button"
+          title={item.endpoint}
+          disabled={chat.isStreaming}
+          onClick={() => handleProtocolChange(item.value)}
+          className={`${compact ? 'px-2' : 'px-2.5'} h-7 rounded-md text-[11px] font-medium transition-colors disabled:opacity-40 ${protocol === item.value ? 'bg-[var(--surface-card)] text-[var(--primary)] shadow-sm' : 'text-[var(--text-secondary)] hover:text-[var(--text-primary)]'}`}
+        >
+          {item.label}
+        </button>
+      ))}
+    </div>
+  );
 
   const startFreshConversationWithModel = () => {
     if (!pendingModel) return;
@@ -405,9 +482,18 @@ const ChatTab: React.FC<{ tokenId: string }> = ({ tokenId }) => {
     });
   }, []);
 
-  const handlePaste = useCallback((e: React.ClipboardEvent) => {
-    const files = e.clipboardData?.files;
-    if (files && files.length > 0) { e.preventDefault(); addFiles(files); }
+  useEffect(() => {
+    const handleDocumentPaste = (event: ClipboardEvent) => {
+      if (event.defaultPrevented) return;
+      const files = getClipboardFiles(event.clipboardData);
+      if (files.length === 0) return;
+
+      event.preventDefault();
+      addFiles(files);
+    };
+
+    document.addEventListener('paste', handleDocumentPaste);
+    return () => document.removeEventListener('paste', handleDocumentPaste);
   }, [addFiles]);
 
   const handleDrop = useCallback((e: React.DragEvent) => {
@@ -452,18 +538,18 @@ const ChatTab: React.FC<{ tokenId: string }> = ({ tokenId }) => {
             <button type="button" onClick={() => setShowAdvancedDrawer(false)} className="text-xs text-[var(--text-secondary)] hover:text-[var(--text-secondary)]">关闭</button>
           </div>
           <div><label className="block text-xs font-medium text-[var(--text-secondary)] mb-1">Temperature: {temperature}</label><input type="range" min="0" max="2" step="0.1" value={temperature} onChange={e => setTemperature(Number(e.target.value))} className="w-full accent-indigo-600" /></div>
-          <div><label className="block text-xs font-medium text-[var(--text-secondary)] mb-1">Max Tokens</label><input type="number" min={1} max={200000} value={maxTokens} onChange={e => setMaxTokens(Number(e.target.value))} className="w-full px-3 py-2 border border-[var(--border-soft)] rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-[var(--primary)]" /></div>
+          <div><label className="block text-xs font-medium text-[var(--text-secondary)] mb-1">{protocol === 'chat' ? 'Max Tokens' : 'Max Output Tokens'}</label><input type="number" min={1} max={selectedModelInfo?.max_tokens && selectedModelInfo.max_tokens > 0 ? selectedModelInfo.max_tokens : 131072} value={maxTokens} onChange={e => setMaxTokens(Number(e.target.value))} className="w-full px-3 py-2 border border-[var(--border-soft)] rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-[var(--primary)]" /></div>
           <div><label className="block text-xs font-medium text-[var(--text-secondary)] mb-1">Top P</label><input type="number" min={0} max={1} step="0.1" value={topP} onChange={e => setTopP(Number(e.target.value))} className="w-full px-3 py-2 border border-[var(--border-soft)] rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-[var(--primary)]" /></div>
-          <div><label className="block text-xs font-medium text-[var(--text-secondary)] mb-1">Presence Penalty</label><input type="number" min={-2} max={2} step="0.1" value={presencePenalty} onChange={e => setPresencePenalty(Number(e.target.value))} className="w-full px-3 py-2 border border-[var(--border-soft)] rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-[var(--primary)]" /></div>
-          <div><label className="block text-xs font-medium text-[var(--text-secondary)] mb-1">Frequency Penalty</label><input type="number" min={-2} max={2} step="0.1" value={frequencyPenalty} onChange={e => setFrequencyPenalty(Number(e.target.value))} className="w-full px-3 py-2 border border-[var(--border-soft)] rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-[var(--primary)]" /></div>
-          <div><label className="block text-xs font-medium text-[var(--text-secondary)] mb-1">Stop（每行一个）</label><textarea value={stop} onChange={e => setStop(e.target.value)} rows={3} className="w-full px-3 py-2 border border-[var(--border-soft)] rounded-lg text-sm resize-none focus:outline-none focus:ring-2 focus:ring-[var(--primary)]" /></div>
-          <div><label className="block text-xs font-medium text-[var(--text-secondary)] mb-1">Seed</label><input type="number" value={seed} onChange={e => setSeed(e.target.value)} className="w-full px-3 py-2 border border-[var(--border-soft)] rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-[var(--primary)]" /></div>
-          <div><label className="block text-xs font-medium text-[var(--text-secondary)] mb-1">User</label><input type="text" value={userValue} onChange={e => setUserValue(e.target.value)} className="w-full px-3 py-2 border border-[var(--border-soft)] rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-[var(--primary)]" /></div>
-          <div><label className="block text-xs font-medium text-[var(--text-secondary)] mb-1">Conversation ID</label><input type="text" value={effectiveConversationId} onChange={e => setConversationId(e.target.value)} className="w-full px-3 py-2 border border-[var(--border-soft)] rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-[var(--primary)]" /></div>
+          {protocol === 'chat' && <div><label className="block text-xs font-medium text-[var(--text-secondary)] mb-1">Presence Penalty</label><input type="number" min={-2} max={2} step="0.1" value={presencePenalty} onChange={e => setPresencePenalty(Number(e.target.value))} className="w-full px-3 py-2 border border-[var(--border-soft)] rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-[var(--primary)]" /></div>}
+          {protocol === 'chat' && <div><label className="block text-xs font-medium text-[var(--text-secondary)] mb-1">Frequency Penalty</label><input type="number" min={-2} max={2} step="0.1" value={frequencyPenalty} onChange={e => setFrequencyPenalty(Number(e.target.value))} className="w-full px-3 py-2 border border-[var(--border-soft)] rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-[var(--primary)]" /></div>}
+          {protocol !== 'responses' && <div><label className="block text-xs font-medium text-[var(--text-secondary)] mb-1">Stop（每行一个）</label><textarea value={stop} onChange={e => setStop(e.target.value)} rows={3} className="w-full px-3 py-2 border border-[var(--border-soft)] rounded-lg text-sm resize-none focus:outline-none focus:ring-2 focus:ring-[var(--primary)]" /></div>}
+          {protocol === 'chat' && <div><label className="block text-xs font-medium text-[var(--text-secondary)] mb-1">Seed</label><input type="number" value={seed} onChange={e => setSeed(e.target.value)} className="w-full px-3 py-2 border border-[var(--border-soft)] rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-[var(--primary)]" /></div>}
+          <div><label className="block text-xs font-medium text-[var(--text-secondary)] mb-1">{protocol === 'anthropic' ? 'User ID' : 'User'}</label><input type="text" value={userValue} onChange={e => setUserValue(e.target.value)} className="w-full px-3 py-2 border border-[var(--border-soft)] rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-[var(--primary)]" /></div>
+          {protocol === 'chat' && <div><label className="block text-xs font-medium text-[var(--text-secondary)] mb-1">Conversation ID</label><input type="text" value={effectiveConversationId} onChange={e => setConversationId(e.target.value)} className="w-full px-3 py-2 border border-[var(--border-soft)] rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-[var(--primary)]" /></div>}
           <div className="border border-[var(--border-soft)] rounded-xl overflow-hidden">
             <div className="px-3 py-2 bg-[var(--surface)] text-xs font-semibold text-[var(--text-secondary)]">高级参数（JSON）</div>
             <div className="p-3 space-y-3">
-              <div><label className="block text-xs font-medium text-[var(--text-secondary)] mb-1">response_format</label><textarea value={responseFormatText} onChange={e => setResponseFormatText(e.target.value)} rows={3} placeholder='{"type":"json_object"}' className="w-full px-3 py-2 border border-[var(--border-soft)] rounded-lg text-xs font-mono resize-none focus:outline-none focus:ring-2 focus:ring-[var(--primary)]" /></div>
+              {protocol !== 'anthropic' && <div><label className="block text-xs font-medium text-[var(--text-secondary)] mb-1">{protocol === 'responses' ? 'text.format' : 'response_format'}</label><textarea value={responseFormatText} onChange={e => setResponseFormatText(e.target.value)} rows={3} placeholder='{"type":"json_object"}' className="w-full px-3 py-2 border border-[var(--border-soft)] rounded-lg text-xs font-mono resize-none focus:outline-none focus:ring-2 focus:ring-[var(--primary)]" /></div>}
               <div><label className="block text-xs font-medium text-[var(--text-secondary)] mb-1">tools</label><textarea value={toolsText} onChange={e => setToolsText(e.target.value)} rows={4} placeholder="[...]" className="w-full px-3 py-2 border border-[var(--border-soft)] rounded-lg text-xs font-mono resize-none focus:outline-none focus:ring-2 focus:ring-[var(--primary)]" /></div>
               <div><label className="block text-xs font-medium text-[var(--text-secondary)] mb-1">tool_choice</label><textarea value={toolChoiceText} onChange={e => setToolChoiceText(e.target.value)} rows={2} placeholder='"auto"' className="w-full px-3 py-2 border border-[var(--border-soft)] rounded-lg text-xs font-mono resize-none focus:outline-none focus:ring-2 focus:ring-[var(--primary)]" /></div>
             </div>
@@ -484,9 +570,12 @@ const ChatTab: React.FC<{ tokenId: string }> = ({ tokenId }) => {
       <div className="h-full flex gap-4">
         <div className="flex-1 flex flex-col bg-[var(--surface-card)] rounded-xl border border-[var(--border-soft)] overflow-hidden min-w-0">
           {/* Mobile: 极简顶栏 */}
-          <div className="px-3 py-2 border-b border-[var(--border-soft)] flex items-center justify-between gap-2 md:hidden">
-            <ModelSelector options={models.map(m => ({ id: m.id, provider: m.group || m.owned_by }))} value={selectedModel} onChange={handleModelSelect} className="min-w-0 flex-1" />
-            <button type="button" onClick={() => setShowMobileMenu(true)} className="p-2 rounded-lg text-[var(--text-secondary)] hover:bg-[var(--surface)]"><MoreHorizontal size={18} /></button>
+          <div className="px-3 py-2 border-b border-[var(--border-soft)] flex flex-col gap-2 md:hidden">
+            <div className="flex items-center justify-between gap-2">
+              <ModelSelector options={models.map(m => ({ id: m.id, provider: m.group || m.owned_by }))} value={selectedModel} onChange={handleModelSelect} className="min-w-0 flex-1" />
+              <button type="button" onClick={() => setShowMobileMenu(true)} className="p-2 rounded-lg text-[var(--text-secondary)] hover:bg-[var(--surface)]"><MoreHorizontal size={18} /></button>
+            </div>
+            {renderProtocolSwitch(true)}
           </div>
           {/* Mobile: 底部菜单 */}
           {showMobileMenu && (
@@ -495,7 +584,7 @@ const ChatTab: React.FC<{ tokenId: string }> = ({ tokenId }) => {
               <div className="fixed bottom-0 left-0 right-0 z-50 bg-[var(--surface-card)] rounded-t-2xl border-t border-[var(--border-soft)] p-4 space-y-1 md:hidden animate-slide-in-right">
                 <div className="w-10 h-1 bg-gray-300 rounded-full mx-auto mb-3" />
                 <button type="button" onClick={() => { setShowMobileMenu(false); setShowHistoryDrawer(true); }} className="w-full flex items-center gap-3 px-4 py-3 rounded-xl hover:bg-[var(--surface)] text-sm text-[var(--text-primary)]"><Plus size={16} className="text-[var(--text-secondary)]" /> 历史会话</button>
-                <button type="button" onClick={() => { setShowMobileMenu(false); setShowSystemPrompt(prev => !prev); }} className="w-full flex items-center gap-3 px-4 py-3 rounded-xl hover:bg-[var(--surface)] text-sm text-[var(--text-primary)]"><FileJson size={16} className="text-[var(--text-secondary)]" /> System Prompt</button>
+                <button type="button" onClick={() => { setShowMobileMenu(false); setShowSystemPrompt(prev => !prev); }} className="w-full flex items-center gap-3 px-4 py-3 rounded-xl hover:bg-[var(--surface)] text-sm text-[var(--text-primary)]"><FileJson size={16} className="text-[var(--text-secondary)]" /> {protocol === 'responses' ? 'Instructions' : 'System Prompt'}</button>
                 <button type="button" onClick={() => { setShowMobileMenu(false); setShowAdvancedDrawer(true); }} className="w-full flex items-center gap-3 px-4 py-3 rounded-xl hover:bg-[var(--surface)] text-sm text-[var(--text-primary)]"><SlidersHorizontal size={16} className="text-[var(--text-secondary)]" /> 参数设置</button>
                 <button type="button" onClick={() => { setShowMobileMenu(false); setShowDebugDrawer(true); setShowFullDebug(false); }} className="w-full flex items-center gap-3 px-4 py-3 rounded-xl hover:bg-[var(--surface)] text-sm text-[var(--text-primary)]"><Bug size={16} className="text-[var(--text-secondary)]" /> 调试信息</button>
                 <div className="flex items-center justify-between px-4 py-3 rounded-xl">
@@ -510,16 +599,17 @@ const ChatTab: React.FC<{ tokenId: string }> = ({ tokenId }) => {
             </>
           )}
           {/* Desktop: 完整工具栏 */}
-          <div className="hidden md:flex px-4 py-2 border-b border-[var(--border-soft)] items-center justify-between gap-2 flex-wrap">
-            <div className="flex items-center gap-2 min-w-0 flex-1">
-              <ModelSelector options={models.map(m => ({ id: m.id, provider: m.group || m.owned_by }))} value={selectedModel} onChange={handleModelSelect} />
+          <div className="hidden md:flex px-4 py-2 border-b border-[var(--border-soft)] items-center gap-2 flex-wrap">
+            <div className="flex items-center gap-2 min-w-0 flex-1 basis-[21rem]">
+              <ModelSelector options={models.map(m => ({ id: m.id, provider: m.group || m.owned_by }))} value={selectedModel} onChange={handleModelSelect} className="min-w-[10rem] max-w-[13rem] flex-1" />
+              {renderProtocolSwitch()}
             </div>
-            <div className="flex items-center gap-1.5 flex-wrap">
-              <button type="button" onClick={() => setShowHistoryDrawer(prev => !prev)} className="inline-flex items-center gap-1.5 px-2 py-1 rounded-lg border border-[var(--border-soft)] text-[11px] text-[var(--text-secondary)] hover:bg-[var(--surface)]"><Plus size={12} /> 历史</button>
-              <button type="button" onClick={() => setShowSystemPrompt(prev => !prev)} className="inline-flex items-center gap-1.5 px-2 py-1 rounded-lg border border-[var(--border-soft)] text-[11px] text-[var(--text-secondary)] hover:bg-[var(--surface)]">System</button>
-              <button type="button" onClick={() => setShowAdvancedDrawer(prev => !prev)} className="inline-flex items-center gap-1.5 px-2 py-1 rounded-lg border border-[var(--border-soft)] text-[11px] text-[var(--text-secondary)] hover:bg-[var(--surface)]"><SlidersHorizontal size={12} /> 参数</button>
-              <button type="button" onClick={() => { setShowDebugDrawer(prev => !prev); setShowFullDebug(false); }} className="inline-flex items-center gap-1.5 px-2 py-1 rounded-lg border border-[var(--border-soft)] text-[11px] text-[var(--text-secondary)] hover:bg-[var(--surface)] xl:hidden"><Bug size={12} /> 调试</button>
-              <button type="button" onClick={handleClear} className="inline-flex items-center gap-1.5 px-2 py-1 rounded-lg border border-[var(--border-soft)] text-[11px] text-[var(--text-secondary)] hover:bg-[var(--surface)]"><Trash2 size={12} /> 清空</button>
+            <div className="flex items-center gap-1.5 ml-auto">
+              <button type="button" aria-label="历史" title="历史" onClick={() => setShowHistoryDrawer(prev => !prev)} className="inline-flex h-7 w-7 items-center justify-center rounded-lg border border-[var(--border-soft)] text-[var(--text-secondary)] hover:bg-[var(--surface)]"><PanelLeft size={13} /></button>
+              <button type="button" aria-label={protocol === 'responses' ? 'Instructions' : 'System'} title={protocol === 'responses' ? 'Instructions' : 'System'} onClick={() => setShowSystemPrompt(prev => !prev)} className="inline-flex h-7 w-7 items-center justify-center rounded-lg border border-[var(--border-soft)] text-[var(--text-secondary)] hover:bg-[var(--surface)]"><FileJson size={13} /></button>
+              <button type="button" aria-label="参数" title="参数" onClick={() => setShowAdvancedDrawer(prev => !prev)} className="inline-flex h-7 w-7 items-center justify-center rounded-lg border border-[var(--border-soft)] text-[var(--text-secondary)] hover:bg-[var(--surface)]"><SlidersHorizontal size={13} /></button>
+              <button type="button" aria-label="调试" title="调试" onClick={() => { setShowDebugDrawer(prev => !prev); setShowFullDebug(false); }} className="inline-flex h-7 w-7 items-center justify-center rounded-lg border border-[var(--border-soft)] text-[var(--text-secondary)] hover:bg-[var(--surface)] xl:hidden"><Bug size={13} /></button>
+              <button type="button" aria-label="清空" title="清空" onClick={handleClear} className="inline-flex h-7 w-7 items-center justify-center rounded-lg border border-[var(--border-soft)] text-[var(--text-secondary)] hover:bg-[var(--surface)]"><Trash2 size={13} /></button>
             </div>
           </div>
 
@@ -557,17 +647,18 @@ const ChatTab: React.FC<{ tokenId: string }> = ({ tokenId }) => {
 
           {(showSystemPrompt || systemPrompt.trim()) && (
             <div className="px-3 md:px-4 py-1.5 border-b border-[var(--border-soft)]">
-              <label className="block text-[11px] font-medium text-[var(--text-secondary)] mb-1">System Prompt</label>
+              <label className="block text-[11px] font-medium text-[var(--text-secondary)] mb-1">{protocol === 'responses' ? 'Instructions' : 'System Prompt'}</label>
               <textarea value={systemPrompt} onChange={e => setSystemPrompt(e.target.value)} rows={2} className="w-full px-3 py-2 border border-[var(--border-soft)] rounded-lg text-sm resize-none focus:outline-none focus:ring-2 focus:ring-[var(--primary)]" />
             </div>
           )}
 
           <div className="hidden md:flex px-4 py-1 border-b border-[var(--border-soft)] text-[11px] text-[var(--text-secondary)] items-center gap-3 flex-wrap">
             <span>{chat.statusText}</span>
+            <span className="font-mono">{protocolInfo.endpoint}</span>
             {conversationModel ? <span>会话模型 {conversationModel}</span> : null}
             {chat.latencyMs ? <span>耗时 {(chat.latencyMs / 1000).toFixed(2)}s</span> : null}
             {chat.usage ? <span>Tokens {chat.usage.input}/{chat.usage.output}/{chat.usage.total || (chat.usage.input + chat.usage.output)}</span> : null}
-            {effectiveConversationId ? <span>会话 #{effectiveConversationId}</span> : null}
+            {protocol === 'chat' && effectiveConversationId ? <span>会话 #{effectiveConversationId}</span> : null}
           </div>
           <div className="flex-1 overflow-y-auto p-3 md:p-4 space-y-4 min-h-0">
             {chat.messages.length === 0 && (
@@ -613,6 +704,20 @@ const ChatTab: React.FC<{ tokenId: string }> = ({ tokenId }) => {
                       </div>
                     )}
                   </div>
+                  {msg.role === 'assistant' && msg.toolCalls && msg.toolCalls.length > 0 && (
+                    <div className="px-4 pb-3 space-y-2">
+                      {msg.toolCalls.map((call, callIndex) => (
+                        <div key={call.id || callIndex} className="rounded-lg border border-[var(--border-soft)] bg-[var(--surface-card)] overflow-hidden">
+                          <div className="px-3 py-1.5 border-b border-[var(--border-soft)] flex items-center gap-2 text-xs font-medium text-[var(--text-primary)]">
+                            <Wrench size={12} className="text-[var(--primary)]" />
+                            <span className="truncate">{call.name}</span>
+                            {call.id ? <span className="ml-auto font-mono text-[10px] text-[var(--text-secondary)] truncate max-w-32">{call.id}</span> : null}
+                          </div>
+                          <pre className="px-3 py-2 text-[11px] leading-5 font-mono whitespace-pre-wrap break-all text-[var(--text-secondary)] max-h-48 overflow-auto">{call.arguments || '{}'}</pre>
+                        </div>
+                      ))}
+                    </div>
+                  )}
                   {msg.role === 'assistant' && (
                     <div className="px-4 pb-3 flex items-center gap-3 text-xs text-[var(--text-secondary)] flex-wrap">
                       <StatusBadge status={msg.status || 'completed'} />
@@ -677,7 +782,7 @@ const ChatTab: React.FC<{ tokenId: string }> = ({ tokenId }) => {
               )}
               <div className="flex items-end gap-1.5 p-2">
                 <button onClick={() => fileInputRef.current?.click()} disabled={chat.isStreaming} className="p-2 text-[var(--text-secondary)] hover:text-[var(--primary)] hover:bg-[var(--primary-lighter)] rounded-lg disabled:opacity-40 transition-all flex-shrink-0 mb-0.5" title="添加附件"><Paperclip size={18} /></button>
-                <textarea value={input} onChange={e => setInput(e.target.value)} onKeyDown={handleKeyDown} onPaste={handlePaste} placeholder="输入消息... (Enter 发送, Shift+Enter 换行, 可粘贴/拖拽文件)" rows={2} className="flex-1 px-2 py-2.5 text-sm resize-none focus:outline-none bg-transparent max-h-32" disabled={chat.isStreaming} />
+				<textarea value={input} onChange={e => setInput(e.target.value)} onKeyDown={handleKeyDown} placeholder="输入消息" rows={2} className="flex-1 px-2 py-2.5 text-sm resize-none focus:outline-none bg-transparent max-h-32" disabled={chat.isStreaming} />
                 {chat.isStreaming ? (
                   <button onClick={handleStop} className="px-4 py-2.5 bg-red-500 text-white rounded-xl hover:bg-red-600 transition-colors flex-shrink-0"><Square size={18} /></button>
                 ) : (

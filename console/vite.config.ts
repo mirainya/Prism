@@ -5,14 +5,16 @@ import tailwindcss from '@tailwindcss/vite';
 
 export default defineConfig(({ mode }) => {
     const env = loadEnv(mode, '.', '');
+    const apiProxyTarget = process.env.VITE_API_PROXY_TARGET || env.VITE_API_PROXY_TARGET || 'http://localhost:23523';
     return {
       server: {
         port: 3001,
         host: '0.0.0.0',
         proxy: {
           '/api': {
-            target: 'http://localhost:23523',
+            target: apiProxyTarget,
             changeOrigin: true,
+            secure: true,
           },
         },
       },

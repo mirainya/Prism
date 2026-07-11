@@ -6,7 +6,7 @@ import { createChannelCapability, updateChannelCapability } from '../../services
 import { ChannelCapability, Channel, Capability } from '../../types';
 import {
     RESULT_MODES, STANDARD_PARAMS, STANDARD_RESPONSE, POLL_PARAMS,
-    STANDARD_STATUS_VALUES, formatPrice,
+    STANDARD_STATUS_VALUES,
 } from './constants';
 import { FieldMappingRow, ValueMappingRow, FixedParamRow } from './MappingRows';
 import {
@@ -127,7 +127,7 @@ const ChannelCapabilityModal: React.FC<{
                 capability_code: capabilityCode, model: '', name: '', price: 0, price_unit: 'request',
                 result_mode: 'poll', request_path: '', request_method: 'POST', content_type: 'application/json',
                 auth_location: 'header', auth_key: 'Authorization', auth_value_prefix: 'Bearer ',
-                poll_path: '', poll_method: 'GET', poll_interval: 5, poll_max_attempts: 60,
+                poll_path: '', poll_method: 'GET', poll_interval: 5, poll_max_attempts: 60, transfer_enabled: false,
             });
             setParamFieldMappings([]); setParamValueMappings([]); setParamFixedParams([]); setParamTypeConverts([]);
             setRespFieldMappings([]); setRespValueMappings([]); setRespTypeConverts([]); setRespSuccessCondition(null);

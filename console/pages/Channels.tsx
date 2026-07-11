@@ -14,7 +14,6 @@ import {
     updateChannelAccount,
     deleteChannelAccount,
     fetchChannelCapabilities,
-    createChannelCapability,
     updateChannelCapability,
     deleteChannelCapability,
     fetchCapabilities,
@@ -28,12 +27,6 @@ const STATUS_MAP: Record<number, { label: string; color: string }> = {
   1: { label: '已启用', color: 'bg-green-100 text-green-700' },
   0: { label: '已禁用', color: 'bg-[var(--primary-lighter)] text-[var(--text-primary)]' },
 };
-
-const RESULT_MODES = [
-  { value: 'sync', label: '同步' },
-  { value: 'poll', label: '轮询' },
-  { value: 'callback', label: '回调' },
-];
 
 // formatCircuitCountdown 距离熔断到期的剩余时间(人类可读)
 const formatCircuitCountdown = (disabledUntil: string): string => {
@@ -91,10 +84,6 @@ const ChannelRow: React.FC<{
   const keyCapabilities = selectedAccountId
     ? capabilities.filter(c => c.accountId === selectedAccountId)
     : [];
-
-  const getResultModeLabel = (mode: string) => {
-    return RESULT_MODES.find(m => m.value === mode)?.label || mode;
-  };
 
   const handleCopyApiKey = async (accountId: string, apiKey: string) => {
     if (!apiKey) return;
@@ -461,7 +450,7 @@ const Channels: React.FC = () => {
             />
           </div>
           <button
-            onClick={loadData}
+            onClick={() => loadData()}
             className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold text-[var(--text-secondary)] hover:text-[var(--text-primary)] transition-colors flex-shrink-0"
           >
             <RefreshCw size={14} className={isLoading ? 'animate-spin' : ''} />

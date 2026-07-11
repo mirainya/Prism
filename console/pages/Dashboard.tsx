@@ -7,7 +7,6 @@ import { TrendingUp, Activity, AlertCircle, DollarSign, ArrowUpRight, ArrowDownR
 import { fetchDashboardStats } from '../services/api';
 import { DashboardStats } from '../types';
 
-const COLORS = ['var(--chart-1)', 'var(--chart-2)', 'var(--chart-3)', 'var(--chart-4)', 'var(--chart-5)'];
 const COLORS_RAW = ['#8b5cf6', '#ec4899', '#6366f1', '#a78bfa', '#f472b6'];
 
 const Dashboard: React.FC = () => {

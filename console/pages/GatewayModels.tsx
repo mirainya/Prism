@@ -6,7 +6,7 @@ import { CSS } from '@dnd-kit/utilities';
 import { Modal } from '../components/ui/Modal';
 import {
   GwModel, GwAbility,
-  fetchGwModels, fetchGwAbilities, upsertGwModelMeta, deleteGwModelMeta, deleteGwModel, reorderGwModels,
+  fetchGwModels, fetchGwAbilities, upsertGwModelMeta, deleteGwModel, reorderGwModels,
 } from '../services/gatewayApi';
 import { ThinkingConfig } from '../types';
 import ThinkingConfigEditor from './capabilities/ThinkingConfigEditor';
@@ -171,12 +171,6 @@ const GatewayModels: React.FC = () => {
     return models.filter(m => m.model_name.toLowerCase().includes(kw) || (m.display_name || '').toLowerCase().includes(kw));
   }, [models, searchTerm]);
 
-  const handleDeleteMeta = async (name: string) => {
-    if (!confirm('清除该模型的元数据(显示名/思考档/特性)? 不影响路由,模型仍可用。')) return;
-    await deleteGwModelMeta(name);
-    load();
-  };
-
   const handleDeleteModel = (name: string) => {
     setConfirmModal({ open: true, modelName: name });
   };
@@ -245,7 +239,7 @@ const GatewayModels: React.FC = () => {
             <span className="ml-2 md:ml-3 text-xs md:text-base font-normal text-[var(--text-secondary)]">{models.length} 个可路由</span>
           </h1>
           <p className="text-[var(--text-secondary)] mt-1 text-sm md:text-base">
-            仅展示 gw_abilities 里至少 1 个 Key 能跑的模型(与 /v2 路由同源)。此页只编辑元数据(显示名/思考档/特性),渠道与 Key 请去「网关渠道」管理。
+            仅展示 gw_abilities 里至少 1 个 Key 能跑的模型。此页只编辑元数据(显示名/思考档/特性),渠道与 Key 请去「网关渠道」管理。
           </p>
         </div>
         <button onClick={load} className="flex items-center gap-2 px-3 md:px-4 py-2 border border-[var(--border-soft)] rounded-lg text-[var(--text-secondary)] hover:bg-[var(--surface)] self-start">

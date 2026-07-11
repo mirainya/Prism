@@ -17,7 +17,7 @@ import EnumSelect from './EnumSelect';
 import { CapabilityDebugPanel } from './CapabilityResultCard';
 import { Modal } from '../../components/ui/Modal';
 import {
-  ACCEPTED_FILE_TYPES, FALLBACK_STANDARD_PARAMS, LONG_TEXT_FIELDS, CONTROL_FIELDS,
+  ACCEPTED_FILE_TYPES, FALLBACK_STANDARD_PARAMS, LONG_TEXT_FIELDS,
   CAPABILITY_TYPE_ORDER, formatFileSize, getFileIcon,
   extractMediaItems, getCapabilityPromptPreview,
   getCapabilityTaskStatus, getCapabilityTypeBadgeClass, normalizeCapabilityValue,
@@ -277,10 +277,6 @@ const CapabilityTab: React.FC<{ tokenId: string }> = ({ tokenId }) => {
     if (hasTouchedParamPanel) return;
     setShowParamPanel(!(tasks.length > 0 || !!selectedTaskNo));
   }, [tasks.length, selectedTaskNo, hasTouchedParamPanel, selectedCap]);
-
-  const resetCapabilityFilters = () => {
-    setCapabilitySearch(''); setCapabilityTypeFilter('');
-  };
 
   const handleSelectCapability = (capabilityCode: string) => {
     clearCapabilityAttachments();

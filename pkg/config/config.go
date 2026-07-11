@@ -7,6 +7,8 @@ import (
 	"github.com/spf13/viper"
 )
 
+const DefaultFileStorageMaxTotalSizeMB = 1024
+
 type Config struct {
 	Server      ServerConfig      `mapstructure:"server"`
 	Database    DatabaseConfig    `mapstructure:"database"`
@@ -18,9 +20,14 @@ type Config struct {
 }
 
 type ServerConfig struct {
-	Port      int    `mapstructure:"port"`
-	JWTSecret string `mapstructure:"jwt_secret"`
-	PublicURL string `mapstructure:"public_url"`
+	Port                    int    `mapstructure:"port"`
+	JWTSecret               string `mapstructure:"jwt_secret"`
+	PublicURL               string `mapstructure:"public_url"`
+	ResetGatewayConcurrency *bool  `mapstructure:"reset_gateway_concurrency_on_start"`
+}
+
+func (c ServerConfig) ShouldResetGatewayConcurrency() bool {
+	return c.ResetGatewayConcurrency == nil || *c.ResetGatewayConcurrency
 }
 
 type DatabaseConfig struct {
@@ -66,11 +73,12 @@ type RateLimitConfig struct {
 }
 
 type FileStorageConfig struct {
-	BaseURL       string   `mapstructure:"base_url"`
-	APIKey        string   `mapstructure:"api_key"`
-	UploadPath    string   `mapstructure:"upload_path"`
-	MaxFileSizeMB int      `mapstructure:"max_file_size_mb"`
-	AllowedTypes  []string `mapstructure:"allowed_types"`
+	BaseURL        string   `mapstructure:"base_url"`
+	APIKey         string   `mapstructure:"api_key"`
+	UploadPath     string   `mapstructure:"upload_path"`
+	MaxFileSizeMB  int      `mapstructure:"max_file_size_mb"`
+	MaxTotalSizeMB int      `mapstructure:"max_total_size_mb"`
+	AllowedTypes   []string `mapstructure:"allowed_types"`
 }
 
 var (
@@ -96,23 +104,40 @@ func Load(path string) error {
 	if err := viper.ReadInConfig(); err != nil {
 		return err
 	}
-	C = &Config{}
-	return viper.Unmarshal(C)
+	newCfg := &Config{}
+	if err := viper.Unmarshal(newCfg); err != nil {
+		return err
+	}
+	applyDefaults(newCfg)
+
+	mu.Lock()
+	C = newCfg
+	mu.Unlock()
+	return nil
 }
 
 func Watch() {
 	viper.OnConfigChange(func(e fsnotify.Event) {
-		mu.Lock()
 		newCfg := &Config{}
-		if err := viper.Unmarshal(newCfg); err == nil {
-			C = newCfg
+		if err := viper.Unmarshal(newCfg); err != nil {
+			return
 		}
+		applyDefaults(newCfg)
+
+		mu.Lock()
+		C = newCfg
 		cbs := make([]func(*Config), len(callbacks))
 		copy(cbs, callbacks)
 		mu.Unlock()
 		for _, fn := range cbs {
-			fn(C)
+			fn(newCfg)
 		}
 	})
 	viper.WatchConfig()
+}
+
+func applyDefaults(cfg *Config) {
+	if cfg.FileStorage.MaxTotalSizeMB <= 0 {
+		cfg.FileStorage.MaxTotalSizeMB = DefaultFileStorageMaxTotalSizeMB
+	}
 }

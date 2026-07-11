@@ -19,8 +19,11 @@ func NewCircuit() *Circuit { return &Circuit{} }
 
 // MarkUnavailable 据上游错误决定是否熔断该 key 对该 model 的调用。
 // 非熔断类错误(5xx 渠道故障)跳过。幂等:已存在则延长退避 + fail_count+1。
-func (c *Circuit) MarkUnavailable(keyID uint, modelName string, err error) {
-	if keyID == 0 || modelName == "" || err == nil {
+
+// MarkTransportUnavailable records a temporary failure for one concrete
+// upstream endpoint dialect. Other transports on the same key remain usable.
+func (c *Circuit) MarkTransportUnavailable(keyID uint, modelName string, transport model.UpstreamTransport, err error) {
+	if keyID == 0 || modelName == "" || transport == "" || err == nil {
 		return
 	}
 	shouldBreak, backoff := domain.ClassifyUpstreamError(err)
@@ -28,38 +31,33 @@ func (c *Circuit) MarkUnavailable(keyID uint, modelName string, err error) {
 		return
 	}
 
-	statusCode := domain.UpstreamStatusCode(err)
-	disabledUntil := time.Now().Add(backoff)
+	now := time.Now()
+	disabledUntil := now.Add(backoff)
 	reason := err.Error()
 	if len(reason) > 500 {
 		reason = reason[:500]
 	}
-
-	state := model.AccountModelState{
-		AccountID:     keyID,
-		ModelCode:     modelName,
-		DisabledUntil: disabledUntil,
-		Reason:        reason,
-		StatusCode:    statusCode,
-		FailCount:     1,
+	statusCode := domain.UpstreamStatusCode(err)
+	state := model.GwRouteState{
+		KeyID: keyID, ModelName: modelName, Transport: transport,
+		DisabledUntil: disabledUntil, Reason: reason, StatusCode: statusCode, FailCount: 1,
 	}
-
 	if dbErr := model.DB().Clauses(clause.OnConflict{
-		Columns: []clause.Column{{Name: "account_id"}, {Name: "model_code"}},
+		Columns: []clause.Column{{Name: "key_id"}, {Name: "model_name"}, {Name: "transport"}},
 		DoUpdates: clause.Assignments(map[string]any{
 			"disabled_until": disabledUntil,
 			"reason":         reason,
 			"status_code":    statusCode,
 			"fail_count":     gorm.Expr("fail_count + 1"),
-			"updated_at":     time.Now(),
+			"updated_at":     now,
 		}),
 	}).Create(&state).Error; dbErr != nil {
-		logger.Error("gw circuit mark unavailable failed",
-			zap.Uint("key_id", keyID), zap.String("model", modelName), zap.Error(dbErr))
+		logger.Error("gw transport circuit mark unavailable failed",
+			zap.Uint("key_id", keyID), zap.String("model", modelName), zap.String("transport", string(transport)), zap.Error(dbErr))
 		return
 	}
 
-	logger.Warn("gw circuit-broken",
-		zap.Uint("key_id", keyID), zap.String("model", modelName),
+	logger.Warn("gw transport circuit-broken",
+		zap.Uint("key_id", keyID), zap.String("model", modelName), zap.String("transport", string(transport)),
 		zap.Int("status", statusCode), zap.Time("until", disabledUntil))
 }

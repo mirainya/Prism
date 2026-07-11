@@ -17,9 +17,18 @@ type AggregationResult struct {
 	ResponsePreview    string
 	ResponseBody       string
 	ErrorMessage       string
+	UpstreamError      *StreamError
 	Usage              *chat.ChatUsage
 	ProviderResponseID string // 火山 B 模式回写
 }
+
+type StreamError struct {
+	Message string `json:"message"`
+	Type    string `json:"type,omitempty"`
+	Code    any    `json:"code,omitempty"`
+}
+
+func (e *StreamError) Error() string { return e.Message }
 
 // Writer 抽象 gin.ResponseWriter 需要的两个方法,便于测试。
 type Writer interface {
@@ -32,6 +41,7 @@ type Writer interface {
 func ProxyStream(w Writer, upstreamBody io.Reader) (*AggregationResult, error) {
 	agg := &AggregationResult{}
 	reader := bufio.NewReader(upstreamBody)
+	done := false
 	for {
 		line, err := reader.ReadString('\n')
 		if line != "" {
@@ -40,8 +50,14 @@ func ProxyStream(w Writer, upstreamBody io.Reader) (*AggregationResult, error) {
 			trimmed := strings.TrimSpace(line)
 			if strings.HasPrefix(trimmed, "data: ") {
 				payload := strings.TrimPrefix(trimmed, "data: ")
-				if payload != "[DONE]" {
-					mergeChunk(agg, payload)
+				if payload == "[DONE]" {
+					done = true
+				} else {
+					if streamErr := mergeChunk(agg, payload); streamErr != nil {
+						agg.UpstreamError = streamErr
+						agg.ErrorMessage = streamErr.Error()
+						return agg, streamErr
+					}
 				}
 			}
 		}
@@ -50,13 +66,20 @@ func ProxyStream(w Writer, upstreamBody io.Reader) (*AggregationResult, error) {
 				agg.ErrorMessage = err.Error()
 				return agg, err
 			}
+			if !done {
+				streamErr := &StreamError{Message: "upstream stream ended before [DONE]", Type: "server_error", Code: "incomplete_stream"}
+				agg.UpstreamError = streamErr
+				agg.ErrorMessage = streamErr.Error()
+				return agg, streamErr
+			}
 			return agg, nil
 		}
 	}
 }
 
-func mergeChunk(agg *AggregationResult, payload string) {
+func mergeChunk(agg *AggregationResult, payload string) *StreamError {
 	var parsed struct {
+		Error   *StreamError `json:"error"`
 		Choices []struct {
 			Delta struct {
 				Content          string `json:"content"`
@@ -73,7 +96,10 @@ func mergeChunk(agg *AggregationResult, payload string) {
 		ProviderResponseID string          `json:"provider_response_id"`
 	}
 	if err := json.Unmarshal([]byte(payload), &parsed); err != nil {
-		return
+		return &StreamError{Message: "invalid upstream stream event", Type: "server_error", Code: "invalid_stream_event"}
+	}
+	if parsed.Error != nil {
+		return parsed.Error
 	}
 	if parsed.ProviderResponseID != "" {
 		agg.ProviderResponseID = parsed.ProviderResponseID
@@ -101,4 +127,5 @@ func mergeChunk(agg *AggregationResult, payload string) {
 	if body, err := json.Marshal(map[string]string{"content": agg.AssistantContent}); err == nil {
 		agg.ResponseBody = string(body)
 	}
+	return nil
 }

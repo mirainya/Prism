@@ -87,7 +87,7 @@ func GetTaskDetail(c *gin.Context) {
 	detail := gin.H{
 		"task_no":        task.TaskNo,
 		"capability":     task.ModelCode,
-		"status":         task.Status,
+		"status":         task.Status.Public(),
 		"progress":       task.Progress,
 		"cost":           task.Cost,
 		"refunded":       task.Refunded,

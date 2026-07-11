@@ -97,7 +97,7 @@ func (s *UnifiedService) InvokeAndWait(ctx context.Context, req *InvokeRequest, 
 				return &ImageResult{
 					Done:   false,
 					TaskNo: task.TaskNo,
-					Status: string(task.Status),
+					Status: string(task.Status.Public()),
 				}, nil
 			}
 		}

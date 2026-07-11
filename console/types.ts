@@ -57,6 +57,7 @@ export type CapabilityStandardParamType = 'string' | 'number' | 'array' | 'enum'
 export interface CapabilityStandardParamSchema {
   type: CapabilityStandardParamType;
   name: string;
+  description?: string;
   required?: boolean;
   options?: string[];
   enumValues?: string[];
@@ -270,6 +271,7 @@ export interface ThinkingConfig {
 export interface PlaygroundModelInfo {
   id: string;
   owned_by: string;
+  max_tokens?: number;
   group?: string; // 分组名(手动组名/源渠道/未分组),与对话模型页同频
   supports_stream?: boolean;
   default_stream?: boolean;

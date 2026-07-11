@@ -1,5 +1,6 @@
 server:
   port: 23523
+  reset_gateway_concurrency_on_start: true # Set false when multiple Prism instances share one database
   jwt_secret: "your-secret-key-change-in-production"
 
 database:
@@ -34,6 +35,9 @@ http_client:
   max_idle_conns: 100       # 最大空闲连接数
   max_idle_conns_per_host: 20
   idle_conn_timeout: 90     # 空闲连接超时(秒)
+
+file_storage:
+  max_total_size_mb: 1024   # Per-token Files API quota
 
 rate_limit:
   enabled: false

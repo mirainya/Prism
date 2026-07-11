@@ -269,7 +269,6 @@ Prism/
 |------|------|
 | `pages/Home.tsx` | 落地页：功能展示、能力列表 |
 | `pages/Pricing.tsx` | 公开定价页：能力和渠道定价详情 |
-| `pages/CapabilityPrices.tsx` | 能力定价展示：按类型筛选、搜索 |
 
 ---
 

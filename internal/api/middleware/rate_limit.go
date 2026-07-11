@@ -49,10 +49,7 @@ func RateLimit(keyFunc func(c *gin.Context) string) gin.HandlerFunc {
 		c.Header("X-RateLimit-Remaining", fmt.Sprintf("%d", max(0, int64(limit)-count)))
 
 		if count > int64(limit) {
-			c.JSON(http.StatusTooManyRequests, gin.H{
-				"code":    429,
-				"message": "rate limit exceeded, please try again later",
-			})
+			writeGatewayProtocolError(c, http.StatusTooManyRequests, "rate limit exceeded, please try again later", "rate_limit_error", "rate_limit_exceeded")
 			c.Abort()
 			return
 		}

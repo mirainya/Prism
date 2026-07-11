@@ -14,7 +14,6 @@ import (
 	"github.com/mirainya/Prism/pkg/logger"
 	"github.com/mirainya/Prism/pkg/queue"
 	"go.uber.org/zap"
-	"gorm.io/gorm"
 )
 
 const DefaultMaxPollCount = 360 // 默认最大轮询次数（兜底）
@@ -34,8 +33,8 @@ func HandleTaskPoll(ctx context.Context, t *asynq.Task) error {
 		return fmt.Errorf("get task: %w", err)
 	}
 
-	// 任务已进入终态(成功/失败/取消),不再轮询
-	if task.Status == model.TaskStatusSuccess || task.Status == model.TaskStatusFailed || task.Status == model.TaskStatusCancelled {
+	// 终态任务不再轮询。finalizing 仍可重试查询，以恢复一次失败的上传入队。
+	if task.Status.IsTerminal() {
 		return nil
 	}
 
@@ -44,8 +43,8 @@ func HandleTaskPoll(ctx context.Context, t *asynq.Task) error {
 	if err := model.DB().First(&endpoint, task.EndpointID).Error; err != nil {
 		// 端点配置缺失(被删/DB异常)则无法正确轮询,直接判失败,避免用零值配置空转
 		logger.Error("poll: load endpoint failed", zap.Uint("task_id", task.ID), zap.Uint("endpoint_id", task.EndpointID), zap.Error(err))
-		if committed, _ := taskService.UpdateTaskFail(task.ID, "poll: endpoint config not found"); committed {
-			decrementAccountTasks(task.ID)
+		if _, failErr := taskService.UpdateTaskFail(task.ID, "poll: endpoint config not found"); failErr != nil {
+			return fmt.Errorf("load endpoint: %v; record task failure: %w", err, failErr)
 		}
 		return nil
 	}
@@ -62,8 +61,9 @@ func HandleTaskPoll(ctx context.Context, t *asynq.Task) error {
 
 	// 超时保护
 	if payload.PollCount >= maxPollCount {
-		if committed, _ := taskService.UpdateTaskFail(payload.TaskID, "poll timeout"); committed {
-			decrementAccountTasks(payload.TaskID)
+		_, failErr := taskService.UpdateTaskTimeoutFail(payload.TaskID, "poll timeout")
+		if failErr != nil {
+			return fmt.Errorf("record poll timeout: %w", failErr)
 		}
 		return nil
 	}
@@ -72,8 +72,8 @@ func HandleTaskPoll(ctx context.Context, t *asynq.Task) error {
 	var channel model.Channel
 	if err := model.DB().First(&channel, task.ChannelID).Error; err != nil {
 		logger.Error("poll: load channel failed", zap.Uint("task_id", task.ID), zap.Uint("channel_id", task.ChannelID), zap.Error(err))
-		if committed, _ := taskService.UpdateTaskFail(task.ID, "poll: channel not found"); committed {
-			decrementAccountTasks(task.ID)
+		if _, failErr := taskService.UpdateTaskFail(task.ID, "poll: channel not found"); failErr != nil {
+			return fmt.Errorf("load channel: %v; record task failure: %w", err, failErr)
 		}
 		return nil
 	}
@@ -81,8 +81,8 @@ func HandleTaskPoll(ctx context.Context, t *asynq.Task) error {
 	var account model.ChannelAccount
 	if err := model.DB().First(&account, task.AccountID).Error; err != nil {
 		logger.Error("poll: load account failed", zap.Uint("task_id", task.ID), zap.Uint("account_id", task.AccountID), zap.Error(err))
-		if committed, _ := taskService.UpdateTaskFail(task.ID, "poll: account not found"); committed {
-			decrementAccountTasks(task.ID)
+		if _, failErr := taskService.UpdateTaskFail(task.ID, "poll: account not found"); failErr != nil {
+			return fmt.Errorf("load account: %v; record task failure: %w", err, failErr)
 		}
 		return nil
 	}
@@ -101,8 +101,9 @@ func HandleTaskPoll(ctx context.Context, t *asynq.Task) error {
 			return requeuePoll(payload.TaskID, payload.PollCount+1, pollInterval)
 		}
 		logger.Error("get progress fatal error, fail task", zap.Uint("task_id", payload.TaskID), zap.Error(err))
-		if committed, _ := taskService.UpdateTaskFail(payload.TaskID, "poll error: "+err.Error()); committed {
-			decrementAccountTasks(payload.TaskID)
+		_, failErr := taskService.UpdateTaskFail(payload.TaskID, "poll error: "+err.Error())
+		if failErr != nil {
+			return fmt.Errorf("record poll error: %w", failErr)
 		}
 		return nil
 	}
@@ -112,26 +113,20 @@ func HandleTaskPoll(ctx context.Context, t *asynq.Task) error {
 	// 5. 处理结果
 	switch result.Status {
 	case provider.StatusSuccess:
-		// 更新进度
-		taskService.UpdateTaskProgress(task.ID, 100)
-		// 入队上传任务
-		originURLs := append([]string{}, result.URLs...)
-		originURLs = append(originURLs, result.B64Data...)
-		originURL := ""
-		if len(originURLs) > 0 {
-			originURL = originURLs[0]
-		}
-		return enqueueUpload(task.ID, originURL, originURLs, result.RevisedPrompt)
+		return enqueuePollResult(task.ID, result)
 
 	case provider.StatusFail:
-		if committed, _ := taskService.UpdateTaskFail(task.ID, result.Error); committed {
-			decrementAccountTasks(task.ID)
+		_, failErr := taskService.UpdateTaskFail(task.ID, result.Error)
+		if failErr != nil {
+			return fmt.Errorf("record poll failure: %w", failErr)
 		}
 		return nil
 
 	case provider.StatusProcessing, provider.StatusSubmitted, provider.StatusPending:
 		// 更新进度
-		taskService.UpdateTaskProgress(task.ID, result.Progress)
+		if err := taskService.UpdateTaskProgress(task.ID, result.Progress); err != nil {
+			return fmt.Errorf("update poll progress: %w", err)
+		}
 		// 继续轮询
 		return requeuePoll(payload.TaskID, payload.PollCount+1, pollInterval)
 
@@ -172,26 +167,21 @@ func requeuePoll(taskID uint, pollCount int, intervalSeconds int) error {
 	return err
 }
 
-func enqueueUpload(taskID uint, originURL string, urls []string, revisedPrompt ...string) error {
-	payload := TaskUploadPayload{
-		TaskID:    taskID,
-		OriginURL: originURL,
-		URLs:      urls,
-	}
-	if len(revisedPrompt) > 0 {
-		payload.RevisedPrompt = revisedPrompt[0]
-	}
-	payloadBytes, _ := json.Marshal(payload)
-	task := asynq.NewTask(TypeTaskUpload, payloadBytes)
-	_, err := queue.Client.Enqueue(task, asynq.Queue("default"))
-	return err
-}
+var enqueueUpload = queue.EnqueueTaskUpload
 
-func decrementAccountTasks(taskID uint) {
-	task, err := taskService.GetTaskByID(taskID)
-	if err == nil {
-		model.DB().Model(&model.ChannelAccount{}).
-			Where("id = ? AND current_tasks > 0", task.AccountID).
-			UpdateColumn("current_tasks", gorm.Expr("current_tasks - 1"))
+func enqueuePollResult(taskID uint, result provider.ProgressResult) error {
+	originURLs := append([]string{}, result.URLs...)
+	originURLs = append(originURLs, result.B64Data...)
+	originURL := ""
+	if len(originURLs) > 0 {
+		originURL = originURLs[0]
 	}
+	ready, err := taskService.BeginTaskFinalization(taskID)
+	if err != nil {
+		return fmt.Errorf("begin task finalization: %w", err)
+	}
+	if !ready {
+		return nil
+	}
+	return enqueueUpload(taskID, originURL, originURLs, result.RevisedPrompt)
 }

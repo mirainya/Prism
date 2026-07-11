@@ -4,13 +4,11 @@ import (
 	"context"
 	"encoding/base64"
 	"fmt"
-	"io"
-	"net/http"
 	"path/filepath"
 	"strings"
-	"time"
 
 	"github.com/mirainya/Prism/internal/model"
+	"github.com/mirainya/Prism/pkg/safeurl"
 )
 
 // resolveFileParams 图生图文件预处理:仅对配了 extra_config.image_edit 的端点,
@@ -87,38 +85,15 @@ func resolveFileParams(ctx context.Context, params map[string]any, endpoint *mod
 
 // downloadToBase64 下载 URL 内容并返回 base64 编码字符串和文件名
 func downloadToBase64(ctx context.Context, urlStr string) (string, string, error) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, urlStr, nil)
-	if err != nil {
-		return "", "", fmt.Errorf("create request: %w", err)
-	}
-
-	client := &http.Client{Timeout: 60 * time.Second}
-	resp, err := client.Do(req)
-	if err != nil {
-		return "", "", fmt.Errorf("http request: %w", err)
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode >= 400 {
-		return "", "", fmt.Errorf("HTTP %d", resp.StatusCode)
-	}
-
-	// 限制最大 32MiB 避免内存溢出
 	maxSize := int64(32 * 1024 * 1024)
-	data, err := io.ReadAll(io.LimitReader(resp.Body, maxSize+1))
+	result, err := safeurl.Download(ctx, urlStr, maxSize)
 	if err != nil {
-		return "", "", fmt.Errorf("read body: %w", err)
+		return "", "", err
 	}
-	if int64(len(data)) > maxSize {
-		return "", "", fmt.Errorf("file exceeds 32MiB limit")
-	}
-
-	// 根据 Content-Type 生成文件名
-	contentType := resp.Header.Get("Content-Type")
+	contentType := result.ContentType
 	ext := inferExtension(contentType, urlStr)
 	filename := "upload" + ext
-
-	return base64.StdEncoding.EncodeToString(data), filename, nil
+	return base64.StdEncoding.EncodeToString(result.Data), filename, nil
 }
 
 // inferExtension 根据 Content-Type 和 URL 推断文件扩展名

@@ -5,13 +5,15 @@
 ## 基础信息
 
 - Base URL: `http://{host}:{port}`
-- 响应格式: JSON
-- 统一响应结构:
+- `/api/*` 管理接口使用统一 JSON 包装:
 
 ```json
 {"code": 0, "message": "success", "data": {...}}  // 成功
 {"code": 400, "message": "error reason"}           // 失败
 ```
+
+- `/v1/*` 兼容接口直接返回对应协议结构，不使用 `{code,data}` 包装。
+- `/v1/responses`、`/v1/files` 的错误使用 OpenAI Error 结构：`{"error":{"message":"...","type":"...","code":"..."}}`。
 
 ---
 
@@ -105,6 +107,159 @@ ContentPart 类型:
 
 - `stream: false` → 返回标准 OpenAI ChatCompletion 响应
 - `stream: true` → SSE 流，`Content-Type: text/event-stream`
+
+### POST /v1/messages
+
+Anthropic Messages 兼容接口。支持文本、图片、文档、工具调用及 Anthropic SSE 事件格式。
+
+```json
+{
+  "model": "claude-sonnet-4-20250514",
+  "max_tokens": 1024,
+  "messages": [{"role": "user", "content": [{"type": "text", "text": "你好"}]}],
+  "system": "string 或 ContentBlock[]",
+  "tools": [{"name": "tool_name", "description": "...", "input_schema": {"type": "object"}}],
+  "tool_choice": {"type": "auto"},
+  "stream": false
+}
+```
+
+认证可使用 `Authorization: Bearer sk-prism-xxx` 或 Anthropic SDK 的 `x-api-key: sk-prism-xxx`。
+
+### POST /v1/responses
+
+对下游开放的 OpenAI Responses 兼容接口。支持多模态输入、函数工具、流式输出、续话、后台执行、存储和幂等请求。
+
+上游调用方式由每个模型能力的 `gw_ability_transports` 配置决定：
+
+| Transport | 上游路径 | 处理方式 |
+|-----------|----------|----------|
+| `openai_chat` | `/v1/chat/completions` | 无损范围内转换 |
+| `openai_responses` | `/v1/responses` | 原生 Responses |
+| `anthropic_messages` | `/v1/messages` | 无损范围内转换 |
+| `google_generate_content` | Gemini GenerateContent | 无损范围内转换 |
+| `volcengine_responses_v3` | `/api/v3/responses` | 火山方舟原生 Responses v3 |
+
+> Prism 会管理公开的 `resp_` ID、存储和后台任务。无法无损转换的字段会返回 HTTP 400，不会静默丢弃。`file_search` 暂不支持。
+
+Header：
+
+| Header | 必填 | 说明 |
+|--------|------|------|
+| `Authorization: Bearer sk-prism-xxx` | 是 | API Token |
+| `Idempotency-Key` | 否 | 相同 Token、Key 与请求体返回同一响应；同 Key 不同请求体返回 400 |
+
+```json
+// Request
+{
+  "model": "string (required)",
+  "input": "string 或 InputItem[] (required)",
+  "instructions": "string?",
+  "stream": false,
+  "store": true,
+  "background": false,
+  "previous_response_id": "resp_xxx?",
+  "tools": [],
+  "tool_choice": "auto|none|required|object",
+  "parallel_tool_calls": true,
+  "max_output_tokens": 4096,
+  "max_tool_calls": 10,
+  "temperature": 0.7,
+  "top_p": 1.0,
+  "top_logprobs": 0,
+  "reasoning": {},
+  "thinking": {},
+  "caching": {},
+  "text": {},
+  "conversation": null,
+  "prompt": null,
+  "stream_options": null,
+  "context_management": null,
+  "metadata": {},
+  "include": [],
+  "truncation": "auto",
+  "service_tier": "auto",
+  "prompt_cache_key": "string?",
+  "prompt_cache_retention": "string?",
+  "safety_identifier": "string?",
+  "user": "string?",
+  "expire_at": 1900000000,
+  "session": {"id": "session_xxx"}
+}
+```
+
+多模态输入示例：
+
+```json
+{
+  "model": "doubao-seed-2-0-pro",
+  "input": [{
+    "role": "user",
+    "content": [
+      {"type": "input_text", "text": "描述这张图片和附件"},
+      {"type": "input_image", "image_url": "https://example.com/image.jpg"},
+      {"type": "input_video", "video_url": "https://example.com/video.mp4", "fps": 1},
+      {"type": "input_file", "file_id": "file_xxx"}
+    ]
+  }],
+  "store": true
+}
+```
+
+- `stream: true`：返回 Responses SSE 事件流。
+- `background: true`：立即返回 `queued`；通过 `GET /v1/responses/:id` 查询。不能同时启用 `stream`，且 `store` 必须为 `true`。
+- `previous_response_id`：必须使用同一 Token 创建且已保存的 Prism `resp_` ID。
+- `file_id`：必须属于当前 Token；Prism 会在调用上游前解析文件内容。
+- 火山扩展：支持 `thinking`、`caching`、`expire_at`、`session`，以及 `function`、`web_search`、`image_process`、`mcp`、`knowledge_search`、`doubao_app` 工具。
+- 火山不支持 `conversation`、`prompt`、`stream_options`、`top_logprobs`、`metadata`、`truncation`、`prompt_cache_retention`、`user`；选择火山通道时这些字段返回 400。
+- 火山请求、响应和 `usage` 的未知扩展字段会原样保留，不会在 Prism 重新编码时丢失。
+
+### Responses 资源接口
+
+| Method | Path | 说明 |
+|--------|------|------|
+| GET | `/v1/responses/:id` | 查询已保存响应 |
+| DELETE | `/v1/responses/:id` | 删除响应 |
+| POST | `/v1/responses/:id/cancel` | 取消后台响应 |
+| GET | `/v1/responses/:id/input_items` | 获取输入项；支持 `limit=1..100`、`order=asc|desc`、`after` |
+
+### POST /v1/files
+
+上传供 Responses 多模态输入使用的文件。请求类型必须为 `multipart/form-data`。
+
+```bash
+curl "$BASE_URL/v1/files" \
+  -H "Authorization: Bearer sk-prism-xxx" \
+  -F "purpose=vision" \
+  -F "file=@./image.png"
+```
+
+```json
+// Response
+{
+  "id": "file_xxx",
+  "object": "file",
+  "bytes": 1024,
+  "created_at": 1700000000,
+  "filename": "image.png",
+  "purpose": "vision",
+  "status": "processed"
+}
+```
+
+- 单文件最大 `64 MiB`。
+- 默认每个 Token 总配额 `1 GiB`，可通过服务端配置调整。
+- `purpose` 支持 `assistants`、`batch`、`evals`、`fine-tune`、`user_data`、`vision`；默认 `assistants`。
+- 文件仅能由创建它的 API Token 查询、下载、引用或删除。
+
+### Files 资源接口
+
+| Method | Path | 说明 |
+|--------|------|------|
+| GET | `/v1/files` | 文件列表；支持 `purpose`、`limit=1..10000`、`order=asc|desc`、`after` |
+| GET | `/v1/files/:id` | 获取文件信息 |
+| GET | `/v1/files/:id/content` | 下载文件内容 |
+| DELETE | `/v1/files/:id` | 删除文件 |
 
 ### GET /v1/models
 
@@ -458,7 +613,7 @@ ContentPart 类型:
 
 ## 注意事项
 
-- `/v1/chat/completions` 和 `/v1/models` 完全兼容 OpenAI API 格式
+- `/v1/chat/completions`、`/v1/responses`、`/v1/messages` 和 `/v1/models` 分别返回对应协议的兼容格式
 - 多模态支持: messages.content 可为 string 或 ContentPart 数组
 - 流式响应为标准 SSE 格式 (`data: {...}\n\n`，结束 `data: [DONE]\n\n`)
 - Token key 格式: `sk-prism-{random_hex}`，存储时 SHA256 哈希

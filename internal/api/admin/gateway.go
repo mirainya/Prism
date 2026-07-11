@@ -1,6 +1,8 @@
 package admin
 
 import (
+	"encoding/json"
+	"errors"
 	"strconv"
 
 	"github.com/gin-gonic/gin"
@@ -8,6 +10,8 @@ import (
 	"github.com/mirainya/Prism/internal/model"
 	"github.com/mirainya/Prism/internal/service"
 	pkgErrors "github.com/mirainya/Prism/pkg/errors"
+	"gorm.io/datatypes"
+	"gorm.io/gorm"
 )
 
 var gatewayAdminService = service.NewGatewayAdminService()
@@ -196,6 +200,10 @@ func UpdateGwAbility(c *gin.Context) {
 		return
 	}
 	if err := gatewayAdminService.UpdateAbility(id, body); err != nil {
+		if errors.Is(err, service.ErrGwInvalidCapabilities) {
+			resp.BadRequest(c, pkgErrors.WithMessage(pkgErrors.ErrInvalidParams, err.Error()))
+			return
+		}
 		resp.InternalError(c, pkgErrors.ErrInternalError)
 		return
 	}
@@ -213,6 +221,99 @@ func DeleteGwAbility(c *gin.Context) {
 		return
 	}
 	resp.Success(c, gin.H{"deleted": true})
+}
+
+func ListGwAbilityTransports(c *gin.Context) {
+	id, err := resp.ParseUintParam(c, "id")
+	if err != nil {
+		return
+	}
+	rows, err := gatewayAdminService.ListAbilityTransports(id)
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		resp.NotFound(c, pkgErrors.ErrModelNotFound)
+		return
+	}
+	if err != nil {
+		resp.InternalError(c, pkgErrors.ErrInternalError)
+		return
+	}
+	resp.Success(c, rows)
+}
+
+func UpsertGwAbilityTransport(c *gin.Context) {
+	id, err := resp.ParseUintParam(c, "id")
+	if err != nil {
+		return
+	}
+	var body struct {
+		Transport model.UpstreamTransport `json:"transport" binding:"required"`
+		Status    *int8                   `json:"status"`
+		Config    json.RawMessage         `json:"config"`
+	}
+	if err := c.ShouldBindJSON(&body); err != nil {
+		resp.BadRequest(c, pkgErrors.WithMessage(pkgErrors.ErrInvalidParams, err.Error()))
+		return
+	}
+	status := int8(1)
+	if body.Status != nil {
+		status = *body.Status
+	}
+	row, err := gatewayAdminService.UpsertAbilityTransport(id, body.Transport, status, datatypes.JSON(body.Config))
+	if errors.Is(err, service.ErrGwInvalidTransport) {
+		resp.BadRequest(c, pkgErrors.WithMessage(pkgErrors.ErrInvalidParams, err.Error()))
+		return
+	}
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		resp.NotFound(c, pkgErrors.ErrModelNotFound)
+		return
+	}
+	if err != nil {
+		resp.InternalError(c, pkgErrors.ErrInternalError)
+		return
+	}
+	resp.Success(c, row)
+}
+
+func DeleteGwAbilityTransport(c *gin.Context) {
+	id, err := resp.ParseUintParam(c, "id")
+	if err != nil {
+		return
+	}
+	err = gatewayAdminService.DeleteAbilityTransport(id, model.UpstreamTransport(c.Param("transport")))
+	if errors.Is(err, service.ErrGwInvalidTransport) {
+		resp.BadRequest(c, pkgErrors.WithMessage(pkgErrors.ErrInvalidParams, err.Error()))
+		return
+	}
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		resp.NotFound(c, pkgErrors.ErrModelNotFound)
+		return
+	}
+	if err != nil {
+		resp.InternalError(c, pkgErrors.ErrInternalError)
+		return
+	}
+	resp.Success(c, gin.H{"deleted": true})
+}
+
+func ProbeGwAbilityTransport(c *gin.Context) {
+	id, err := resp.ParseUintParam(c, "id")
+	if err != nil {
+		return
+	}
+	result, err := gatewayAdminService.ProbeAbilityTransport(c.Request.Context(), id, model.UpstreamTransport(c.Param("transport")))
+	if errors.Is(err, service.ErrGwInvalidTransport) {
+		resp.BadRequest(c, pkgErrors.WithMessage(pkgErrors.ErrInvalidParams, err.Error()))
+		return
+	}
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		resp.NotFound(c, pkgErrors.ErrModelNotFound)
+		return
+	}
+	if err != nil {
+		resp.InternalError(c, pkgErrors.ErrInternalError)
+		return
+	}
+	resp.Success(c, result)
 }
 
 // ---------- 对话模型(可路由模型 + 元数据 + 可用性) ----------

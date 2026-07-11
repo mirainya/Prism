@@ -12,10 +12,23 @@ type TaskStatus string
 const (
 	TaskStatusPending    TaskStatus = "pending"
 	TaskStatusProcessing TaskStatus = "processing"
+	TaskStatusFinalizing TaskStatus = "finalizing"
 	TaskStatusSuccess    TaskStatus = "success"
 	TaskStatusFailed     TaskStatus = "failed"
 	TaskStatusCancelled  TaskStatus = "cancelled"
 )
+
+func (s TaskStatus) IsTerminal() bool {
+	return s == TaskStatusSuccess || s == TaskStatusFailed || s == TaskStatusCancelled
+}
+
+// Public hides the internal result-finalization state from API clients.
+func (s TaskStatus) Public() TaskStatus {
+	if s == TaskStatusFinalizing {
+		return TaskStatusProcessing
+	}
+	return s
+}
 
 // Task 任务记录
 type Task struct {
@@ -43,10 +56,11 @@ type Task struct {
 	Result         datatypes.JSON `gorm:"type:json;comment:统一结果" json:"result"`
 	ErrorMessage   string         `gorm:"type:text;comment:错误信息" json:"error_message"`
 
-	Cost        decimal.Decimal `gorm:"type:decimal(10,4);comment:费用" json:"cost"`
-	Refunded    bool            `gorm:"default:false;comment:是否已退款" json:"refunded"`
-	StartedAt   *time.Time      `gorm:"comment:开始时间" json:"started_at"`
-	CompletedAt *time.Time      `gorm:"comment:完成时间" json:"completed_at"`
+	Cost                decimal.Decimal `gorm:"type:decimal(10,4);comment:费用" json:"cost"`
+	Refunded            bool            `gorm:"default:false;comment:是否已退款" json:"refunded"`
+	AccountSlotReleased bool            `gorm:"default:false;comment:账号并发槽位是否已释放" json:"-"`
+	StartedAt           *time.Time      `gorm:"comment:开始时间" json:"started_at"`
+	CompletedAt         *time.Time      `gorm:"comment:完成时间" json:"completed_at"`
 
 	// 关联
 	Channel  *Channel  `gorm:"foreignKey:ChannelID" json:"channel,omitempty"`

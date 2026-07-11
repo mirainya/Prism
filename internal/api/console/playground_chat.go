@@ -2,6 +2,7 @@ package console
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 
@@ -10,6 +11,7 @@ import (
 	gwstream "github.com/mirainya/Prism/internal/gateway/stream"
 	"github.com/mirainya/Prism/internal/provider/chat"
 	"github.com/mirainya/Prism/internal/service"
+	perrors "github.com/mirainya/Prism/pkg/errors"
 )
 
 // PlaygroundChatCompletions POST /api/playground/:token_id/chat/completions
@@ -79,6 +81,8 @@ func PlaygroundChatCompletions(c *gin.Context) {
 	if cc.PreviousResponseID != "" {
 		completionReq.PreviousResponseID = cc.PreviousResponseID
 		completionReq.NewMessages = newMessages
+		completionReq.ProviderKeyID = cc.ProviderKeyID
+		completionReq.UpstreamTransport = cc.UpstreamTransport
 	}
 
 	if stream {
@@ -92,7 +96,7 @@ func PlaygroundChatCompletions(c *gin.Context) {
 func playgroundStream(c *gin.Context, req *service.CompletionRequest, cc *service.ConversationContext, newMessages []chat.ChatMessage) {
 	session, err := chatPipeline.StreamComplete(c.Request.Context(), req)
 	if err != nil {
-		resp.ErrorMsg(c, http.StatusInternalServerError, 500, err.Error())
+		respondPlaygroundChatError(c, err)
 		return
 	}
 	defer session.Cleanup()
@@ -117,7 +121,8 @@ func playgroundStream(c *gin.Context, req *service.CompletionRequest, cc *servic
 			ReasoningContent: agg.ReasoningContent,
 		}
 		service.SaveConversationTurn(cc, req.UserID, req.TokenID, req.Model,
-			newMessages, assistant, agg.Usage, agg.FinishReason, provRespID, reqLogID)
+			newMessages, assistant, agg.Usage, agg.FinishReason, provRespID, reqLogID,
+			service.ConversationProvenance{KeyID: session.ProviderKeyID(), Transport: session.UpstreamTransport()})
 	}
 
 	// 下发 prism-debug 事件,前端据 request_log_id 拉完整调试详情
@@ -132,14 +137,15 @@ func playgroundStream(c *gin.Context, req *service.CompletionRequest, cc *servic
 func playgroundNonStream(c *gin.Context, req *service.CompletionRequest, cc *service.ConversationContext, newMessages []chat.ChatMessage) {
 	chatResp, err := chatPipeline.Complete(c.Request.Context(), req)
 	if err != nil {
-		resp.ErrorMsg(c, http.StatusInternalServerError, 500, err.Error())
+		respondPlaygroundChatError(c, err)
 		return
 	}
 
 	if len(chatResp.Choices) > 0 {
 		convID := service.SaveConversationTurn(cc, req.UserID, req.TokenID, req.Model,
 			newMessages, chatResp.Choices[0].Message, chatResp.Usage,
-			chatResp.Choices[0].FinishReason, chatResp.ProviderResponseID, chatResp.RequestLogID)
+			chatResp.Choices[0].FinishReason, chatResp.ProviderResponseID, chatResp.RequestLogID,
+			service.ConversationProvenance{KeyID: chatResp.ProviderKeyID, Transport: chatResp.UpstreamTransport})
 		if convID > 0 {
 			chatResp.ConversationID = fmt.Sprint(convID)
 		}
@@ -148,3 +154,11 @@ func playgroundNonStream(c *gin.Context, req *service.CompletionRequest, cc *ser
 	c.JSON(http.StatusOK, chatResp)
 }
 
+func respondPlaygroundChatError(c *gin.Context, err error) {
+	if errors.Is(err, service.ErrInsufficientTokenBalance) ||
+		errors.Is(err, service.ErrInsufficientUserBalance) {
+		resp.BadRequest(c, perrors.WithMessage(perrors.ErrInsufficientQuota, err.Error()))
+		return
+	}
+	resp.ErrorMsg(c, http.StatusInternalServerError, 500, err.Error())
+}

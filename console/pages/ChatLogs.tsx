@@ -1,4 +1,4 @@
-import React, {useEffect, useState, useMemo} from 'react';
+import React, {useEffect, useState} from 'react';
 import {
     Search,
     DollarSign,
@@ -11,7 +11,6 @@ import {
     Bot,
     Clock,
     Hash,
-    Image as ImageIcon,
     FileText
 } from 'lucide-react';
 import {fetchConversations, fetchConversationMessages, ConversationListParams} from '../services/api';
@@ -180,7 +179,11 @@ const ChatLogs: React.FC = () => {
                     </div>
                     {isAdmin() && models.length > 0 && (
                         <ModelSelector
-                            options={models.map(m => ({ id: m.model_name, label: m.display_name || m.model_name }))}
+                            options={models.map(m => ({
+                                id: m.model_name,
+                                label: m.display_name || m.model_name,
+                                provider: m.source_channel || m.group_name || 'other',
+                            }))}
                             value={filters.model ?? ''}
                             onChange={v => { setFilters({...filters, model: v}); setPage(1); }}
                             allOption="所有模型"

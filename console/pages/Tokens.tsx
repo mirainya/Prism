@@ -6,7 +6,6 @@ import {
     Trash2,
     CheckCircle2,
     AlertCircle,
-    X,
     Wallet,
     PlusCircle,
     Edit2,
@@ -19,11 +18,10 @@ import {
     createToken,
     deleteToken,
     rechargeToken,
-    getToken,
     updateToken,
     fetchAllCapabilityChannels
 } from '../services/api';
-import {ApiToken, ChannelPriorityItem, CapabilityWithChannels, ChannelOption} from '../types';
+import {ApiToken, ChannelPriorityItem, CapabilityWithChannels} from '../types';
 import { ChannelConfigEditor } from './ChannelConfigEditor';
 import { STATUS_COLORS, STATUS_LABELS } from '../constants';
 

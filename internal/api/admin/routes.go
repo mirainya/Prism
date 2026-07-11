@@ -47,7 +47,7 @@ func RegisterRoutes(group *gin.RouterGroup) {
 	group.GET("/request-logs/:id", GetRequestLog)
 	group.POST("/request-logs/:id/retry", RetryRequest)
 
-	// 网关 v2 路由表(gw_*)管理:渠道/key/能力/元数据 + 以 key 为单位拉取导入
+	// 聊天网关路由表(gw_*)管理:渠道/key/能力/元数据 + 以 key 为单位拉取导入
 	gw := group.Group("/gw")
 	{
 		gw.GET("/channels", ListGwChannels)
@@ -67,6 +67,10 @@ func RegisterRoutes(group *gin.RouterGroup) {
 		gw.GET("/abilities", ListGwAbilities) // ?model=&channel_id=&key_id=
 		gw.PUT("/abilities/:id", UpdateGwAbility)
 		gw.DELETE("/abilities/:id", DeleteGwAbility)
+		gw.GET("/abilities/:id/transports", ListGwAbilityTransports)
+		gw.PUT("/abilities/:id/transports", UpsertGwAbilityTransport)
+		gw.DELETE("/abilities/:id/transports/:transport", DeleteGwAbilityTransport)
+		gw.POST("/abilities/:id/transports/:transport/check", ProbeGwAbilityTransport)
 
 		gw.GET("/models", ListGwModels) // 对话模型页:可路由模型+元数据+可用性
 		gw.POST("/models/reorder", ReorderGwModels)

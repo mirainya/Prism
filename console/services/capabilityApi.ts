@@ -1,18 +1,6 @@
 import { Capability, ChannelCapability, CapabilityWithChannels } from '../types';
 import { request } from './request';
 
-export interface CapabilityPrice {
-    code: string;
-    name: string;
-    type: string;
-    channels: { channelName: string; price: number; priceUnit: string }[];
-}
-
-export const fetchCapabilityPrices = async (): Promise<CapabilityPrice[]> => {
-    const data = await request<any[]>('/capability-prices');
-    return data || [];
-};
-
 export const fetchCapabilities = async (): Promise<Capability[]> => {
   const data = await request<any[]>('/admin/capabilities');
   return data.map(c => ({

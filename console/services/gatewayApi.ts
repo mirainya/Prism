@@ -1,6 +1,6 @@
 import { request } from './request';
 
-// ========== 网关 v2 路由表(gw_*)管理 API ==========
+// ========== 聊天网关路由表(gw_*)管理 API ==========
 // 后端: /api/admin/gw/*。gw_abilities 是「某 key 能跑某 model」的唯一路由记录;
 // gw_model_meta 是元数据面(显示名/思考档),永不参与路由。
 
@@ -28,6 +28,26 @@ export interface GwChannelKey {
   current_conc: number;
 }
 
+export const GW_CAPABILITY_NAMES = [
+  'stream',
+  'vision',
+  'files',
+  'audio',
+  'video',
+  'tools',
+  'structured_output',
+  'reasoning',
+  'background',
+  'web_search',
+  'file_search',
+  'code_interpreter',
+  'computer_use',
+  'image_generation',
+] as const;
+
+export type GwCapabilityName = typeof GW_CAPABILITY_NAMES[number];
+export type GwCapabilityConfig = Partial<Record<GwCapabilityName, boolean>> | GwCapabilityName[] | null;
+
 export interface GwAbility {
   id: number;
   model_name: string;
@@ -38,10 +58,31 @@ export interface GwAbility {
   price_mode: string;
   input_price: string;
   output_price: string;
+  capabilities: GwCapabilityConfig;
   status: number;
   channel_name?: string;
   protocol?: string;
   key_name?: string;
+}
+
+export const GW_TRANSPORTS = [
+  'openai_chat',
+  'openai_responses',
+  'anthropic_messages',
+  'google_generate_content',
+  'volcengine_responses_v3',
+] as const;
+
+export type GwTransportName = typeof GW_TRANSPORTS[number];
+
+export interface GwAbilityTransport {
+  id: number;
+  ability_id: number;
+  transport: GwTransportName;
+  status: number;
+  config: Record<string, any> | null;
+  checked_at?: string | null;
+  last_error?: string;
 }
 
 export interface GwModelMeta {
@@ -111,6 +152,32 @@ export const deleteGwAbility = async (id: number): Promise<void> => {
   await request(`/admin/gw/abilities/${id}`, { method: 'DELETE' });
 };
 
+export const fetchGwAbilityTransports = async (abilityId: number): Promise<GwAbilityTransport[]> =>
+  (await request<GwAbilityTransport[]>(`/admin/gw/abilities/${abilityId}/transports`)) || [];
+
+export const upsertGwAbilityTransport = async (
+  abilityId: number,
+  transport: GwTransportName,
+  status: number,
+  config: Record<string, any> | null = null,
+): Promise<GwAbilityTransport> =>
+  request<GwAbilityTransport>(`/admin/gw/abilities/${abilityId}/transports`, {
+    method: 'PUT',
+    body: JSON.stringify({ transport, status, config }),
+  });
+
+export interface GwTransportProbeResult {
+  ok: boolean;
+  checked_at: string;
+  error?: string;
+}
+
+export const probeGwAbilityTransport = async (
+  abilityId: number,
+  transport: GwTransportName,
+): Promise<GwTransportProbeResult> =>
+  request<GwTransportProbeResult>(`/admin/gw/abilities/${abilityId}/transports/${transport}/check`, { method: 'POST' });
+
 // ---------- 对话模型(可路由模型 + 元数据 + 可用性) ----------
 export interface GwModel {
   model_name: string;
@@ -173,6 +240,7 @@ export interface GwImportItem {
 export interface GwImportResult {
   abilities_added: number;
   meta_added: number;
+  transports_added: number;
 }
 
 export const importGwKeyModels = async (

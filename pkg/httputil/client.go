@@ -9,8 +9,50 @@ import (
 	"mime/multipart"
 	"net/http"
 	"net/url"
+	"strings"
 	"time"
 )
+
+type HTTPError struct {
+	Status  int
+	Message string
+	Type    string
+	Code    any
+	Param   *string
+}
+
+func (e *HTTPError) Error() string   { return fmt.Sprintf("upstream HTTP %d: %s", e.Status, e.Message) }
+func (e *HTTPError) HTTPStatus() int { return e.Status }
+
+func newHTTPError(status int, body []byte) error {
+	message := "request rejected"
+	type errorDetail struct {
+		Message string  `json:"message"`
+		Type    string  `json:"type"`
+		Code    any     `json:"code"`
+		Param   *string `json:"param"`
+	}
+	var payload struct {
+		errorDetail
+		Error *errorDetail `json:"error"`
+	}
+	detail := errorDetail{}
+	if json.Unmarshal(body, &payload) == nil {
+		detail = payload.errorDetail
+		if payload.Error != nil {
+			detail = *payload.Error
+		}
+		if detail.Message != "" {
+			message = detail.Message
+		}
+	}
+	message = strings.Join(strings.Fields(message), " ")
+	runes := []rune(message)
+	if len(runes) > 500 {
+		message = string(runes[:500]) + "..."
+	}
+	return &HTTPError{Status: status, Message: message, Type: detail.Type, Code: detail.Code, Param: detail.Param}
+}
 
 var client = &http.Client{
 	Timeout: 5 * time.Minute,
@@ -48,7 +90,7 @@ func Get(ctx context.Context, url string, headers map[string]string) ([]byte, er
 	}
 
 	if resp.StatusCode >= 400 {
-		return nil, fmt.Errorf("http error: %d, body: %s", resp.StatusCode, string(body))
+		return nil, newHTTPError(resp.StatusCode, body)
 	}
 	return body, nil
 }
@@ -86,7 +128,7 @@ func Download(ctx context.Context, url string) (*DownloadResult, error) {
 
 	if resp.StatusCode != http.StatusOK {
 		resp.Body.Close()
-		return nil, fmt.Errorf("unexpected status code: %d", resp.StatusCode)
+		return nil, newHTTPError(resp.StatusCode, nil)
 	}
 
 	return &DownloadResult{
@@ -126,7 +168,7 @@ func PostJSONStream(ctx context.Context, url string, body any, headers map[strin
 	if resp.StatusCode >= 400 {
 		defer resp.Body.Close()
 		respBody, _ := io.ReadAll(resp.Body)
-		return nil, fmt.Errorf("http error: %d, body: %s", resp.StatusCode, string(respBody))
+		return nil, newHTTPError(resp.StatusCode, respBody)
 	}
 
 	return resp, nil
@@ -166,7 +208,7 @@ func PostJSON(ctx context.Context, url string, body any, headers map[string]stri
 	}
 
 	if resp.StatusCode >= 400 {
-		return nil, fmt.Errorf("http error: %d, body: %s", resp.StatusCode, string(respBody))
+		return nil, newHTTPError(resp.StatusCode, respBody)
 	}
 
 	return respBody, nil
@@ -195,7 +237,7 @@ func GetJSON(ctx context.Context, url string, headers map[string]string) ([]byte
 	}
 
 	if resp.StatusCode >= 400 {
-		return nil, fmt.Errorf("http error: %d, body: %s", resp.StatusCode, string(respBody))
+		return nil, newHTTPError(resp.StatusCode, respBody)
 	}
 
 	return respBody, nil
@@ -255,7 +297,7 @@ func Post(ctx context.Context, reqURL string, params map[string]any, headers map
 	}
 
 	if resp.StatusCode >= 400 {
-		return nil, fmt.Errorf("http error: %d, body: %s", resp.StatusCode, string(respBody))
+		return nil, newHTTPError(resp.StatusCode, respBody)
 	}
 
 	return respBody, nil
@@ -337,7 +379,7 @@ func PostWithDetail(ctx context.Context, reqURL string, params map[string]any, h
 	detail.ResponseBody = respBody
 
 	if resp.StatusCode >= 400 {
-		detail.Error = fmt.Errorf("http error: %d, body: %s", resp.StatusCode, string(respBody))
+		detail.Error = newHTTPError(resp.StatusCode, respBody)
 	}
 
 	return detail
@@ -382,7 +424,7 @@ func GetJSONWithDetail(ctx context.Context, reqURL string, headers map[string]st
 	detail.ResponseBody = respBody
 
 	if resp.StatusCode >= 400 {
-		detail.Error = fmt.Errorf("http error: %d, body: %s", resp.StatusCode, string(respBody))
+		detail.Error = newHTTPError(resp.StatusCode, respBody)
 	}
 
 	return detail
@@ -440,7 +482,7 @@ func PostJSONWithDetail(ctx context.Context, reqURL string, body any, headers ma
 	detail.ResponseBody = respBody
 
 	if resp.StatusCode >= 400 {
-		detail.Error = fmt.Errorf("http error: %d, body: %s", resp.StatusCode, string(respBody))
+		detail.Error = newHTTPError(resp.StatusCode, respBody)
 	}
 
 	return detail

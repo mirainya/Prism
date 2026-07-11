@@ -1,13 +1,13 @@
 import React, { useEffect, useState } from 'react';
-import { Plus, RefreshCw, Edit3, Trash2, ChevronDown, ChevronRight, Key, Power, Download, MessageSquare, X, GripVertical, Server, Search, Check } from 'lucide-react';
+import { Plus, RefreshCw, Edit3, Trash2, ChevronDown, ChevronRight, Key, Power, Download, MessageSquare, X, GripVertical, Server, Search, Check, Activity, Loader2 } from 'lucide-react';
 import { DndContext, PointerSensor, closestCenter, useSensor, useSensors, DragEndEvent } from '@dnd-kit/core';
 import { SortableContext, arrayMove, useSortable, verticalListSortingStrategy } from '@dnd-kit/sortable';
 import { CSS } from '@dnd-kit/utilities';
 import {
-  GwChannel, GwChannelKey, GwAbility,
+  GwChannel, GwChannelKey, GwAbility, GwCapabilityName, GwTransportName, GW_CAPABILITY_NAMES, GW_TRANSPORTS,
   fetchGwChannels, createGwChannel, updateGwChannel, deleteGwChannel, reorderGwChannels,
   fetchGwKeys, createGwKey, updateGwKey, deleteGwKey,
-  fetchGwAbilities, deleteGwAbility, updateGwAbility,
+  fetchGwAbilities, deleteGwAbility, updateGwAbility, fetchGwAbilityTransports, upsertGwAbilityTransport, probeGwAbilityTransport,
 } from '../services/gatewayApi';
 import { GwChannelModal, GwKeyModal, GwPullModal } from './gateway_channels/GwChannelModals';
 
@@ -16,6 +16,78 @@ const PROTOCOL_COLORS: Record<string, string> = {
   anthropic: 'bg-orange-100 text-orange-700',
   volcengine: 'bg-blue-100 text-blue-700',
   google: 'bg-red-100 text-red-700',
+};
+
+const CAPABILITY_LABELS: Record<GwCapabilityName, string> = {
+  stream: '流式输出',
+  vision: '图片',
+  files: '文件',
+  audio: '音频',
+  video: '视频',
+  tools: '工具调用',
+  structured_output: '结构化输出',
+  reasoning: '推理',
+  background: '后台任务',
+  web_search: '联网搜索',
+  file_search: '文件搜索',
+  code_interpreter: '代码解释器',
+  computer_use: '计算机操作',
+  image_generation: '图片生成',
+};
+
+const TRANSPORT_LABELS: Record<GwTransportName, string> = {
+  openai_chat: 'OpenAI Chat',
+  openai_responses: 'OpenAI Responses',
+  anthropic_messages: 'Anthropic Messages',
+  google_generate_content: 'Google GenerateContent',
+  volcengine_responses_v3: '火山 Responses v3',
+};
+
+const maskApiKey = (apiKey: string) => {
+  if (!apiKey) return '';
+  if (apiKey.length <= 10) return '********';
+  return `${apiKey.slice(0, 5)}...${apiKey.slice(-4)}`;
+};
+
+const defaultCapabilities = (protocol?: string): Record<GwCapabilityName, boolean> => {
+	const enabled = new Set<GwCapabilityName>(['stream', 'vision', 'files', 'tools']);
+  switch (protocol) {
+    case 'openai':
+    case 'custom':
+      enabled.add('structured_output');
+      enabled.add('reasoning');
+      break;
+    case 'anthropic':
+      break;
+    case 'google':
+      enabled.add('structured_output');
+      break;
+    case 'volcengine':
+      enabled.add('audio');
+      enabled.add('video');
+      enabled.add('structured_output');
+      enabled.add('reasoning');
+      enabled.add('web_search');
+      break;
+  }
+  return Object.fromEntries(GW_CAPABILITY_NAMES.map(name => [name, enabled.has(name)])) as Record<GwCapabilityName, boolean>;
+};
+
+const normalizeCapabilities = (ability: GwAbility): Record<GwCapabilityName, boolean> => {
+  if (Array.isArray(ability.capabilities)) {
+    const enabled = new Set(ability.capabilities);
+    return Object.fromEntries(GW_CAPABILITY_NAMES.map(name => [name, enabled.has(name)])) as Record<GwCapabilityName, boolean>;
+  }
+
+  const capabilities = defaultCapabilities(ability.protocol);
+  if (ability.capabilities) {
+    for (const name of GW_CAPABILITY_NAMES) {
+      if (typeof ability.capabilities[name] === 'boolean') {
+        capabilities[name] = ability.capabilities[name];
+      }
+    }
+  }
+  return capabilities;
 };
 
 // 单渠道展开区: 左 keys 列表(点选) + 右该 key 的 abilities
@@ -74,7 +146,6 @@ const ChannelDetail: React.FC<{
 
   const handleSaveAbility = async (id: number, data: Record<string, any>) => {
     await updateGwAbility(id, data);
-    setEditingAb(null);
     if (selectedKeyId) loadAbilities(selectedKeyId);
   };
 
@@ -109,7 +180,7 @@ const ChannelDetail: React.FC<{
                       </span>
                       {isSel && <span className="text-[10px] text-[var(--primary)] font-medium">← 查看模型</span>}
                     </div>
-                    <div className="text-xs text-[var(--text-secondary)] font-mono break-all mt-1">{k.api_key}</div>
+                    <div className="text-xs text-[var(--text-secondary)] font-mono break-all mt-1">{maskApiKey(k.api_key)}</div>
                     <div className="text-xs text-[var(--text-secondary)] mt-1">权重: {k.weight} | 并发: {k.current_conc}/{k.max_conc || '∞'}</div>
                   </div>
                   <div className="flex items-center gap-1 md:opacity-0 md:group-hover/k:opacity-100 shrink-0">
@@ -200,7 +271,7 @@ const ChannelDetail: React.FC<{
   );
 };
 
-// 能力编辑弹窗: 编辑 vendor_model/priority/status/price(对接 UpdateGwAbility 白名单)
+// 能力编辑弹窗: 编辑 vendor_model/priority/status/price/capabilities
 const AbilityEditModal: React.FC<{
   ability: GwAbility;
   onClose: () => void;
@@ -212,9 +283,51 @@ const AbilityEditModal: React.FC<{
   const [priceMode, setPriceMode] = useState(ability.price_mode || 'token');
   const [inputPrice, setInputPrice] = useState(ability.input_price || '0');
   const [outputPrice, setOutputPrice] = useState(ability.output_price || '0');
+  const [capabilities, setCapabilities] = useState(() => normalizeCapabilities(ability));
+	const [transports, setTransports] = useState<Record<GwTransportName, boolean>>(
+		() => Object.fromEntries(GW_TRANSPORTS.map(name => [name, false])) as Record<GwTransportName, boolean>,
+	);
+	const [transportLoading, setTransportLoading] = useState(true);
+	const [transportChecks, setTransportChecks] = useState<Partial<Record<GwTransportName, { ok: boolean; error?: string }>>>({});
+	const [checkingTransport, setCheckingTransport] = useState<GwTransportName | null>(null);
+	const [error, setError] = useState('');
   const [saving, setSaving] = useState(false);
 
+	useEffect(() => {
+		let active = true;
+		setTransportLoading(true);
+		fetchGwAbilityTransports(ability.id)
+			.then(rows => {
+				if (!active) return;
+				const enabled = new Set(rows.filter(row => row.status === 1).map(row => row.transport));
+				setTransports(Object.fromEntries(GW_TRANSPORTS.map(name => [name, enabled.has(name)])) as Record<GwTransportName, boolean>);
+				setTransportChecks(Object.fromEntries(rows.filter(row => row.checked_at).map(row => [row.transport, { ok: !row.last_error, error: row.last_error || undefined }])));
+			})
+			.catch(err => active && setError(err.message || '加载 Transport 失败'))
+			.finally(() => active && setTransportLoading(false));
+		return () => { active = false; };
+	}, [ability.id]);
+
+	const handleProbe = async (name: GwTransportName) => {
+		setError('');
+		setCheckingTransport(name);
+		try {
+			await upsertGwAbilityTransport(ability.id, name, transports[name] ? 1 : 0);
+			const result = await probeGwAbilityTransport(ability.id, name);
+			setTransportChecks(current => ({ ...current, [name]: { ok: result.ok, error: result.error } }));
+		} catch (err: any) {
+			setError(err.message || '检测失败');
+		} finally {
+			setCheckingTransport(null);
+		}
+	};
+
   const handleSubmit = async () => {
+		setError('');
+		if (!GW_TRANSPORTS.some(name => transports[name])) {
+			setError('至少启用一个上游 Transport');
+			return;
+		}
     setSaving(true);
     try {
       await onSave(ability.id, {
@@ -224,7 +337,12 @@ const AbilityEditModal: React.FC<{
         price_mode: priceMode,
         input_price: inputPrice,
         output_price: outputPrice,
+        capabilities,
       });
+			await Promise.all(GW_TRANSPORTS.map(name => upsertGwAbilityTransport(ability.id, name, transports[name] ? 1 : 0)));
+			onClose();
+		} catch (err: any) {
+			setError(err.message || '保存失败');
     } finally {
       setSaving(false);
     }
@@ -263,6 +381,50 @@ const AbilityEditModal: React.FC<{
             </div>
           </div>
           <div>
+			<label className="block text-xs font-bold text-[var(--text-secondary)] mb-2">上游 Transport</label>
+			{transportLoading ? (
+				<div className="text-xs text-[var(--text-secondary)] py-2">加载中...</div>
+			) : (
+				<div className="space-y-2">
+					{GW_TRANSPORTS.map(name => {
+						const check = transportChecks[name];
+						return (
+							<div key={name} className="flex items-center gap-2 rounded-lg border border-[var(--border-soft)] px-3 py-2 text-xs">
+								<label className="flex min-w-0 flex-1 items-center gap-2 cursor-pointer">
+									<input type="checkbox" checked={transports[name]}
+										onChange={event => setTransports(current => ({ ...current, [name]: event.target.checked }))}
+										className="h-4 w-4 shrink-0 accent-[var(--primary)]" />
+									<span className="font-medium text-[var(--text-primary)] break-words">{TRANSPORT_LABELS[name]}</span>
+								</label>
+								{check && <span className={`text-[10px] ${check.ok ? 'text-emerald-600' : 'text-red-600'}`} title={check.error}>{check.ok ? '可用' : '失败'}</span>}
+								<button type="button" onClick={() => handleProbe(name)} disabled={checkingTransport !== null}
+									className="p-1.5 rounded text-[var(--text-secondary)] hover:text-[var(--primary)] hover:bg-[var(--primary-lighter)] disabled:opacity-40"
+									title="检测此 Transport">
+									{checkingTransport === name ? <Loader2 size={13} className="animate-spin" /> : <Activity size={13} />}
+								</button>
+							</div>
+						);
+					})}
+				</div>
+			)}
+		  </div>
+		  <div>
+			<label className="block text-xs font-bold text-[var(--text-secondary)] mb-2">语义能力</label>
+            <div className="grid grid-cols-2 gap-x-4 gap-y-2 sm:grid-cols-3">
+              {GW_CAPABILITY_NAMES.map(name => (
+                <label key={name} className="flex min-w-0 items-center gap-2 text-xs text-[var(--text-primary)] cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={capabilities[name]}
+                    onChange={e => setCapabilities(current => ({ ...current, [name]: e.target.checked }))}
+                    className="h-4 w-4 shrink-0 accent-[var(--primary)]"
+                  />
+                  <span className="min-w-0 break-words">{CAPABILITY_LABELS[name]}</span>
+                </label>
+              ))}
+            </div>
+          </div>
+          <div>
             <label className="block text-xs font-bold text-[var(--text-secondary)] mb-1">计价模式</label>
             <div className="flex gap-2">
               <button onClick={() => setPriceMode('token')} className={`flex-1 py-2 rounded-lg text-xs font-bold border ${priceMode === 'token' ? 'bg-[var(--primary-lighter)] text-[var(--primary)] border-[var(--primary)]' : 'bg-[var(--surface)] text-[var(--text-secondary)] border-[var(--border-soft)]'}`}>按 Token</button>
@@ -282,9 +444,10 @@ const AbilityEditModal: React.FC<{
             </div>
           </div>
         </div>
+		{error && <div className="px-5 pb-2 text-xs text-red-600">{error}</div>}
         <div className="flex justify-end gap-2 px-5 py-4 border-t border-[var(--border-soft)]">
           <button onClick={onClose} className="px-4 py-2 text-sm font-semibold text-[var(--text-secondary)] hover:text-[var(--text-primary)]">取消</button>
-          <button onClick={handleSubmit} disabled={saving}
+		  <button onClick={handleSubmit} disabled={saving || transportLoading}
             className="flex items-center gap-1.5 px-5 py-2 bg-[var(--primary)] text-white rounded-lg text-sm font-bold hover:opacity-90 disabled:opacity-50">
             <Check size={16} /> {saving ? '保存中...' : '保存'}
           </button>

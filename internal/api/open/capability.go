@@ -100,7 +100,7 @@ func GetTaskByNo(c *gin.Context) {
 
 	resp.Success(c, gin.H{
 		"task_id":  task.TaskNo,
-		"status":   task.Status,
+		"status":   task.Status.Public(),
 		"progress": task.Progress,
 		"result":   task.Result,
 		"error":    task.ErrorMessage,

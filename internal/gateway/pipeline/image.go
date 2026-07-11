@@ -1,15 +1,14 @@
 package pipeline
 
 import (
+	"context"
 	"encoding/base64"
 	"fmt"
-	"io"
-	"net/http"
 	"strings"
-	"time"
 
 	"github.com/mirainya/Prism/internal/provider/chat"
 	"github.com/mirainya/Prism/pkg/logger"
+	"github.com/mirainya/Prism/pkg/safeurl"
 	"go.uber.org/zap"
 )
 
@@ -66,25 +65,9 @@ func convertImageURLsToBase64(messages []chat.ChatMessage) []chat.ChatMessage {
 }
 
 func downloadToDataURL(url string) (string, error) {
-	client := &http.Client{Timeout: 30 * time.Second}
-	resp, err := client.Get(url)
+	result, err := safeurl.Download(context.Background(), url, 20*1024*1024)
 	if err != nil {
 		return "", err
 	}
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		return "", fmt.Errorf("status %d", resp.StatusCode)
-	}
-	body, err := io.ReadAll(io.LimitReader(resp.Body, 20*1024*1024))
-	if err != nil {
-		return "", err
-	}
-	ct := resp.Header.Get("Content-Type")
-	if ct == "" {
-		ct = http.DetectContentType(body)
-	}
-	if idx := strings.Index(ct, ";"); idx >= 0 {
-		ct = ct[:idx]
-	}
-	return fmt.Sprintf("data:%s;base64,%s", ct, base64.StdEncoding.EncodeToString(body)), nil
+	return fmt.Sprintf("data:%s;base64,%s", result.ContentType, base64.StdEncoding.EncodeToString(result.Data)), nil
 }

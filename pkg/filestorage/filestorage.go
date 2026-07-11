@@ -15,6 +15,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/mirainya/Prism/pkg/config"
+	"github.com/mirainya/Prism/pkg/safeurl"
 )
 
 type xfsResponse struct {
@@ -47,41 +48,15 @@ func TransferURL(ctx context.Context, originURL string, capabilityCode string) (
 		return originURL, nil
 	}
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, originURL, nil)
-	if err != nil {
-		return "", fmt.Errorf("create download request: %w", err)
-	}
-
-	client := &http.Client{Timeout: 60 * time.Second}
-	resp, err := client.Do(req)
-	if err != nil {
-		return "", fmt.Errorf("download: %w", err)
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode >= 400 {
-		return "", fmt.Errorf("download: upstream returned HTTP %d", resp.StatusCode)
-	}
-
-	// 限制下载体积上限,避免超大响应打爆内存
 	maxBytes := int64(cfg.MaxFileSizeMB) * 1024 * 1024
 	if maxBytes <= 0 {
 		maxBytes = 64 * 1024 * 1024 // 默认 64MiB 兜底
 	}
-	data, err := io.ReadAll(io.LimitReader(resp.Body, maxBytes+1))
+	result, err := safeurl.Download(ctx, originURL, maxBytes)
 	if err != nil {
-		return "", fmt.Errorf("read body: %w", err)
+		return "", fmt.Errorf("download: %w", err)
 	}
-	if int64(len(data)) > maxBytes {
-		return "", fmt.Errorf("download: file exceeds max size %d MiB", cfg.MaxFileSizeMB)
-	}
-
-	contentType := resp.Header.Get("Content-Type")
-	if contentType == "" {
-		contentType = "image/png"
-	}
-
-	return upload(ctx, data, contentType, capabilityCode)
+	return upload(ctx, result.Data, result.ContentType, capabilityCode)
 }
 
 // TransferBase64 解码 base64 数据并上传到 xfilestorage，返回最终 URL

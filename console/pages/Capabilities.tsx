@@ -192,7 +192,7 @@ const Capabilities: React.FC = () => {
         const oldIndex = sortedCapabilities.findIndex(c => c.code === active.id);
         const newIndex = sortedCapabilities.findIndex(c => c.code === over.id);
         if (oldIndex < 0 || newIndex < 0) return;
-        const reordered = arrayMove(sortedCapabilities, oldIndex, newIndex);
+        const reordered = arrayMove<Capability>(sortedCapabilities, oldIndex, newIndex);
         // 乐观更新:按新次序重算同类型内的 sort(降序,首个最大)
         const sameType = reordered.filter(c => (c.type || 'other') === (activeCap.type || 'other'));
         const sortMap = new Map(sameType.map((c, i) => [c.code, sameType.length - i]));

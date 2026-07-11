@@ -5,167 +5,160 @@ import (
 	"strings"
 )
 
-// ---------- 多模态内容类型 ----------
+const MaxSupportedChoices = 16
 
-// ContentPart 多模态内容块（文本/图片/音频/文件）
 type ContentPart struct {
-	Type     string    `json:"type"`                // "text", "image_url", "input_audio", "file_url"
-	Text     string    `json:"text,omitempty"`      // type=text 时
-	ImageURL *ImageURL `json:"image_url,omitempty"` // type=image_url 时
-	FileURL  *FileURL  `json:"file_url,omitempty"`  // type=file_url 时
+	Type     string    `json:"type"`
+	Text     string    `json:"text,omitempty"`
+	ImageURL *ImageURL `json:"image_url,omitempty"`
+	FileURL  *FileURL  `json:"file_url,omitempty"`
 }
 
-// ImageURL 图片 URL 或 base64
 type ImageURL struct {
-	URL    string `json:"url"`              // URL 或 "data:image/png;base64,..."
-	Detail string `json:"detail,omitempty"` // "auto", "low", "high"
+	URL    string `json:"url"`
+	Detail string `json:"detail,omitempty"`
 }
 
-// FileURL 文件 URL（PDF/文档等）
 type FileURL struct {
-	URL         string `json:"url"`                    // 文件 URL
-	ContentType string `json:"content_type,omitempty"` // MIME 类型
+	URL         string `json:"url"`
+	ContentType string `json:"content_type,omitempty"`
 }
 
-// ---------- Function Calling / Tool Use ----------
-
-// ToolDefinition 工具定义
 type ToolDefinition struct {
-	Type     string      `json:"type"` // "function"
+	Type     string      `json:"type"`
 	Function FunctionDef `json:"function"`
 }
 
-// FunctionDef 函数定义
 type FunctionDef struct {
 	Name        string          `json:"name"`
 	Description string          `json:"description,omitempty"`
-	Parameters  json.RawMessage `json:"parameters,omitempty"` // JSON Schema
+	Parameters  json.RawMessage `json:"parameters,omitempty"`
+	Strict      *bool           `json:"strict,omitempty"`
 }
 
-// ToolCall 模型发起的工具调用
 type ToolCall struct {
 	ID       string       `json:"id"`
-	Type     string       `json:"type"` // "function"
+	Type     string       `json:"type"`
 	Function FunctionCall `json:"function"`
 }
 
-// FunctionCall 函数调用详情
 type FunctionCall struct {
 	Name      string `json:"name"`
-	Arguments string `json:"arguments"` // JSON string
+	Arguments string `json:"arguments"`
 }
 
-// ---------- Response Format ----------
-
-// ResponseFormat 响应格式控制
 type ResponseFormat struct {
-	Type       string          `json:"type"`                  // "text", "json_object", "json_schema"
-	JSONSchema json.RawMessage `json:"json_schema,omitempty"` // type=json_schema 时
+	Type       string          `json:"type"`
+	JSONSchema json.RawMessage `json:"json_schema,omitempty"`
 }
-
-// ---------- 请求/响应结构 ----------
 
 type StreamOptions struct {
-	IncludeUsage bool `json:"include_usage"`
+	IncludeUsage       bool  `json:"include_usage"`
+	IncludeObfuscation *bool `json:"include_obfuscation,omitempty"`
 }
 
-// ChatRequest 统一请求格式
+type AudioConfig struct {
+	Format string `json:"format"`
+	Voice  any    `json:"voice"`
+}
+
+type Prediction struct {
+	Type    string `json:"type"`
+	Content any    `json:"content"`
+}
+
 type ChatRequest struct {
-	Model            string           `json:"model"`
-	Messages         []ChatMessage    `json:"messages"`
-	Temperature      *float64         `json:"temperature,omitempty"`
-	MaxTokens        int              `json:"max_tokens,omitempty"`
-	TopP             *float64         `json:"top_p,omitempty"`
-	FrequencyPenalty *float64         `json:"frequency_penalty,omitempty"`
-	PresencePenalty  *float64         `json:"presence_penalty,omitempty"`
-	Stop             []string         `json:"stop,omitempty"`
-	Stream           bool             `json:"stream,omitempty"`
-	StreamOptions    *StreamOptions   `json:"stream_options,omitempty"`
-	Tools            []ToolDefinition `json:"tools,omitempty"`
-	ToolChoice       any              `json:"tool_choice,omitempty"` // "auto","none","required" 或 {"type":"function","function":{"name":"..."}}
-	ResponseFormat   *ResponseFormat  `json:"response_format,omitempty"`
-	Seed             *int             `json:"seed,omitempty"`
-	User             string           `json:"user,omitempty"`
-
-	// ExtraBody 额外请求体参数，序列化时合并到顶层 JSON
-	// 用于支持各厂商特有字段（如 reasoning、max_output_tokens 等）
-	ExtraBody map[string]any `json:"-"`
+	Model               string            `json:"model"`
+	Messages            []ChatMessage     `json:"messages"`
+	Temperature         *float64          `json:"temperature,omitempty"`
+	MaxTokens           int               `json:"max_tokens,omitempty"`
+	MaxCompletionTokens *int              `json:"max_completion_tokens,omitempty"`
+	TopP                *float64          `json:"top_p,omitempty"`
+	FrequencyPenalty    *float64          `json:"frequency_penalty,omitempty"`
+	PresencePenalty     *float64          `json:"presence_penalty,omitempty"`
+	Stop                []string          `json:"stop,omitempty"`
+	Stream              bool              `json:"stream,omitempty"`
+	StreamOptions       *StreamOptions    `json:"stream_options,omitempty"`
+	N                   *int              `json:"n,omitempty"`
+	Logprobs            *bool             `json:"logprobs,omitempty"`
+	TopLogprobs         *int              `json:"top_logprobs,omitempty"`
+	Tools               []ToolDefinition  `json:"tools,omitempty"`
+	ToolChoice          any               `json:"tool_choice,omitempty"`
+	ParallelToolCalls   *bool             `json:"parallel_tool_calls,omitempty"`
+	ResponseFormat      *ResponseFormat   `json:"response_format,omitempty"`
+	Seed                *int              `json:"seed,omitempty"`
+	User                string            `json:"user,omitempty"`
+	Modalities          []string          `json:"modalities,omitempty"`
+	Audio               *AudioConfig      `json:"audio,omitempty"`
+	Prediction          *Prediction       `json:"prediction,omitempty"`
+	Store               *bool             `json:"store,omitempty"`
+	Metadata            map[string]string `json:"metadata,omitempty"`
+	ServiceTier         *string           `json:"service_tier,omitempty"`
+	ExtraBody           map[string]any    `json:"-"`
 }
 
-// MarshalJSON 自定义序列化：将 ExtraBody 中的字段合并到请求体顶层
 func (r ChatRequest) MarshalJSON() ([]byte, error) {
-	// 用别名避免递归调用
 	type Alias ChatRequest
 	base, err := json.Marshal(Alias(r))
-	if err != nil {
-		return nil, err
+	if err != nil || len(r.ExtraBody) == 0 {
+		return base, err
 	}
-
-	if len(r.ExtraBody) == 0 {
-		return base, nil
-	}
-
-	// 将 base 反序列化为 map，合并 ExtraBody
 	var merged map[string]any
 	if err := json.Unmarshal(base, &merged); err != nil {
 		return nil, err
 	}
-	for k, v := range r.ExtraBody {
-		merged[k] = v
+	for key, value := range r.ExtraBody {
+		merged[key] = value
 	}
-
 	return json.Marshal(merged)
 }
 
-// ChatMessage 消息（Content 支持 string 或 []ContentPart）
 type ChatMessage struct {
-	Role             string     `json:"role"`
-	Content          any        `json:"content"`                     // string 或 []ContentPart
-	ReasoningContent string     `json:"reasoning_content,omitempty"` // 模型思考过程（Gemini thinking / Claude extended thinking）
-	Name             string     `json:"name,omitempty"`              // 可选的发送者名称
-	ToolCalls        []ToolCall `json:"tool_calls,omitempty"`        // role=assistant 时，模型发起的工具调用
-	ToolCallID       string     `json:"tool_call_id,omitempty"`      // role=tool 时，对应的 tool_call id
+	Role             string          `json:"role"`
+	Content          any             `json:"content"`
+	ReasoningContent string          `json:"reasoning_content,omitempty"`
+	Name             string          `json:"name,omitempty"`
+	ToolCalls        []ToolCall      `json:"tool_calls,omitempty"`
+	ToolCallID       string          `json:"tool_call_id,omitempty"`
+	Refusal          *string         `json:"refusal,omitempty"`
+	Annotations      json.RawMessage `json:"annotations,omitempty"`
+	Audio            json.RawMessage `json:"audio,omitempty"`
 }
 
-// ContentText 便捷方法：提取纯文本内容
 func (m *ChatMessage) ContentText() string {
 	if m.Content == nil {
 		return ""
 	}
-	switch v := m.Content.(type) {
+	switch value := m.Content.(type) {
 	case string:
-		return v
+		return value
 	case []any:
 		var texts []string
-		for _, part := range v {
-			if pm, ok := part.(map[string]any); ok {
-				if pm["type"] == "text" {
-					if text, ok := pm["text"].(string); ok {
-						texts = append(texts, text)
-					}
-				}
+		for _, rawPart := range value {
+			part, ok := rawPart.(map[string]any)
+			if !ok || part["type"] != "text" {
+				continue
+			}
+			if text, ok := part["text"].(string); ok {
+				texts = append(texts, text)
 			}
 		}
 		return strings.Join(texts, "\n")
-	}
-	return ""
-}
-
-// ContentAttachments 提取非文本内容块（image_url, file_url 等），返回 JSON 字符串
-func (m *ChatMessage) ContentAttachments() string {
-	if m.Content == nil {
+	default:
 		return ""
 	}
+}
+
+func (m *ChatMessage) ContentAttachments() string {
 	parts, ok := m.Content.([]any)
 	if !ok {
 		return ""
 	}
 	var attachments []any
-	for _, part := range parts {
-		if pm, ok := part.(map[string]any); ok {
-			if pm["type"] != "text" {
-				attachments = append(attachments, pm)
-			}
+	for _, rawPart := range parts {
+		part, ok := rawPart.(map[string]any)
+		if ok && part["type"] != "text" {
+			attachments = append(attachments, part)
 		}
 	}
 	if len(attachments) == 0 {
@@ -178,26 +171,28 @@ func (m *ChatMessage) ContentAttachments() string {
 	return string(data)
 }
 
-// ChatResponse 统一响应格式
 type ChatResponse struct {
-	ID      string       `json:"id"`
-	Object  string       `json:"object"`
-	Created int64        `json:"created"`
-	Model   string       `json:"model"`
-	Choices []ChatChoice `json:"choices"`
-	Usage   *ChatUsage   `json:"usage,omitempty"`
+	ID                string       `json:"id"`
+	Object            string       `json:"object"`
+	Created           int64        `json:"created"`
+	Model             string       `json:"model"`
+	Choices           []ChatChoice `json:"choices"`
+	Usage             *ChatUsage   `json:"usage,omitempty"`
+	SystemFingerprint string       `json:"system_fingerprint,omitempty"`
+	ServiceTier       string       `json:"service_tier,omitempty"`
 }
 
-// ChatChoice 选项
 type ChatChoice struct {
-	Index        int         `json:"index"`
-	Message      ChatMessage `json:"message"`
-	FinishReason string      `json:"finish_reason"`
+	Index        int             `json:"index"`
+	Message      ChatMessage     `json:"message"`
+	FinishReason string          `json:"finish_reason"`
+	Logprobs     json.RawMessage `json:"logprobs,omitempty"`
 }
 
-// ChatUsage Token 使用统计
 type ChatUsage struct {
-	PromptTokens     int `json:"prompt_tokens"`
-	CompletionTokens int `json:"completion_tokens"`
-	TotalTokens      int `json:"total_tokens"`
+	PromptTokens            int             `json:"prompt_tokens"`
+	CompletionTokens        int             `json:"completion_tokens"`
+	TotalTokens             int             `json:"total_tokens"`
+	PromptTokensDetails     json.RawMessage `json:"prompt_tokens_details,omitempty"`
+	CompletionTokensDetails json.RawMessage `json:"completion_tokens_details,omitempty"`
 }

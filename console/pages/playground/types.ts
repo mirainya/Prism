@@ -23,10 +23,20 @@ export interface ChatMessage {
   role: 'system' | 'user' | 'assistant';
   content: string | ContentPart[];
   reasoningContent?: string;
+  toolCalls?: PlaygroundToolCall[];
   requestLogId?: number;
   finishReason?: string;
   status?: 'streaming' | 'completed' | 'failed' | 'aborted';
 }
+
+export interface PlaygroundToolCall {
+  id?: string;
+  index?: number;
+  name: string;
+  arguments: string;
+}
+
+export type PlaygroundProtocol = 'chat' | 'responses' | 'anthropic';
 
 export interface ChatState {
   messages: ChatMessage[];

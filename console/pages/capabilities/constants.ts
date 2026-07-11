@@ -1,5 +1,3 @@
-import { CapabilityStandardParamSchema } from '../../types';
-
 export const RESULT_MODES = [
     {value: 'sync', label: '同步'},
     {value: 'stream', label: '流式'},

@@ -201,7 +201,11 @@ func (s *DashboardService) ListTasks(req *ListTasksRequest, userID uint, isAdmin
 		db = db.Where("token_id = ?", req.TokenID)
 	}
 	if req.Status != "" {
-		db = db.Where("status = ?", req.Status)
+		if req.Status == string(model.TaskStatusProcessing) {
+			db = db.Where("status IN ?", []model.TaskStatus{model.TaskStatusProcessing, model.TaskStatusFinalizing})
+		} else {
+			db = db.Where("status = ?", req.Status)
+		}
 	}
 	if req.Capability != "" {
 		db = db.Where("capability_code = ?", req.Capability)
@@ -240,7 +244,7 @@ func (s *DashboardService) ListTasks(req *ListTasksRequest, userID uint, isAdmin
 			ID:         t.TaskNo,
 			TaskNo:     t.TaskNo,
 			Capability: t.ModelCode,
-			Status:     string(t.Status),
+			Status:     string(t.Status.Public()),
 			Progress:   t.Progress,
 			Cost:       t.Cost,
 			Refunded:   t.Refunded,
@@ -305,9 +309,9 @@ type TokenUsageSummary struct {
 
 // ChatStatsResult Chat 增强统计
 type ChatStatsResult struct {
-	TokenUsage      *TokenUsageSummary   `json:"token_usage"`
-	ChannelRates    []ChannelSuccessRate `json:"channel_rates"`
-	ModelRankings   []ModelCallRanking   `json:"model_rankings"`
+	TokenUsage    *TokenUsageSummary   `json:"token_usage"`
+	ChannelRates  []ChannelSuccessRate `json:"channel_rates"`
+	ModelRankings []ModelCallRanking   `json:"model_rankings"`
 }
 
 // GetChatStats 获取 Chat 增强统计（基于 channel_request_logs）

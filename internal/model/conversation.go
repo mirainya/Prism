@@ -9,17 +9,19 @@ import (
 // Conversation 对话
 type Conversation struct {
 	BaseModel
-	UserID           uint   `gorm:"not null;index;comment:用户ID" json:"user_id"`
-	TokenID          uint   `gorm:"not null;index;comment:Token ID" json:"token_id"`
-	Title            string `gorm:"type:varchar(200);comment:对话标题" json:"title"`
-	Model            string `gorm:"type:varchar(50);comment:最后使用模型" json:"model"`
-	SystemPrompt     string `gorm:"type:text;comment:系统提示词" json:"system_prompt"`
-	LastRequestLogID uint   `gorm:"default:0;index;comment:最近一次请求日志ID" json:"last_request_log_id"`
-	LastStatus       string `gorm:"type:varchar(20);comment:最近一次请求状态" json:"last_status"`
-	ProviderResponseID string `gorm:"type:varchar(128);default:'';comment:上游有状态对话ID(如火山response_id)" json:"provider_response_id"`
-	TotalTokens      int    `gorm:"default:0;comment:累计token" json:"total_tokens"`
-	MessageCount     int    `gorm:"default:0;comment:消息数量" json:"message_count"`
-	Status           int8   `gorm:"default:1;comment:状态(1启用/0禁用)" json:"status"`
+	UserID             uint              `gorm:"not null;index;comment:用户ID" json:"user_id"`
+	TokenID            uint              `gorm:"not null;index;comment:Token ID" json:"token_id"`
+	Title              string            `gorm:"type:varchar(200);comment:对话标题" json:"title"`
+	Model              string            `gorm:"type:varchar(50);comment:最后使用模型" json:"model"`
+	SystemPrompt       string            `gorm:"type:text;comment:系统提示词" json:"system_prompt"`
+	LastRequestLogID   uint              `gorm:"default:0;index;comment:最近一次请求日志ID" json:"last_request_log_id"`
+	LastStatus         string            `gorm:"type:varchar(20);comment:最近一次请求状态" json:"last_status"`
+	ProviderResponseID string            `gorm:"type:varchar(128);default:'';comment:上游有状态对话ID(如火山response_id)" json:"provider_response_id"`
+	ProviderKeyID      uint              `gorm:"default:0;comment:上游状态所属网关Key" json:"provider_key_id"`
+	UpstreamTransport  UpstreamTransport `gorm:"type:varchar(64);default:'';comment:上游状态所属Transport" json:"upstream_transport"`
+	TotalTokens        int               `gorm:"default:0;comment:累计token" json:"total_tokens"`
+	MessageCount       int               `gorm:"default:0;comment:消息数量" json:"message_count"`
+	Status             int8              `gorm:"default:1;comment:状态(1启用/0禁用)" json:"status"`
 }
 
 func (Conversation) TableName() string {

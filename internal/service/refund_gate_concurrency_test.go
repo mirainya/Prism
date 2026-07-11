@@ -1,6 +1,7 @@
 package service
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"sync"
@@ -188,10 +189,8 @@ func TestCancelTask_RefundAndDecrementOnce(t *testing.T) {
 	}
 }
 
-// TestConcurrentFail_DecrementOnce 复现并验证本轮修复的核心竞态:
-// 多个 worker (poll/timeout/submit) 并发对同一任务判失败时, 模拟 worker 的
-// "if committed { decrement }" 模式, 账号计数必须恰好只减一次。
-// 若 decrement 不受 committed 守卫保护, 计数会被重复递减 (旧 bug)。
+// TestConcurrentFail_DecrementOnce verifies that the terminal transaction
+// releases the account slot exactly once under concurrent failure attempts.
 func TestConcurrentFail_DecrementOnce(t *testing.T) {
 	setupTestDB(t)
 	// 账号初始 5 个在跑任务, 其中 1 个是本任务
@@ -204,10 +203,7 @@ func TestConcurrentFail_DecrementOnce(t *testing.T) {
 	for i := 0; i < workers; i++ {
 		go func() {
 			defer wg.Done()
-			// 完全复刻 worker 层的调用模式
-			if committed, _ := svc.UpdateTaskFail(task.ID, "concurrent"); committed {
-				decrementAccountTasksByID(task.AccountID)
-			}
+			_, _ = svc.UpdateTaskFail(task.ID, "concurrent")
 		}()
 	}
 	wg.Wait()
@@ -225,5 +221,134 @@ func TestConcurrentFail_DecrementOnce(t *testing.T) {
 	want := decimal.NewFromFloat(11)
 	if !token.Balance.Equal(want) {
 		t.Fatalf("重复退款: 余额期望 %s, 实际 %s", want, token.Balance)
+	}
+}
+
+func TestUpdateTaskFailRollsBackWhenRefundFails(t *testing.T) {
+	setupTestDB(t)
+	account := &model.ChannelAccount{CurrentTasks: 1}
+	if err := model.DB().Create(account).Error; err != nil {
+		t.Fatalf("create account: %v", err)
+	}
+	task := &model.Task{
+		TaskNo:    GenerateTaskNo(),
+		TokenID:   999,
+		AccountID: account.ID,
+		Status:    model.TaskStatusProcessing,
+		Cost:      decimal.NewFromInt(1),
+	}
+	if err := model.DB().Create(task).Error; err != nil {
+		t.Fatalf("create task: %v", err)
+	}
+
+	service := NewTaskService()
+	committed, err := service.UpdateTaskFail(task.ID, "upstream failed")
+	if err == nil || committed {
+		t.Fatalf("first failure transition = committed %v, err %v; want refund error", committed, err)
+	}
+
+	var afterError model.Task
+	if err := model.DB().First(&afterError, task.ID).Error; err != nil {
+		t.Fatalf("reload task after refund error: %v", err)
+	}
+	if afterError.Status != model.TaskStatusProcessing || afterError.Refunded {
+		t.Fatalf("task was committed despite refund error: status=%s refunded=%v",
+			afterError.Status, afterError.Refunded)
+	}
+	var afterErrorAccount model.ChannelAccount
+	if err := model.DB().First(&afterErrorAccount, account.ID).Error; err != nil {
+		t.Fatalf("reload account after refund error: %v", err)
+	}
+	if afterErrorAccount.CurrentTasks != 1 {
+		t.Fatalf("account slot changed despite rollback: %d", afterErrorAccount.CurrentTasks)
+	}
+	var refundLogs int64
+	if err := model.DB().Model(&model.BillingLog{}).
+		Where("idempotent_key = ?", task.TaskNo).Count(&refundLogs).Error; err != nil {
+		t.Fatalf("count rolled back refund logs: %v", err)
+	}
+	if refundLogs != 0 {
+		t.Fatalf("refund log count after rollback = %d, want 0", refundLogs)
+	}
+
+	token := &model.Token{
+		BaseModel: model.BaseModel{ID: task.TokenID},
+		Balance:   decimal.Zero,
+		TotalUsed: task.Cost,
+	}
+	if err := model.DB().Create(token).Error; err != nil {
+		t.Fatalf("create missing token: %v", err)
+	}
+	committed, err = service.UpdateTaskFail(task.ID, "upstream failed")
+	if err != nil || !committed {
+		t.Fatalf("retry failure transition = committed %v, err %v", committed, err)
+	}
+
+	var gotTask model.Task
+	var gotToken model.Token
+	var gotAccount model.ChannelAccount
+	if err := model.DB().First(&gotTask, task.ID).Error; err != nil {
+		t.Fatalf("reload failed task: %v", err)
+	}
+	if err := model.DB().First(&gotToken, token.ID).Error; err != nil {
+		t.Fatalf("reload refunded token: %v", err)
+	}
+	if err := model.DB().First(&gotAccount, account.ID).Error; err != nil {
+		t.Fatalf("reload released account: %v", err)
+	}
+	if gotTask.Status != model.TaskStatusFailed || !gotTask.Refunded ||
+		!gotToken.Balance.Equal(task.Cost) || !gotToken.TotalUsed.IsZero() || gotAccount.CurrentTasks != 0 {
+		t.Fatalf("retry did not commit refund: status=%s refunded=%v balance=%s total_used=%s current_tasks=%d",
+			gotTask.Status, gotTask.Refunded, gotToken.Balance, gotToken.TotalUsed, gotAccount.CurrentTasks)
+	}
+}
+
+func TestUpdateTaskFailPreservesDatabaseErrors(t *testing.T) {
+	db := setupTestDB(t)
+	task := &model.Task{TaskNo: GenerateTaskNo(), Status: model.TaskStatusProcessing}
+	if err := db.Create(task).Error; err != nil {
+		t.Fatalf("create task: %v", err)
+	}
+	sqlDB, err := db.DB()
+	if err != nil {
+		t.Fatalf("get sql db: %v", err)
+	}
+	if err := sqlDB.Close(); err != nil {
+		t.Fatalf("close sql db: %v", err)
+	}
+
+	_, err = NewTaskService().UpdateTaskFail(task.ID, "database failure")
+	if err == nil {
+		t.Fatal("expected database error")
+	}
+	if errors.Is(err, ErrTaskNotFound) {
+		t.Fatalf("database error was converted to ErrTaskNotFound: %v", err)
+	}
+}
+
+func TestUpdateTaskFailRollsBackWhenAccountReleaseFails(t *testing.T) {
+	db := setupTestDB(t)
+	task := &model.Task{
+		TaskNo:    GenerateTaskNo(),
+		AccountID: 1,
+		Status:    model.TaskStatusProcessing,
+	}
+	if err := db.Create(task).Error; err != nil {
+		t.Fatalf("create task: %v", err)
+	}
+	if err := db.Migrator().DropTable(&model.ChannelAccount{}); err != nil {
+		t.Fatalf("drop account table: %v", err)
+	}
+
+	committed, err := NewTaskService().UpdateTaskFail(task.ID, "upstream failure")
+	if err == nil || committed {
+		t.Fatalf("failure transition = committed %v, err %v; want account release error", committed, err)
+	}
+	var got model.Task
+	if err := db.First(&got, task.ID).Error; err != nil {
+		t.Fatalf("reload task: %v", err)
+	}
+	if got.Status != model.TaskStatusProcessing || got.CompletedAt != nil {
+		t.Fatalf("task terminal state was not rolled back: status=%s completed_at=%v", got.Status, got.CompletedAt)
 	}
 }

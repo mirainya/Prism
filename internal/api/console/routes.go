@@ -46,6 +46,8 @@ func RegisterRoutes(group *gin.RouterGroup) {
 	group.GET("/playground/:token_id/conversations/:conversation_id/messages", PlaygroundGetConversationMessages)
 	group.GET("/playground/:token_id/debug/:request_log_id", PlaygroundGetDebug)
 	group.POST("/playground/:token_id/chat/completions", PlaygroundChatCompletions)
+	group.POST("/playground/:token_id/responses", PlaygroundResponses)
+	group.POST("/playground/:token_id/messages", PlaygroundAnthropicMessages)
 	group.POST("/playground/:token_id/upload", PlaygroundUploadFile)
 	group.POST("/playground/:token_id/capabilities/:capability", PlaygroundInvokeCapability)
 	group.GET("/playground/:token_id/tasks", PlaygroundListTasks)

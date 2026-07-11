@@ -1,0 +1,232 @@
+package volcengine
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"io"
+	"net/http"
+	"net/http/httptest"
+	"strings"
+	"testing"
+
+	"github.com/mirainya/Prism/internal/gateway/canonical"
+	gatewaytransport "github.com/mirainya/Prism/internal/gateway/transport"
+)
+
+func TestVolcengineConvertsAnthropicMessages(t *testing.T) {
+	plan := New(gatewaytransport.HTTPClient{}).Plan(gatewaytransport.OperationMessages, canonical.Request{Endpoint: canonical.EndpointAnthropic}, canonical.FeatureSet{})
+	if !plan.Supported() || plan.Kind != gatewaytransport.PlanConverted {
+		t.Fatalf("plan=%#v", plan)
+	}
+}
+
+func TestPlanKindsAndExtensionBoundaries(t *testing.T) {
+	item := New(gatewaytransport.HTTPClient{})
+	for _, test := range []struct {
+		name      string
+		operation gatewaytransport.Operation
+		kind      gatewaytransport.PlanKind
+	}{
+		{name: "responses native", operation: gatewaytransport.OperationResponses, kind: gatewaytransport.PlanExact},
+		{name: "chat converted", operation: gatewaytransport.OperationChat, kind: gatewaytransport.PlanConverted},
+		{name: "messages converted", operation: gatewaytransport.OperationMessages, kind: gatewaytransport.PlanConverted},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			plan := item.Plan(test.operation, canonical.Request{}, canonical.FeatureSet{})
+			if plan.Kind != test.kind || plan.Upstream != gatewaytransport.OperationResponses {
+				t.Fatalf("plan = %#v", plan)
+			}
+		})
+	}
+
+	for _, field := range []string{"conversation", "prompt", "stream_options", "top_logprobs", "metadata", "truncation", "prompt_cache_retention", "user"} {
+		t.Run(field, func(t *testing.T) {
+			request := canonical.Request{ClientExtensions: map[string]json.RawMessage{
+				"openai_responses.request_extras": json.RawMessage(`{"` + field + `":true}`),
+			}}
+			if plan := item.Plan(gatewaytransport.OperationResponses, request, canonical.FeatureSet{}); plan.Supported() {
+				t.Fatalf("documented unsupported field %q was accepted: %#v", field, plan)
+			}
+		})
+	}
+	if plan := item.Plan(gatewaytransport.OperationResponses, canonical.Request{User: "user-1"}, canonical.FeatureSet{}); plan.Supported() {
+		t.Fatalf("documented unsupported user field was accepted: %#v", plan)
+	}
+	metadata := canonical.Request{Metadata: map[string]string{"trace": "x"}}
+	if plan := item.Plan(gatewaytransport.OperationResponses, metadata, canonical.FeatureSet{}); plan.Supported() {
+		t.Fatalf("documented unsupported metadata was accepted: %#v", plan)
+	}
+	metadata.ClientExtensions = map[string]json.RawMessage{"openai_responses.request_extras": json.RawMessage(`{"metadata":{"trace":"x"}}`)}
+	metadata.Metadata = nil
+	if plan := item.Plan(gatewaytransport.OperationResponses, metadata, canonical.FeatureSet{}); plan.Supported() {
+		t.Fatalf("metadata hidden in request_extras was accepted: %#v", plan)
+	}
+	metadata.ClientExtensions = nil
+	metadata.ProviderOptions.Volcengine = &canonical.VolcengineOptions{Unknown: map[string]json.RawMessage{"metadata": json.RawMessage(`{"trace":"x"}`)}}
+	if plan := item.Plan(gatewaytransport.OperationResponses, metadata, canonical.FeatureSet{}); plan.Supported() {
+		t.Fatalf("metadata hidden in provider extensions was accepted: %#v", plan)
+	}
+	fileSearch := canonical.Request{Tools: []canonical.Tool{{Type: "file_search"}}}
+	if plan := item.Plan(gatewaytransport.OperationResponses, fileSearch, canonical.NewFeatureSet(canonical.FeatureTools, canonical.FeatureFileSearch)); plan.Supported() {
+		t.Fatalf("documented unsupported file_search was accepted: %#v", plan)
+	}
+}
+
+func TestPrepareAddsOnlyDocumentedBetaHeaders(t *testing.T) {
+	transport := New(gatewaytransport.HTTPClient{})
+	call := invocation(false, []canonical.Tool{{Type: "web_search"}, {Type: "mcp"}, {Type: "image_process"}, {Type: "knowledge_search"}, {Type: "doubao_app"}})
+	call.Request.ClientExtensions = map[string]json.RawMessage{"openai_responses.request_extras": json.RawMessage(`{"future_response_option":true}`)}
+	prepared, err := transport.Prepare(context.Background(), call)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if prepared.URL != "https://ark.example"+responsesPath || prepared.Headers.Get("ark-beta-web-search") != "" {
+		t.Fatalf("unexpected URL/headers: %s %#v", prepared.URL, prepared.Headers)
+	}
+	for _, name := range []string{"ark-beta-mcp", "ark-beta-image-process", "ark-beta-knowledge-search", "ark-beta-doubao-app"} {
+		if prepared.Headers.Get(name) != "true" {
+			t.Fatalf("%s header = %q", name, prepared.Headers.Get(name))
+		}
+	}
+	var body map[string]json.RawMessage
+	if err := json.Unmarshal(prepared.Body, &body); err != nil {
+		t.Fatal(err)
+	}
+	if string(body["thinking"]) != `{"type":"enabled"}` || string(body["future_option"]) != `true` || string(body["future_response_option"]) != `true` {
+		t.Fatalf("Volcengine options were not forwarded: %s", prepared.Body)
+	}
+}
+
+func TestPrepareCapsOutputTokensToArkLimit(t *testing.T) {
+	call := invocation(false, nil)
+	requested := 200000
+	call.Request.MaxOutputTokens = &requested
+	prepared, err := New(gatewaytransport.HTTPClient{}).Prepare(context.Background(), call)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var body map[string]any
+	if err := json.Unmarshal(prepared.Body, &body); err != nil {
+		t.Fatal(err)
+	}
+	if got, ok := body["max_output_tokens"].(float64); !ok || int(got) != maxOutputTokensUpperBound {
+		t.Fatalf("max_output_tokens = %#v, want %d", body["max_output_tokens"], maxOutputTokensUpperBound)
+	}
+}
+
+func TestConvertedToolChoiceIsNormalizedForVolcengine(t *testing.T) {
+	call := invocation(false, nil)
+	call.Operation = gatewaytransport.OperationMessages
+	call.Request.ToolChoice = &canonical.ToolChoice{
+		Mode: "tool", Type: "tool", Name: "lookup",
+		Raw: json.RawMessage(`{"type":"tool","name":"lookup","disable_parallel_tool_use":false}`),
+	}
+	item := New(gatewaytransport.HTTPClient{})
+	if plan := item.Plan(call.Operation, call.Request, canonical.NewFeatureSet(canonical.FeatureTools)); !plan.Supported() {
+		t.Fatalf("standard tool choice was rejected: %#v", plan)
+	}
+	prepared, err := item.Prepare(context.Background(), call)
+	if err != nil {
+		t.Fatal(err)
+	}
+	body := string(prepared.Body)
+	if !strings.Contains(body, `"tool_choice":{"name":"lookup","type":"function"}`) || strings.Contains(body, "disable_parallel_tool_use") {
+		t.Fatalf("tool choice was not normalized: %s", body)
+	}
+}
+
+func TestExecuteAndStreamUseArkResponses(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		if request.URL.Path != responsesPath || request.Header.Get("Authorization") != "Bearer key" {
+			http.Error(writer, "bad request", http.StatusBadRequest)
+			return
+		}
+		var body map[string]any
+		_ = json.NewDecoder(request.Body).Decode(&body)
+		if body["stream"] == true {
+			writer.Header().Set("Content-Type", "text/event-stream")
+			_, _ = io.WriteString(writer, "event: response.output_text.delta\ndata: {\"type\":\"response.output_text.delta\",\"sequence_number\":1,\"item_id\":\"msg_1\",\"delta\":\"hi\"}\n\nevent: response.completed\ndata: {\"type\":\"response.completed\",\"sequence_number\":2,\"response\":{\"id\":\"up_1\",\"object\":\"response\",\"status\":\"completed\",\"model\":\"vendor\",\"output\":[],\"usage\":{\"input_tokens\":1,\"output_tokens\":2,\"total_tokens\":3,\"tool_usage\":{\"web_search\":1}}}}\n\ndata: [DONE]\n\n")
+			return
+		}
+		writer.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(writer, `{"id":"up_1","object":"response","status":"completed","model":"vendor","output":[{"type":"message","role":"assistant","content":[{"type":"output_text","text":"ok"}]}],"usage":{"input_tokens":1,"output_tokens":2,"total_tokens":3,"tool_usage":{"web_search":1}},"future_response":true}`)
+	}))
+	defer server.Close()
+	transport := New(gatewaytransport.HTTPClient{Client: server.Client()})
+	call := invocation(false, nil)
+	call.Route.BaseURL = server.URL
+	response, _, err := transport.Execute(context.Background(), call)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if response.ID != "up_1" || len(response.Output) != 1 || len(response.Usage.Extra["tool_usage"]) == 0 || string(response.ProviderExtensions["future_response"]) != "true" {
+		t.Fatalf("unexpected response: %#v", response)
+	}
+
+	streamCall := invocation(true, nil)
+	streamCall.Route.BaseURL = server.URL
+	stream, _, err := transport.Stream(context.Background(), streamCall)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer stream.Close()
+	first, err := stream.Next(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first.Type != canonical.EventTextDelta || first.Delta != "hi" {
+		t.Fatalf("unexpected first event: %#v", first)
+	}
+	last, err := stream.Next(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if last.Type != canonical.EventCompleted || last.Response == nil || last.Usage == nil || last.Usage.TotalTokens != 3 || last.ProviderResponseID != "up_1" || len(last.Response.Usage.Extra["tool_usage"]) == 0 {
+		t.Fatalf("unexpected completed event: %#v", last)
+	}
+}
+
+func TestPreparePreservesCallIDAndMultimodalMetadata(t *testing.T) {
+	call := invocation(false, nil)
+	call.Request.Items = []canonical.Item{
+		{Type: "function_call", CallID: "call_1", Name: "lookup", Arguments: json.RawMessage(`{"q":"x"}`), Status: "completed"},
+		{Type: "function_call_output", CallID: "call_1", Output: json.RawMessage(`"ok"`)},
+		{Type: "message", Role: canonical.RoleUser, Content: []canonical.Content{{Type: "input_file", FileID: "file_1", Filename: "report.pdf", MediaType: "application/pdf"}, {Type: "input_audio", URL: "https://example.test/a.wav", MediaType: "audio/wav", Format: "wav"}}},
+	}
+	prepared, err := New(gatewaytransport.HTTPClient{}).Prepare(context.Background(), call)
+	if err != nil {
+		t.Fatal(err)
+	}
+	body := string(prepared.Body)
+	for _, expected := range []string{`"call_id":"call_1"`, `"arguments":"{\"q\":\"x\"}"`, `"filename":"report.pdf"`, `"content_type":"application/pdf"`, `"format":"wav"`} {
+		if !strings.Contains(body, expected) {
+			t.Fatalf("prepared body missing %s: %s", expected, body)
+		}
+	}
+}
+
+func TestDecodeFailedEventCarriesErrorUsageAndPublicModel(t *testing.T) {
+	event, err := decodeEvent([]byte(`{"type":"response.failed","response":{"id":"resp_1","status":"failed","model":"vendor","output":[],"usage":{"input_tokens":2,"output_tokens":1,"total_tokens":3},"error":{"type":"server_error","code":"upstream_failed","message":"failed"}}}`), "response.failed", "public")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if event.Type != canonical.EventFailed || event.Response == nil || event.Response.Model != "public" || event.ProviderResponseID != "resp_1" || event.Usage == nil || event.Usage.TotalTokens != 3 || event.Error == nil || event.Error.Code != "upstream_failed" {
+		t.Fatalf("event = %#v", event)
+	}
+}
+
+func TestHTTPErrorIncludesVolcengineDetails(t *testing.T) {
+	err := newHTTPError(http.StatusTooManyRequests, []byte(`{"error":{"type":"rate_limit_error","code":"rate_limit","message":"slow"}}`))
+	var upstream *HTTPError
+	if !errors.As(err, &upstream) || upstream.Details == nil || upstream.Details.Status != http.StatusTooManyRequests || upstream.Details.Code != "rate_limit" || upstream.Details.Message != "slow" || !upstream.Details.Retryable {
+		t.Fatalf("error = %#v", err)
+	}
+	if !strings.Contains(err.Error(), "slow") {
+		t.Fatalf("error message does not include upstream detail: %v", err)
+	}
+}
+
+func invocation(stream bool, tools []canonical.Tool) gatewaytransport.Invocation {
+	return gatewaytransport.Invocation{Route: gatewaytransport.Route{BaseURL: "https://ark.example", APIKey: "key", VendorModel: "vendor", PublicModel: "public"}, Operation: gatewaytransport.OperationResponses, Request: canonical.Request{Endpoint: canonical.EndpointOpenAIResponses, Model: "public", Stream: stream, Items: []canonical.Item{{Type: "message", Role: canonical.RoleUser, Content: []canonical.Content{{Type: "input_text", Text: "hello"}}}}, Tools: tools, ProviderOptions: canonical.ProviderOptions{Volcengine: &canonical.VolcengineOptions{Thinking: json.RawMessage(`{"type":"enabled"}`), Unknown: map[string]json.RawMessage{"future_option": json.RawMessage(`true`)}}}}}
+}

@@ -9,6 +9,8 @@ import (
 	"github.com/hibiken/asynq"
 	"github.com/mirainya/Prism/internal/model"
 	"github.com/mirainya/Prism/internal/provider"
+	"github.com/mirainya/Prism/internal/service"
+	"github.com/mirainya/Prism/pkg/auth"
 	"github.com/mirainya/Prism/pkg/config"
 	"github.com/mirainya/Prism/pkg/filestorage"
 	"github.com/mirainya/Prism/pkg/logger"
@@ -28,6 +30,9 @@ func HandleTaskSubmit(ctx context.Context, t *asynq.Task) error {
 	task, err := taskService.GetTaskByID(payload.TaskID)
 	if err != nil {
 		return fmt.Errorf("get task: %w", err)
+	}
+	if task.Status != model.TaskStatusPending {
+		return nil
 	}
 
 	// 2. 获取渠道信息
@@ -49,8 +54,8 @@ func HandleTaskSubmit(ctx context.Context, t *asynq.Task) error {
 	// 3. 创建 Provider
 	prov, err := provider.NewProvider(&channel, &account, &endpoint)
 	if err != nil {
-		if committed, _ := taskService.UpdateTaskFail(task.ID, "create provider error: "+err.Error()); committed {
-			decrementAccountTasks(task.ID)
+		if _, failErr := taskService.UpdateTaskFail(task.ID, "create provider error: "+err.Error()); failErr != nil {
+			return fmt.Errorf("record provider creation failure: %w", failErr)
 		}
 		return nil
 	}
@@ -64,7 +69,20 @@ func HandleTaskSubmit(ctx context.Context, t *asynq.Task) error {
 		if mappedParams == nil {
 			mappedParams = make(map[string]any)
 		}
-		mappedParams["callback_url"] = config.C.Server.PublicURL + "/internal/callback/" + channel.Type
+		callbackSecret, err := service.NewChannelService().EnsureCallbackSecret(channel.ID)
+		if err != nil {
+			if _, failErr := taskService.UpdateTaskFail(task.ID, "prepare callback authentication: "+err.Error()); failErr != nil {
+				return fmt.Errorf("record callback authentication failure: %w", failErr)
+			}
+			return nil
+		}
+		mappedParams["callback_url"] = auth.BuildSignedCallbackURL(
+			config.C.Server.PublicURL,
+			channel.Type,
+			channel.ID,
+			task.TaskNo,
+			callbackSecret,
+		)
 	}
 
 	// 5. 提交到上游
@@ -76,8 +94,9 @@ func HandleTaskSubmit(ctx context.Context, t *asynq.Task) error {
 
 	result, err := prov.Submit(ctx, submitReq)
 	if err != nil {
-		if committed, _ := taskService.UpdateTaskFail(task.ID, "submit error: "+err.Error()); committed {
-			decrementAccountTasks(task.ID)
+		_, failErr := taskService.UpdateTaskSubmitFail(task.ID, "submit error: "+err.Error())
+		if failErr != nil {
+			return fmt.Errorf("record submit failure: %w", failErr)
 		}
 		return nil
 	}
@@ -85,10 +104,12 @@ func HandleTaskSubmit(ctx context.Context, t *asynq.Task) error {
 	// 6. 根据交互模式处理结果
 	switch endpoint.InteractionMode {
 	case model.ModePoll:
-		taskService.UpdateTaskStatus(task.ID, model.TaskStatusProcessing, result.ProviderTaskID)
+		if err := taskService.UpdateTaskStatus(task.ID, model.TaskStatusProcessing, result.ProviderTaskID); err != nil {
+			return fmt.Errorf("mark poll task processing: %w", err)
+		}
 		if result.ProviderTaskID == "" {
-			if committed, _ := taskService.UpdateTaskFail(task.ID, "upstream returned empty task_id, cannot poll"); committed {
-				decrementAccountTasks(task.ID)
+			if _, failErr := taskService.UpdateTaskFail(task.ID, "upstream returned empty task_id, cannot poll"); failErr != nil {
+				return fmt.Errorf("record empty poll task ID: %w", failErr)
 			}
 			return nil
 		}
@@ -100,52 +121,56 @@ func HandleTaskSubmit(ctx context.Context, t *asynq.Task) error {
 		pollTask := asynq.NewTask(TypeTaskPoll, payloadBytes)
 		info, enqErr := queue.Client.Enqueue(pollTask, asynq.ProcessIn(time.Duration(endpoint.PollInterval)*time.Second), asynq.Queue("default"))
 		if enqErr != nil {
-			// 入队轮询失败: 任务已提交上游但无法被跟踪,判失败并递减计数,避免卡 Processing 永久泄漏
+			// 入队轮询失败: 任务已提交上游但无法被跟踪，判失败。
 			logger.Error("enqueue poll failed", zap.Uint("task_id", task.ID), zap.Error(enqErr))
-			if committed, _ := taskService.UpdateTaskFail(task.ID, "enqueue poll failed: "+enqErr.Error()); committed {
-				decrementAccountTasks(task.ID)
+			if _, failErr := taskService.UpdateTaskFail(task.ID, "enqueue poll failed: "+enqErr.Error()); failErr != nil {
+				return fmt.Errorf("enqueue poll failed: %v; record task failure: %w", enqErr, failErr)
 			}
 			return nil
 		}
 		logger.Info("enqueue poll ok", zap.Uint("task_id", task.ID), zap.String("queue", info.Queue))
 	case model.ModeCallback:
 		if result.ProviderTaskID == "" && (len(result.URLs) > 0 || len(result.B64Data) > 0) {
-			originURLs := append([]string{}, result.URLs...)
-			originURLs = append(originURLs, result.B64Data...)
-			originURL := ""
-			if len(originURLs) > 0 {
-				originURL = originURLs[0]
-			}
+			urls := append([]string{}, result.URLs...)
 			if len(result.B64Data) > 0 {
-				taskService.UpdateTaskProgress(task.ID, 100)
-				if err := enqueueUpload(task.ID, originURL, originURLs, result.RevisedPrompt); err != nil {
-					if committed, _ := taskService.UpdateTaskFail(task.ID, "enqueue upload error: "+err.Error()); committed {
-						decrementAccountTasks(task.ID)
+				transferred, err := resolveSubmitB64ToURLs(ctx, result.B64Data, task.ModelCode)
+				if err != nil {
+					if _, failErr := taskService.UpdateTaskFail(task.ID, err.Error()); failErr != nil {
+						return fmt.Errorf("transfer callback result: %v; record task failure: %w", err, failErr)
 					}
+					break
 				}
-				break
+				urls = append(urls, transferred...)
 			}
-			successResult := buildResult(originURL, originURLs)
+			originURL := ""
+			if len(urls) > 0 {
+				originURL = urls[0]
+			}
+			successResult := buildResult(originURL, urls)
 			if result.RevisedPrompt != "" {
 				successResult["revised_prompt"] = result.RevisedPrompt
 			}
-			if committed, _ := taskService.UpdateTaskSuccess(task.ID, successResult, task.Cost); committed {
-				decrementAccountTasks(task.ID)
+			if _, err := taskService.UpdateTaskSuccess(task.ID, successResult, task.Cost); err != nil {
+				return fmt.Errorf("complete callback submit task: %w", err)
 			}
 			break
 		}
-		taskService.UpdateTaskStatus(task.ID, model.TaskStatusProcessing, result.ProviderTaskID)
+		if err := taskService.UpdateTaskStatus(task.ID, model.TaskStatusProcessing, result.ProviderTaskID); err != nil {
+			return fmt.Errorf("mark callback task processing: %w", err)
+		}
 		if endpoint.PollPath != "" && result.ProviderTaskID != "" {
 			interval := endpoint.PollInterval
 			if interval <= 0 {
 				interval = DefaultPollInterval
 			}
-			requeuePoll(task.ID, 0, interval)
+			if err := requeuePoll(task.ID, 0, interval); err != nil {
+				return fmt.Errorf("enqueue callback fallback poll: %w", err)
+			}
 		}
 	default:
 		if result.ProviderTaskID == "" && len(result.URLs) == 0 && len(result.B64Data) == 0 {
-			if committed, _ := taskService.UpdateTaskFail(task.ID, "upstream returned empty result"); committed {
-				decrementAccountTasks(task.ID)
+			if _, failErr := taskService.UpdateTaskFail(task.ID, "upstream returned empty result"); failErr != nil {
+				return fmt.Errorf("record empty upstream result: %w", failErr)
 			}
 			break
 		}
@@ -153,8 +178,8 @@ func HandleTaskSubmit(ctx context.Context, t *asynq.Task) error {
 		if len(result.B64Data) > 0 {
 			transferred, err := resolveSubmitB64ToURLs(ctx, result.B64Data, task.ModelCode)
 			if err != nil {
-				if committed, _ := taskService.UpdateTaskFail(task.ID, err.Error()); committed {
-					decrementAccountTasks(task.ID)
+				if _, failErr := taskService.UpdateTaskFail(task.ID, err.Error()); failErr != nil {
+					return fmt.Errorf("transfer submit result: %v; record task failure: %w", err, failErr)
 				}
 				break
 			}
@@ -168,8 +193,8 @@ func HandleTaskSubmit(ctx context.Context, t *asynq.Task) error {
 		if result.RevisedPrompt != "" {
 			successResult["revised_prompt"] = result.RevisedPrompt
 		}
-		if committed, _ := taskService.UpdateTaskSuccess(task.ID, successResult, task.Cost); committed {
-			decrementAccountTasks(task.ID)
+		if _, err := taskService.UpdateTaskSuccess(task.ID, successResult, task.Cost); err != nil {
+			return fmt.Errorf("complete submitted task: %w", err)
 		}
 	}
 

@@ -208,7 +208,7 @@ export const GwPullModal: React.FC<{
     setImporting(true); setError('');
     try {
       const res = await importGwKeyModels(keyId, models);
-      setResult(`导入完成: 新增能力 ${res.abilities_added} · 新增元数据 ${res.meta_added}`);
+	  setResult(`导入完成: 新增能力 ${res.abilities_added} · 新增 Transport ${res.transports_added} · 新增元数据 ${res.meta_added}`);
       await load();
       onImported?.();
     } catch (e: any) {

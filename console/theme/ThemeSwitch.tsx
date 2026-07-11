@@ -15,7 +15,7 @@ export const ThemeSwitch: React.FC = () => {
           className={`w-5 h-5 rounded-full transition-transform hover:scale-125 ${
             theme.key === t.key ? 'ring-2 ring-offset-2 scale-110' : ''
           }`}
-          style={{ backgroundColor: t.color, ringColor: t.color }}
+          style={{ backgroundColor: t.color, '--tw-ring-color': t.color } as React.CSSProperties}
         />
       ))}
     </div>

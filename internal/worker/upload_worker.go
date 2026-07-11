@@ -3,6 +3,7 @@ package worker
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 
 	"github.com/hibiken/asynq"
@@ -26,10 +27,27 @@ func HandleTaskUpload(ctx context.Context, t *asynq.Task) error {
 	if err != nil {
 		return fmt.Errorf("get task: %w", err)
 	}
+	if task.Status.IsTerminal() {
+		if task.Status == model.TaskStatusSuccess &&
+			task.CallbackURL != "" &&
+			task.CallbackStatus != model.CallbackStatusSuccess {
+			return enqueueNotify(task.ID)
+		}
+		return nil
+	}
+	ready, err := taskService.BeginTaskFinalization(task.ID)
+	if err != nil {
+		return fmt.Errorf("begin upload finalization: %w", err)
+	}
+	if !ready {
+		return nil
+	}
 
 	// 获取端点配置以获取价格
 	var ep model.Endpoint
-	model.DB().First(&ep, task.EndpointID)
+	if err := model.DB().First(&ep, task.EndpointID).Error; err != nil {
+		return fmt.Errorf("get endpoint: %w", err)
+	}
 
 	originURLs := payload.URLs
 	if len(originURLs) == 0 && payload.OriginURL != "" {
@@ -49,8 +67,9 @@ func HandleTaskUpload(ctx context.Context, t *asynq.Task) error {
 			if transferred, err := transferResultFile(ctx, originURL, task.ModelCode); err != nil {
 				if isB64 {
 					logger.Error("base64 transfer failed", zap.Uint("task_id", task.ID), zap.Error(err))
-					if committed, _ := taskService.UpdateTaskFail(task.ID, "transfer base64 failed: "+err.Error()); committed {
-						decrementAccountTasks(task.ID)
+					_, failErr := taskService.FailTaskUpload(task.ID, "transfer base64 failed: "+err.Error())
+					if failErr != nil {
+						return fmt.Errorf("record upload failure: %w", failErr)
 					}
 					return nil
 				}
@@ -73,14 +92,15 @@ func HandleTaskUpload(ctx context.Context, t *asynq.Task) error {
 		result["revised_prompt"] = payload.RevisedPrompt
 	}
 	// 结算价统一用扣款时记录的 task.Cost(按 primary 端点价扣的),避免 fallback 到异价端点导致账目不符
-	committed, _ := taskService.UpdateTaskSuccess(task.ID, result, task.Cost)
-	if committed {
-		decrementAccountTasks(task.ID)
+	committed, err := taskService.CompleteTaskUpload(task.ID, result, task.Cost)
+	if err != nil {
+		return fmt.Errorf("complete upload task: %w", err)
 	}
-
 	// 如果有回调地址，入队通知任务
-	if task.CallbackURL != "" {
-		enqueueNotify(task.ID)
+	if committed && task.CallbackURL != "" {
+		if err := enqueueNotify(task.ID); err != nil {
+			return fmt.Errorf("enqueue notify: %w", err)
+		}
 	}
 
 	logger.Info("task upload completed", zap.Uint("task_id", task.ID), zap.String("final_url", primaryURL))
@@ -129,6 +149,10 @@ func enqueueNotify(taskID uint) error {
 	_, err := queue.Client.Enqueue(task,
 		asynq.MaxRetry(5),
 		asynq.Queue("notify"),
+		asynq.TaskID(fmt.Sprintf("task-notify-%d", taskID)),
 	)
+	if errors.Is(err, asynq.ErrTaskIDConflict) {
+		return nil
+	}
 	return err
 }

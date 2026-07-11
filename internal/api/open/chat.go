@@ -6,6 +6,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/mirainya/Prism/internal/api/resp"
+	"github.com/mirainya/Prism/internal/model"
 	"github.com/mirainya/Prism/internal/service"
 )
 
@@ -19,6 +20,11 @@ func GetChatModelDetail(c *gin.Context) {
 		resp.ErrorMsg(c, http.StatusInternalServerError, 500, err.Error())
 		return
 	}
+	transports, err := svc.ListModelTransports()
+	if err != nil {
+		resp.ErrorMsg(c, http.StatusInternalServerError, 500, err.Error())
+		return
+	}
 	for _, m := range rows {
 		if m.ModelName != code || m.KeyAvailable <= 0 {
 			continue
@@ -28,6 +34,7 @@ func GetChatModelDetail(c *gin.Context) {
 			"object":   "model",
 			"owned_by": "prism",
 		}
+		addModelProtocolSupport(item, transports[m.ModelName])
 		if m.DisplayName != "" {
 			item["name"] = m.DisplayName
 		}
@@ -55,6 +62,11 @@ func ListChatModelsPublic(c *gin.Context) {
 		resp.ErrorMsg(c, http.StatusInternalServerError, 500, err.Error())
 		return
 	}
+	transports, err := svc.ListModelTransports()
+	if err != nil {
+		resp.ErrorMsg(c, http.StatusInternalServerError, 500, err.Error())
+		return
+	}
 
 	data := make([]gin.H, 0, len(rows))
 	for _, m := range rows {
@@ -66,6 +78,7 @@ func ListChatModelsPublic(c *gin.Context) {
 			"object":   "model",
 			"owned_by": "prism",
 		}
+		addModelProtocolSupport(item, transports[m.ModelName])
 		if m.MaxTokens > 0 {
 			item["max_tokens"] = m.MaxTokens
 		}
@@ -82,4 +95,13 @@ func ListChatModelsPublic(c *gin.Context) {
 		"object": "list",
 		"data":   data,
 	})
+}
+
+func addModelProtocolSupport(item gin.H, transports []model.UpstreamTransport) {
+	item["native_transports"] = transports
+	if len(transports) == 0 {
+		item["supported_endpoints"] = []string{}
+		return
+	}
+	item["supported_endpoints"] = []string{"/v1/chat/completions", "/v1/responses", "/v1/messages"}
 }

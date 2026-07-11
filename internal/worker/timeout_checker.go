@@ -18,8 +18,8 @@ func HandleTaskTimeoutCheck(ctx context.Context, t *asynq.Task) error {
 	timeout := time.Now().Add(-30 * time.Minute)
 
 	var tasks []model.Task
-	err := model.DB().Where("status = ? AND updated_at < ?",
-		model.TaskStatusProcessing,
+	err := model.DB().Where("status IN ? AND updated_at < ?",
+		[]model.TaskStatus{model.TaskStatusProcessing, model.TaskStatusFinalizing},
 		timeout,
 	).Find(&tasks).Error
 
@@ -30,8 +30,8 @@ func HandleTaskTimeoutCheck(ctx context.Context, t *asynq.Task) error {
 
 	for _, task := range tasks {
 		logger.Warn("task timeout", zap.Uint("task_id", task.ID), zap.String("task_no", task.TaskNo))
-		if committed, _ := taskService.UpdateTaskFail(task.ID, "task timeout"); committed {
-			decrementAccountTasks(task.ID)
+		if _, err := taskService.UpdateTaskTimeoutFail(task.ID, "task timeout"); err != nil {
+			return err
 		}
 	}
 

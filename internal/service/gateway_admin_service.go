@@ -10,6 +10,12 @@ import (
 	"strings"
 	"time"
 
+	"github.com/mirainya/Prism/internal/gateway/canonical"
+	gatewaytransport "github.com/mirainya/Prism/internal/gateway/transport"
+	transportanthropic "github.com/mirainya/Prism/internal/gateway/transport/anthropic"
+	transportgoogle "github.com/mirainya/Prism/internal/gateway/transport/google"
+	transportopenai "github.com/mirainya/Prism/internal/gateway/transport/openai"
+	transportvolcengine "github.com/mirainya/Prism/internal/gateway/transport/volcengine"
 	"github.com/mirainya/Prism/internal/model"
 	"github.com/tidwall/gjson"
 	"gorm.io/datatypes"
@@ -17,7 +23,7 @@ import (
 	"gorm.io/gorm/clause"
 )
 
-// GatewayAdminService 网关 v2 路由表(gw_*)的后台管理。
+// GatewayAdminService 聊天网关路由表(gw_*)的后台管理。
 // gw_abilities 是「某 key 能跑某 model」的唯一记录(路由索引,无软删);
 // 增删渠道/key 时同步重建关联 abilities。gw_model_meta 是元数据面,永不参与路由。
 type GatewayAdminService struct{}
@@ -27,10 +33,12 @@ func NewGatewayAdminService() *GatewayAdminService {
 }
 
 var (
-	ErrGwChannelNotFound = errors.New("gateway channel not found")
-	ErrGwKeyNotFound     = errors.New("gateway channel key not found")
-	ErrGwNoBaseURL       = errors.New("channel base_url is empty")
-	ErrGwNoKey           = errors.New("channel key api_key is empty")
+	ErrGwChannelNotFound     = errors.New("gateway channel not found")
+	ErrGwKeyNotFound         = errors.New("gateway channel key not found")
+	ErrGwNoBaseURL           = errors.New("channel base_url is empty")
+	ErrGwNoKey               = errors.New("channel key api_key is empty")
+	ErrGwInvalidCapabilities = errors.New("invalid gateway capabilities")
+	ErrGwInvalidTransport    = errors.New("invalid gateway transport")
 )
 
 // ---------- 渠道 GwChannel ----------
@@ -79,6 +87,12 @@ func (s *GatewayAdminService) UpdateChannel(id uint, updates map[string]any) err
 // DeleteChannel 删渠道 = 软删渠道 + 软删其 keys + 硬删其 abilities(索引无软删)。
 func (s *GatewayAdminService) DeleteChannel(id uint) error {
 	return model.DB().Transaction(func(tx *gorm.DB) error {
+		if err := tx.Where("ability_id IN (?)", tx.Model(&model.GwAbility{}).Select("id").Where("channel_id = ?", id)).Delete(&model.GwAbilityTransport{}).Error; err != nil {
+			return err
+		}
+		if err := tx.Where("key_id IN (?)", tx.Model(&model.GwChannelKey{}).Select("id").Where("channel_id = ?", id)).Delete(&model.GwRouteState{}).Error; err != nil {
+			return err
+		}
 		if err := tx.Where("channel_id = ?", id).Delete(&model.GwAbility{}).Error; err != nil {
 			return err
 		}
@@ -139,6 +153,12 @@ func (s *GatewayAdminService) UpdateKey(id uint, updates map[string]any) error {
 // DeleteKey 删 key = 软删 key + 硬删其 abilities。
 func (s *GatewayAdminService) DeleteKey(id uint) error {
 	return model.DB().Transaction(func(tx *gorm.DB) error {
+		if err := tx.Where("ability_id IN (?)", tx.Model(&model.GwAbility{}).Select("id").Where("key_id = ?", id)).Delete(&model.GwAbilityTransport{}).Error; err != nil {
+			return err
+		}
+		if err := tx.Where("key_id = ?", id).Delete(&model.GwRouteState{}).Error; err != nil {
+			return err
+		}
 		if err := tx.Where("key_id = ?", id).Delete(&model.GwAbility{}).Error; err != nil {
 			return err
 		}
@@ -196,9 +216,17 @@ func (s *GatewayAdminService) ListAbilities(f AbilityFilter) ([]GwAbilityRow, er
 
 // UpdateAbility 更新 ability 可编辑字段(vendor/优先级/价格/状态)。
 func (s *GatewayAdminService) UpdateAbility(id uint, updates map[string]any) error {
+	if value, ok := updates["capabilities"]; ok {
+		capabilities, err := normalizeGwCapabilities(value)
+		if err != nil {
+			return err
+		}
+		updates["capabilities"] = capabilities
+	}
 	allowed := map[string]struct{}{
 		"vendor_model": {}, "priority": {}, "status": {},
 		"price_mode": {}, "input_price": {}, "output_price": {},
+		"capabilities": {},
 	}
 	clean := filterAllowed(updates, allowed)
 	if len(clean) == 0 {
@@ -207,9 +235,247 @@ func (s *GatewayAdminService) UpdateAbility(id uint, updates map[string]any) err
 	return model.DB().Model(&model.GwAbility{}).Where("id = ?", id).Updates(clean).Error
 }
 
+var gwCapabilityNames = map[string]struct{}{
+	"stream": {}, "vision": {}, "files": {},
+	"audio": {}, "video": {}, "tools": {}, "structured_output": {}, "reasoning": {}, "background": {},
+	"web_search": {}, "file_search": {}, "code_interpreter": {}, "computer_use": {}, "image_generation": {},
+}
+
+func normalizeGwCapabilities(value any) (datatypes.JSON, error) {
+	if value == nil {
+		return nil, nil
+	}
+	switch capabilities := value.(type) {
+	case map[string]any:
+		for name, enabled := range capabilities {
+			if _, ok := gwCapabilityNames[name]; !ok {
+				return nil, fmt.Errorf("%w: unknown capability %q", ErrGwInvalidCapabilities, name)
+			}
+			if _, ok := enabled.(bool); !ok {
+				return nil, fmt.Errorf("%w: capability %q must be boolean", ErrGwInvalidCapabilities, name)
+			}
+		}
+	case []any:
+		for _, rawName := range capabilities {
+			name, ok := rawName.(string)
+			if !ok {
+				return nil, fmt.Errorf("%w: array entries must be strings", ErrGwInvalidCapabilities)
+			}
+			if _, ok := gwCapabilityNames[name]; !ok {
+				return nil, fmt.Errorf("%w: unknown capability %q", ErrGwInvalidCapabilities, name)
+			}
+		}
+	default:
+		return nil, fmt.Errorf("%w: expected an object or array", ErrGwInvalidCapabilities)
+	}
+	encoded, err := json.Marshal(value)
+	if err != nil {
+		return nil, fmt.Errorf("%w: %v", ErrGwInvalidCapabilities, err)
+	}
+	return datatypes.JSON(encoded), nil
+}
+
 // DeleteAbility 硬删一条 ability(仅删路由索引)。
 func (s *GatewayAdminService) DeleteAbility(id uint) error {
-	return model.DB().Delete(&model.GwAbility{}, id).Error
+	return model.DB().Transaction(func(tx *gorm.DB) error {
+		if err := tx.Where("ability_id = ?", id).Delete(&model.GwAbilityTransport{}).Error; err != nil {
+			return err
+		}
+		return tx.Delete(&model.GwAbility{}, id).Error
+	})
+}
+
+func (s *GatewayAdminService) ListAbilityTransports(abilityID uint) ([]model.GwAbilityTransport, error) {
+	var count int64
+	if err := model.DB().Model(&model.GwAbility{}).Where("id = ?", abilityID).Count(&count).Error; err != nil {
+		return nil, err
+	}
+	if count == 0 {
+		return nil, gorm.ErrRecordNotFound
+	}
+	rows := make([]model.GwAbilityTransport, 0)
+	err := model.DB().Where("ability_id = ?", abilityID).Order("transport").Find(&rows).Error
+	return rows, err
+}
+
+func (s *GatewayAdminService) UpsertAbilityTransport(abilityID uint, transportID model.UpstreamTransport, status int8, config datatypes.JSON) (*model.GwAbilityTransport, error) {
+	if !validGwTransport(transportID) {
+		return nil, ErrGwInvalidTransport
+	}
+	if status != 0 && status != 1 {
+		return nil, ErrGwInvalidTransport
+	}
+	var count int64
+	if err := model.DB().Model(&model.GwAbility{}).Where("id = ?", abilityID).Count(&count).Error; err != nil {
+		return nil, err
+	}
+	if count == 0 {
+		return nil, gorm.ErrRecordNotFound
+	}
+	if len(config) > 0 && !json.Valid(config) {
+		return nil, ErrGwInvalidTransport
+	}
+	row := &model.GwAbilityTransport{AbilityID: abilityID, Transport: transportID, Status: status, Config: config}
+	err := model.DB().Clauses(clause.OnConflict{
+		Columns:   []clause.Column{{Name: "ability_id"}, {Name: "transport"}},
+		DoUpdates: clause.Assignments(map[string]any{"status": status, "config": config, "updated_at": time.Now()}),
+	}).Create(row).Error
+	if err != nil {
+		return nil, err
+	}
+	if err := model.DB().Where("ability_id = ? AND transport = ?", abilityID, transportID).First(row).Error; err != nil {
+		return nil, err
+	}
+	return row, nil
+}
+
+func (s *GatewayAdminService) DeleteAbilityTransport(abilityID uint, transportID model.UpstreamTransport) error {
+	if !validGwTransport(transportID) {
+		return ErrGwInvalidTransport
+	}
+	result := model.DB().Where("ability_id = ? AND transport = ?", abilityID, transportID).Delete(&model.GwAbilityTransport{})
+	if result.Error != nil {
+		return result.Error
+	}
+	if result.RowsAffected == 0 {
+		return gorm.ErrRecordNotFound
+	}
+	return nil
+}
+
+type GwTransportProbeResult struct {
+	OK        bool      `json:"ok"`
+	CheckedAt time.Time `json:"checked_at"`
+	Error     string    `json:"error,omitempty"`
+}
+
+func (s *GatewayAdminService) ProbeAbilityTransport(ctx context.Context, abilityID uint, transportID model.UpstreamTransport) (*GwTransportProbeResult, error) {
+	if !validGwTransport(transportID) {
+		return nil, ErrGwInvalidTransport
+	}
+	var row struct {
+		Ability         model.GwAbility `gorm:"embedded;embeddedPrefix:ability__"`
+		BaseURL         string
+		APIKey          string
+		ExtraHeaders    datatypes.JSON
+		ChannelConfig   datatypes.JSON
+		TransportConfig datatypes.JSON
+	}
+	err := model.DB().Table("gw_abilities ab").
+		Select("ab.id AS ability__id, ab.model_name AS ability__model_name, ab.vendor_model AS ability__vendor_model, "+
+			"ab.channel_id AS ability__channel_id, ab.key_id AS ability__key_id, gc.base_url, gc.extra_headers, gc.config AS channel_config, "+
+			"ck.api_key, at.config AS transport_config").
+		Joins("JOIN gw_channels gc ON gc.id = ab.channel_id AND gc.deleted_at IS NULL").
+		Joins("JOIN gw_channel_keys ck ON ck.id = ab.key_id AND ck.deleted_at IS NULL").
+		Joins("JOIN gw_ability_transports at ON at.ability_id = ab.id AND at.transport = ?", transportID).
+		Where("ab.id = ?", abilityID).Scan(&row).Error
+	if err != nil {
+		return nil, err
+	}
+	if row.Ability.ID == 0 {
+		return nil, gorm.ErrRecordNotFound
+	}
+	client := &http.Client{Timeout: 30 * time.Second}
+	item, err := probeTransport(transportID, client)
+	if err != nil {
+		return nil, err
+	}
+	extraHeaders := map[string]string{}
+	_ = json.Unmarshal(row.ExtraHeaders, &extraHeaders)
+	config := map[string]any{}
+	_ = json.Unmarshal(row.ChannelConfig, &config)
+	var transportConfig map[string]any
+	if json.Unmarshal(row.TransportConfig, &transportConfig) == nil {
+		for key, value := range transportConfig {
+			config[key] = value
+		}
+	}
+	maxOutput := 1
+	request := canonical.Request{
+		Endpoint: probeEndpoint(transportID), Model: row.Ability.ModelName, MaxOutputTokens: &maxOutput,
+		Items: []canonical.Item{{Type: "message", Role: canonical.RoleUser, Content: []canonical.Content{{Type: "input_text", Text: "ping"}}}},
+	}
+	operation, err := probeOperation(request.Endpoint)
+	if err != nil {
+		return nil, err
+	}
+	invocation := gatewaytransport.Invocation{
+		Route: gatewaytransport.Route{
+			AbilityID: row.Ability.ID, ChannelID: row.Ability.ChannelID, KeyID: row.Ability.KeyID,
+			BaseURL: row.BaseURL, APIKey: row.APIKey, VendorModel: row.Ability.VendorModel,
+			PublicModel: row.Ability.ModelName, ExtraHeaders: extraHeaders, Config: config,
+		},
+		Request: request, Operation: operation,
+	}
+	prepared, prepareErr := item.Prepare(ctx, invocation)
+	var probeErr error
+	if prepareErr != nil {
+		probeErr = prepareErr
+	} else {
+		_, probeErr = item.ExecutePrepared(ctx, invocation, prepared)
+	}
+	now := time.Now()
+	message := ""
+	if probeErr != nil {
+		message = truncate(probeErr.Error(), 1000)
+	}
+	if err := model.DB().Model(&model.GwAbilityTransport{}).
+		Where("ability_id = ? AND transport = ?", abilityID, transportID).
+		Updates(map[string]any{"checked_at": &now, "last_error": message}).Error; err != nil {
+		return nil, err
+	}
+	return &GwTransportProbeResult{OK: probeErr == nil, CheckedAt: now, Error: message}, nil
+}
+
+func probeTransport(id model.UpstreamTransport, client *http.Client) (gatewaytransport.Transport, error) {
+	switch id {
+	case model.UpstreamTransportOpenAIChat:
+		return transportopenai.NewChat(client), nil
+	case model.UpstreamTransportOpenAIResponses:
+		return transportopenai.NewResponses(client), nil
+	case model.UpstreamTransportAnthropic:
+		return transportanthropic.New(client), nil
+	case model.UpstreamTransportGoogle:
+		return transportgoogle.NewGenerateContent(client), nil
+	case model.UpstreamTransportVolcengineV3:
+		return transportvolcengine.New(gatewaytransport.HTTPClient{Client: client}), nil
+	default:
+		return nil, ErrGwInvalidTransport
+	}
+}
+
+func probeEndpoint(id model.UpstreamTransport) canonical.Endpoint {
+	switch id {
+	case model.UpstreamTransportOpenAIResponses, model.UpstreamTransportVolcengineV3:
+		return canonical.EndpointOpenAIResponses
+	case model.UpstreamTransportAnthropic:
+		return canonical.EndpointAnthropic
+	default:
+		return canonical.EndpointOpenAIChat
+	}
+}
+
+func probeOperation(endpoint canonical.Endpoint) (gatewaytransport.Operation, error) {
+	switch endpoint {
+	case canonical.EndpointOpenAIChat:
+		return gatewaytransport.OperationChat, nil
+	case canonical.EndpointOpenAIResponses:
+		return gatewaytransport.OperationResponses, nil
+	case canonical.EndpointAnthropic:
+		return gatewaytransport.OperationMessages, nil
+	default:
+		return "", ErrGwInvalidTransport
+	}
+}
+
+func validGwTransport(value model.UpstreamTransport) bool {
+	switch value {
+	case model.UpstreamTransportOpenAIChat, model.UpstreamTransportOpenAIResponses,
+		model.UpstreamTransportAnthropic, model.UpstreamTransportGoogle, model.UpstreamTransportVolcengineV3:
+		return true
+	default:
+		return false
+	}
 }
 
 // ---------- 元数据 GwModelMeta ----------
@@ -261,9 +527,30 @@ type GwModelRow struct {
 	KeyAvailable   int            `json:"key_available"` // 其中启用且渠道/key 启用的数
 }
 
+func (s *GatewayAdminService) ListModelTransports() (map[string][]model.UpstreamTransport, error) {
+	var rows []struct {
+		ModelName string
+		Transport model.UpstreamTransport
+	}
+	err := model.DB().Table("gw_abilities ab").
+		Select("DISTINCT ab.model_name, at.transport").
+		Joins("JOIN gw_ability_transports at ON at.ability_id = ab.id AND at.status = 1").
+		Joins("JOIN gw_channel_keys ck ON ck.id = ab.key_id AND ck.status = 1 AND ck.deleted_at IS NULL").
+		Joins("JOIN gw_channels gc ON gc.id = ab.channel_id AND gc.status = 1 AND gc.deleted_at IS NULL").
+		Where("ab.status = 1").Order("ab.model_name, at.transport").Scan(&rows).Error
+	if err != nil {
+		return nil, err
+	}
+	result := make(map[string][]model.UpstreamTransport)
+	for _, row := range rows {
+		result[row.ModelName] = append(result[row.ModelName], row.Transport)
+	}
+	return result, nil
+}
+
 // ListModels 列出所有「可路由 chat 模型」:distinct gw_abilities.model_name
 // LEFT JOIN gw_model_meta,并统计可用 key 数(ability+key+channel 三者启用)。
-// 与 /v2 路由同源,只展示至少有一条 ability 的模型。
+// 与聊天网关路由同源,只展示至少有一条 ability 的模型。
 func (s *GatewayAdminService) ListModels() ([]GwModelRow, error) {
 	rows := make([]GwModelRow, 0)
 	err := model.DB().Table("gw_abilities ab").
@@ -307,7 +594,7 @@ func (s *GatewayAdminService) ReorderModels(names []string) error {
 	})
 }
 
-// ListPlaygroundModels 在线试用的可用模型列表,与 /v2 路由同源(gw_abilities+gw_model_meta)。
+// ListPlaygroundModels 在线试用的可用模型列表,与聊天网关路由同源(gw_abilities+gw_model_meta)。
 // 只列 key_available>0 的可路由模型,复用 ModelInfo 结构使前端零改动。
 // chat 全走合成流式,故 supports_stream/default_stream 恒 true(与老无端点分支一致)。
 func (s *GatewayAdminService) ListPlaygroundModels() ([]ModelInfo, error) {
@@ -326,6 +613,7 @@ func (s *GatewayAdminService) ListPlaygroundModels() ([]ModelInfo, error) {
 			OwnedBy:        "prism",
 			SupportsStream: true,
 			DefaultStream:  true,
+			MaxTokens:      m.MaxTokens,
 		}
 		// 分组:手动组名优先,否则源渠道,兜底「未分组」(与对话模型页同频)
 		if g := strings.TrimSpace(m.GroupName); g != "" {
@@ -478,8 +766,9 @@ type GwImportRequest struct {
 
 // GwImportResult 导入结果。
 type GwImportResult struct {
-	AbilitiesAdded int `json:"abilities_added"`
-	MetaAdded      int `json:"meta_added"`
+	AbilitiesAdded  int `json:"abilities_added"`
+	MetaAdded       int `json:"meta_added"`
+	TransportsAdded int `json:"transports_added"`
 }
 
 // ImportKeyModels 把选中模型导入某 key:写 gw_abilities(缺失时,价0) + upsert gw_model_meta(仅补显示名)。
@@ -488,52 +777,94 @@ func (s *GatewayAdminService) ImportKeyModels(req *GwImportRequest) (*GwImportRe
 	if err := model.DB().First(&key, req.KeyID).Error; err != nil {
 		return nil, ErrGwKeyNotFound
 	}
+	var channel model.GwChannel
+	if err := model.DB().First(&channel, key.ChannelID).Error; err != nil {
+		return nil, ErrGwChannelNotFound
+	}
 	result := &GwImportResult{}
-
-	for _, item := range req.Models {
-		name := strings.TrimSpace(item.ModelName)
-		if name == "" {
-			continue
-		}
-		vendor := strings.TrimSpace(item.VendorModel)
-		if vendor == "" {
-			vendor = name
-		}
-
-		// 1. ability(该 key 缺失时建,价0)
-		var cnt int64
-		model.DB().Model(&model.GwAbility{}).
-			Where("key_id = ? AND model_name = ?", req.KeyID, name).Count(&cnt)
-		if cnt == 0 {
-			ab := &model.GwAbility{
-				ModelName:   name,
-				ChannelID:   key.ChannelID,
-				KeyID:       req.KeyID,
-				VendorModel: vendor,
-				Priority:    0,
-				PriceMode:   "token",
-				Status:      1,
+	err := model.DB().Transaction(func(tx *gorm.DB) error {
+		for _, item := range req.Models {
+			name := strings.TrimSpace(item.ModelName)
+			if name == "" {
+				continue
 			}
-			if err := model.DB().Create(ab).Error; err == nil {
+			vendor := strings.TrimSpace(item.VendorModel)
+			if vendor == "" {
+				vendor = name
+			}
+			var ability model.GwAbility
+			lookup := tx.Where("key_id = ? AND model_name = ?", req.KeyID, name).First(&ability)
+			if errors.Is(lookup.Error, gorm.ErrRecordNotFound) {
+				ability = model.GwAbility{
+					ModelName: name, ChannelID: key.ChannelID, KeyID: req.KeyID, VendorModel: vendor,
+					Priority: 0, PriceMode: "token", Capabilities: defaultGwCapabilities(channel.Protocol), Status: 1,
+				}
+				if err := tx.Create(&ability).Error; err != nil {
+					return err
+				}
 				result.AbilitiesAdded++
+			} else if lookup.Error != nil {
+				return lookup.Error
 			}
-		}
 
-		// 2. model_meta(缺失时补显示名,不覆盖已有配置)
-		var mcnt int64
-		model.DB().Model(&model.GwModelMeta{}).Where("model_name = ?", name).Count(&mcnt)
-		if mcnt == 0 {
-			display := strings.TrimSpace(item.DisplayName)
-			if display == "" {
-				display = name
+			transportRow := model.GwAbilityTransport{AbilityID: ability.ID, Transport: defaultGwTransport(channel.Protocol), Status: 1}
+			insert := tx.Clauses(clause.OnConflict{DoNothing: true}).Create(&transportRow)
+			if insert.Error != nil {
+				return insert.Error
 			}
-			meta := &model.GwModelMeta{ModelName: name, DisplayName: display, Status: 1}
-			if err := model.DB().Create(meta).Error; err == nil {
+			result.TransportsAdded += int(insert.RowsAffected)
+
+			var meta model.GwModelMeta
+			metaLookup := tx.Where("model_name = ?", name).First(&meta)
+			if errors.Is(metaLookup.Error, gorm.ErrRecordNotFound) {
+				display := strings.TrimSpace(item.DisplayName)
+				if display == "" {
+					display = name
+				}
+				if err := tx.Create(&model.GwModelMeta{ModelName: name, DisplayName: display, Status: 1}).Error; err != nil {
+					return err
+				}
 				result.MetaAdded++
+			} else if metaLookup.Error != nil {
+				return metaLookup.Error
 			}
 		}
+		return nil
+	})
+	if err != nil {
+		return nil, err
 	}
 	return result, nil
+}
+
+func defaultGwTransport(protocol model.Protocol) model.UpstreamTransport {
+	switch protocol {
+	case model.ProtocolAnthropic:
+		return model.UpstreamTransportAnthropic
+	case model.ProtocolGoogle:
+		return model.UpstreamTransportGoogle
+	case model.ProtocolVolcengine:
+		return model.UpstreamTransportVolcengineV3
+	default:
+		return model.UpstreamTransportOpenAIChat
+	}
+}
+
+func defaultGwCapabilities(protocol model.Protocol) datatypes.JSON {
+	capabilities := map[string]bool{"stream": true, "vision": true, "files": true, "tools": true}
+	switch protocol {
+	case model.ProtocolGoogle:
+		capabilities["structured_output"] = true
+	case model.ProtocolVolcengine:
+		for _, name := range []string{"audio", "video", "structured_output", "reasoning", "web_search"} {
+			capabilities[name] = true
+		}
+	default:
+		capabilities["structured_output"] = true
+		capabilities["reasoning"] = true
+	}
+	encoded, _ := json.Marshal(capabilities)
+	return encoded
 }
 
 // discoveryHTTPClient 拉取上游 /v1/models 的专用 client(轻量 GET,20s 足够)。

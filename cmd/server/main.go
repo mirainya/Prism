@@ -13,6 +13,9 @@ import (
 
 	"github.com/hibiken/asynq"
 	"github.com/mirainya/Prism/internal/api"
+	"github.com/mirainya/Prism/internal/gateway"
+	"github.com/mirainya/Prism/internal/gateway/engine"
+	responsepipeline "github.com/mirainya/Prism/internal/gateway/responses"
 	"github.com/mirainya/Prism/internal/model"
 	"github.com/mirainya/Prism/internal/provider"
 	"github.com/mirainya/Prism/internal/worker"
@@ -73,6 +76,11 @@ func main() {
 		log.Fatalf("failed to connect database: %v", err)
 	}
 	model.SetDB(db)
+	if config.C.Server.ShouldResetGatewayConcurrency() {
+		if err := model.DB().Model(&model.GwChannelKey{}).Where("current_conc <> 0").Update("current_conc", 0).Error; err != nil {
+			log.Fatalf("failed to reset gateway concurrency: %v", err)
+		}
+	}
 
 	if err := model.AutoMigrate(); err != nil {
 		log.Fatalf("failed to migrate database: %v", err)
@@ -88,15 +96,33 @@ func main() {
 
 	// 初始化 HTTP Client
 	provider.InitHTTPClient()
+	v2Engine, err := gateway.NewV2Engine()
+	if err != nil {
+		log.Fatalf("failed to initialize Gateway V2: %v", err)
+	}
 
 	// 启动 Worker
-	workerSrv := startWorker()
+	reconciled, err := responsepipeline.ReconcilePendingResponseRefunds(context.Background())
+	if err != nil {
+		log.Fatalf("failed to reconcile response refunds: %v", err)
+	}
+	if reconciled > 0 {
+		logger.Info(fmt.Sprintf("reconciled %d response refunds", reconciled))
+	}
+	recovered, err := responsepipeline.RequeuePendingBackground(context.Background())
+	if err != nil {
+		log.Fatalf("failed to recover background responses: %v", err)
+	}
+	if recovered > 0 {
+		logger.Info(fmt.Sprintf("requeued %d background responses", recovered))
+	}
+	workerSrv := startWorker(v2Engine)
 
 	// 启动 Scheduler
 	scheduler := startScheduler()
 
 	// 设置路由并启动 HTTP 服务
-	r := api.SetupRouter()
+	r := api.SetupRouter(v2Engine)
 	addr := fmt.Sprintf(":%d", config.C.Server.Port)
 	httpSrv := &http.Server{
 		Addr:    addr,
@@ -146,10 +172,10 @@ func main() {
 	logger.Info("server exited gracefully")
 }
 
-func startWorker() *asynq.Server {
+func startWorker(v2Engine *engine.Engine) *asynq.Server {
 	srv := queue.NewServer()
 	mux := asynq.NewServeMux()
-	worker.RegisterHandlers(mux)
+	worker.RegisterHandlers(mux, v2Engine)
 
 	go func() {
 		logger.Info("worker starting...")
@@ -175,6 +201,10 @@ func startScheduler() *asynq.Scheduler {
 	_, err := scheduler.Register("*/5 * * * *", worker.NewTimeoutCheckTask(), asynq.Queue("low"))
 	if err != nil {
 		log.Fatalf("failed to register timeout check task: %v", err)
+	}
+	_, err = scheduler.Register("* * * * *", worker.NewResponseRecoveryTask(), asynq.Queue("low"))
+	if err != nil {
+		log.Fatalf("failed to register response recovery task: %v", err)
 	}
 
 	// 每 6 小时同步一次上游模型

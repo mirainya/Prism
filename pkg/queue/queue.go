@@ -13,24 +13,22 @@ import (
 var Client *asynq.Client
 
 func InitClient() error {
-	cfg := config.C.Redis
-	Client = asynq.NewClient(asynq.RedisClientOpt{
-		Addr:     cfg.Addr,
-		Password: cfg.Password,
-		DB:       cfg.DB,
-	})
+	Client = asynq.NewClient(redisClientOpt())
 	return nil
 }
 
-func NewServer() *asynq.Server {
+func redisClientOpt() asynq.RedisClientOpt {
 	cfg := config.C.Redis
+	return asynq.RedisClientOpt{
+		Addr:     cfg.Addr,
+		Password: cfg.Password,
+		DB:       cfg.DB,
+	}
+}
 
+func NewServer() *asynq.Server {
 	return asynq.NewServer(
-		asynq.RedisClientOpt{
-			Addr:     cfg.Addr,
-			Password: cfg.Password,
-			DB:       cfg.DB,
-		},
+		redisClientOpt(),
 		asynq.Config{
 			Concurrency: config.C.Worker.Concurrency,
 			Queues: map[string]int{

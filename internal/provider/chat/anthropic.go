@@ -72,7 +72,9 @@ func ConvertRequestToAnthropic(req *ChatRequest) map[string]any {
 		"max_tokens": req.MaxTokens,
 	}
 
-	if req.MaxTokens == 0 {
+	if req.MaxCompletionTokens != nil {
+		result["max_tokens"] = *req.MaxCompletionTokens
+	} else if req.MaxTokens == 0 {
 		result["max_tokens"] = 4096
 	}
 
@@ -93,30 +95,22 @@ func ConvertRequestToAnthropic(req *ChatRequest) map[string]any {
 			continue
 		}
 
-		m := map[string]any{
-			"role": msg.Role,
+		role := msg.Role
+		if role == "developer" {
+			role = "user"
 		}
-
-		switch v := msg.Content.(type) {
-		case string:
-			m["content"] = v
-		case []any:
-			m["content"] = ConvertToAnthropicContent(v)
-		default:
-			m["content"] = fmt.Sprint(msg.Content)
-		}
-
+		blocks := anthropicMessageBlocks(msg)
 		if msg.ToolCallID != "" {
 			// Anthropic 只接受 user/assistant,tool_result 必须放在 user 消息里
-			m["role"] = "user"
-			m["content"] = []map[string]any{{
+			role = "user"
+			blocks = []map[string]any{{
 				"type":        "tool_result",
 				"tool_use_id": msg.ToolCallID,
 				"content":     msg.ContentText(),
 			}}
 		}
 
-		messages = append(messages, m)
+		messages = appendAnthropicMessage(messages, role, blocks)
 	}
 	result["messages"] = messages
 
@@ -136,8 +130,68 @@ func ConvertRequestToAnthropic(req *ChatRequest) map[string]any {
 		}
 		result["tools"] = tools
 	}
+	if req.ToolChoice != nil {
+		switch choice := req.ToolChoice.(type) {
+		case string:
+			switch choice {
+			case "auto":
+				result["tool_choice"] = map[string]any{"type": "auto"}
+			case "required":
+				result["tool_choice"] = map[string]any{"type": "any"}
+			case "none":
+				delete(result, "tools")
+			}
+		case map[string]any:
+			if function, ok := choice["function"].(map[string]any); ok {
+				if name, ok := function["name"].(string); ok {
+					result["tool_choice"] = map[string]any{"type": "tool", "name": name}
+				}
+			}
+		}
+	}
 
 	return result
+}
+
+func anthropicMessageBlocks(msg ChatMessage) []map[string]any {
+	var blocks []map[string]any
+	switch content := msg.Content.(type) {
+	case string:
+		if content != "" {
+			blocks = append(blocks, map[string]any{"type": "text", "text": content})
+		}
+	case []any:
+		blocks = append(blocks, ConvertToAnthropicContent(content)...)
+	case nil:
+	default:
+		blocks = append(blocks, map[string]any{"type": "text", "text": fmt.Sprint(content)})
+	}
+	if msg.Role == "assistant" {
+		for _, call := range msg.ToolCalls {
+			var input any = map[string]any{}
+			if call.Function.Arguments != "" {
+				if err := json.Unmarshal([]byte(call.Function.Arguments), &input); err != nil {
+					input = map[string]any{}
+				}
+			}
+			blocks = append(blocks, map[string]any{
+				"type": "tool_use", "id": call.ID, "name": call.Function.Name, "input": input,
+			})
+		}
+	}
+	return blocks
+}
+
+func appendAnthropicMessage(messages []map[string]any, role string, blocks []map[string]any) []map[string]any {
+	if len(blocks) == 0 {
+		blocks = []map[string]any{{"type": "text", "text": ""}}
+	}
+	if len(messages) > 0 && messages[len(messages)-1]["role"] == role {
+		current, _ := messages[len(messages)-1]["content"].([]map[string]any)
+		messages[len(messages)-1]["content"] = append(current, blocks...)
+		return messages
+	}
+	return append(messages, map[string]any{"role": role, "content": blocks})
 }
 
 func (p *AnthropicProvider) convertRequest(req *ChatRequest) map[string]any {
@@ -189,6 +243,13 @@ func ConvertToAnthropicContent(parts []any) []map[string]any {
 			if fileURL, ok := pm["file_url"].(map[string]any); ok {
 				url, _ := fileURL["url"].(string)
 				ct, _ := fileURL["content_type"].(string)
+				if mediaType, data, ok := parseDataURL(url); ok {
+					if ct == "" {
+						ct = mediaType
+					}
+					blocks = append(blocks, map[string]any{"type": "document", "source": map[string]any{"type": "base64", "media_type": ct, "data": data}})
+					continue
+				}
 				if ct == "" {
 					ct = "application/pdf"
 				}
@@ -200,6 +261,19 @@ func ConvertToAnthropicContent(parts []any) []map[string]any {
 						"media_type": ct,
 					},
 				})
+			}
+		case "file":
+			if file, ok := pm["file"].(map[string]any); ok {
+				if mediaType, data, ok := parseChatFileData(file); ok {
+					blocks = append(blocks, map[string]any{
+						"type": "document",
+						"source": map[string]any{
+							"type":       "base64",
+							"media_type": mediaType,
+							"data":       data,
+						},
+					})
+				}
 			}
 		}
 	}

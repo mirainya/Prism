@@ -56,3 +56,14 @@ func TestUpstreamStatusCode(t *testing.T) {
 		}
 	}
 }
+
+type testHTTPStatusError struct{ status int }
+
+func (e testHTTPStatusError) Error() string   { return "safe upstream error" }
+func (e testHTTPStatusError) HTTPStatus() int { return e.status }
+
+func TestUpstreamStatusCodeUsesStructuredProvider(t *testing.T) {
+	if got := UpstreamStatusCode(testHTTPStatusError{status: 429}); got != 429 {
+		t.Fatalf("got %d", got)
+	}
+}

@@ -13,6 +13,8 @@ type ConversationContext struct {
 	Conv               *model.Conversation // nil 表示新会话
 	History            []chat.ChatMessage  // 已含 system prompt 的历史消息
 	PreviousResponseID string              // 火山 B 模式:非空则只发新消息
+	ProviderKeyID      uint
+	UpstreamTransport  model.UpstreamTransport
 }
 
 // LoadConversationContext 按 conversationID 加载会话历史(playground 会话续聊)。
@@ -38,6 +40,8 @@ func LoadConversationContext(conversationID string, tokenID uint, targetModel st
 	// 有状态对话(B模式):有有效 response_id 时只发新消息,历史由上游维护
 	if conv.ProviderResponseID != "" {
 		cc.PreviousResponseID = conv.ProviderResponseID
+		cc.ProviderKeyID = conv.ProviderKeyID
+		cc.UpstreamTransport = conv.UpstreamTransport
 	}
 	return cc
 }
@@ -91,6 +95,7 @@ func SaveConversationTurn(
 	finishReason string,
 	providerResponseID string,
 	reqLogID uint,
+	provenance ...ConversationProvenance,
 ) uint {
 	conv := cc.Conv
 	msgs := newMessages
@@ -143,8 +148,22 @@ func SaveConversationTurn(
 	if providerResponseID != "" && providerResponseID != conv.ProviderResponseID {
 		updates["provider_response_id"] = providerResponseID
 	}
+	if len(provenance) > 0 && (provenance[0].KeyID != 0 || provenance[0].Transport != "") {
+		updates["provider_key_id"] = provenance[0].KeyID
+		updates["upstream_transport"] = provenance[0].Transport
+	}
 	model.DB().Model(conv).Updates(updates)
+	if reqLogID > 0 {
+		model.DB().Model(&model.ChannelRequestLog{}).
+			Where("id = ? AND conversation_id = 0", reqLogID).
+			Update("conversation_id", conv.ID)
+	}
 	return conv.ID
+}
+
+type ConversationProvenance struct {
+	KeyID     uint
+	Transport model.UpstreamTransport
 }
 
 // findOrCreatePlaygroundConversation 复用老逻辑:2 小时内同 token+title 且消息数增长则归并,否则新建。

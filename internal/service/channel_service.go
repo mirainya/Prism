@@ -6,6 +6,7 @@ import (
 	"fmt"
 
 	"github.com/mirainya/Prism/internal/model"
+	"github.com/mirainya/Prism/pkg/auth"
 	"gorm.io/datatypes"
 	"gorm.io/gorm"
 )
@@ -53,12 +54,17 @@ func (s *ChannelService) CreateChannel(req *CreateChannelRequest) (*model.Channe
 	if err != nil {
 		return nil, fmt.Errorf("marshal channel config: %w", err)
 	}
+	callbackSecret, err := auth.GenerateCallbackSecret()
+	if err != nil {
+		return nil, err
+	}
 	channel := &model.Channel{
-		Type:    req.Type,
-		Name:    req.Name,
-		BaseURL: req.BaseURL,
-		Config:  configJSON,
-		Status:  1,
+		Type:           req.Type,
+		Name:           req.Name,
+		BaseURL:        req.BaseURL,
+		CallbackSecret: callbackSecret,
+		Config:         configJSON,
+		Status:         1,
 	}
 	// Status 用指针区分"未传"(默认1启用)与"显式传0"(禁用)
 	if req.Status != nil {
@@ -69,6 +75,39 @@ func (s *ChannelService) CreateChannel(req *CreateChannelRequest) (*model.Channe
 		return nil, err
 	}
 	return channel, nil
+}
+
+// EnsureCallbackSecret returns a stable channel secret. The conditional
+// update prevents concurrent workers from replacing each other's secret.
+func (s *ChannelService) EnsureCallbackSecret(id uint) (string, error) {
+	var channel model.Channel
+	if err := model.DB().Select("id", "callback_secret").First(&channel, id).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return "", ErrChannelNotFound
+		}
+		return "", err
+	}
+	if channel.CallbackSecret != "" {
+		return channel.CallbackSecret, nil
+	}
+
+	candidate, err := auth.GenerateCallbackSecret()
+	if err != nil {
+		return "", err
+	}
+	if err := model.DB().Model(&model.Channel{}).
+		Where("id = ? AND (callback_secret = '' OR callback_secret IS NULL)", id).
+		UpdateColumn("callback_secret", candidate).Error; err != nil {
+		return "", err
+	}
+
+	if err := model.DB().Select("callback_secret").First(&channel, id).Error; err != nil {
+		return "", err
+	}
+	if channel.CallbackSecret == "" {
+		return "", errors.New("callback secret is empty")
+	}
+	return channel.CallbackSecret, nil
 }
 
 func (s *ChannelService) GetChannelByID(id uint) (*model.Channel, error) {

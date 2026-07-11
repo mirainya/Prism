@@ -95,7 +95,7 @@ func PlaygroundGetTask(c *gin.Context) {
 	detail := gin.H{
 		"task_id":         task.TaskNo,
 		"task_no":         task.TaskNo,
-		"status":          task.Status,
+		"status":          task.Status.Public(),
 		"progress":        task.Progress,
 		"result":          result,
 		"error":           task.ErrorMessage,
@@ -274,12 +274,14 @@ func PlaygroundGetDebug(c *gin.Context) {
 		resp.NotFound(c, errors.ErrTaskNotFound)
 		return
 	}
-	if logDetail.ConversationID > 0 {
-		conversation, convErr := conversationService.GetConversation(logDetail.ConversationID)
-		if convErr != nil || conversation.UserID != token.UserID || conversation.TokenID != token.ID {
-			resp.Forbidden(c, errors.ErrNoPermission)
-			return
-		}
+	if logDetail.ConversationID == 0 {
+		resp.Forbidden(c, errors.ErrNoPermission)
+		return
+	}
+	conversation, convErr := conversationService.GetConversation(logDetail.ConversationID)
+	if convErr != nil || conversation.UserID != token.UserID || conversation.TokenID != token.ID {
+		resp.Forbidden(c, errors.ErrNoPermission)
+		return
 	}
 
 	var requestBody any
@@ -299,16 +301,11 @@ func PlaygroundGetDebug(c *gin.Context) {
 
 	// 上下文策略状态：有状态对话(B模式)依赖 conversation 上的 provider_response_id
 	contextMode := ""
-	providerResponseID := ""
-	if logDetail.ConversationID > 0 {
-		if conv, err := conversationService.GetConversation(logDetail.ConversationID); err == nil {
-			providerResponseID = conv.ProviderResponseID
-			if providerResponseID != "" {
-				contextMode = "stateful" // B模式：历史由上游维护，仅发新消息
-			} else {
-				contextMode = "full_history" // A模式：发送本地全量历史
-			}
-		}
+	providerResponseID := conversation.ProviderResponseID
+	if providerResponseID != "" {
+		contextMode = "stateful" // B模式：历史由上游维护，仅发新消息
+	} else {
+		contextMode = "full_history" // A模式：发送本地全量历史
 	}
 
 	resp.Success(c, gin.H{

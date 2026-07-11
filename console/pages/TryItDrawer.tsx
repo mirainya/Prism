@@ -17,13 +17,17 @@ interface TryItDrawerProps {
   name: string;
   params: ParamDef[];
   tokens: ApiToken[];
+  bodyType?: 'json' | 'multipart';
+  initialJson?: string;
+  preferJson?: boolean;
 }
 
-export const TryItDrawer: React.FC<TryItDrawerProps> = ({ open, onClose, method, path, name, params, tokens }) => {
+export const TryItDrawer: React.FC<TryItDrawerProps> = ({ open, onClose, method, path, name, params, tokens, bodyType = 'json', initialJson = '', preferJson = false }) => {
   const [token, setToken] = useState('');
   const [pathValue, setPathValue] = useState(path);
   const [mode, setMode] = useState<'form' | 'json'>('form');
   const [formValues, setFormValues] = useState<Record<string, string>>({});
+  const [fileValues, setFileValues] = useState<Record<string, File | null>>({});
   const [jsonBody, setJsonBody] = useState('');
   const [response, setResponse] = useState('');
   const [loading, setLoading] = useState(false);
@@ -36,14 +40,33 @@ export const TryItDrawer: React.FC<TryItDrawerProps> = ({ open, onClose, method,
   useEffect(() => {
     setPathValue(path);
     setFormValues({});
-    setJsonBody('');
+    setFileValues({});
+    setJsonBody(initialJson);
     setResponse('');
-  }, [path]);
+    setMode(bodyType === 'json' && preferJson ? 'json' : 'form');
+  }, [open, path, method, bodyType, initialJson, preferJson]);
+
+  const isPathParameter = (paramName: string) => path.includes(`{${paramName}}`);
+
+  const buildRequestURL = (): string => {
+    const resolvedPath = pathValue.replace(/\{([^}]+)\}/g, (_match, paramName: string) => encodeURIComponent(formValues[paramName] || ''));
+    if (method !== 'GET') return `${window.location.origin}${resolvedPath}`;
+
+    const query = new URLSearchParams();
+    params.forEach(param => {
+      if (isPathParameter(param.name)) return;
+      const value = formValues[param.name];
+      if (value !== undefined && value !== '') query.set(param.name, value);
+    });
+    if (!query.size) return `${window.location.origin}${resolvedPath}`;
+    return `${window.location.origin}${resolvedPath}${resolvedPath.includes('?') ? '&' : '?'}${query.toString()}`;
+  };
 
   // 表单值 → JSON
   const formToJson = (): string => {
     const body: Record<string, any> = {};
     params.forEach(p => {
+      if (p.type === 'file' || isPathParameter(p.name)) return;
       const val = formValues[p.name];
       if (val === undefined || val === '') return;
       if (p.type === 'boolean') body[p.name] = val === 'true';
@@ -73,7 +96,7 @@ export const TryItDrawer: React.FC<TryItDrawerProps> = ({ open, onClose, method,
   };
 
   const getBody = (): string => {
-    if (method === 'GET') return '';
+    if (method === 'GET' || bodyType === 'multipart') return '';
     return mode === 'json' ? jsonBody : formToJson();
   };
 
@@ -81,11 +104,26 @@ export const TryItDrawer: React.FC<TryItDrawerProps> = ({ open, onClose, method,
     setLoading(true);
     setResponse('');
     try {
-      const url = `${window.location.origin}${pathValue}`;
-      const headers: Record<string, string> = { 'Authorization': token, 'Content-Type': 'application/json' };
+      const url = buildRequestURL();
+      const headers: Record<string, string> = { 'Authorization': token };
       const opts: RequestInit = { method, headers };
-      const body = getBody();
-      if (method !== 'GET' && body && body !== '{}') opts.body = body;
+      if (bodyType === 'multipart' && method !== 'GET') {
+        const body = new FormData();
+        params.forEach(p => {
+          if (p.type === 'file') {
+            const file = fileValues[p.name];
+            if (file) body.append(p.name, file);
+            return;
+          }
+          const value = formValues[p.name];
+          if (value !== undefined && value !== '') body.append(p.name, value);
+        });
+        opts.body = body;
+      } else {
+        headers['Content-Type'] = 'application/json';
+        const body = getBody();
+        if (method !== 'GET' && body && body !== '{}') opts.body = body;
+      }
       const res = await fetch(url, opts);
       const text = await res.text();
       try { setResponse(JSON.stringify(JSON.parse(text), null, 2)); } catch { setResponse(text); }
@@ -96,6 +134,14 @@ export const TryItDrawer: React.FC<TryItDrawerProps> = ({ open, onClose, method,
   };
 
   const curlCmd = (() => {
+    if (bodyType === 'multipart') {
+      const fields = params.map(p => {
+        if (p.type === 'file') return `  -F '${p.name}=@/path/to/file'`;
+        const value = formValues[p.name] || (p.required ? `<${p.name}>` : '');
+        return value ? `  -F '${p.name}=${value}'` : '';
+      }).filter(Boolean);
+      return `curl -X ${method} '${window.location.origin}${pathValue}' \\\n  -H 'Authorization: YOUR_TOKEN'${fields.length ? ` \\\n${fields.join(' \\\n')}` : ''}`;
+    }
     const body = getBody();
     return `curl -X ${method} '${window.location.origin}${pathValue}' \\\n  -H 'Authorization: YOUR_TOKEN' \\\n  -H 'Content-Type: application/json'${method !== 'GET' && body && body !== '{}' ? ` \\\n  -d '\n${body}\n'` : ''}`;
   })();
@@ -153,18 +199,18 @@ export const TryItDrawer: React.FC<TryItDrawerProps> = ({ open, onClose, method,
           </div>
 
           {/* 参数区 */}
-          {method !== 'GET' && params.length > 0 && (
+          {params.length > 0 && (
             <div>
               <div className="flex items-center justify-between mb-2">
                 <label className="text-xs font-medium text-[var(--text-secondary)]">请求参数</label>
-                <div className="flex items-center gap-1 bg-[var(--surface)] rounded-lg p-0.5">
+                {method !== 'GET' && bodyType === 'json' && <div className="flex items-center gap-1 bg-[var(--surface)] rounded-lg p-0.5">
                   <button onClick={() => switchMode('form')} className={`flex items-center gap-1 px-2 py-1 rounded text-xs font-medium transition-colors ${mode === 'form' ? 'bg-[var(--primary)] text-white' : 'text-[var(--text-secondary)] hover:text-[var(--text-primary)]'}`}>
                     <List size={12} /> 表单
                   </button>
                   <button onClick={() => switchMode('json')} className={`flex items-center gap-1 px-2 py-1 rounded text-xs font-medium transition-colors ${mode === 'json' ? 'bg-[var(--primary)] text-white' : 'text-[var(--text-secondary)] hover:text-[var(--text-primary)]'}`}>
                     <Code size={12} /> JSON
                   </button>
-                </div>
+                </div>}
               </div>
 
               {mode === 'form' ? (
@@ -178,7 +224,14 @@ export const TryItDrawer: React.FC<TryItDrawerProps> = ({ open, onClose, method,
                           {p.required && <span className="text-red-500">*</span>}
                           <span className="text-[var(--text-secondary)] ml-1">{p.type}</span>
                         </label>
-                        {enumOpts.length > 0 ? (
+                        {p.type === 'file' ? (
+                          <input
+                            key={`${path}-${p.name}`}
+                            type="file"
+                            onChange={e => setFileValues({ ...fileValues, [p.name]: e.target.files?.[0] || null })}
+                            className="w-full px-3 py-2 border border-[var(--border-soft)] rounded-lg text-sm bg-[var(--surface)] text-[var(--text-primary)] file:mr-3 file:border-0 file:bg-[var(--primary-lighter)] file:text-[var(--primary)] file:px-3 file:py-1 file:rounded"
+                          />
+                        ) : enumOpts.length > 0 ? (
                           <select
                             value={formValues[p.name] || ''}
                             onChange={e => setFormValues({ ...formValues, [p.name]: e.target.value })}
@@ -218,7 +271,7 @@ export const TryItDrawer: React.FC<TryItDrawerProps> = ({ open, onClose, method,
                     );
                   })}
                 </div>
-              ) : (
+              ) : bodyType === 'json' ? (
                 <textarea
                   value={jsonBody}
                   onChange={e => setJsonBody(e.target.value)}
@@ -226,7 +279,7 @@ export const TryItDrawer: React.FC<TryItDrawerProps> = ({ open, onClose, method,
                   className="w-full px-3 py-2 border border-[var(--border-soft)] rounded-lg text-xs font-mono resize-y bg-[var(--surface)] text-[var(--text-primary)]"
                   placeholder="Request Body (JSON)"
                 />
-              )}
+              ) : null}
             </div>
           )}
 

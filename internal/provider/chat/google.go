@@ -89,7 +89,7 @@ func (p *GoogleProvider) ListModels(ctx context.Context) ([]domain.ModelInfo, er
 
 func (p *GoogleProvider) convertRequest(req *ChatRequest) map[string]any {
 	var contents []map[string]any
-	var systemInstruction string
+	var systemInstructions []string
 
 	for _, msg := range req.Messages {
 		role := msg.Role
@@ -97,15 +97,43 @@ func (p *GoogleProvider) convertRequest(req *ChatRequest) map[string]any {
 			role = "model"
 		}
 		if role == "system" {
-			systemInstruction = msg.ContentText()
+			if text := msg.ContentText(); text != "" {
+				systemInstructions = append(systemInstructions, text)
+			}
 			continue
+		}
+		if role == "developer" || role == "tool" {
+			role = "user"
 		}
 
 		parts := convertToGeminiParts(msg.Content)
-		contents = append(contents, map[string]any{
+		if msg.Role == "assistant" {
+			for _, call := range msg.ToolCalls {
+				var args any = map[string]any{}
+				if call.Function.Arguments != "" {
+					_ = json.Unmarshal([]byte(call.Function.Arguments), &args)
+				}
+				parts = append(parts, map[string]any{"functionCall": map[string]any{
+					"name": call.Function.Name, "args": args,
+				}})
+			}
+		}
+		if msg.Role == "tool" {
+			parts = []map[string]any{{"functionResponse": map[string]any{
+				"name":     findToolCallName(req.Messages, msg.ToolCallID),
+				"response": toolResponseValue(msg.ContentText()),
+			}}}
+		}
+		entry := map[string]any{
 			"role":  role,
 			"parts": parts,
-		})
+		}
+		if msg.Role == "tool" && len(contents) > 0 && contents[len(contents)-1]["role"] == "user" {
+			current, _ := contents[len(contents)-1]["parts"].([]map[string]any)
+			contents[len(contents)-1]["parts"] = append(current, parts...)
+		} else {
+			contents = append(contents, entry)
+		}
 	}
 
 	result := map[string]any{
@@ -113,17 +141,19 @@ func (p *GoogleProvider) convertRequest(req *ChatRequest) map[string]any {
 	}
 
 	// Gemini 的 system instruction
-	if systemInstruction != "" {
+	if len(systemInstructions) > 0 {
 		result["systemInstruction"] = map[string]any{
 			"parts": []map[string]any{
-				{"text": systemInstruction},
+				{"text": strings.Join(systemInstructions, "\n")},
 			},
 		}
 	}
 
 	// generationConfig：补全所有参数
 	generationConfig := map[string]any{}
-	if req.MaxTokens > 0 {
+	if req.MaxCompletionTokens != nil {
+		generationConfig["maxOutputTokens"] = *req.MaxCompletionTokens
+	} else if req.MaxTokens > 0 {
 		generationConfig["maxOutputTokens"] = req.MaxTokens
 	}
 	if req.Temperature != nil {
@@ -132,11 +162,23 @@ func (p *GoogleProvider) convertRequest(req *ChatRequest) map[string]any {
 	if req.TopP != nil {
 		generationConfig["topP"] = *req.TopP
 	}
+	if req.N != nil {
+		generationConfig["candidateCount"] = *req.N
+	}
 	if len(req.Stop) > 0 {
 		generationConfig["stopSequences"] = req.Stop
 	}
 	if req.ResponseFormat != nil && req.ResponseFormat.Type == "json_object" {
 		generationConfig["responseMimeType"] = "application/json"
+	}
+	if req.ResponseFormat != nil && req.ResponseFormat.Type == "json_schema" {
+		generationConfig["responseMimeType"] = "application/json"
+		var wrapper struct {
+			Schema any `json:"schema"`
+		}
+		if json.Unmarshal(req.ResponseFormat.JSONSchema, &wrapper) == nil && wrapper.Schema != nil {
+			generationConfig["responseJsonSchema"] = wrapper.Schema
+		}
 	}
 	if len(generationConfig) > 0 {
 		result["generationConfig"] = generationConfig
@@ -161,12 +203,58 @@ func (p *GoogleProvider) convertRequest(req *ChatRequest) map[string]any {
 			{"functionDeclarations": funcDecls},
 		}
 	}
+	if req.ToolChoice != nil {
+		config := map[string]any{}
+		switch choice := req.ToolChoice.(type) {
+		case string:
+			switch choice {
+			case "auto":
+				config["mode"] = "AUTO"
+			case "none":
+				config["mode"] = "NONE"
+			case "required":
+				config["mode"] = "ANY"
+			}
+		case map[string]any:
+			if fn, ok := choice["function"].(map[string]any); ok {
+				if name, ok := fn["name"].(string); ok {
+					config["mode"] = "ANY"
+					config["allowedFunctionNames"] = []string{name}
+				}
+			}
+		}
+		if len(config) > 0 {
+			result["toolConfig"] = map[string]any{"functionCallingConfig": config}
+		}
+	}
 
 	return result
 }
 
+func findToolCallName(messages []ChatMessage, callID string) string {
+	for i := len(messages) - 1; i >= 0; i-- {
+		for _, call := range messages[i].ToolCalls {
+			if call.ID == callID {
+				return call.Function.Name
+			}
+		}
+	}
+	return callID
+}
+
+func toolResponseValue(content string) any {
+	var value any
+	if content != "" && json.Unmarshal([]byte(content), &value) == nil {
+		return value
+	}
+	return map[string]any{"content": content}
+}
+
 // convertToGeminiParts 将 Content (string 或 []ContentPart) 转为 Gemini parts
 func convertToGeminiParts(content any) []map[string]any {
+	if content == nil {
+		return nil
+	}
 	switch v := content.(type) {
 	case string:
 		return []map[string]any{{"text": v}}
@@ -207,12 +295,30 @@ func convertToGeminiParts(content any) []map[string]any {
 					if ct == "" {
 						ct = "application/pdf"
 					}
+					if mediaType, data, ok := parseDataURL(url); ok {
+						if ct == "" {
+							ct = mediaType
+						}
+						parts = append(parts, map[string]any{"inlineData": map[string]any{"mimeType": ct, "data": data}})
+						continue
+					}
 					parts = append(parts, map[string]any{
 						"fileData": map[string]any{
 							"mimeType": ct,
 							"fileUri":  url,
 						},
 					})
+				}
+			case "file":
+				if file, ok := pm["file"].(map[string]any); ok {
+					if mediaType, data, ok := parseChatFileData(file); ok {
+						parts = append(parts, map[string]any{
+							"inlineData": map[string]any{
+								"mimeType": mediaType,
+								"data":     data,
+							},
+						})
+					}
 				}
 			}
 		}
@@ -248,14 +354,12 @@ func (p *GoogleProvider) convertResponse(body []byte) (*ChatResponse, error) {
 		return nil, fmt.Errorf("unmarshal response failed: %w", err)
 	}
 
-	content := ""
-	reasoning := ""
-	finishReason := ""
-	var toolCalls []ToolCall
-
-	if len(geminiResp.Candidates) > 0 {
-		candidate := geminiResp.Candidates[0]
-		finishReason = candidate.FinishReason
+	choices := make([]ChatChoice, 0, len(geminiResp.Candidates))
+	for candidateIndex, candidate := range geminiResp.Candidates {
+		content := ""
+		reasoning := ""
+		finishReason := candidate.FinishReason
+		var toolCalls []ToolCall
 		for i, part := range candidate.Content.Parts {
 			if part.Text != "" {
 				if part.Thought {
@@ -266,7 +370,7 @@ func (p *GoogleProvider) convertResponse(body []byte) (*ChatResponse, error) {
 			}
 			if part.FunctionCall != nil {
 				toolCalls = append(toolCalls, ToolCall{
-					ID:   fmt.Sprintf("call_%d", i),
+					ID:   fmt.Sprintf("call_%d_%d", candidateIndex, i),
 					Type: "function",
 					Function: FunctionCall{
 						Name:      part.FunctionCall.Name,
@@ -275,16 +379,12 @@ func (p *GoogleProvider) convertResponse(body []byte) (*ChatResponse, error) {
 				})
 			}
 		}
-	}
-
-	msg := ChatMessage{
-		Role:             "assistant",
-		Content:          content,
-		ReasoningContent: reasoning,
-	}
-	if len(toolCalls) > 0 {
-		msg.ToolCalls = toolCalls
-		finishReason = "tool_calls"
+		msg := ChatMessage{Role: "assistant", Content: content, ReasoningContent: reasoning}
+		if len(toolCalls) > 0 {
+			msg.ToolCalls = toolCalls
+			finishReason = "tool_calls"
+		}
+		choices = append(choices, ChatChoice{Index: candidateIndex, Message: msg, FinishReason: finishReason})
 	}
 
 	return &ChatResponse{
@@ -292,11 +392,7 @@ func (p *GoogleProvider) convertResponse(body []byte) (*ChatResponse, error) {
 		Object:  "chat.completion",
 		Created: time.Now().Unix(),
 		Model:   p.config.VendorModel,
-		Choices: []ChatChoice{{
-			Index:        0,
-			Message:      msg,
-			FinishReason: finishReason,
-		}},
+		Choices: choices,
 		Usage: &ChatUsage{
 			PromptTokens:     geminiResp.UsageMetadata.PromptTokenCount,
 			CompletionTokens: geminiResp.UsageMetadata.CandidatesTokenCount,

@@ -16,16 +16,17 @@ Prism 是一个基于 Go + React 的 AI Gateway，提供统一的 OpenAI 兼容�
 客户端 ──→ Prism（鉴权 → 路由 → 计费 → 日志）──→ 上游 API
                                                     ├── OpenAI
                                                     ├── Anthropic Claude
-                                                    └── Google Gemini
+                                                    ├── Google Gemini
+                                                    └── 火山方舟
 ```
 
 ## 核心能力
 
 | 能力 | 说明 |
 |------|------|
-| **统一 Chat 接口** | `/v1/chat/completions`、`/v1/models`，完全兼容 OpenAI 格式 |
+| **统一对话接口** | `/v1/chat/completions`、`/v1/responses`、`/v1/messages`、`/v1/files`、`/v1/models` |
 | **多渠道路由** | 同一模型映射多个渠道，支持优先级与负载均衡，失败自动切换，渠道级图片 Base64 转换 |
-| **多提供商** | OpenAI / Anthropic Claude（原生协议） / Google Gemini，统一协议翻译 |
+| **多提供商** | OpenAI / Anthropic Claude / Google Gemini / 火山方舟；火山 Responses 使用 `/api/v3/responses` |
 | **对话管理** | 自动归并对话、流式聚合 usage、消息历史追溯、附件显示 |
 | **异步任务** | 图片/视频生成等能力，支持同步/轮询/回调三种交互模式，支持取消 |
 | **Playground** | 内置调试台：流式对话、文件上传、能力调用、请求调试面板 |
@@ -141,6 +142,17 @@ cd console && npm run dev
 
 ```
 POST   /v1/chat/completions            # 对话补全（流式/非流式）
+POST   /v1/messages                    # Anthropic Messages 兼容接口
+POST   /v1/responses                   # OpenAI Responses 兼容接口
+GET    /v1/responses/:id               # 查询已保存响应
+DELETE /v1/responses/:id               # 删除响应
+POST   /v1/responses/:id/cancel        # 取消后台响应
+GET    /v1/responses/:id/input_items   # 获取响应输入项
+POST   /v1/files                       # 上传多模态文件
+GET    /v1/files                       # 文件列表
+GET    /v1/files/:id                   # 文件信息
+GET    /v1/files/:id/content           # 下载文件
+DELETE /v1/files/:id                   # 删除文件
 GET    /v1/models                       # 模型列表
 GET    /v1/models/:code                 # 模型详情
 GET    /v1/channels                      # 可用渠道列表

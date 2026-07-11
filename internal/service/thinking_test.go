@@ -129,4 +129,3 @@ func TestParseThinkingConfig(t *testing.T) {
 		t.Fatalf("合法配置解析失败: %v", cfg)
 	}
 }
-

@@ -6,7 +6,7 @@ var db *gorm.DB
 
 // DB 返回一个新的数据库 session，避免 session 污染
 func DB() *gorm.DB {
-	return db.Session(&gorm.Session{})
+	return db.Session(&gorm.Session{NewDB: true})
 }
 
 // SetDB 设置数据库连接
@@ -31,10 +31,14 @@ func AutoMigrate() error {
 		&BillingLog{},
 		&AccountModelState{},
 		&AccountModel{},
-		// 网关 v2 路由表(与老表并存)
+		// 聊天网关路由表(与老表并存)
 		&GwChannel{},
 		&GwChannelKey{},
 		&GwAbility{},
+		&GwAbilityTransport{},
+		&GwRouteState{},
 		&GwModelMeta{},
+		&AIResponse{},
+		&AIFile{},
 	)
 }

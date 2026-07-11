@@ -7,7 +7,10 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/mirainya/Prism/internal/api/middleware"
 	"github.com/mirainya/Prism/internal/api/resp"
+	"github.com/mirainya/Prism/internal/gateway/engine"
+	"github.com/mirainya/Prism/internal/gateway/handler"
 	"github.com/mirainya/Prism/internal/gateway/pipeline"
+	responsepipeline "github.com/mirainya/Prism/internal/gateway/responses"
 	"github.com/mirainya/Prism/internal/model"
 	"github.com/mirainya/Prism/internal/service"
 	"github.com/mirainya/Prism/pkg/errors"
@@ -19,10 +22,57 @@ var playgroundDashboardService = service.NewDashboardService()
 
 // chatPipeline 由 router 注入的共享网关 pipeline(playground chat 走它,与 /v1 同源)。
 var chatPipeline *pipeline.Pipeline
+var playgroundResponsesHandler *handler.ResponsesHandler
+var playgroundAnthropicHandler *handler.AnthropicHandler
 
 // SetChatPipeline 注入共享 pipeline(在 router SetupRouter 装配时调用一次)。
 func SetChatPipeline(p *pipeline.Pipeline) {
 	chatPipeline = p
+}
+
+// SetGatewayEngine injects the shared V2 engine used by the public protocol handlers.
+func SetGatewayEngine(executionEngine *engine.Engine) {
+	if executionEngine == nil {
+		playgroundResponsesHandler = nil
+		playgroundAnthropicHandler = nil
+		return
+	}
+	playgroundResponsesHandler = handler.NewResponsesHandler(responsepipeline.New(executionEngine))
+	playgroundAnthropicHandler = handler.NewAnthropicHandler(executionEngine)
+}
+
+func usePlaygroundToken(c *gin.Context) (*model.Token, bool) {
+	token, ok := getPlaygroundToken(c)
+	if !ok {
+		return nil, false
+	}
+	c.Set(middleware.ContextKeyTokenID, token.ID)
+	c.Set(middleware.ContextKeyToken, token)
+	return token, true
+}
+
+// PlaygroundResponses POST /api/playground/:token_id/responses.
+func PlaygroundResponses(c *gin.Context) {
+	if _, ok := usePlaygroundToken(c); !ok {
+		return
+	}
+	if playgroundResponsesHandler == nil {
+		resp.ErrorMsg(c, http.StatusInternalServerError, 500, "responses handler not initialized")
+		return
+	}
+	playgroundResponsesHandler.Create(c)
+}
+
+// PlaygroundAnthropicMessages POST /api/playground/:token_id/messages.
+func PlaygroundAnthropicMessages(c *gin.Context) {
+	if _, ok := usePlaygroundToken(c); !ok {
+		return
+	}
+	if playgroundAnthropicHandler == nil {
+		resp.ErrorMsg(c, http.StatusInternalServerError, 500, "anthropic handler not initialized")
+		return
+	}
+	playgroundAnthropicHandler.Messages(c)
 }
 
 func getPlaygroundToken(c *gin.Context) (*model.Token, bool) {
@@ -85,6 +135,7 @@ func PlaygroundListModels(c *gin.Context) {
 			"supports_tools":           m.SupportsTools,
 			"supports_response_format": m.SupportsResponseFormat,
 			"supports_multimodal":      m.SupportsMultimodal,
+			"max_tokens":               m.MaxTokens,
 			"group":                    m.Group,
 			"thinking":                 m.Thinking,
 		})

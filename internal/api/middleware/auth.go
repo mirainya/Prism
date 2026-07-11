@@ -6,7 +6,6 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
-	"net/http"
 	"strings"
 	"time"
 
@@ -56,18 +55,25 @@ func InvalidateTokenCacheByID(tokenID uint) {
 
 func Auth() gin.HandlerFunc {
 	return func(c *gin.Context) {
-		tokenKey := c.GetHeader("Authorization")
+		tokenKey := strings.TrimSpace(c.GetHeader("Authorization"))
 		if tokenKey == "" {
-			c.JSON(http.StatusUnauthorized, gin.H{
-				"code":    errors.ErrInvalidToken.Code,
-				"message": "missing authorization header",
-			})
+			tokenKey = strings.TrimSpace(c.GetHeader("x-api-key"))
+		}
+		if tokenKey == "" {
+			writeAuthenticationError(c, "missing API key")
 			c.Abort()
 			return
 		}
 
 		// 支持 Bearer 前缀
-		tokenKey = strings.TrimPrefix(tokenKey, "Bearer ")
+		if len(tokenKey) >= len("Bearer ") && strings.EqualFold(tokenKey[:len("Bearer ")], "Bearer ") {
+			tokenKey = strings.TrimSpace(tokenKey[len("Bearer "):])
+		}
+		if tokenKey == "" {
+			writeAuthenticationError(c, "missing API key")
+			c.Abort()
+			return
+		}
 
 		keyHash := HashTokenKey(tokenKey)
 
@@ -77,10 +83,7 @@ func Auth() gin.HandlerFunc {
 			// 缓存未命中，查数据库
 			token = &model.Token{}
 			if err := model.DB().Model(&model.Token{}).Where("`key` = ? AND status = 1", keyHash).First(token).Error; err != nil {
-				c.JSON(http.StatusUnauthorized, gin.H{
-					"code":    errors.ErrInvalidToken.Code,
-					"message": errors.ErrInvalidToken.Message,
-				})
+				writeAuthenticationError(c, errors.ErrInvalidToken.Message)
 				c.Abort()
 				return
 			}
@@ -90,10 +93,7 @@ func Auth() gin.HandlerFunc {
 
 		// 缓存命中但 Token 已禁用
 		if token.Status != 1 {
-			c.JSON(http.StatusUnauthorized, gin.H{
-				"code":    errors.ErrInvalidToken.Code,
-				"message": errors.ErrInvalidToken.Message,
-			})
+			writeAuthenticationError(c, errors.ErrInvalidToken.Message)
 			c.Abort()
 			return
 		}

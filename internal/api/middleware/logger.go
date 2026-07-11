@@ -2,8 +2,12 @@ package middleware
 
 import (
 	"bytes"
+	"encoding/json"
 	"io"
+	"mime"
+	"net/http"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -11,6 +15,33 @@ import (
 	"github.com/mirainya/Prism/pkg/metrics"
 	"go.uber.org/zap"
 )
+
+const (
+	maxRequestBodyLogBytes  = 4096
+	maxResponseBodyLogBytes = 1024
+)
+
+var sensitiveRequestPaths = map[string]struct{}{
+	"/api/auth/login":    {},
+	"/api/auth/register": {},
+	"/api/user/password": {},
+}
+
+var sensitiveJSONKeys = map[string]struct{}{
+	"authorization": {},
+	"credential":    {},
+	"key":           {},
+	"passwd":        {},
+	"password":      {},
+	"pwd":           {},
+	"secret":        {},
+	"token":         {},
+}
+
+type replayReadCloser struct {
+	io.Reader
+	io.Closer
+}
 
 type responseWriter struct {
 	gin.ResponseWriter
@@ -24,8 +55,15 @@ func (w *responseWriter) WriteHeader(code int) {
 }
 
 func (w *responseWriter) Write(b []byte) (int, error) {
-	if w.statusCode >= 400 && w.body.Len() < 1024 {
-		w.body.Write(b)
+	if w.statusCode >= 400 {
+		remaining := maxResponseBodyLogBytes - w.body.Len()
+		if remaining > 0 {
+			captured := b
+			if len(captured) > remaining {
+				captured = captured[:remaining]
+			}
+			_, _ = w.body.Write(captured)
+		}
 	}
 	return w.ResponseWriter.Write(b)
 }
@@ -33,14 +71,18 @@ func (w *responseWriter) Write(b []byte) (int, error) {
 func RequestLogger() gin.HandlerFunc {
 	return func(c *gin.Context) {
 		start := time.Now()
-		path := c.Request.URL.Path
+		requestPath := c.Request.URL.Path
 		query := c.Request.URL.RawQuery
 
 		// 读取请求体
 		var requestBody []byte
-		if c.Request.Body != nil {
-			requestBody, _ = io.ReadAll(c.Request.Body)
-			c.Request.Body = io.NopCloser(bytes.NewBuffer(requestBody))
+		if shouldLogRequestBody(c.Request.Method, requestPath, c.GetHeader("Content-Type")) && c.Request.Body != nil {
+			originalBody := c.Request.Body
+			requestBody, _ = io.ReadAll(io.LimitReader(originalBody, maxRequestBodyLogBytes))
+			c.Request.Body = &replayReadCloser{
+				Reader: io.MultiReader(bytes.NewReader(requestBody), originalBody),
+				Closer: originalBody,
+			}
 		}
 
 		// 包装 ResponseWriter 以捕获响应
@@ -57,6 +99,10 @@ func RequestLogger() gin.HandlerFunc {
 		latency := time.Since(start)
 		status := c.Writer.Status()
 		statusStr := strconv.Itoa(status)
+		path := c.FullPath()
+		if path == "" {
+			path = requestPath
+		}
 
 		metrics.APIRequestTotal.Inc(c.Request.Method, path, statusStr)
 		metrics.APIRequestDuration.Observe(latency.Seconds(), c.Request.Method, path)
@@ -77,12 +123,14 @@ func RequestLogger() gin.HandlerFunc {
 		}
 
 		// 非 GET 请求记录请求体
-		if c.Request.Method != "GET" && len(requestBody) > 0 && len(requestBody) < 4096 {
-			fields = append(fields, zap.String("request", string(requestBody)))
+		if len(requestBody) > 0 && len(requestBody) < maxRequestBodyLogBytes {
+			if sanitizedBody, ok := sanitizeRequestBody(requestBody); ok {
+				fields = append(fields, zap.String("request", sanitizedBody))
+			}
 		}
 
 		// 错误响应记录响应体
-		if status >= 400 && rw.body.Len() < 1024 {
+		if status >= 400 && rw.body.Len() > 0 {
 			fields = append(fields, zap.String("response", rw.body.String()))
 		}
 
@@ -94,4 +142,89 @@ func RequestLogger() gin.HandlerFunc {
 			logger.Info("request completed", fields...)
 		}
 	}
+}
+
+func shouldLogRequestBody(method, path, contentType string) bool {
+	if method == http.MethodGet {
+		return false
+	}
+	_, sensitive := sensitiveRequestPaths[strings.TrimRight(path, "/")]
+	return !sensitive && isJSONContentType(contentType)
+}
+
+func isJSONContentType(contentType string) bool {
+	mediaType, _, err := mime.ParseMediaType(contentType)
+	if err != nil {
+		return false
+	}
+	return mediaType == "application/json" || strings.HasSuffix(mediaType, "+json")
+}
+
+func sanitizeRequestBody(body []byte) (string, bool) {
+	var value any
+	decoder := json.NewDecoder(bytes.NewReader(body))
+	decoder.UseNumber()
+	if err := decoder.Decode(&value); err != nil {
+		return "", false
+	}
+	var trailing any
+	if err := decoder.Decode(&trailing); err != io.EOF {
+		return "", false
+	}
+	redactSensitiveJSONFields(value)
+	sanitized, err := json.Marshal(value)
+	if err != nil {
+		return "", false
+	}
+	return string(sanitized), true
+}
+
+func redactSensitiveJSONFields(value any) {
+	switch value := value.(type) {
+	case map[string]any:
+		for key, child := range value {
+			if isSensitiveJSONKey(key) {
+				value[key] = "[REDACTED]"
+				continue
+			}
+			redactSensitiveJSONFields(child)
+		}
+	case []any:
+		for _, child := range value {
+			redactSensitiveJSONFields(child)
+		}
+	}
+}
+
+func isSensitiveJSONKey(key string) bool {
+	originalKey := strings.TrimSpace(key)
+	normalized := strings.Map(func(r rune) rune {
+		switch r {
+		case '_', '-', ' ', '.':
+			return -1
+		default:
+			return r
+		}
+	}, strings.ToLower(originalKey))
+
+	if _, sensitive := sensitiveJSONKeys[normalized]; sensitive {
+		return true
+	}
+	return strings.Contains(normalized, "password") ||
+		strings.Contains(normalized, "secret") ||
+		strings.Contains(normalized, "token") ||
+		strings.Contains(normalized, "apikey") ||
+		strings.Contains(normalized, "authorization") ||
+		hasKeyFieldSuffix(originalKey)
+}
+
+func hasKeyFieldSuffix(key string) bool {
+	lowerKey := strings.ToLower(key)
+	return lowerKey == "key" ||
+		strings.HasSuffix(lowerKey, "_key") ||
+		strings.HasSuffix(lowerKey, "-key") ||
+		strings.HasSuffix(lowerKey, ".key") ||
+		strings.HasSuffix(lowerKey, " key") ||
+		strings.HasSuffix(key, "Key") ||
+		strings.HasSuffix(key, "KEY")
 }

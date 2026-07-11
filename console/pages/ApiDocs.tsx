@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
-import { Book, Search, Copy, Check, ChevronDown, ChevronRight, Play, Loader2, Zap, MessageSquare, ListChecks, Bell, AlertTriangle, RefreshCw } from 'lucide-react';
+import { Book, Search, Copy, Check, ChevronDown, ChevronRight, Play, Loader2, Zap, MessageSquare, ListChecks, Bell, AlertTriangle, RefreshCw, Braces, FileUp } from 'lucide-react';
 import { fetchDocsModels, DocsModel } from '../services/docsApi';
 import { fetchGwModels } from '../services/gatewayApi';
 import { fetchTokens } from '../services/api';
@@ -75,6 +75,7 @@ interface ApiEndpoint {
   channelParams?: { channelName: string; channelType: string; interactionMode?: string; params: { name: string; type: string; required: boolean; description: string }[] }[];
   requestExample?: string;
   responseExample?: string;
+  bodyType?: 'json' | 'multipart';
 }
 
 // ===== 可复制路径 =====
@@ -179,6 +180,195 @@ const CHAT_COMPLETIONS_PARAMS = [
   { name: 'user', type: 'string', required: false, description: '终端用户标识' },
 ];
 
+const ANTHROPIC_MESSAGES_ENDPOINTS: ApiEndpoint[] = [{
+  id: 'ep-anthropic-messages',
+  method: 'POST',
+  path: '/v1/messages',
+  name: '创建消息',
+  description: '兼容 Anthropic Messages API。Prism 会按模型已配置的 Transport 原生调用或无损转换，支持文本、图片、文档、工具调用和 SSE。',
+  params: [
+    { name: 'model', type: 'string', required: true, description: '模型标识' },
+    { name: 'max_tokens', type: 'integer', required: true, description: '最大输出 token 数' },
+    { name: 'messages', type: 'array', required: true, description: 'Anthropic user/assistant 消息数组' },
+    { name: 'system', type: 'string|array', required: false, description: '系统提示词或内容块数组' },
+    { name: 'stream', type: 'boolean', required: false, description: '是否返回 Anthropic SSE 事件流' },
+    { name: 'tools', type: 'array', required: false, description: '工具定义，使用 input_schema' },
+    { name: 'tool_choice', type: 'object', required: false, description: 'auto、any、tool 或 none' },
+    { name: 'temperature', type: 'number', required: false, description: '采样温度' },
+    { name: 'top_p', type: 'number', required: false, description: '核采样参数' },
+    { name: 'stop_sequences', type: 'string[]', required: false, description: '停止序列' },
+    { name: 'metadata', type: 'object', required: false, description: '请求元数据' },
+  ],
+  requestExample: JSON.stringify({
+    model: 'claude-sonnet-4-20250514',
+    max_tokens: 1024,
+    messages: [{ role: 'user', content: [{ type: 'text', text: '你好' }] }],
+    stream: false,
+  }, null, 2),
+  responseExample: JSON.stringify({
+    id: 'msg_abc123', type: 'message', role: 'assistant', model: 'claude-sonnet-4-20250514',
+    content: [{ type: 'text', text: '你好！' }], stop_reason: 'end_turn',
+    usage: { input_tokens: 8, output_tokens: 4 },
+  }, null, 2),
+}];
+
+const RESPONSES_PARAMS = [
+  { name: 'model', type: 'string', required: true, description: '模型标识' },
+  { name: 'input', type: 'string|array', required: true, description: '文本或输入项数组，支持 input_text、input_image、input_audio、input_video、input_file 和工具结果' },
+  { name: 'instructions', type: 'string', required: false, description: '系统指令' },
+  { name: 'stream', type: 'boolean', required: false, description: '是否返回 Responses SSE 事件流' },
+  { name: 'store', type: 'boolean', required: false, description: '是否保存响应，默认 true' },
+  { name: 'background', type: 'boolean', required: false, description: '由 Prism 后台执行；不能与 stream 同时启用' },
+  { name: 'previous_response_id', type: 'string', required: false, description: 'Prism 返回的上一条 resp_ ID' },
+  { name: 'tools', type: 'array', required: false, description: '函数或上游托管工具；file_search 暂不支持' },
+  { name: 'tool_choice', type: 'string|object', required: false, description: '工具选择策略' },
+  { name: 'parallel_tool_calls', type: 'boolean', required: false, description: '是否允许并行工具调用' },
+  { name: 'max_output_tokens', type: 'integer', required: false, description: '最大输出 token 数' },
+  { name: 'max_tool_calls', type: 'integer', required: false, description: '最大托管工具调用次数' },
+  { name: 'temperature', type: 'number', required: false, description: '采样温度' },
+  { name: 'top_p', type: 'number', required: false, description: '核采样参数' },
+  { name: 'top_logprobs', type: 'integer', required: false, description: '返回的候选 token 数，范围 0-20' },
+  { name: 'reasoning', type: 'object', required: false, description: '推理配置' },
+  { name: 'thinking', type: 'object', required: false, description: '火山方舟思考模式配置' },
+  { name: 'caching', type: 'object', required: false, description: '火山方舟缓存配置' },
+  { name: 'text', type: 'object', required: false, description: '文本输出及结构化输出配置' },
+  { name: 'conversation', type: 'string|object', required: false, description: '上游会话配置' },
+  { name: 'prompt', type: 'object', required: false, description: '提示模板配置' },
+  { name: 'stream_options', type: 'object', required: false, description: '流式输出配置' },
+  { name: 'context_management', type: 'array', required: false, description: '上下文管理配置' },
+  { name: 'metadata', type: 'object', required: false, description: '自定义元数据；火山 Responses v3 不支持' },
+  { name: 'include', type: 'string[]', required: false, description: '附加输出字段' },
+  { name: 'truncation', type: 'string', required: false, description: '上下文截断策略' },
+  { name: 'service_tier', type: 'string', required: false, description: '服务等级' },
+  { name: 'prompt_cache_key', type: 'string', required: false, description: '提示缓存键' },
+  { name: 'prompt_cache_retention', type: 'string', required: false, description: '提示缓存保留策略' },
+  { name: 'safety_identifier', type: 'string', required: false, description: '安全标识' },
+  { name: 'user', type: 'string', required: false, description: '终端用户标识' },
+  { name: 'expire_at', type: 'integer', required: false, description: '火山方舟响应过期时间（Unix 秒）' },
+  { name: 'session', type: 'object', required: false, description: '火山方舟会话配置' },
+];
+
+const RESPONSES_ENDPOINTS: ApiEndpoint[] = [
+  {
+    id: 'ep-responses-create',
+    method: 'POST',
+    path: '/v1/responses',
+    name: '创建响应',
+    description: 'OpenAI Responses 兼容入口，支持多模态、函数工具、流式、续话、后台执行和 Idempotency-Key 请求头。火山 v3 专属字段及未来扩展会原样保留；无法无损转换的字段返回 400。',
+    params: RESPONSES_PARAMS,
+    requestExample: JSON.stringify({
+      model: 'doubao-seed-2-0-pro',
+      input: [{
+        role: 'user',
+        content: [
+          { type: 'input_text', text: '描述这张图片' },
+          { type: 'input_image', image_url: 'https://example.com/image.jpg' },
+        ],
+      }],
+      stream: false,
+      store: true,
+    }, null, 2),
+    responseExample: JSON.stringify({
+      id: 'resp_abc123',
+      object: 'response',
+      status: 'completed',
+      model: 'doubao-seed-2-0-pro',
+      output: [{ type: 'message', role: 'assistant', content: [{ type: 'output_text', text: '图片描述...' }] }],
+      usage: { input_tokens: 120, output_tokens: 32, total_tokens: 152 },
+    }, null, 2),
+  },
+  {
+    id: 'ep-responses-get',
+    method: 'GET',
+    path: '/v1/responses/{response_id}',
+    name: '查询响应',
+    description: '查询当前 Token 创建且已保存的响应。',
+    params: [{ name: 'response_id', type: 'string', required: true, description: '响应 ID（路径参数）' }],
+  },
+  {
+    id: 'ep-responses-delete',
+    method: 'DELETE',
+    path: '/v1/responses/{response_id}',
+    name: '删除响应',
+    description: '删除当前 Token 创建的响应记录。',
+    params: [{ name: 'response_id', type: 'string', required: true, description: '响应 ID（路径参数）' }],
+  },
+  {
+    id: 'ep-responses-cancel',
+    method: 'POST',
+    path: '/v1/responses/{response_id}/cancel',
+    name: '取消后台响应',
+    description: '取消 queued 或 in_progress 状态的后台响应。',
+    params: [{ name: 'response_id', type: 'string', required: true, description: '响应 ID（路径参数）' }],
+  },
+  {
+    id: 'ep-responses-input-items',
+    method: 'GET',
+    path: '/v1/responses/{response_id}/input_items',
+    name: '输入项列表',
+    description: '分页读取已保存响应的输入项。',
+    params: [
+      { name: 'response_id', type: 'string', required: true, description: '响应 ID（路径参数）' },
+      { name: 'limit', type: 'integer', required: false, description: '返回数量，1-100，默认 20' },
+      { name: 'order', type: 'string', required: false, description: 'asc 或 desc' },
+      { name: 'after', type: 'string', required: false, description: '分页游标' },
+    ],
+  },
+];
+
+const FILE_ENDPOINTS: ApiEndpoint[] = [
+  {
+    id: 'ep-files-upload',
+    method: 'POST',
+    path: '/v1/files',
+    name: '上传文件',
+    description: '使用 multipart/form-data 上传文件。单文件上限 64 MiB，文件归当前 API Token 所有。',
+    bodyType: 'multipart',
+    params: [
+      { name: 'file', type: 'file', required: true, description: '要上传的文件' },
+      { name: 'purpose', type: 'string', required: false, description: 'assistants、batch、evals、fine-tune、user_data 或 vision；默认 assistants' },
+    ],
+    responseExample: JSON.stringify({ id: 'file_abc123', object: 'file', bytes: 1024, filename: 'image.png', purpose: 'vision', status: 'processed' }, null, 2),
+  },
+  {
+    id: 'ep-files-list',
+    method: 'GET',
+    path: '/v1/files',
+    name: '文件列表',
+    description: '分页列出当前 Token 上传的文件。',
+    params: [
+      { name: 'purpose', type: 'string', required: false, description: '按用途筛选' },
+      { name: 'limit', type: 'integer', required: false, description: '返回数量，1-10000' },
+      { name: 'order', type: 'string', required: false, description: 'asc 或 desc' },
+      { name: 'after', type: 'string', required: false, description: '分页游标' },
+    ],
+  },
+  {
+    id: 'ep-files-get',
+    method: 'GET',
+    path: '/v1/files/{file_id}',
+    name: '文件信息',
+    description: '获取当前 Token 所有的文件元数据。',
+    params: [{ name: 'file_id', type: 'string', required: true, description: '文件 ID（路径参数）' }],
+  },
+  {
+    id: 'ep-files-content',
+    method: 'GET',
+    path: '/v1/files/{file_id}/content',
+    name: '下载文件',
+    description: '下载当前 Token 所有的文件内容。',
+    params: [{ name: 'file_id', type: 'string', required: true, description: '文件 ID（路径参数）' }],
+  },
+  {
+    id: 'ep-files-delete',
+    method: 'DELETE',
+    path: '/v1/files/{file_id}',
+    name: '删除文件',
+    description: '删除当前 Token 所有的文件。',
+    params: [{ name: 'file_id', type: 'string', required: true, description: '文件 ID（路径参数）' }],
+  },
+];
+
 // 兼容接口（图片/视频生成）——卡片渲染与 copyAllDocs 的单一数据源
 const COMPAT_ENDPOINTS: ApiEndpoint[] = [
   {
@@ -279,6 +469,20 @@ const ApiDocs: React.FC = () => {
   const copyAllDocs = () => {
     const chatModelsLocal = models.filter(m => m.type === 'chat');
     const capModels = models.filter(m => m.type !== 'chat');
+    const appendEndpoints = (title: string, intro: string, endpoints: ApiEndpoint[]) => {
+      let section = `## ${title}\n\n${intro}\n\n`;
+      endpoints.forEach(ep => {
+        section += `### ${ep.method} ${ep.path}\n${ep.name}${ep.description ? ' - ' + ep.description : ''}\n\n`;
+        if (ep.params.length > 0) {
+          section += `| 参数 | 类型 | 必填 | 说明 |\n|------|------|------|------|\n`;
+          ep.params.forEach(p => { section += `| ${p.name} | ${p.type} | ${p.required ? '是' : '否'} | ${p.description} |\n`; });
+          section += '\n';
+        }
+        if (ep.requestExample) section += `**请求示例:**\n\`\`\`json\n${ep.requestExample}\n\`\`\`\n\n`;
+        if (ep.responseExample) section += `**响应示例:**\n\`\`\`json\n${ep.responseExample}\n\`\`\`\n\n`;
+      });
+      return section;
+    };
     let md = `# API 文档\n\nBase URL: ${window.location.origin}\n认证方式: 请求头 Authorization: YOUR_TOKEN\n\n`;
     md += `## Chat 对话接口\n\n### POST /v1/chat/completions\n对话补全 - 兼容 OpenAI 格式，支持多模态（图片/文件）\n\n| 参数 | 类型 | 必填 | 说明 |\n|------|------|------|------|\n`;
     CHAT_COMPLETIONS_PARAMS.forEach(p => { md += `| ${p.name} | ${p.type} | ${p.required ? '是' : '否'} | ${p.description} |\n`; });
@@ -286,6 +490,9 @@ const ApiDocs: React.FC = () => {
     md += `### GET /v1/models\n获取所有可用模型\n\n当前可用模型: ${models.map(m => m.code).join(', ')}\n\n`;
     md += `### GET /v1/models/:code\n获取单个模型详情\n\n| 参数 | 类型 | 必填 | 说明 |\n|------|------|------|------|\n| code | string | 是 | 模型标识（路径参数） |\n\n`;
     md += `### GET /v1/channels\n获取所有可用渠道列表\n\n`;
+	md += appendEndpoints('Anthropic Messages API', '下游使用 Anthropic Messages 协议，模型可通过任一已配置 Transport 执行。', ANTHROPIC_MESSAGES_ENDPOINTS);
+    md += appendEndpoints('Responses API', '下游统一使用 /v1/responses。OpenAI 上游调用 /v1/responses；火山方舟调用原生 /api/v3/responses 并保留 v3 扩展；Anthropic 与 Google 由 Prism 转换。', RESPONSES_ENDPOINTS);
+    md += appendEndpoints('Files API', '文件按 API Token 隔离，可通过 file_id 用于 Responses 多模态输入。', FILE_ENDPOINTS);
     md += `## 能力接口\n\n### GET /v1/capabilities\n获取所有可用能力接口列表\n\n| 参数 | 类型 | 必填 | 说明 |\n|------|------|------|------|\n| channel | string | 否 | 按渠道类型筛选 |\n| type | string | 否 | 按能力类型筛选 |\n\n当前可用能力: ${capModels.map(m => m.code).join(', ')}\n\n`;
     capModels.forEach(m => {
       md += `### POST /v1/capabilities/${m.code}\n${m.name}${m.description ? ' - ' + m.description : ''}\n\n| 参数 | 类型 | 必填 | 说明 |\n|------|------|------|------|\n| channel | string | 否 | 指定渠道（可选） |\n| callback_url | string | 否 | 回调地址 |\n`;
@@ -374,6 +581,9 @@ const ApiDocs: React.FC = () => {
       { id: 'ep-model-detail', label: '模型详情' },
       { id: 'ep-channels', label: '渠道列表' },
     ]},
+	{ id: 'anthropic', label: 'Anthropic Messages', icon: <MessageSquare size={14} />, items: ANTHROPIC_MESSAGES_ENDPOINTS.map(e => ({ id: e.id, label: e.name })) },
+    { id: 'responses', label: 'Responses', icon: <Braces size={14} />, items: RESPONSES_ENDPOINTS.map(e => ({ id: e.id, label: e.name })) },
+    { id: 'files', label: 'Files', icon: <FileUp size={14} />, items: FILE_ENDPOINTS.map(e => ({ id: e.id, label: e.name })) },
     { id: 'capabilities', label: '能力接口', icon: <Zap size={14} />, items: capabilityEndpoints.map(e => ({ id: e.id, label: e.name })) },
     { id: 'compat', label: '兼容接口', icon: <RefreshCw size={14} />, items: [
       { id: 'ep-images-generations', label: '图片生成' },
@@ -537,6 +747,37 @@ const ApiDocs: React.FC = () => {
           )}
         </section>
 
+		<section id="anthropic">
+		  <h2 className="text-lg font-bold text-[var(--text-primary)] mb-3 flex items-center gap-2"><MessageSquare size={18} /> Anthropic Messages API</h2>
+		  <p className="text-sm text-[var(--text-secondary)] mb-4">兼容 Anthropic Messages 请求、响应与流式事件格式。</p>
+		  <div className="space-y-3">
+			{ANTHROPIC_MESSAGES_ENDPOINTS.map(ep => <EndpointCard key={ep.id} api={ep} onTryIt={setTryItApi} />)}
+		  </div>
+		</section>
+
+        {/* Responses API */}
+        <section id="responses">
+          <h2 className="text-lg font-bold text-[var(--text-primary)] mb-3 flex items-center gap-2"><Braces size={18} /> Responses API</h2>
+          <p className="text-sm text-[var(--text-secondary)] mb-2">下游统一调用 OpenAI 兼容的 <code className="text-[var(--primary)]">/v1/responses</code>。</p>
+          <p className="text-xs text-[var(--text-secondary)] mb-4">OpenAI 上游使用 <code>/v1/responses</code>；火山方舟使用原生 <code>/api/v3/responses</code>，保留 v3 扩展字段、工具事件和工具用量；Anthropic 与 Google 由 Prism 转换。后台执行、存储和公开响应 ID 由 Prism 管理。</p>
+          <div className="space-y-3">
+            {RESPONSES_ENDPOINTS.map(ep => (
+              <EndpointCard key={ep.id} api={ep} onTryIt={setTryItApi} />
+            ))}
+          </div>
+        </section>
+
+        {/* Files API */}
+        <section id="files">
+          <h2 className="text-lg font-bold text-[var(--text-primary)] mb-3 flex items-center gap-2"><FileUp size={18} /> Files API</h2>
+          <p className="text-sm text-[var(--text-secondary)] mb-4">上传并管理多模态输入文件。文件按 API Token 隔离，可在 Responses 输入中通过 <code className="text-[var(--primary)]">file_id</code> 引用。</p>
+          <div className="space-y-3">
+            {FILE_ENDPOINTS.map(ep => (
+              <EndpointCard key={ep.id} api={ep} onTryIt={setTryItApi} />
+            ))}
+          </div>
+        </section>
+
         {/* 能力接口 */}
         <section id="capabilities">
           <h2 className="text-lg font-bold text-[var(--text-primary)] mb-3 flex items-center gap-2"><Zap size={18} /> 能力接口</h2>
@@ -655,6 +896,7 @@ const ApiDocs: React.FC = () => {
         name={tryItApi?.name || ''}
         params={tryItApi?.params || []}
         tokens={tokens}
+        bodyType={tryItApi?.bodyType || 'json'}
       />
     </div>
   );

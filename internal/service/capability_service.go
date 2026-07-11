@@ -41,6 +41,11 @@ type InvokeResponse struct {
 	Status string `json:"status"`
 }
 
+var (
+	enqueueCallbackUpload = queue.EnqueueTaskUpload
+	errNoAvailableAccount = errors.New("no available account")
+)
+
 // Invoke 调用能力
 func (s *UnifiedService) Invoke(ctx context.Context, req *InvokeRequest) (*InvokeResponse, error) {
 	// 查找该能力所有可用端点(priority 降序),供跨端点/渠道 fallback
@@ -50,63 +55,15 @@ func (s *UnifiedService) Invoke(ctx context.Context, req *InvokeRequest) (*Invok
 	}
 	primary := &endpoints[0]
 
-	// 为首选端点选一个账号(白名单+熔断过滤),失败则依次尝试其他端点
-	var channel model.Channel
-	var account *model.ChannelAccount
-	var chosen *model.Endpoint
-	for i := range endpoints {
-		ep := &endpoints[i]
-		var ch model.Channel
-		if err := model.DB().First(&ch, ep.ChannelID).Error; err != nil {
-			continue
-		}
-		acc, err := s.selectAccountForEndpoint(ep, nil)
-		if err != nil {
-			continue // 该端点无可用账号(绑定 key 不可用 / 渠道池空),试下一个
-		}
-		channel, account, chosen = ch, acc, ep
-		break
-	}
-	if chosen == nil {
-		return nil, fmt.Errorf("no available account")
-	}
-
-	// 扣费(以首选端点价做余额守卫,结算/退款统一按此价,避免 fallback 端点价差导致账目不一致)
 	cost := primary.InputPrice
-	deducted := false
-	if cost.GreaterThan(decimal.Zero) {
-		if err := s.billingService.Deduct(req.TokenID, req.UserID, cost); err != nil {
-			s.decrementAccountTasks(account.ID) // 已选中账号 +1,扣费失败需回滚计数
+	task, chosen, channel, account, err := s.reserveInitialCapabilityTask(req, endpoints, cost)
+	if err != nil {
+		if errors.Is(err, ErrInsufficientTokenBalance) || errors.Is(err, ErrInsufficientUserBalance) {
 			return nil, ErrInsufficientTokenBalance
 		}
-		deducted = true
-	}
-
-	// 创建任务(记录实际选中的端点/渠道/账号)
-	taskSvc := NewTaskService()
-	task, err := taskSvc.CreateTask(&CreateTaskRequest{
-		UserID:        req.UserID,
-		TokenID:       req.TokenID,
-		ModelCode:     req.Capability,
-		ChannelID:     channel.ID,
-		EndpointID:    chosen.ID,
-		AccountID:     account.ID,
-		RequestParams: req.Params,
-		MappedParams:  mapParams(req.Params, chosen.ParamMapping),
-		CallbackURL:   req.CallbackURL,
-		Cost:          cost,
-	})
-	if err != nil {
-		// 建任务失败: 回滚已扣费用与账号计数,避免钱和容量凭空泄漏
-		if deducted {
-			if refErr := s.billingService.Refund(req.TokenID, req.UserID, cost); refErr != nil {
-				logger.Error("refund after create-task failure failed",
-					zap.Uint("token_id", req.TokenID), zap.String("cost", cost.String()), zap.Error(refErr))
-			}
-		}
-		s.decrementAccountTasks(account.ID)
 		return nil, err
 	}
+	taskSvc := NewTaskService()
 
 	// sync/stream 模式直接执行(含换账号 + 跨端点/渠道 fallback)
 	if chosen.InteractionMode == model.ModeSync || chosen.InteractionMode == model.ModeStream {
@@ -120,7 +77,10 @@ func (s *UnifiedService) Invoke(ctx context.Context, req *InvokeRequest) (*Invok
 					if r := recover(); r != nil {
 						logger.Error("async capability execution panicked",
 							zap.Uint("task_id", task.ID), zap.Any("panic", r))
-						taskSvc.UpdateTaskFail(task.ID, fmt.Sprintf("async execution panicked: %v", r))
+						if _, failErr := taskSvc.UpdateTaskFail(task.ID, fmt.Sprintf("async execution panicked: %v", r)); failErr != nil {
+							logger.Error("record async panic failure failed",
+								zap.Uint("task_id", task.ID), zap.Error(failErr))
+						}
 					}
 				}()
 				bgCtx, cancel := context.WithTimeout(context.Background(), 600*time.Second)
@@ -137,10 +97,11 @@ func (s *UnifiedService) Invoke(ctx context.Context, req *InvokeRequest) (*Invok
 
 	// 异步模式入队(跨渠道异步 fallback 属 worker 层,本期不做)
 	if err := queue.EnqueueTaskSubmit(task.ID); err != nil {
-		// 入队失败: 任务无法被 worker 处理,直接判失败并退款+递减计数,避免卡 pending 永久泄漏
+		// 入队失败: 任务无法被 worker 处理,直接判失败并退款。
 		logger.Error("enqueue submit failed", zap.Uint("task_id", task.ID), zap.Error(err))
-		taskSvc.UpdateTaskFail(task.ID, "enqueue submit failed: "+err.Error())
-		s.decrementAccountTasks(account.ID)
+		if _, failErr := taskSvc.UpdateTaskFail(task.ID, "enqueue submit failed: "+err.Error()); failErr != nil {
+			return nil, fmt.Errorf("enqueue submit failed: %v; record task failure: %w", err, failErr)
+		}
 		return nil, fmt.Errorf("enqueue submit failed: %w", err)
 	}
 
@@ -148,6 +109,72 @@ func (s *UnifiedService) Invoke(ctx context.Context, req *InvokeRequest) (*Invok
 		TaskID: task.TaskNo,
 		Status: string(task.Status),
 	}, nil
+}
+
+func (s *UnifiedService) reserveInitialCapabilityTask(
+	req *InvokeRequest,
+	endpoints []model.Endpoint,
+	cost decimal.Decimal,
+) (*model.Task, *model.Endpoint, model.Channel, *model.ChannelAccount, error) {
+	taskNo := GenerateTaskNo()
+	var task *model.Task
+	var chosen *model.Endpoint
+	var channel model.Channel
+	var account *model.ChannelAccount
+
+	err := model.DB().Transaction(func(tx *gorm.DB) error {
+		if err := s.billingService.deductWithKeyTx(
+			tx, req.TokenID, req.UserID, cost, taskNo+":reserve",
+		); err != nil {
+			return err
+		}
+
+		for i := range endpoints {
+			ep := &endpoints[i]
+			var candidateChannel model.Channel
+			if err := tx.First(&candidateChannel, ep.ChannelID).Error; err != nil {
+				if errors.Is(err, gorm.ErrRecordNotFound) {
+					continue
+				}
+				return err
+			}
+			candidateAccount, err := s.selectAccountForEndpointTx(tx, ep, nil)
+			if err != nil {
+				if errors.Is(err, gorm.ErrRecordNotFound) {
+					continue
+				}
+				return err
+			}
+			chosen = ep
+			channel = candidateChannel
+			account = candidateAccount
+			break
+		}
+		if chosen == nil {
+			return errNoAvailableAccount
+		}
+
+		var err error
+		task, err = NewTaskService().createTask(tx, &CreateTaskRequest{
+			TaskNo:        taskNo,
+			UserID:        req.UserID,
+			TokenID:       req.TokenID,
+			ModelCode:     req.Capability,
+			ChannelID:     channel.ID,
+			EndpointID:    chosen.ID,
+			AccountID:     account.ID,
+			RequestParams: req.Params,
+			MappedParams:  mapParams(req.Params, chosen.ParamMapping),
+			CallbackURL:   req.CallbackURL,
+			Cost:          cost,
+		})
+		return err
+	})
+	if err != nil {
+		return nil, nil, model.Channel{}, nil, err
+	}
+	logTaskCreated(task)
+	return task, chosen, channel, account, nil
 }
 
 // executeSyncWithFallback 同步执行任务:
@@ -159,10 +186,17 @@ func (s *UnifiedService) executeSyncWithFallback(ctx context.Context, task *mode
 	circuitSvc := NewAccountCircuitService()
 	accountPerEndpoint := 3
 	var lastErr error
+	started := false
 
 	for i := range endpoints {
 		ep := &endpoints[i]
 		if ep.InteractionMode != model.ModeSync && ep.InteractionMode != model.ModeStream {
+			continue
+		}
+		if ep.ID == startEP.ID {
+			started = true
+		}
+		if !started {
 			continue
 		}
 
@@ -182,20 +216,43 @@ func (s *UnifiedService) executeSyncWithFallback(ctx context.Context, task *mode
 
 		for attempt := 0; attempt < accountPerEndpoint; attempt++ {
 			if account == nil {
-				next, err := s.selectAccountForEndpoint(ep, excludeAccountIDs)
+				next, err := s.selectAndAssignAccountForEndpoint(task.ID, ep, excludeAccountIDs)
 				if err != nil {
-					break
+					if errors.Is(err, ErrTaskNotExecutable) {
+						return nil, err
+					}
+					if errors.Is(err, gorm.ErrRecordNotFound) {
+						break
+					}
+					if _, failErr := taskSvc.UpdateTaskFail(task.ID, "select fallback account: "+err.Error()); failErr != nil {
+						return nil, fmt.Errorf("select fallback account: %v; record task failure: %w", err, failErr)
+					}
+					return nil, fmt.Errorf("select fallback account: %w", err)
 				}
 				account = next
+				task.EndpointID = ep.ID
+				task.ChannelID = channel.ID
+				task.AccountID = account.ID
+				task.AccountSlotReleased = false
 			}
 
-			model.DB().Model(&model.Task{}).Where("id = ?", task.ID).
-				Updates(map[string]any{"endpoint_id": ep.ID, "channel_id": channel.ID, "account_id": account.ID})
+			if err := s.ensureTaskAccountExecutable(task.ID, ep, account.ID); err != nil {
+				if errors.Is(err, ErrTaskNotExecutable) {
+					return nil, err
+				}
+				if _, failErr := taskSvc.UpdateTaskFail(task.ID, "validate task execution account: "+err.Error()); failErr != nil {
+					return nil, fmt.Errorf("validate task execution account: %v; record task failure: %w", err, failErr)
+				}
+				return nil, fmt.Errorf("validate task execution account: %w", err)
+			}
 
 			result, err := s.doSubmit(ctx, task, ep, &channel, account, mappedParams)
-			s.decrementAccountTasks(account.ID)
 			if err != nil {
 				lastErr = err
+				if releaseErr := taskSvc.ReleaseAccountSlot(task.ID); releaseErr != nil {
+					return nil, fmt.Errorf("upstream call failed: %v; release account slot: %w", err, releaseErr)
+				}
+				task.AccountSlotReleased = true
 				circuitSvc.MarkUnavailable(account.ID, ep.ModelCode, err)
 				excludeAccountIDs = append(excludeAccountIDs, account.ID)
 				logger.Warn("sync attempt failed, trying next account/endpoint",
@@ -207,6 +264,10 @@ func (s *UnifiedService) executeSyncWithFallback(ctx context.Context, task *mode
 
 			if result.ProviderTaskID == "" && len(result.URLs) == 0 && len(result.B64Data) == 0 {
 				lastErr = fmt.Errorf("upstream returned empty result")
+				if releaseErr := taskSvc.ReleaseAccountSlot(task.ID); releaseErr != nil {
+					return nil, fmt.Errorf("empty upstream result; release account slot: %w", releaseErr)
+				}
+				task.AccountSlotReleased = true
 				circuitSvc.MarkUnavailable(account.ID, ep.ModelCode, lastErr)
 				excludeAccountIDs = append(excludeAccountIDs, account.ID)
 				logger.Warn("sync attempt returned empty result, trying next account/endpoint",
@@ -221,7 +282,9 @@ func (s *UnifiedService) executeSyncWithFallback(ctx context.Context, task *mode
 				transferred, err := resolveB64ToURLs(ctx, result.B64Data, ep.ModelCode)
 				if err != nil {
 					lastErr = err
-					taskSvc.UpdateTaskFail(task.ID, err.Error())
+					if _, failErr := taskSvc.UpdateTaskFail(task.ID, err.Error()); failErr != nil {
+						return nil, fmt.Errorf("transfer result: %v; record task failure: %w", err, failErr)
+					}
 					return nil, err
 				}
 				urls = append(urls, transferred...)
@@ -236,7 +299,13 @@ func (s *UnifiedService) executeSyncWithFallback(ctx context.Context, task *mode
 				successResult["revised_prompt"] = result.RevisedPrompt
 			}
 
-			taskSvc.UpdateTaskSuccess(task.ID, successResult, task.Cost)
+			committed, err := taskSvc.UpdateTaskSuccess(task.ID, successResult, task.Cost)
+			if err != nil {
+				return nil, fmt.Errorf("complete synchronous task: %w", err)
+			}
+			if !committed {
+				return nil, ErrTaskNotExecutable
+			}
 			return &InvokeResponse{
 				TaskID: task.TaskNo,
 				Status: string(model.TaskStatusSuccess),
@@ -248,7 +317,9 @@ func (s *UnifiedService) executeSyncWithFallback(ctx context.Context, task *mode
 	if lastErr == nil {
 		lastErr = fmt.Errorf("no available endpoint/account for capability: %s", req.Capability)
 	}
-	taskSvc.UpdateTaskFail(task.ID, lastErr.Error())
+	if _, failErr := taskSvc.UpdateTaskFail(task.ID, lastErr.Error()); failErr != nil {
+		return nil, fmt.Errorf("%v; record task failure: %w", lastErr, failErr)
+	}
 	return nil, lastErr
 }
 
@@ -283,24 +354,28 @@ func (s *UnifiedService) CancelTask(ctx context.Context, taskNo string, userID u
 }
 
 // HandleCallback 处理供应商回调
-func (s *UnifiedService) HandleCallback(ctx context.Context, channelType string, body map[string]any) error {
-	taskID, _ := body["task_id"].(string)
-	if taskID == "" {
-		taskID, _ = body["id"].(string)
+func (s *UnifiedService) HandleCallback(ctx context.Context, authenticatedTask *model.Task, body map[string]any) error {
+	if authenticatedTask == nil || authenticatedTask.ID == 0 {
+		return errors.New("missing authenticated callback task")
 	}
-	if taskID == "" {
-		return errors.New("missing task_id in callback")
-	}
-
 	taskSvc := NewTaskService()
-	task, err := taskSvc.GetTaskByVendorID(taskID)
+	task, err := taskSvc.GetTaskByID(authenticatedTask.ID)
 	if err != nil {
-		return fmt.Errorf("task not found for vendor_id: %s", taskID)
+		return err
+	}
+	if task.TaskNo != authenticatedTask.TaskNo || task.ChannelID != authenticatedTask.ChannelID {
+		return ErrTaskNotFound
+	}
+	if task.Status.IsTerminal() {
+		return nil
 	}
 
 	var endpoint model.Endpoint
 	if err := model.DB().First(&endpoint, task.EndpointID).Error; err != nil {
 		return err
+	}
+	if endpoint.ChannelID != task.ChannelID {
+		return errors.New("callback endpoint does not belong to task channel")
 	}
 
 	// 用配置驱动的解析器解析回调（读取 response/callback mapping 的 value_mapping、url、error）
@@ -309,16 +384,35 @@ func (s *UnifiedService) HandleCallback(ctx context.Context, channelType string,
 		return err
 	}
 	var account model.ChannelAccount
-	model.DB().First(&account, task.AccountID)
+	if err := model.DB().First(&account, task.AccountID).Error; err != nil {
+		return err
+	}
 
-	bodyBytes, _ := json.Marshal(body)
+	bodyBytes, err := json.Marshal(body)
+	if err != nil {
+		return err
+	}
 	prov, err := provider.NewProvider(&channel, &account, &endpoint)
 	if err != nil {
 		return err
 	}
-	parsed, _, err := prov.ParseCallback(ctx, bodyBytes)
+	parsed, providerTaskID, err := prov.ParseCallback(ctx, bodyBytes)
 	if err != nil {
 		return err
+	}
+	switch parsed.Status {
+	case provider.StatusFail, provider.StatusSuccess,
+		provider.StatusPending, provider.StatusSubmitted, provider.StatusProcessing:
+	default:
+		return ErrInvalidCallbackStatus
+	}
+	if providerTaskID != "" {
+		if task.VendorTaskID != "" && task.VendorTaskID != providerTaskID {
+			return ErrVendorTaskMismatch
+		}
+		if err := taskSvc.BindVendorTaskID(task.ID, providerTaskID); err != nil {
+			return err
+		}
 	}
 
 	switch parsed.Status {
@@ -327,8 +421,9 @@ func (s *UnifiedService) HandleCallback(ctx context.Context, channelType string,
 		if errMsg == "" {
 			errMsg = "upstream task failed"
 		}
-		if committed, _ := taskSvc.UpdateTaskFail(task.ID, errMsg); committed { // 内部自动退款
-			s.decrementAccountTasks(task.AccountID)
+		_, err := taskSvc.UpdateTaskFail(task.ID, errMsg)
+		if err != nil {
+			return err
 		}
 	case provider.StatusSuccess:
 		// 复用上传流水线（转存+通知），与轮询成功路径保持一致
@@ -338,18 +433,26 @@ func (s *UnifiedService) HandleCallback(ctx context.Context, channelType string,
 		if len(originURLs) > 0 {
 			originURL = originURLs[0]
 		}
-		taskSvc.UpdateTaskProgress(task.ID, 100)
-		if err := queue.EnqueueTaskUpload(task.ID, originURL, originURLs, parsed.RevisedPrompt); err != nil {
-			// 入队失败: 任务不会进入 upload_worker(否则由其负责终态+递减),此处判失败并递减,避免卡 Processing
+		ready, err := taskSvc.BeginTaskFinalization(task.ID)
+		if err != nil {
+			return err
+		}
+		if !ready {
+			return nil
+		}
+		if err := enqueueCallbackUpload(task.ID, originURL, originURLs, parsed.RevisedPrompt); err != nil {
 			logger.Error("enqueue upload from callback failed", zap.Uint("task_id", task.ID), zap.Error(err))
-			if committed, _ := taskSvc.UpdateTaskFail(task.ID, "enqueue upload from callback failed: "+err.Error()); committed {
-				s.decrementAccountTasks(task.AccountID)
-			}
+			return fmt.Errorf("enqueue upload from callback: %w", err)
 		}
 		// 入队成功: 终态与账号计数递减由 upload_worker 统一处理,此处不再递减(避免重复)
-	default:
+	case provider.StatusPending, provider.StatusSubmitted, provider.StatusProcessing:
 		// 处理中：仅更新进度，不结算
-		taskSvc.UpdateTaskProgress(task.ID, parsed.Progress)
+		if err := taskSvc.UpdateTaskStatus(task.ID, model.TaskStatusProcessing, providerTaskID); err != nil {
+			return err
+		}
+		if err := taskSvc.UpdateTaskProgress(task.ID, parsed.Progress); err != nil {
+			return err
+		}
 	}
 
 	return nil

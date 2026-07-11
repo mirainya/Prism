@@ -40,7 +40,32 @@ export const playgroundChatCompletions = async (
     body: Record<string, any>,
     signal?: AbortSignal,
 ): Promise<Response> => {
-    return fetch(`${API_BASE}/playground/${tokenId}/chat/completions`, {
+    return playgroundProtocolRequest(tokenId, 'chat/completions', body, signal);
+};
+
+export const playgroundResponses = async (
+    tokenId: string,
+    body: Record<string, any>,
+    signal?: AbortSignal,
+): Promise<Response> => {
+    return playgroundProtocolRequest(tokenId, 'responses', body, signal);
+};
+
+export const playgroundAnthropicMessages = async (
+    tokenId: string,
+    body: Record<string, any>,
+    signal?: AbortSignal,
+): Promise<Response> => {
+    return playgroundProtocolRequest(tokenId, 'messages', body, signal);
+};
+
+const playgroundProtocolRequest = async (
+    tokenId: string,
+    endpoint: 'chat/completions' | 'responses' | 'messages',
+    body: Record<string, any>,
+    signal?: AbortSignal,
+): Promise<Response> => {
+    return fetch(`${API_BASE}/playground/${tokenId}/${endpoint}`, {
         method: 'POST',
         headers: {
             'Content-Type': 'application/json',

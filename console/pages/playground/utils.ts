@@ -4,6 +4,18 @@ import { ContentPart, MediaContext, MediaItem, TaskResult } from './types';
 export const ACCEPTED_FILE_TYPES = 'image/png,image/jpeg,image/gif,image/webp,application/pdf,text/plain,text/csv,application/vnd.openxmlformats-officedocument.wordprocessingml.document';
 export const MAX_FILE_SIZE = 20 * 1024 * 1024;
 
+export const getClipboardFiles = (clipboardData: DataTransfer | null): File[] => {
+  if (!clipboardData) return [];
+
+  const files = Array.from(clipboardData.files);
+  if (files.length > 0) return files;
+
+  return Array.from(clipboardData.items)
+    .filter(item => item.kind === 'file')
+    .map(item => item.getAsFile())
+    .filter((file): file is File => file !== null);
+};
+
 export const FALLBACK_STANDARD_PARAMS: Record<string, CapabilityStandardParamSchema> = {
   prompt: { name: '提示词', type: 'string', required: true },
 };
