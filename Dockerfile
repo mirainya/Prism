@@ -1,8 +1,8 @@
 # ---- Frontend Build ----
-FROM node:18-alpine AS frontend
+FROM node:22-alpine AS frontend
 WORKDIR /app/console
 COPY console/package.json console/package-lock.json* ./
-RUN npm install
+RUN npm ci
 COPY console/ ./
 RUN npm run build
 

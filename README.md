@@ -5,245 +5,232 @@
 <h1 align="center">Prism</h1>
 
 <p align="center">
-  多渠道聚合、统一鉴权、可视化运营的 AI Gateway
+  多协议转换、能力感知路由和可视化管理的 AI Gateway
 </p>
 
----
+Prism 使用 Go + React 构建，对外提供 OpenAI Chat Completions、OpenAI Responses 和 Anthropic Messages 接口，并根据请求内容选择兼容的上游协议。前端构建产物嵌入 Go 二进制，可作为单个服务部署。
 
-Prism 是一个基于 Go + React 的 AI Gateway，提供统一的 OpenAI 兼容接口，支持多渠道路由、异步任务调度、计费管理和完整的管理后台。单二进制部署，前端嵌入后端。
+> Gateway V2 是内部执行架构名称；公开 API 仍位于 `/v1`，没有 `/v2` HTTP 接口。
 
+## 架构
+
+```text
+客户端
+  -> Gin Handler（鉴权、校验、协议错误格式）
+  -> Downstream Codec（Chat / Responses / Messages）
+  -> Canonical Request / Response / Event
+  -> Engine（执行计划、选路、重试、计费、日志、流生命周期）
+  -> Router（语义能力、Transport、并发、熔断、权重）
+  -> Upstream Transport
+  -> 上游 API
 ```
-客户端 ──→ Prism（鉴权 → 路由 → 计费 → 日志）──→ 上游 API
-                                                    ├── OpenAI
-                                                    ├── Anthropic Claude
-                                                    ├── Google Gemini
-                                                    └── 火山方舟
-```
 
-## 核心能力
+| 层 | 职责 |
+|---|---|
+| `gateway/codec` | 解码下游请求，并把响应或 SSE 编码为下游协议 |
+| `gateway/canonical` | 表示消息、多模态内容、工具、推理、usage 和流事件 |
+| `gateway/engine` | 生成执行计划，管理重试、计费预授权、请求日志和流终态 |
+| `gateway/routing` | 从 `gw_*` 数据中选择能力与 Transport，管理并发和熔断 |
+| `gateway/transport` | 处理上游 URL、鉴权、请求编码、HTTP/SSE 和响应解码 |
+| `gateway/responses` | 管理 Responses 存储、续话、幂等、后台任务、取消和恢复 |
 
-| 能力 | 说明 |
-|------|------|
-| **统一对话接口** | `/v1/chat/completions`、`/v1/responses`、`/v1/messages`、`/v1/files`、`/v1/models` |
-| **多渠道路由** | 同一模型映射多个渠道，支持优先级与负载均衡，失败自动切换，渠道级图片 Base64 转换 |
-| **多提供商** | OpenAI / Anthropic Claude / Google Gemini / 火山方舟；火山 Responses 使用 `/api/v3/responses` |
-| **对话管理** | 自动归并对话、流式聚合 usage、消息历史追溯、附件显示 |
-| **异步任务** | 图片/视频生成等能力，支持同步/轮询/回调三种交互模式，支持取消 |
-| **Playground** | 内置调试台：流式对话、文件上传、能力调用、请求调试面板 |
-| **API 文档** | 动态生成，渠道参数按交互模式分组显示，内置右侧抽屉试用面板（表单/JSON 双模式） |
-| **模型发现** | 自动同步上游渠道模型列表，审批后上线，支持快速配置 |
-| **计费系统** | Token 余额体系，按模型定价，用量实时扣费 |
-| **请求日志** | 完整记录请求/响应/用量/延迟/错误，支持重试 |
-| **对话日志** | 按 Token 查看对话列表、消息详情、输入输出 token |
-| **统计仪表盘** | 今日概览 + 7 天趋势 + 模型/渠道分布图 |
-| **配置热重载** | Viper 监听 config.yaml 变更，无需重启 |
-| **监控** | Prometheus 指标 + `/health` 健康检查（DB + Redis） |
-| **安全** | JWT + Token 双鉴权、CORS 可配置、Token 级限流、渠道能力更新白名单校验 |
+图片、视频等异步能力目前仍由 `api/open -> service -> worker` 执行，与对话 Gateway V2 并存。
 
-## 技术栈
+## 协议支持
 
-**后端**：Go 1.25 · Gin · GORM · MySQL 8 · Redis 7 · Asynq · Viper · Zap · Prometheus
+### 下游接口
 
-**前端**：React 19 · TypeScript · Vite 6 · Tailwind CSS 4 · Recharts 3 · Lucide Icons
+| 接口 | 用途 |
+|---|---|
+| `POST /v1/chat/completions` | OpenAI Chat Completions，支持流式与非流式 |
+| `POST /v1/responses` | OpenAI Responses，支持流式、存储、续话和后台执行 |
+| `POST /v1/messages` | Anthropic Messages，支持流式与非流式 |
+| `/v1/files` | 按 Token 隔离的文件上传、查询、下载和删除 |
+
+### 上游 Transport
+
+| Transport ID | 上游协议 |
+|---|---|
+| `openai_chat` | `POST /v1/chat/completions` |
+| `openai_responses` | `POST /v1/responses` |
+| `anthropic_messages` | `POST /v1/messages` |
+| `google_generate_content` | Gemini `generateContent` / `streamGenerateContent` |
+| `volcengine_responses_v3` | 火山方舟 `POST /api/v3/responses` |
+
+每个 Transport 会针对当前 canonical 请求返回 `exact`、`converted` 或 `unsupported`。Engine 优先选择原生协议，仅在字段和能力可表达时转换；无法兼容的请求返回 `400 unsupported_model_capability`，临时没有可用路由时返回 `503 model_unavailable`。
+
+Chat、Responses 和 Messages 并不与某个模型固定绑定。一个公开模型能使用哪些下游协议，由其语义能力、已启用 Transport 和当前请求共同决定。
+
+火山方舟的 `thinking`、`caching`、`session`、`context_management` 等扩展只会交给原生 v3 Transport。Responses 转 Chat 时允许忽略 `include: ["reasoning.encrypted_content"]`，但不会伪造加密推理内容。
+
+## 路由模型
+
+| 数据表 | 作用 |
+|---|---|
+| `gw_channels` | 上游 Base URL、协议、附加请求头和渠道配置 |
+| `gw_channel_keys` | API Key、权重、状态和最大并发 |
+| `gw_abilities` | 公开模型到上游模型的映射、能力、优先级和价格 |
+| `gw_ability_transports` | 为每条能力显式声明可用 Transport |
+| `gw_route_states` | 按 Key、公开模型和 Transport 记录临时熔断状态 |
+| `gw_model_meta` | 展示名、分组、排序、思考档和最大输出元数据，不参与选路 |
+
+路由不会根据渠道类型猜测上游端点。原生 Transport 优先，其后比较 Ability 优先级，同档 Key 按权重选择。一次请求最多尝试 3 个可用路由，并在请求结束后释放并发占用。
+
+## 主要能力
+
+- 文本、图片、文件、音频、视频、函数工具、推理和结构化输出的 canonical 表达；实际支持范围由 Transport 与 Ability 能力共同校验。
+- Responses 使用 Prism `resp_` ID，支持 `Idempotency-Key`、`previous_response_id`、`GET`、`DELETE`、取消和 `input_items`。
+- 上游执行前预授权计费，终态 usage 到达后按实际用量结算；未指定输出上限时的 `4096` 仅用于预授权估算，不代表模型最大输出。
+- 每次真实上游尝试写入请求日志，记录 Transport、路径、模型、状态、耗时和 usage，并对凭据及大型 data URL 脱敏。
+- Playground 复用同一个 Gateway Engine，支持 Chat、Responses、Messages、多模态粘贴/拖放、能力调用、历史记录和调试信息。
+- 图片与视频生成支持统一能力接口、同步/轮询/回调渠道及后台任务。
+- `/health` 检查 MySQL 与 Redis，`/metrics` 暴露 Prometheus 指标。
+
+普通 `/v1/chat/completions` 调用会记录请求日志，但不会自动创建 Conversation；对话记录由 Playground 保存。Responses 状态单独存储在 `ai_responses`。
 
 ## 项目结构
 
-```
+```text
 Prism/
-├── cmd/server/                  # 服务入口
-├── configs/                     # 配置文件
-├── console/                     # React 前端（构建后嵌入二进制）
-│   └── pages/                   # 页面（Dashboard/Channels/ChatModels/Tokens/...）
+├── cmd/server/                    # 服务入口与依赖初始化
+├── configs/                       # 示例、Docker 与本地配置
+├── console/                       # React 管理端，dist 嵌入 Go 二进制
+├── database/migrations/           # 按时间排序的数据迁移
 ├── internal/
-│   ├── api/
-│   │   ├── admin/               # 管理员 API（渠道/模型/用户/日志/发现）
-│   │   ├── console/             # 控制台 API（Token/仪表盘/Playground/对话/文档）
-│   │   ├── open/                # 公开 API（Chat/能力/任务/模型）
-│   │   ├── callback/            # 上游回调接收
-│   │   └── middleware/          # JWT/Token鉴权/限流/CORS/日志/错误处理
-│   ├── model/                   # 数据模型（User/Channel/Token/Endpoint/Task/Log/Conversation）
-│   ├── domain/                  # 领域接口
-│   ├── repository/              # 数据访问层
-│   ├── provider/
-│   │   ├── chat/                # Chat 提供商适配（OpenAI/Anthropic/Google）
-│   │   └── mapping/             # 参数/响应映射规则引擎
-│   ├── service/                 # 业务逻辑（路由/计费/对话/日志/统计/模型管理）
-│   └── worker/                  # 异步任务（提交/轮询/超时/回调/模型发现/上传）
-├── pkg/                         # 公共组件
-│   ├── auth/                    # JWT + 密码加密
-│   ├── cache/                   # Redis 客户端
-│   ├── config/                  # Viper 配置加载
-│   ├── database/                # GORM 数据库
-│   ├── httputil/                # HTTP 客户端（普通 + 流式）
-│   ├── logger/                  # Zap 日志
-│   ├── metrics/                 # Prometheus 指标
-│   ├── queue/                   # Asynq 任务队列
-│   └── filestorage/             # 文件存储
-├── Dockerfile                   # 多阶段构建
-├── docker-compose.yml           # 一键部署（Prism + MySQL + Redis）
-└── build.bat                    # Windows 构建 Linux 二进制
+│   ├── api/                       # Console、Admin、V1 与回调路由
+│   ├── gateway/
+│   │   ├── canonical/             # 协议中立模型和事件
+│   │   ├── codec/                 # 三种下游协议编解码
+│   │   ├── engine/                # 执行、重试、计费与日志
+│   │   ├── handler/               # Chat、Responses、Messages、Files
+│   │   ├── pipeline/              # Chat 边界编排与 Playground 复用
+│   │   ├── responses/             # Responses 生命周期
+│   │   ├── routing/               # 选路、并发和熔断
+│   │   └── transport/             # 五种上游 Transport
+│   ├── model/                     # GORM 数据模型
+│   ├── service/                   # 管理、计费与异步能力业务
+│   └── worker/                    # Asynq 后台任务
+├── pkg/                           # 配置、数据库、缓存、日志、指标等组件
+├── API_REFERENCE.md               # 静态 API 参考
+├── Dockerfile
+└── docker-compose.yml
 ```
 
 ## 快速开始
 
 ### 环境要求
 
-- Go 1.25+
-- Node.js 18+
+- Go 1.25.6+
+- Node.js `^20.19.0` 或 `>=22.12.0`
 - MySQL 8+
-- Redis 6+
+- Redis 7+
 
-### Docker 部署（推荐）
+### Docker Compose（本地体验）
 
 ```bash
 git clone https://github.com/mirainya/Prism.git
 cd Prism
-docker compose up -d
+docker compose up -d --build
 ```
 
-服务启动后访问 `http://localhost:23523`。
+访问 `http://localhost:23523/`。Compose 文件包含固定的示例数据库密码、JWT 密钥，并公开 MySQL 与 Redis 端口，不应直接用于公网生产环境；生产部署前必须修改凭据、限制端口并提供独立配置。
 
-### 手动部署
+### 手动构建
 
 ```bash
-# 1. 克隆
 git clone https://github.com/mirainya/Prism.git
 cd Prism
-
-# 2. 配置
 cp configs/config.example.yaml configs/config.yaml
-# 编辑 config.yaml 填写数据库和 Redis 连接信息
 
-# 3. 构建前端
-cd console && npm install && npm run build && cd ..
+cd console
+npm ci
+npm run build
+cd ..
 
-# 4. 构建后端（Linux）
-GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build -ldflags="-s -w" -o prism ./cmd/server
-
-# 5. 部署
-# 上传 prism + configs/ 到服务器，运行 ./prism
+go build -trimpath -ldflags="-s -w" -o prism ./cmd/server
+./prism
 ```
 
-Windows 下可直接执行 `build.bat` 一键构建。
+`console/dist` 未提交到仓库，构建后端前必须先构建前端。Windows 可运行 `build.bat` 生成 Linux AMD64 二进制。
+
+首次启动会执行 GORM AutoMigrate 创建或补充表结构。已有实例升级时，还需备份数据库并按文件名顺序执行 `database/migrations/` 中尚未应用的 SQL；这些数据迁移不会由 AutoMigrate 自动执行。
+
+当前版本没有管理员自举命令。首次部署需先注册用户，再由数据库管理员将该用户的 `users.role` 提升为 `admin`，才能配置网关。
 
 ### 开发模式
 
 ```bash
-# 后端
+# 后端：http://localhost:23523
 go run ./cmd/server
 
-# 前端（独立开发服务器）
-cd console && npm run dev
+# 前端：http://localhost:3001
+cd console
+npm ci
+npm run dev
 ```
+
+前端开发服务器默认把 `/api` 转发到 `http://localhost:23523`；调试 `/v1` 时直接使用后端端口。
 
 ## API 概览
 
-### 公开接口（`/v1`，Token 鉴权）
+V1 接口支持以下两种认证头：
 
-```
-POST   /v1/chat/completions            # 对话补全（流式/非流式）
-POST   /v1/messages                    # Anthropic Messages 兼容接口
-POST   /v1/responses                   # OpenAI Responses 兼容接口
-GET    /v1/responses/:id               # 查询已保存响应
-DELETE /v1/responses/:id               # 删除响应
-POST   /v1/responses/:id/cancel        # 取消后台响应
-GET    /v1/responses/:id/input_items   # 获取响应输入项
-POST   /v1/files                       # 上传多模态文件
-GET    /v1/files                       # 文件列表
-GET    /v1/files/:id                   # 文件信息
-GET    /v1/files/:id/content           # 下载文件
-DELETE /v1/files/:id                   # 删除文件
-GET    /v1/models                       # 模型列表
-GET    /v1/models/:code                 # 模型详情
-GET    /v1/channels                      # 可用渠道列表
-GET    /v1/capabilities                 # 可用能力列表
-POST   /v1/capabilities/:capability     # 调用能力（图片/视频生成等）
-GET    /v1/tasks/:task_no               # 查询任务状态
-POST   /v1/tasks/:task_no/cancel        # 取消任务
-POST   /v1/images/generations           # 图片生成（兼容接口）
-POST   /v1/videos/generations           # 视频生成（兼容接口）
+```http
+Authorization: Bearer sk-prism-...
 ```
 
-认证方式：`Authorization: YOUR_TOKEN`
+```http
+x-api-key: sk-prism-...
+```
 
-### 管理接口（`/api/admin`，JWT + 管理员权限）
+除三个对话入口和 Files API 外，V1 还提供：
 
-| 模块 | 接口 |
-|------|------|
-| 用户管理 | 列表、角色变更、状态变更、充值 |
-| 渠道管理 | CRUD 渠道 + 渠道账号 |
-| 能力管理 | CRUD 能力 + 渠道能力绑定 |
-| 模型管理 | CRUD Chat 模型 + 渠道映射、预设模板、快速配置 |
-| 模型发现 | 同步上游模型列表、审批/拒绝待上线模型 |
-| 请求日志 | 列表、详情、重试 |
+- `GET /v1/models`、`GET /v1/models/:code`
+- `GET /v1/channels`、`GET /v1/capabilities`
+- `POST /v1/capabilities/:capability`
+- `POST /v1/images/generations`、`POST /v1/videos/generations`
+- `GET /v1/tasks/:task_no`、`POST /v1/tasks/:task_no/cancel`
 
-### 控制台接口（`/api`，JWT 认证）
+Responses 资源接口包括：
 
-| 模块 | 接口 |
-|------|------|
-| 认证 | 注册、登录、登出 |
-| 用户 | 个人信息、修改密码 |
-| Token | CRUD + 充值 |
-| 仪表盘 | 请求/用量/费用统计、Chat 统计 |
-| 对话 | 对话列表、消息详情 |
-| Playground | 对话补全、能力调用、任务管理、调试信息、文件上传 |
-| 文档 | 模型列表（用于 API 文档展示） |
+- `GET /v1/responses/:id`
+- `DELETE /v1/responses/:id`
+- `POST /v1/responses/:id/cancel`
+- `GET /v1/responses/:id/input_items`
+
+完整请求示例见 [`API_REFERENCE.md`](API_REFERENCE.md)。登录控制台后可访问 `/#/api-docs` 使用在线文档与试用面板。
 
 ## 管理后台
 
-| 模块 | 说明 |
-|------|------|
-| 仪表盘 | 请求量、用量、费用统计与趋势图 |
-| 渠道管理 | 添加/编辑上游渠道与账号，支持多种提供商 |
-| 模型管理 | Chat 模型配置、渠道映射、预设模板、模型发现 |
-| 能力管理 | 异步能力配置、参数 Schema、渠道绑定 |
-| Token 管理 | 创建/充值/禁用 API Token |
-| 用户管理 | 角色/状态/余额管理 |
-| 请求日志 | 查看请求详情、错误信息、用量、支持重试 |
-| 对话日志 | 按 Token 查看对话列表、消息内容、token 用量 |
-| 定价管理 | 按模型设置输入/输出 token 单价 |
-| Playground | 在线调试对话和能力调用，带调试面板 |
-| API 文档 | 动态生成的接口文档，内置试用面板 |
+- 网关渠道：管理 Gateway V2 渠道、Key、模型发现与导入。
+- 对话模型：管理 Ability、Transport 探测、公开模型元数据、分组与排序。
+- 能力渠道与能力配置：管理图片、视频等异步能力的渠道、账号和参数。
+- Playground：测试 Chat、Responses、Messages 和异步能力，查看历史与调试信息。
+- 用户与令牌：管理用户角色、余额、API Token、限流和充值。
+- 日志：查看调用日志、对话记录及管理员请求详情与重试。
+- 仪表盘与 API 文档：查看用量统计，并在登录状态下试用接口。
 
-## 配置说明
+## 配置
 
-`configs/config.yaml` 主要配置项：
+复制 [`configs/config.example.yaml`](configs/config.example.yaml) 为 `configs/config.yaml`。重点配置包括：
 
-```yaml
-server:
-  port: 23523                     # 监听端口
-  jwt_secret: "your-secret"       # JWT 密钥
+- `server.port`、`server.jwt_secret`
+- `server.reset_gateway_concurrency_on_start`：多实例共用数据库时必须设为 `false`
+- `database.*`、`redis.*`
+- `worker.*`、`http_client.*`
+- `file_storage.max_total_size_mb`
+- `rate_limit.*`
 
-database:
-  host: localhost
-  port: 3306
-  user: prism
-  password: ""
-  dbname: prism
-  max_open_conns: 50              # 最大连接数
-  max_idle_conns: 10              # 最大空闲连接
-  conn_max_lifetime: 3600         # 连接存活时间(秒)
-  log_level: warn                 # info/warn/error/silent
+数据库、Redis、Worker、HTTP Client 和监听端口都在启动时初始化，修改这些配置后需要重启服务。
 
-redis:
-  addr: localhost:6379
-  password: ""
-  db: 0
-  pool_size: 20                   # 连接池大小
+## 检查
 
-worker:
-  concurrency: 10                 # 异步任务并发数
-  poll_interval: 5s               # 轮询间隔
-  max_retry: 3                    # 最大重试次数
+```bash
+go test ./...
+go vet ./...
 
-http_client:
-  timeout: 30                     # 请求超时(秒)
-  max_idle_conns: 100             # 最大空闲连接
-  idle_conn_timeout: 90           # 空闲连接超时(秒)
-
-rate_limit:
-  enabled: false                  # 是否启用限流
-  requests_per_min: 60            # 每分钟请求上限(按 Token)
+cd console
+npm run build
 ```
 
 ## License
