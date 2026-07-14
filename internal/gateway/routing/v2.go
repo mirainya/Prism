@@ -46,6 +46,8 @@ type transportCandidate struct {
 	VendorModel     string
 	Priority        int
 	Weight          int
+	MaxConc         int
+	CurrentConc     int
 	PriceMode       string
 	InputPrice      decimal.Decimal
 	OutputPrice     decimal.Decimal
@@ -75,11 +77,11 @@ func (r *Router) SelectTransport(modelName string, requirements RouteRequirement
 
 		q := tx.Table("gw_abilities ab").
 			Select("ab.id AS ability_id, ab.key_id, ab.channel_id, ab.vendor_model, ab.priority, "+
-				"ab.price_mode, ab.input_price, ab.output_price, ck.weight, ck.api_key, "+
+				"ab.price_mode, ab.input_price, ab.output_price, ck.weight, ck.max_conc, ck.current_conc, ck.api_key, "+
 				"gc.protocol, gc.base_url, gc.extra_headers, gc.config AS channel_cfg, ab.capabilities, "+
 				"at.transport, at.config AS transport_config").
 			Joins("JOIN gw_ability_transports at ON at.ability_id = ab.id AND at.status = 1").
-			Joins("JOIN gw_channel_keys ck ON ck.id = ab.key_id AND ck.status = 1 AND ck.deleted_at IS NULL AND (ck.max_conc = 0 OR ck.current_conc < ck.max_conc)").
+			Joins("JOIN gw_channel_keys ck ON ck.id = ab.key_id AND ck.status = 1 AND ck.deleted_at IS NULL").
 			Joins("JOIN gw_channels gc ON gc.id = ab.channel_id AND gc.status = 1 AND gc.deleted_at IS NULL").
 			Where("ab.model_name = ? AND ab.status = 1", modelName).
 			Clauses(clause.Locking{Strength: "UPDATE"})
@@ -113,19 +115,27 @@ func (r *Router) SelectTransport(modelName string, requirements RouteRequirement
 
 		filtered := make([]transportCandidate, 0, len(all))
 		capabilityMatch := false
+		transportMatch := false
 		for _, candidate := range all {
 			if !supportsSemanticRequirements(semanticCapabilities(candidate.Capabilities), requirements) {
 				continue
 			}
 			capabilityMatch = true
+			if !transportAllowed(candidate.Transport, options.AllowedTransports) {
+				continue
+			}
+			transportMatch = true
 			attempt := routeStateKey{keyID: candidate.KeyID, transport: candidate.Transport}
-			if !transportAllowed(candidate.Transport, options.AllowedTransports) || disabled[attempt] || excludedAttempts[attempt] {
+			if (candidate.MaxConc > 0 && candidate.CurrentConc >= candidate.MaxConc) || disabled[attempt] || excludedAttempts[attempt] {
 				continue
 			}
 			filtered = append(filtered, candidate)
 		}
 		if !capabilityMatch {
 			return ErrCapabilityUnavailable
+		}
+		if !transportMatch {
+			return ErrNoCompatibleTransport
 		}
 		if len(filtered) == 0 {
 			return ErrNoRoute

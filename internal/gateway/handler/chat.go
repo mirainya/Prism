@@ -439,7 +439,7 @@ func respondChatPipelineError(c *gin.Context, err error) {
 		openaierror.Write(c, http.StatusNotFound, "The requested model does not exist", "invalid_request_error", &param, "model_not_found")
 		return
 	}
-	if errors.Is(err, routing.ErrCapabilityUnavailable) {
+	if errors.Is(err, routing.ErrCapabilityUnavailable) || errors.Is(err, routing.ErrNoCompatibleTransport) {
 		openaierror.InvalidRequest(c, "The requested model does not support all features used by this request", nil, "unsupported_model_capability")
 		return
 	}

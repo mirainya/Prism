@@ -146,6 +146,76 @@ func TestSelectTransportPreservesCapabilityErrors(t *testing.T) {
 	}
 }
 
+func TestSelectTransportDistinguishesIncompatibleTransport(t *testing.T) {
+	db := newTransportRoutingDB(t)
+	channel := createRouteFixture(t, db, "chat-transport", model.ProtocolOpenAI, 1, datatypes.JSON(`["responses"]`))
+	ability := routeFixtureAbility(t, db, channel.ID)
+	if err := db.Create(&model.GwAbilityTransport{AbilityID: ability.ID, Transport: model.UpstreamTransportOpenAIChat, Status: 1}).Error; err != nil {
+		t.Fatalf("create transport: %v", err)
+	}
+
+	_, err := NewRouter().SelectTransport("test-model", RouteRequirements{CapabilityResponses: true}, RouteOptions{
+		AllowedTransports: []model.UpstreamTransport{model.UpstreamTransportOpenAIResponses},
+	})
+	if !errors.Is(err, ErrNoCompatibleTransport) {
+		t.Fatalf("transport error=%v, want ErrNoCompatibleTransport", err)
+	}
+}
+
+func TestSelectTransportPreservesTemporaryNoRouteError(t *testing.T) {
+	db := newTransportRoutingDB(t)
+	channel := createRouteFixture(t, db, "temporarily-disabled", model.ProtocolOpenAI, 1, datatypes.JSON(`["responses"]`))
+	ability := routeFixtureAbility(t, db, channel.ID)
+	if err := db.Create(&model.GwAbilityTransport{AbilityID: ability.ID, Transport: model.UpstreamTransportOpenAIResponses, Status: 1}).Error; err != nil {
+		t.Fatalf("create transport: %v", err)
+	}
+	var key model.GwChannelKey
+	if err := db.Where("channel_id = ?", channel.ID).First(&key).Error; err != nil {
+		t.Fatalf("load key: %v", err)
+	}
+	if err := db.Create(&model.GwRouteState{
+		KeyID: key.ID, ModelName: "test-model", Transport: model.UpstreamTransportOpenAIResponses,
+		DisabledUntil: time.Now().Add(time.Minute),
+	}).Error; err != nil {
+		t.Fatalf("create state: %v", err)
+	}
+
+	_, err := NewRouter().SelectTransport("test-model", RouteRequirements{CapabilityResponses: true}, RouteOptions{
+		AllowedTransports: []model.UpstreamTransport{model.UpstreamTransportOpenAIResponses},
+	})
+	if !errors.Is(err, ErrNoRoute) {
+		t.Fatalf("temporary route error=%v, want ErrNoRoute", err)
+	}
+	if errors.Is(err, ErrNoCompatibleTransport) {
+		t.Fatalf("temporary route error=%v, must not be ErrNoCompatibleTransport", err)
+	}
+}
+
+func TestSelectTransportTreatsFullCompatibleKeyAsTemporaryNoRoute(t *testing.T) {
+	db := newTransportRoutingDB(t)
+	compatible := createRouteFixture(t, db, "full-compatible", model.ProtocolOpenAI, 1, datatypes.JSON(`["responses"]`))
+	compatibleAbility := routeFixtureAbility(t, db, compatible.ID)
+	if err := db.Create(&model.GwAbilityTransport{AbilityID: compatibleAbility.ID, Transport: model.UpstreamTransportOpenAIResponses, Status: 1}).Error; err != nil {
+		t.Fatalf("create compatible transport: %v", err)
+	}
+	if err := db.Model(&model.GwChannelKey{}).Where("channel_id = ?", compatible.ID).Updates(map[string]any{"max_conc": 1, "current_conc": 1}).Error; err != nil {
+		t.Fatalf("fill compatible key: %v", err)
+	}
+
+	incompatible := createRouteFixture(t, db, "available-incompatible", model.ProtocolOpenAI, 1, datatypes.JSON(`["responses"]`))
+	incompatibleAbility := routeFixtureAbility(t, db, incompatible.ID)
+	if err := db.Create(&model.GwAbilityTransport{AbilityID: incompatibleAbility.ID, Transport: model.UpstreamTransportOpenAIChat, Status: 1}).Error; err != nil {
+		t.Fatalf("create incompatible transport: %v", err)
+	}
+
+	_, err := NewRouter().SelectTransport("test-model", RouteRequirements{CapabilityResponses: true}, RouteOptions{
+		AllowedTransports: []model.UpstreamTransport{model.UpstreamTransportOpenAIResponses},
+	})
+	if !errors.Is(err, ErrNoRoute) {
+		t.Fatalf("full compatible route error=%v, want ErrNoRoute", err)
+	}
+}
+
 func TestSelectTransportTreatsLegacyCapabilitiesAsEmpty(t *testing.T) {
 	db := newTransportRoutingDB(t)
 	channel := createRouteFixture(t, db, "legacy", model.ProtocolOpenAI, 1, nil)

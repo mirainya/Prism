@@ -57,6 +57,59 @@ func TestOpenAIPlanKindsAndExtensionBoundaries(t *testing.T) {
 	}
 }
 
+func TestChatPlanDropsResponsesEncryptedReasoningInclude(t *testing.T) {
+	request := canonical.Request{
+		Model:   "m",
+		Include: []string{includeReasoningEncryptedContent},
+		ClientExtensions: map[string]json.RawMessage{
+			chatRequestExtras: json.RawMessage(`{"include":["reasoning.encrypted_content"]}`),
+		},
+		Items: []canonical.Item{{
+			Type: "message", Role: canonical.RoleUser,
+			Content: []canonical.Content{{Type: "input_text", Text: "hi"}},
+		}},
+	}
+	item := NewChat(nil)
+	plan := item.Plan(transport.OperationResponses, request, canonical.FeatureSet{})
+	if !plan.Supported() || plan.Kind != transport.PlanConverted || plan.Upstream != transport.OperationChat {
+		t.Fatalf("chat plan = %#v", plan)
+	}
+
+	prepared, err := item.Prepare(context.Background(), transport.Invocation{
+		Route: transport.Route{BaseURL: "https://example.test"}, Operation: transport.OperationResponses, Request: request,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var body map[string]json.RawMessage
+	if err := json.Unmarshal(prepared.Body, &body); err != nil {
+		t.Fatal(err)
+	}
+	if _, exists := body["include"]; exists {
+		t.Fatalf("Chat upstream body contains Responses include: %s", prepared.Body)
+	}
+}
+
+func TestChatPlanRejectsUnsupportedResponsesInclude(t *testing.T) {
+	tests := []struct {
+		name      string
+		operation transport.Operation
+		include   []string
+	}{
+		{name: "unsupported value", operation: transport.OperationResponses, include: []string{"file_search_call.results"}},
+		{name: "mixed values", operation: transport.OperationResponses, include: []string{includeReasoningEncryptedContent, "file_search_call.results"}},
+		{name: "non Responses operation", operation: transport.OperationChat, include: []string{includeReasoningEncryptedContent}},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			request := canonical.Request{Include: test.include}
+			if plan := NewChat(nil).Plan(test.operation, request, canonical.FeatureSet{}); plan.Supported() {
+				t.Fatalf("Chat accepted unsupported include: %#v", plan)
+			}
+		})
+	}
+}
+
 func TestConvertedOpenAIResponsesNormalizesAnthropicToolChoice(t *testing.T) {
 	request := canonical.Request{
 		Model: "m",

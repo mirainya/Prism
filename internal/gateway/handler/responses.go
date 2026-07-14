@@ -300,7 +300,7 @@ func respondResponsesError(c *gin.Context, err error) {
 		openaierror.Write(c, http.StatusNotFound, "Response or model not found", "invalid_request_error", nil, "not_found")
 		return
 	}
-	if errors.Is(err, routing.ErrCapabilityUnavailable) {
+	if errors.Is(err, routing.ErrCapabilityUnavailable) || errors.Is(err, routing.ErrNoCompatibleTransport) {
 		openaierror.InvalidRequest(c, "The requested model does not support this Responses request", nil, "unsupported_model_capability")
 		return
 	}

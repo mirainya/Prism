@@ -9,6 +9,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/mirainya/Prism/internal/gateway/canonical"
+	"github.com/mirainya/Prism/internal/gateway/routing"
 	"github.com/mirainya/Prism/internal/gateway/transport"
 	volcenginetransport "github.com/mirainya/Prism/internal/gateway/transport/volcengine"
 )
@@ -43,6 +44,22 @@ func TestWriteAnthropicExecutionErrorPreservesTransportDetails(t *testing.T) {
 		Details: &canonical.Error{Status: http.StatusBadRequest, Message: "max_tokens exceeds model limit", Type: "invalid_request_error"},
 	})
 	if recorder.Code != http.StatusBadRequest || !strings.Contains(recorder.Body.String(), `"message":"max_tokens exceeds model limit"`) {
+		t.Fatalf("unexpected response: status=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+}
+
+func TestWriteAnthropicExecutionErrorClassifiesIncompatibleTransport(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	recorder := httptest.NewRecorder()
+	context, _ := gin.CreateTestContext(recorder)
+	context.Request = httptest.NewRequest(http.MethodPost, "/v1/messages", nil)
+
+	writeAnthropicExecutionError(context, routing.ErrNoCompatibleTransport)
+
+	body := recorder.Body.String()
+	if recorder.Code != http.StatusBadRequest ||
+		!strings.Contains(body, `"type":"invalid_request_error"`) ||
+		!strings.Contains(body, `"message":"The requested model does not support this Anthropic request"`) {
 		t.Fatalf("unexpected response: status=%d body=%s", recorder.Code, recorder.Body.String())
 	}
 }

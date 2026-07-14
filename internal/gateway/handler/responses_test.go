@@ -9,6 +9,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/mirainya/Prism/internal/gateway/canonical"
+	"github.com/mirainya/Prism/internal/gateway/routing"
 	volcenginetransport "github.com/mirainya/Prism/internal/gateway/transport/volcengine"
 	protocol "github.com/mirainya/Prism/internal/provider/responses"
 	"github.com/mirainya/Prism/pkg/httputil"
@@ -54,6 +55,18 @@ func TestRespondResponsesErrorPreservesTransportDetails(t *testing.T) {
 		if !strings.Contains(body, expected) {
 			t.Fatalf("response missing %s: %s", expected, body)
 		}
+	}
+}
+
+func TestRespondResponsesErrorClassifiesIncompatibleTransport(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	recorder := httptest.NewRecorder()
+	context, _ := gin.CreateTestContext(recorder)
+
+	respondResponsesError(context, routing.ErrNoCompatibleTransport)
+
+	if recorder.Code != http.StatusBadRequest || !strings.Contains(recorder.Body.String(), `"code":"unsupported_model_capability"`) {
+		t.Fatalf("unexpected response: status=%d body=%s", recorder.Code, recorder.Body.String())
 	}
 }
 

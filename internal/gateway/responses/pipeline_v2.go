@@ -227,7 +227,9 @@ func (p *Pipeline) executeBackgroundV2(ctx context.Context, responseID string, f
 		if isResponseCancelled(record.ID) || errors.Is(err, context.Canceled) {
 			return nil
 		}
-		permanent := errors.Is(err, routing.ErrModelNotFound) || errors.Is(err, routing.ErrCapabilityUnavailable) ||
+		permanent := errors.Is(err, routing.ErrModelNotFound) ||
+			errors.Is(err, routing.ErrCapabilityUnavailable) ||
+			errors.Is(err, routing.ErrNoCompatibleTransport) ||
 			errors.Is(err, service.ErrInsufficientTokenBalance) || errors.Is(err, service.ErrInsufficientUserBalance)
 		return p.failBackgroundV2(&record, err, permanent, finalAttempt)
 	}

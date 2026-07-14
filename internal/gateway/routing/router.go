@@ -21,6 +21,9 @@ var (
 	// ErrCapabilityUnavailable means the model exists but none of its routes
 	// support every feature required by the request.
 	ErrCapabilityUnavailable = errors.New("requested capabilities are not supported by this model")
+	// ErrNoCompatibleTransport means semantically matching routes exist, but
+	// none declare a transport supported by the request execution plan.
+	ErrNoCompatibleTransport = errors.New("no compatible upstream transport")
 	// ErrNoRoute means matching routes exist but none are currently available.
 	ErrNoRoute = errors.New("no route currently available")
 )

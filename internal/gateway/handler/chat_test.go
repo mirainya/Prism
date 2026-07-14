@@ -90,6 +90,7 @@ func TestRespondChatPipelineErrorClassifiesRoutingErrors(t *testing.T) {
 	}{
 		{routing.ErrModelNotFound, http.StatusNotFound, "model_not_found"},
 		{routing.ErrCapabilityUnavailable, http.StatusBadRequest, "unsupported_model_capability"},
+		{routing.ErrNoCompatibleTransport, http.StatusBadRequest, "unsupported_model_capability"},
 		{routing.ErrNoRoute, http.StatusServiceUnavailable, "model_unavailable"},
 	}
 	for _, tt := range tests {

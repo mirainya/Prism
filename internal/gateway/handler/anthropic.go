@@ -144,8 +144,9 @@ func writeAnthropicExecutionError(c *gin.Context, err error) {
 	}
 	if errors.Is(err, routing.ErrModelNotFound) {
 		status, errorType = http.StatusNotFound, "not_found_error"
-	} else if errors.Is(err, routing.ErrCapabilityUnavailable) {
+	} else if errors.Is(err, routing.ErrCapabilityUnavailable) || errors.Is(err, routing.ErrNoCompatibleTransport) {
 		status, errorType = http.StatusBadRequest, "invalid_request_error"
+		message = "The requested model does not support this Anthropic request"
 	} else if errors.Is(err, routing.ErrNoRoute) {
 		status, errorType = http.StatusServiceUnavailable, "overloaded_error"
 	} else if status == http.StatusUnauthorized {

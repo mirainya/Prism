@@ -13,17 +13,18 @@ import (
 )
 
 const (
-	chatRequestExtras      = "openai_chat.request_extras"
-	chatRawContent         = "openai_chat.raw"
-	chatReasoningContent   = "openai_chat.reasoning_content"
-	chatToolCalls          = "openai_chat.tool_calls"
-	chatMessageName        = "openai_chat.message_name"
-	chatRefusal            = "openai_chat.refusal"
-	chatAnnotations        = "openai_chat.annotations"
-	chatAudio              = "openai_chat.audio"
-	chatChoiceIndex        = "openai_chat.choice_index"
-	chatFinishReason       = "openai_chat.finish_reason"
-	responsesRequestExtras = "openai_responses.request_extras"
+	includeReasoningEncryptedContent = "reasoning.encrypted_content"
+	chatRequestExtras                = "openai_chat.request_extras"
+	chatRawContent                   = "openai_chat.raw"
+	chatReasoningContent             = "openai_chat.reasoning_content"
+	chatToolCalls                    = "openai_chat.tool_calls"
+	chatMessageName                  = "openai_chat.message_name"
+	chatRefusal                      = "openai_chat.refusal"
+	chatAnnotations                  = "openai_chat.annotations"
+	chatAudio                        = "openai_chat.audio"
+	chatChoiceIndex                  = "openai_chat.choice_index"
+	chatFinishReason                 = "openai_chat.finish_reason"
+	responsesRequestExtras           = "openai_responses.request_extras"
 )
 
 func NewChat(client *http.Client) transport.Transport {
@@ -38,8 +39,11 @@ func chatPlan(operation transport.Operation, request canonical.Request, features
 	if operation != transport.OperationChat && operation != transport.OperationResponses && operation != transport.OperationMessages {
 		return transport.Unsupported(operation, "unsupported OpenAI Chat operation")
 	}
-	if request.Background || request.PreviousResponseID != "" || len(request.Include) > 0 || hasVolcengineOptions(request.ProviderOptions.Volcengine) {
+	if request.Background || request.PreviousResponseID != "" || hasVolcengineOptions(request.ProviderOptions.Volcengine) {
 		return transport.Unsupported(operation, "OpenAI Chat cannot express Responses persistence or provider options")
+	}
+	if !chatSupportsInclude(operation, request.Include) {
+		return transport.Unsupported(operation, "OpenAI Chat cannot preserve these Responses include options")
 	}
 	if features.Has(canonical.FeatureVideo) {
 		return transport.Unsupported(operation, "OpenAI Chat does not support video input")
@@ -72,6 +76,21 @@ func chatPlan(operation transport.Operation, request canonical.Request, features
 		return transport.Exact(operation, features)
 	}
 	return transport.Converted(operation, transport.OperationChat, features)
+}
+
+func chatSupportsInclude(operation transport.Operation, include []string) bool {
+	if len(include) == 0 {
+		return true
+	}
+	if operation != transport.OperationResponses {
+		return false
+	}
+	for _, value := range include {
+		if value != includeReasoningEncryptedContent {
+			return false
+		}
+	}
+	return true
 }
 
 func responsesPlan(operation transport.Operation, request canonical.Request, features canonical.FeatureSet) transport.Plan {
@@ -244,6 +263,9 @@ func encode(invocation transport.Invocation, responses bool) ([]byte, error) {
 	}
 	if len(request.Modalities) > 0 {
 		body["modalities"] = request.Modalities
+	}
+	if !responses && invocation.Operation == transport.OperationResponses {
+		delete(body, "include")
 	}
 	return json.Marshal(body)
 }
