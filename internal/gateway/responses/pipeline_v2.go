@@ -70,7 +70,7 @@ func releaseBackgroundResponseLease(responseID, owner string, requeue bool) erro
 		Updates(updates).Error
 }
 
-func (p *Pipeline) createV2(ctx context.Context, userID, tokenID uint, req *protocol.Request, idempotencyKey, requestID string) (out *Result, returnErr error) {
+func (p *Pipeline) createV2(ctx context.Context, userID, tokenID uint, req *protocol.Request, idempotencyKey, requestID string, conversationID uint) (out *Result, returnErr error) {
 	idempotencyKey = strings.TrimSpace(idempotencyKey)
 	if len(idempotencyKey) > 128 {
 		return nil, domain.ErrBadRequest("Idempotency-Key must not exceed 128 bytes")
@@ -86,12 +86,26 @@ func (p *Pipeline) createV2(ctx context.Context, userID, tokenID uint, req *prot
 		returnErr = withResponseCallError(callID, returnErr)
 	}()
 	originalRequestJSON, _ := json.Marshal(req)
+	idempotencyRequestJSON := responseIdempotencyRequestJSON(originalRequestJSON, conversationID)
+	requestHash := hashResponseRequest(idempotencyRequestJSON)
 	originalInput := datatypes.JSON(append([]byte(nil), req.Input...))
 	publicPreviousResponseID := req.PreviousResponseID
+	conversationProjection, projectionErr := newResponseConversationProjection(req, conversationID)
+	if projectionErr != nil {
+		return nil, projectionErr
+	}
+	if conversationID > 0 {
+		if err := service.ValidateAPIConversationID(conversationID, userID, tokenID); err != nil {
+			if errors.Is(err, service.ErrConversationNotFound) {
+				return nil, domain.ErrBadRequest("conversation was not found")
+			}
+			return nil, err
+		}
+	}
 	store := req.Store == nil || *req.Store
 	executionCtx := ctx
 	if idempotencyKey != "" {
-		claim, existing, err := acquireResponseIdempotency(ctx, tokenID, idempotencyKey, originalRequestJSON)
+		claim, existing, err := acquireResponseIdempotency(ctx, tokenID, idempotencyKey, idempotencyRequestJSON)
 		if err != nil {
 			return nil, err
 		}
@@ -101,7 +115,7 @@ func (p *Pipeline) createV2(ctx context.Context, userID, tokenID uint, req *prot
 		idempotencyClaim = claim
 		executionCtx = claim.Context()
 		if store {
-			if existing, err := findIdempotentResponse(executionCtx, tokenID, idempotencyKey, originalRequestJSON); err != nil || existing != nil {
+			if existing, err := findIdempotentResponse(executionCtx, tokenID, idempotencyKey, idempotencyRequestJSON); err != nil || existing != nil {
 				if err != nil {
 					return nil, err
 				}
@@ -117,17 +131,17 @@ func (p *Pipeline) createV2(ctx context.Context, userID, tokenID uint, req *prot
 		return nil, err
 	}
 	if req.Background {
-		result, err := p.enqueueBackgroundV2(executionCtx, userID, tokenID, req, originalRequestJSON, originalInput, publicPreviousResponseID, idempotencyKey, requestID, idempotencyClaim)
+		result, err := p.enqueueBackgroundV2(executionCtx, userID, tokenID, req, originalRequestJSON, idempotencyRequestJSON, requestHash, originalInput, publicPreviousResponseID, idempotencyKey, requestID, conversationID, conversationProjection, idempotencyClaim)
 		if err == nil && idempotencyClaim != nil {
 			idempotencyTransferred = true
 		}
 		return result, err
 	}
 
-	record, err := createRecord(userID, tokenID, req, originalRequestJSON, originalInput, publicPreviousResponseID, idempotencyKey, requestID, nil)
+	record, err := createRecord(userID, tokenID, req, originalRequestJSON, requestHash, originalInput, publicPreviousResponseID, idempotencyKey, requestID, nil, conversationProjection, conversationID)
 	if err != nil {
 		if idempotencyKey != "" && store {
-			if existing, lookupErr := findIdempotentResponse(executionCtx, tokenID, idempotencyKey, originalRequestJSON); lookupErr != nil || existing != nil {
+			if existing, lookupErr := findIdempotentResponse(executionCtx, tokenID, idempotencyKey, idempotencyRequestJSON); lookupErr != nil || existing != nil {
 				if lookupErr != nil {
 					return nil, lookupErr
 				}
@@ -139,7 +153,7 @@ func (p *Pipeline) createV2(ctx context.Context, userID, tokenID uint, req *prot
 	callID = record.CallID
 	requestID, err = ensureResponseCall(record)
 	if err != nil {
-		return nil, errors.Join(err, p.recordResponseFailure(record, err, false))
+		return nil, errors.Join(err, p.recordResponseFailure(record, err, false, conversationProjection))
 	}
 	options := p.v2ExecuteOptions(record, req, previous, requestID, originalRequestJSON)
 	if req.Stream {
@@ -148,19 +162,19 @@ func (p *Pipeline) createV2(ctx context.Context, userID, tokenID uint, req *prot
 		executionRequest.Store = boolPointer(record.Store)
 		canonicalRequest, decodeErr := openairesponses.DecodeRequest(*executionRequest)
 		if decodeErr != nil {
-			return nil, errors.Join(decodeErr, p.recordResponseFailure(record, decodeErr, false))
+			return nil, errors.Join(decodeErr, p.recordResponseFailure(record, decodeErr, false, conversationProjection))
 		}
 		result, executeErr := p.engine.Execute(executionCtx, canonicalRequest, options)
 		if executeErr != nil {
-			return nil, errors.Join(executeErr, p.recordResponseFailure(record, executeErr, false))
+			return nil, errors.Join(executeErr, p.recordResponseFailure(record, executeErr, false, conversationProjection))
 		}
 		if result == nil || result.Stream == nil {
 			executeErr = errors.New("Gateway V2 returned no Responses stream")
-			return nil, errors.Join(executeErr, p.recordResponseFailure(record, executeErr, false))
+			return nil, errors.Join(executeErr, p.recordResponseFailure(record, executeErr, false, conversationProjection))
 		}
 		if err := updateV2RecordRoute(record, result.Route, result.RequestLogID); err != nil {
 			deliveryErr := result.Stream.Abort(err, false)
-			return nil, errors.Join(err, deliveryErr, p.recordResponseFailure(record, err, false))
+			return nil, errors.Join(err, deliveryErr, p.recordResponseFailure(record, err, false, conversationProjection))
 		}
 		idempotencyTransferred = idempotencyClaim != nil
 		return &Result{
@@ -168,6 +182,7 @@ func (p *Pipeline) createV2(ctx context.Context, userID, tokenID uint, req *prot
 			AttemptID:                result.AttemptID,
 			PublicPreviousResponseID: publicPreviousResponseID,
 			idempotencyClaim:         idempotencyClaim,
+			conversation:             conversationProjection,
 		}, nil
 	}
 
@@ -176,23 +191,28 @@ func (p *Pipeline) createV2(ctx context.Context, userID, tokenID uint, req *prot
 	executionRequest.Store = boolPointer(record.Store)
 	result, err := p.v2.Execute(executionCtx, executionRequest, record.ID, options)
 	if err != nil {
-		return nil, errors.Join(err, p.recordResponseFailure(record, err, false))
-	}
-	if err := updateV2RecordRoute(record, result.Route, result.RequestLogID); err != nil {
-		deliveryErr := result.execution.FailDelivery(err, false)
-		return nil, errors.Join(err, deliveryErr, p.recordResponseFailure(record, err, false))
+		return nil, errors.Join(err, p.recordResponseFailure(record, err, false, conversationProjection))
 	}
 	record.ProviderResponseID = result.ProviderResponseID
+	record.RequestLogID = result.RequestLogID
+	completedProjection := conversationProjection.withResponse(result.CanonicalResponse)
+	stageResponseConversationOutputBestEffort(record, completedProjection)
+	if err := updateV2RecordRoute(record, result.Route, result.RequestLogID); err != nil {
+		deliveryErr := result.execution.FailDelivery(err, false)
+		return nil, errors.Join(err, deliveryErr, p.recordResponseFailure(record, err, false, completedProjection))
+	}
 	setPublicPreviousResponseID(result.Response, publicPreviousResponseID)
 	if err := persistCompletedRecord(record, result.Response, idempotencyClaim); err != nil {
 		deliveryErr := result.execution.FailDelivery(err, false)
-		return nil, errors.Join(err, deliveryErr, p.recordResponseFailure(record, err, false))
+		return nil, errors.Join(err, deliveryErr, p.recordResponseFailure(record, err, false, completedProjection))
 	}
+	stageResponseConversationOutputBestEffort(record, completedProjection)
 	idempotencyTransferred = idempotencyClaim != nil
 	p.recordDownstreamResponse(record.CallID, latestResponseAttemptIDTx(model.DB(), record.CallID), result.Response)
 	return &Result{
 		Response: result.Response, Record: record, CallID: record.CallID,
 		AttemptID: result.AttemptID, execution: result.execution,
+		conversation: completedProjection,
 	}, nil
 }
 
@@ -208,7 +228,7 @@ func (p *Pipeline) v2ExecuteOptions(record *model.AIResponse, request *protocol.
 		CallID: record.CallID, RequestID: requestID, DownstreamEndpoint: "/v1/responses",
 		DownstreamRequest: downstreamRequest, ResourceType: "response", ResourceID: record.ID,
 		KeepCallOpenOnError: record.Background, DeferCallCompletion: true,
-		BillingKey: billingKey, MaxAttempts: 3,
+		ProjectConversation: true, BillingKey: billingKey, MaxAttempts: 3,
 		PrepareRoute: func(_ context.Context, _ canonical.Request, route *routing.RouteResult) (canonical.Request, error) {
 			attempt := cloneResponseRequest(base)
 			if err := prepareContinuation(attempt, previous, route); err != nil {
@@ -257,7 +277,7 @@ func updateV2RecordRoute(record *model.AIResponse, route *routing.RouteResult, r
 	}).Error
 }
 
-func (p *Pipeline) enqueueBackgroundV2(ctx context.Context, userID, tokenID uint, req *protocol.Request, requestJSON []byte, inputItems datatypes.JSON, publicPreviousResponseID, idempotencyKey, requestID string, idempotencyClaim *responseIdempotencyClaim) (out *Result, returnErr error) {
+func (p *Pipeline) enqueueBackgroundV2(ctx context.Context, userID, tokenID uint, req *protocol.Request, requestJSON, idempotencyRequestJSON []byte, requestHash string, inputItems datatypes.JSON, publicPreviousResponseID, idempotencyKey, requestID string, conversationID uint, conversationProjection *responseConversationProjection, idempotencyClaim *responseIdempotencyClaim) (out *Result, returnErr error) {
 	callID := ""
 	defer func() {
 		returnErr = withResponseCallError(callID, returnErr)
@@ -271,7 +291,7 @@ func (p *Pipeline) enqueueBackgroundV2(ctx context.Context, userID, tokenID uint
 	record := &model.AIResponse{
 		ID: responseID, UserID: userID, TokenID: tokenID, Model: req.Model, Status: "queued",
 		Background: true, Store: true, PreviousResponseID: publicPreviousResponseID,
-		RequestJSON: requestJSON, RequestHash: hashResponseRequest(requestJSON), InputItems: inputItems, Metadata: metadata,
+		RequestJSON: requestJSON, RequestHash: requestHash, InputItems: inputItems, Metadata: metadata,
 		IdempotencyKey: storedKey, CreatedAt: time.Now(),
 	}
 	queued := &protocol.Response{
@@ -280,9 +300,9 @@ func (p *Pipeline) enqueueBackgroundV2(ctx context.Context, userID, tokenID uint
 	}
 	setPublicPreviousResponseID(queued, publicPreviousResponseID)
 	record.ResponseJSON = mustJSON(queued)
-	if err := createResponseWithCall(record, requestID, false); err != nil {
+	if err := createResponseWithCall(record, requestID, false, conversationProjection, conversationID); err != nil {
 		if idempotencyKey != "" {
-			if existing, lookupErr := findIdempotentResponse(ctx, tokenID, idempotencyKey, requestJSON); lookupErr != nil || existing != nil {
+			if existing, lookupErr := findIdempotentResponse(ctx, tokenID, idempotencyKey, idempotencyRequestJSON); lookupErr != nil || existing != nil {
 				if lookupErr != nil {
 					return nil, lookupErr
 				}
@@ -297,7 +317,7 @@ func (p *Pipeline) enqueueBackgroundV2(ctx context.Context, userID, tokenID uint
 		ContentType: "application/json", Data: requestJSON,
 	})
 	if err := enqueueResponseBackground(responseID); err != nil {
-		return nil, errors.Join(err, p.recordResponseFailure(record, err, false))
+		return nil, errors.Join(err, p.recordResponseFailure(record, err, false, conversationProjection))
 	}
 	if err := completeResponseIdempotency(idempotencyClaim, record.ID, queued); err != nil {
 		return nil, err
@@ -312,6 +332,9 @@ func (p *Pipeline) executeBackgroundV2(ctx context.Context, responseID string, f
 		return err
 	}
 	if !acquired || responseTerminal(record.Status) {
+		if storedResponseTerminal(record) {
+			projectResponseConversationBestEffort(record)
+		}
 		return nil
 	}
 	leaseOwner := record.LeaseOwner
@@ -372,9 +395,13 @@ func (p *Pipeline) executeBackgroundV2(ctx context.Context, responseID string, f
 		}
 		return failureErr
 	}
+	record.ProviderResponseID = result.ProviderResponseID
+	record.RequestLogID = result.RequestLogID
+	backgroundProjection := (&responseConversationProjection{}).withResponse(result.CanonicalResponse)
+	stageResponseConversationOutputBestEffort(record, backgroundProjection)
 	if isResponseCancelled(record.ID) {
 		deliveryErr := result.execution.CancelDelivery(context.Canceled, false)
-		return errors.Join(deliveryErr, p.recordResponseCancellation(record))
+		return errors.Join(deliveryErr, p.recordResponseCancellation(record, backgroundProjection))
 	}
 	result.Response.Background = true
 	result.Response.Store = true
@@ -388,9 +415,9 @@ func (p *Pipeline) executeBackgroundV2(ctx context.Context, responseID string, f
 			deliveryErr = result.execution.FailDelivery(err, false)
 		}
 		if cancelled {
-			return errors.Join(err, deliveryErr, p.recordResponseCancellation(record))
+			return errors.Join(err, deliveryErr, p.recordResponseCancellation(record, backgroundProjection))
 		}
-		return errors.Join(err, deliveryErr, p.recordResponseFailure(record, err, false))
+		return errors.Join(err, deliveryErr, p.recordResponseFailure(record, err, false, backgroundProjection))
 	}
 	if err := result.execution.CompleteDelivery(); err != nil {
 		return err
@@ -407,6 +434,9 @@ func (p *Pipeline) checkpointBackgroundResponse(record *model.AIResponse, leaseO
 	if record == nil || result == nil || result.Response == nil || result.Route == nil {
 		return errors.New("background response checkpoint is incomplete")
 	}
+	record.ProviderResponseID = result.ProviderResponseID
+	record.RequestLogID = result.RequestLogID
+	stageResponseConversationOutputBestEffort(record, (&responseConversationProjection{}).withResponse(result.CanonicalResponse))
 	responseJSON, err := json.Marshal(result.Response)
 	if err != nil {
 		return err
@@ -456,16 +486,20 @@ func (p *Pipeline) finalizeCheckpointedBackgroundResponse(record *model.AIRespon
 	if err := json.Unmarshal(record.ResponseJSON, &response); err != nil {
 		return fmt.Errorf("decode background response checkpoint: %w", err)
 	}
+	stageResponseConversationReadyBestEffort(record, nil)
 	claimed, err := claimResponseFinalization(record)
 	if err != nil {
 		return err
 	}
 	if !claimed {
 		var current model.AIResponse
-		if err := model.DB().Select("status").First(&current, "id = ?", record.ID).Error; err != nil {
+		if err := model.DB().First(&current, "id = ?", record.ID).Error; err != nil {
 			return err
 		}
 		if responseTerminal(current.Status) {
+			if storedResponseTerminal(&current) {
+				projectResponseConversationBestEffort(&current)
+			}
 			return nil
 		}
 		return errors.New("background response finalization was not claimed")
@@ -476,6 +510,7 @@ func (p *Pipeline) finalizeCheckpointedBackgroundResponse(record *model.AIRespon
 			Update("status", "result_ready").Error
 		return err
 	}
+	projectResponseConversationBestEffort(record)
 	return nil
 }
 
@@ -562,25 +597,31 @@ func (p *Pipeline) ProxyV2Stream(ctx context.Context, writer http.ResponseWriter
 		Store: result.Record.Store, Background: result.Record.Background,
 		PreserveNativeRaw: result.Record.UpstreamTransport == model.UpstreamTransportOpenAIResponses || result.Record.UpstreamTransport == model.UpstreamTransportVolcengineV3,
 	})
+	streamProjection := responseProjectionFromStreamSummary(result.conversation, summary)
+	stageResponseConversationOutputBestEffort(result.Record, streamProjection)
 	if err != nil {
 		deliveryErr := result.V2Stream.FailDelivery(err, ctx.Err() != nil)
-		return errors.Join(err, deliveryErr, p.recordResponseFailure(result.Record, err, false))
+		if responseAPICallStatus(result.Record.CallID) == model.APICallStatusCancelled {
+			return errors.Join(err, deliveryErr, p.recordResponseCancellation(result.Record, streamProjection))
+		}
+		return errors.Join(err, deliveryErr, p.recordResponseFailure(result.Record, err, false, streamProjection))
 	}
 	response, err := publicV2StreamResponse(summary, result.Record, request, result.PublicPreviousResponseID)
 	if err != nil {
 		deliveryErr := result.V2Stream.FailDelivery(err, false)
-		return errors.Join(err, deliveryErr, p.recordResponseFailure(result.Record, err, false))
+		return errors.Join(err, deliveryErr, p.recordResponseFailure(result.Record, err, false, streamProjection))
 	}
 	result.Record.ProviderResponseID = summary.ProviderResponseID
-	if err := completeRecord(result.Record, response, claim); err != nil {
+	if err := completeRecordWithProjection(result.Record, response, streamProjection, claim); err != nil {
 		deliveryErr := result.V2Stream.FailDelivery(err, false)
-		return errors.Join(err, deliveryErr, p.recordResponseFailure(result.Record, err, false))
+		return errors.Join(err, deliveryErr, p.recordResponseFailure(result.Record, err, false, streamProjection))
 	}
 	if err := result.V2Stream.CompleteDelivery(); err != nil {
 		return err
 	}
 	claim = nil
 	result.idempotencyClaim = nil
+	projectResponseConversationBestEffort(result.Record)
 	p.recordDownstreamResponse(result.Record.CallID, latestResponseAttemptIDTx(model.DB(), result.Record.CallID), response)
 	return nil
 }

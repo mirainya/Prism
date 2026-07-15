@@ -20,7 +20,7 @@ import (
 )
 
 func (p *Pipeline) completeV2(ctx context.Context, request *service.CompletionRequest) (*service.CompletionResponse, error) {
-	canonicalRequest, err := canonicalChatRequest(request, request.Messages, request.Model)
+	canonicalRequest, err := CanonicalChatRequest(request, request.Messages, request.Model)
 	if err != nil {
 		return nil, err
 	}
@@ -28,8 +28,15 @@ func (p *Pipeline) completeV2(ctx context.Context, request *service.CompletionRe
 	if err != nil {
 		return nil, err
 	}
-	if result == nil || result.Response == nil {
+	if result == nil {
 		return nil, errors.New("Gateway V2 returned no Chat response")
+	}
+	if result.Response == nil {
+		responseErr := errors.New("Gateway V2 returned no Chat response")
+		_, stageErr := service.StageAPIConversationProjectionOutputIfPresent(service.ConversationProjectionOutputRequest{
+			CallID: result.CallID, OutputItems: []canonical.Item{}, RequestLogID: result.RequestLogID,
+		})
+		return nil, errors.Join(responseErr, stageErr, result.FailDelivery(responseErr, false))
 	}
 	providerResponseID := result.Response.ProviderResponseID
 	if providerResponseID == "" {
@@ -49,23 +56,27 @@ func (p *Pipeline) completeV2(ctx context.Context, request *service.CompletionRe
 		_ = result.FailDelivery(err, false)
 		return nil, err
 	}
+	canonicalResponse := cloneCanonicalResponse(*result.Response)
 	return &service.CompletionResponse{
 		ID: wire.ID, Object: wire.Object, Created: wire.Created, Model: request.Model,
 		Choices: wire.Choices, Usage: wire.Usage, SystemFingerprint: wire.SystemFingerprint,
 		ServiceTier: wire.ServiceTier, ProviderResponseID: providerResponseID,
 		RequestLogID: result.RequestLogID, CallID: result.CallID, AttemptID: result.AttemptID,
 		ProviderKeyID: result.Route.KeyID, UpstreamTransport: result.Route.Transport,
-		CompleteDelivery: result.CompleteDelivery, FailDelivery: result.FailDelivery,
+		CanonicalResponse: &canonicalResponse,
+		CompleteDelivery:  result.CompleteDelivery, FailDelivery: result.FailDelivery,
 	}, nil
 }
 
 func (p *Pipeline) streamCompleteV2(ctx context.Context, request *service.CompletionRequest) (*StreamSession, error) {
-	canonicalRequest, err := canonicalChatRequest(request, request.Messages, request.Model)
+	canonicalRequest, err := CanonicalChatRequest(request, request.Messages, request.Model)
 	if err != nil {
 		return nil, err
 	}
 	canonicalRequest.Stream = true
-	result, err := p.v2.Execute(ctx, canonicalRequest, p.v2Options(request))
+	options := p.v2Options(request)
+	options.DeferCallCompletion = true
+	result, err := p.v2.Execute(ctx, canonicalRequest, options)
 	if err != nil {
 		return nil, err
 	}
@@ -94,6 +105,7 @@ func (p *Pipeline) v2Options(request *service.CompletionRequest) engine.ExecuteO
 		CallID: request.CallID, RequestID: request.RequestID,
 		DownstreamEndpoint: downstreamEndpoint, DownstreamRequest: request.DownstreamRequest,
 		ConversationID:      request.ConversationRecordID,
+		ProjectConversation: deferCallCompletion,
 		DeferCallCompletion: deferCallCompletion,
 		BillingKey:          uuid.NewString(), MaxAttempts: 3,
 		PrepareTransport: func(_ context.Context, candidate canonical.Request, transportID transport.ID) (canonical.Request, error) {
@@ -252,7 +264,9 @@ func cloneVolcengineOptions(source *canonical.VolcengineOptions) *canonical.Volc
 	return &result
 }
 
-func canonicalChatRequest(request *service.CompletionRequest, messages []chat.ChatMessage, model string) (canonical.Request, error) {
+// CanonicalChatRequest returns the protocol-neutral request for the supplied
+// downstream message set, before route-specific history reduction.
+func CanonicalChatRequest(request *service.CompletionRequest, messages []chat.ChatMessage, model string) (canonical.Request, error) {
 	wire := chat.ChatRequest{
 		Model: model, Messages: messages, Temperature: request.Temperature, MaxTokens: request.MaxTokens,
 		MaxCompletionTokens: request.MaxCompletionTokens, TopP: request.TopP,
@@ -276,6 +290,16 @@ func canonicalChatRequest(request *service.CompletionRequest, messages []chat.Ch
 		decoded.Reasoning = &canonical.Reasoning{Effort: *request.ReasoningEffort}
 	}
 	return decoded, nil
+}
+
+func canonicalChatRequest(request *service.CompletionRequest, messages []chat.ChatMessage, model string) (canonical.Request, error) {
+	return CanonicalChatRequest(request, messages, model)
+}
+
+func cloneCanonicalResponse(source canonical.Response) canonical.Response {
+	clone := source
+	clone.Output = canonical.CloneItems(source.Output)
+	return clone
 }
 
 func (s *StreamSession) proxyV2ChatStream(ctx context.Context, writer *io.PipeWriter, stream *engine.StreamResult, publicModel string) {

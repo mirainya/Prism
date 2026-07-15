@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"sync"
 
+	"github.com/mirainya/Prism/internal/gateway/canonical"
 	"github.com/mirainya/Prism/internal/gateway/engine"
 	"github.com/mirainya/Prism/internal/gateway/stream"
 	"github.com/mirainya/Prism/internal/model"
@@ -37,20 +38,27 @@ func (p *Pipeline) StreamComplete(ctx context.Context, request *service.Completi
 }
 
 func (s *StreamSession) FinalizeStream(_ *stream.AggregationResult, deliveryErr error) string {
+	providerID, finalizeErr := s.FinalizeStreamDelivery(deliveryErr, deliveryErr != nil)
+	if finalizeErr != nil && logger.L != nil {
+		logger.Error("finalize chat stream delivery", zap.String("call_id", s.callID), zap.Error(finalizeErr))
+	}
+	return providerID
+}
+
+// FinalizeStreamDelivery records the downstream delivery outcome and returns
+// any persistence failure to callers that must project only terminal calls.
+func (s *StreamSession) FinalizeStreamDelivery(deliveryErr error, clientDisconnected bool) (string, error) {
 	var finalizeErr error
 	if s != nil && s.stream != nil {
 		if deliveryErr == nil {
 			finalizeErr = s.stream.CompleteDelivery()
 		} else {
-			finalizeErr = s.stream.FailDelivery(deliveryErr, true)
+			finalizeErr = s.stream.FailDelivery(deliveryErr, clientDisconnected)
 		}
-	}
-	if finalizeErr != nil && logger.L != nil {
-		logger.Error("finalize chat stream delivery", zap.String("call_id", s.callID), zap.Error(finalizeErr))
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return s.providerID
+	return s.providerID, finalizeErr
 }
 
 func (s *StreamSession) Cleanup() {
@@ -100,4 +108,11 @@ func (s *StreamSession) UpstreamTransport() model.UpstreamTransport {
 		return ""
 	}
 	return s.transport
+}
+
+func (s *StreamSession) CanonicalResponse() canonical.Response {
+	if s == nil || s.stream == nil {
+		return canonical.Response{}
+	}
+	return s.stream.CanonicalResponse()
 }

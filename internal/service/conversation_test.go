@@ -27,7 +27,7 @@ func TestSaveConversationTurnBindsRequestLog(t *testing.T) {
 		t.Fatalf("migrate conversation tables: %v", err)
 	}
 
-	requestLog := &model.ChannelRequestLog{RequestType: model.RequestTypeChat}
+	requestLog := &model.ChannelRequestLog{CallID: "call_conversation", RequestType: model.RequestTypeChat}
 	if err := db.Create(requestLog).Error; err != nil {
 		t.Fatalf("create request log: %v", err)
 	}
@@ -370,7 +370,7 @@ func setupConversationDomainTestDB(t *testing.T) *gorm.DB {
 	db := setupTestDB(t)
 	if err := db.AutoMigrate(
 		&model.Conversation{}, &model.Message{}, &model.ConversationTurn{}, &model.ConversationItem{},
-		&model.ChannelRequestLog{}, &model.APICall{},
+		&model.ChannelRequestLog{}, &model.APICall{}, &model.AIResponse{},
 	); err != nil {
 		t.Fatal(err)
 	}
@@ -381,7 +381,8 @@ func createConversationTestCall(t *testing.T, db *gorm.DB, id string, userID, to
 	t.Helper()
 	call := &model.APICall{
 		ID: id, RequestID: id, UserID: userID, TokenID: tokenID, Status: model.APICallStatusCompleted,
-		InputTokens: 3, OutputTokens: 2, TotalTokens: 5, FinalCost: cost, DurationMs: 25,
+		ProjectConversation: true,
+		InputTokens:         3, OutputTokens: 2, TotalTokens: 5, FinalCost: cost, DurationMs: 25,
 	}
 	if err := db.Create(call).Error; err != nil {
 		t.Fatal(err)

@@ -22,20 +22,27 @@ const (
 )
 
 type callCompletionIntent struct {
-	FinalAttemptID        uint            `json:"final_attempt_id,omitempty"`
-	InputTokens           int             `json:"input_tokens,omitempty"`
-	OutputTokens          int             `json:"output_tokens,omitempty"`
-	TotalTokens           int             `json:"total_tokens,omitempty"`
-	CachedInputTokens     int             `json:"cached_input_tokens,omitempty"`
-	ReasoningOutputTokens int             `json:"reasoning_output_tokens,omitempty"`
-	UsageJSON             json.RawMessage `json:"usage_json,omitempty"`
-	ProviderResponseID    string          `json:"provider_response_id,omitempty"`
-	HTTPStatus            int             `json:"http_status,omitempty"`
+	FinalAttemptID         uint                                 `json:"final_attempt_id,omitempty"`
+	InputTokens            int                                  `json:"input_tokens,omitempty"`
+	OutputTokens           int                                  `json:"output_tokens,omitempty"`
+	TotalTokens            int                                  `json:"total_tokens,omitempty"`
+	CachedInputTokens      int                                  `json:"cached_input_tokens,omitempty"`
+	ReasoningOutputTokens  int                                  `json:"reasoning_output_tokens,omitempty"`
+	UsageJSON              json.RawMessage                      `json:"usage_json,omitempty"`
+	ProviderResponseID     string                               `json:"provider_response_id,omitempty"`
+	HTTPStatus             int                                  `json:"http_status,omitempty"`
+	ConversationProjection *ConversationProjectionOutputRequest `json:"conversation_projection,omitempty"`
 }
 
 func persistCallCompletionIntent(callID string, req *CompleteCallRequest, _ error) error {
 	if strings.TrimSpace(callID) == "" || req == nil {
 		return nil
+	}
+	var projection *ConversationProjectionOutputRequest
+	if req.ConversationProjection != nil {
+		projectionCopy := *req.ConversationProjection
+		projectionCopy.OutputItems = normalizeConversationProjectionItemsForStorage(req.ConversationProjection.OutputItems)
+		projection = &projectionCopy
 	}
 	intent := callCompletionIntent{
 		FinalAttemptID: req.FinalAttemptID,
@@ -43,6 +50,7 @@ func persistCallCompletionIntent(callID string, req *CompleteCallRequest, _ erro
 		CachedInputTokens: req.CachedInputTokens, ReasoningOutputTokens: req.ReasoningOutputTokens,
 		UsageJSON:          append(json.RawMessage(nil), req.UsageJSON...),
 		ProviderResponseID: req.ProviderResponseID, HTTPStatus: req.HTTPStatus,
+		ConversationProjection: projection,
 	}
 	encoded, err := json.Marshal(&intent)
 	if err != nil {
@@ -199,6 +207,11 @@ func claimStaleForegroundCall(ctx context.Context, callID string, cutoff time.Ti
 			return err
 		}
 		if call.Status == model.APICallStatusFailed && call.ErrorCode == staleCallPendingCode {
+			if call.ProjectConversation {
+				if err := stageTerminalConversationProjectionOutputTx(tx, &call, nil); err != nil {
+					return err
+				}
+			}
 			claimed = true
 			return nil
 		}
@@ -219,6 +232,7 @@ func claimStaleForegroundCall(ctx context.Context, callID string, cutoff time.Ti
 					CachedInputTokens: intent.CachedInputTokens, ReasoningOutputTokens: intent.ReasoningOutputTokens,
 					UsageJSON: datatypes.JSON(intent.UsageJSON), ProviderResponseID: intent.ProviderResponseID,
 					HTTPStatus: intent.HTTPStatus, CompleteStartedAttempt: true,
+					ConversationProjection: intent.ConversationProjection,
 				})
 				if completeErr == nil {
 					claimed = true

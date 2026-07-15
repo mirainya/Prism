@@ -153,22 +153,23 @@ func GenerateRequestID() string {
 }
 
 type StartCallRequest struct {
-	ID               string
-	RequestID        string
-	UserID           uint
-	TokenID          uint
-	Endpoint         string
-	Operation        string
-	Model            string
-	IsStream         bool
-	Background       bool
-	Store            bool
-	RetainPayload    *bool
-	PayloadExpiresAt *time.Time
-	ResourceType     string
-	ResourceID       string
-	ConversationID   uint
-	ReservedAmount   decimal.Decimal
+	ID                  string
+	RequestID           string
+	UserID              uint
+	TokenID             uint
+	Endpoint            string
+	Operation           string
+	Model               string
+	IsStream            bool
+	Background          bool
+	Store               bool
+	RetainPayload       *bool
+	PayloadExpiresAt    *time.Time
+	ResourceType        string
+	ResourceID          string
+	ConversationID      uint
+	ProjectConversation bool
+	ReservedAmount      decimal.Decimal
 }
 
 type StartAttemptRequest struct {
@@ -239,38 +240,41 @@ type CompleteCallRequest struct {
 	HTTPStatus             int
 	ClientDisconnected     bool
 	CompleteStartedAttempt bool
+	ConversationProjection *ConversationProjectionOutputRequest
 }
 
 type FailCallRequest struct {
-	LeaseOwner            string
-	FinalAttemptID        uint
-	HTTPStatus            int
-	ErrorType             string
-	ErrorCode             string
-	ErrorMessage          string
-	ErrorParam            datatypes.JSON
-	ErrorRetryable        bool
-	InputTokens           int
-	OutputTokens          int
-	TotalTokens           int
-	CachedInputTokens     int
-	ReasoningOutputTokens int
-	UsageJSON             datatypes.JSON
-	FinalCost             decimal.Decimal
-	RefundedAmount        decimal.Decimal
-	ClientDisconnected    bool
-	FailStartedAttempt    bool
+	LeaseOwner             string
+	FinalAttemptID         uint
+	HTTPStatus             int
+	ErrorType              string
+	ErrorCode              string
+	ErrorMessage           string
+	ErrorParam             datatypes.JSON
+	ErrorRetryable         bool
+	InputTokens            int
+	OutputTokens           int
+	TotalTokens            int
+	CachedInputTokens      int
+	ReasoningOutputTokens  int
+	UsageJSON              datatypes.JSON
+	FinalCost              decimal.Decimal
+	RefundedAmount         decimal.Decimal
+	ClientDisconnected     bool
+	FailStartedAttempt     bool
+	ConversationProjection *ConversationProjectionOutputRequest
 }
 
 type CancelCallRequest struct {
-	LeaseOwner         string
-	FinalAttemptID     uint
-	HTTPStatus         int
-	ErrorType          string
-	ErrorCode          string
-	ErrorMessage       string
-	ErrorParam         datatypes.JSON
-	ClientDisconnected bool
+	LeaseOwner             string
+	FinalAttemptID         uint
+	HTTPStatus             int
+	ErrorType              string
+	ErrorCode              string
+	ErrorMessage           string
+	ErrorParam             datatypes.JSON
+	ClientDisconnected     bool
+	ConversationProjection *ConversationProjectionOutputRequest
 }
 
 type ListCallsRequest struct {
@@ -338,24 +342,25 @@ func (s *APICallService) StartCallTx(db *gorm.DB, req *StartCallRequest) (*model
 	now := time.Now()
 	retainPayload, payloadExpiresAt := resolvePayloadPolicy(req.RetainPayload, req.PayloadExpiresAt, now)
 	call := &model.APICall{
-		ID:               callID,
-		RequestID:        requestID,
-		UserID:           req.UserID,
-		TokenID:          req.TokenID,
-		Endpoint:         strings.TrimSpace(req.Endpoint),
-		Operation:        strings.TrimSpace(req.Operation),
-		Model:            strings.TrimSpace(req.Model),
-		Status:           model.APICallStatusReceived,
-		IsStream:         req.IsStream,
-		Background:       req.Background,
-		Store:            req.Store,
-		RetainPayload:    retainPayload,
-		PayloadExpiresAt: payloadExpiresAt,
-		ResourceType:     strings.TrimSpace(req.ResourceType),
-		ResourceID:       strings.TrimSpace(req.ResourceID),
-		ConversationID:   req.ConversationID,
-		ReservedAmount:   req.ReservedAmount,
-		StartedAt:        now,
+		ID:                  callID,
+		RequestID:           requestID,
+		UserID:              req.UserID,
+		TokenID:             req.TokenID,
+		Endpoint:            strings.TrimSpace(req.Endpoint),
+		Operation:           strings.TrimSpace(req.Operation),
+		Model:               strings.TrimSpace(req.Model),
+		Status:              model.APICallStatusReceived,
+		IsStream:            req.IsStream,
+		Background:          req.Background,
+		Store:               req.Store,
+		RetainPayload:       retainPayload,
+		PayloadExpiresAt:    payloadExpiresAt,
+		ResourceType:        strings.TrimSpace(req.ResourceType),
+		ResourceID:          strings.TrimSpace(req.ResourceID),
+		ConversationID:      req.ConversationID,
+		ProjectConversation: req.ProjectConversation,
+		ReservedAmount:      req.ReservedAmount,
+		StartedAt:           now,
 	}
 	if err := db.Create(call).Error; err != nil {
 		return nil, err
@@ -720,6 +725,9 @@ func (s *APICallService) CompleteCallTx(db *gorm.DB, callID string, req *Complet
 		updates["first_byte_at"] = *finalAttempt.FirstByteAt
 		updates["ttft_ms"] = elapsedMilliseconds(call.StartedAt, *finalAttempt.FirstByteAt)
 	}
+	if err := stageTerminalConversationProjectionOutputTx(db, call, result.ConversationProjection); err != nil {
+		return err
+	}
 	return transitionCallStatus(
 		db,
 		callID,
@@ -1020,6 +1028,9 @@ func (s *APICallService) FailCallTx(db *gorm.DB, callID string, req *FailCallReq
 		updates["first_byte_at"] = *finalAttempt.FirstByteAt
 		updates["ttft_ms"] = elapsedMilliseconds(call.StartedAt, *finalAttempt.FirstByteAt)
 	}
+	if err := stageTerminalConversationProjectionOutputTx(db, call, result.ConversationProjection); err != nil {
+		return err
+	}
 	return transitionCallStatus(
 		db,
 		callID,
@@ -1076,6 +1087,9 @@ func (s *APICallService) CancelCallTx(tx *gorm.DB, callID string, req *CancelCal
 	}
 	if len(req.ErrorParam) > 0 {
 		updates["error_param"] = req.ErrorParam
+	}
+	if err := stageTerminalConversationProjectionOutputTx(tx, &call, req.ConversationProjection); err != nil {
+		return err
 	}
 	result := tx.Model(&model.APICall{}).
 		Where("id = ? AND status IN ?", call.ID, []model.APICallStatus{
@@ -1441,6 +1455,65 @@ func validateCallLease(call *model.APICall, owner string) error {
 	}
 	if call == nil || call.LeaseOwner != owner || call.LeaseExpiresAt == nil || !call.LeaseExpiresAt.After(time.Now()) {
 		return ErrAPICallLeaseUnavailable
+	}
+	return nil
+}
+
+func stageTerminalConversationProjectionOutputTx(
+	tx *gorm.DB,
+	call *model.APICall,
+	projection *ConversationProjectionOutputRequest,
+) error {
+	if call == nil {
+		return fmt.Errorf("%w: API call is nil", ErrAPICallInvalidInput)
+	}
+	if !call.ProjectConversation {
+		if projection != nil {
+			return fmt.Errorf("%w: call %s is not configured for conversation projection", ErrAPICallInvalidInput, call.ID)
+		}
+		return nil
+	}
+	callID := strings.TrimSpace(call.ID)
+	request := ConversationProjectionOutputRequest{CallID: callID}
+	if projection != nil {
+		request = *projection
+	}
+	if projectionCallID := strings.TrimSpace(request.CallID); projectionCallID != "" && projectionCallID != callID {
+		return fmt.Errorf(
+			"%w: conversation projection call id %s does not match terminal call %s",
+			ErrAPICallInvalidInput,
+			projectionCallID,
+			callID,
+		)
+	}
+	request.CallID = callID
+	var updated bool
+	var err error
+	if projection == nil {
+		updated, err = StageAPIConversationProjectionOutputIfMissingTx(tx, request)
+	} else {
+		updated, err = StageAPIConversationProjectionOutputIfPresentTx(tx, request)
+	}
+	if err != nil {
+		return fmt.Errorf("stage terminal conversation projection output: %w", err)
+	}
+	if updated {
+		return nil
+	}
+
+	// Some databases report zero affected rows when the same output was
+	// already staged. Confirm readiness without weakening the invariant.
+	var entry model.ConversationProjectionOutbox
+	if err := tx.Select("output_ready").
+		Where("call_id = ? AND input_ready = ?", callID, true).
+		First(&entry).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return fmt.Errorf("%w: input-ready entry for call %s", ErrConversationProjectionNotFound, callID)
+		}
+		return fmt.Errorf("verify terminal conversation projection output: %w", err)
+	}
+	if !entry.OutputReady {
+		return fmt.Errorf("%w: output for call %s", ErrConversationProjectionNotReady, callID)
 	}
 	return nil
 }

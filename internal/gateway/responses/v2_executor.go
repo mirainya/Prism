@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/mirainya/Prism/internal/gateway/canonical"
 	openairesponses "github.com/mirainya/Prism/internal/gateway/codec/openai_responses"
 	"github.com/mirainya/Prism/internal/gateway/engine"
 	"github.com/mirainya/Prism/internal/gateway/routing"
@@ -21,6 +22,7 @@ type V2Executor struct {
 
 type V2Result struct {
 	Response           *protocol.Response
+	CanonicalResponse  *canonical.Response
 	Route              *routing.RouteResult
 	Prepared           transport.PreparedRequest
 	ProviderResponseID string
@@ -69,6 +71,8 @@ func (e *V2Executor) Execute(ctx context.Context, request *protocol.Request, pub
 	if strings.TrimSpace(publicResponseID) == "" {
 		publicResponseID = "resp_" + strings.ReplaceAll(uuid.NewString(), "-", "")
 	}
+	canonicalResponse := *result.Response
+	canonicalResponse.Output = canonical.CloneItems(result.Response.Output)
 	result.Response.ID = publicResponseID
 	result.Response.Model = request.Model
 	if result.Response.CreatedAt == 0 {
@@ -101,6 +105,7 @@ func (e *V2Executor) Execute(ctx context.Context, request *protocol.Request, pub
 
 	return &V2Result{
 		Response:           &response,
+		CanonicalResponse:  &canonicalResponse,
 		Route:              result.Route,
 		Prepared:           result.Prepared,
 		ProviderResponseID: providerResponseID,

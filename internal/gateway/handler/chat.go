@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strconv"
 	"strings"
 
 	"github.com/gin-gonic/gin"
@@ -16,9 +17,11 @@ import (
 	"github.com/mirainya/Prism/internal/api/middleware"
 	"github.com/mirainya/Prism/internal/api/openaierror"
 	"github.com/mirainya/Prism/internal/domain"
+	"github.com/mirainya/Prism/internal/gateway/canonical"
 	"github.com/mirainya/Prism/internal/gateway/pipeline"
 	"github.com/mirainya/Prism/internal/gateway/routing"
 	"github.com/mirainya/Prism/internal/gateway/stream"
+	"github.com/mirainya/Prism/internal/gateway/transport"
 	"github.com/mirainya/Prism/internal/model"
 	"github.com/mirainya/Prism/internal/provider/chat"
 	"github.com/mirainya/Prism/internal/service"
@@ -30,12 +33,18 @@ type ChatHandler struct {
 }
 
 type payloadStreamWriter struct {
-	writer  stream.Writer
-	capture io.Writer
+	writer   stream.Writer
+	capture  io.Writer
+	writeErr error
 }
 
 func (w *payloadStreamWriter) Write(data []byte) (int, error) {
 	written, err := w.writer.Write(data)
+	if err != nil {
+		w.writeErr = err
+	} else if written != len(data) {
+		w.writeErr = io.ErrShortWrite
+	}
 	if written > 0 && w.capture != nil {
 		captured := written
 		if captured > len(data) {
@@ -75,7 +84,7 @@ func NewChatHandler(pipe *pipeline.Pipeline) *ChatHandler {
 
 // Completions POST /v1/chat/completions
 func (h *ChatHandler) Completions(c *gin.Context) {
-	c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, 32*1024*1024)
+	c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, maxPublicConversationRequestBytes)
 	var req struct {
 		Model               string                `json:"model" binding:"required"`
 		Messages            []chat.ChatMessage    `json:"messages" binding:"required,min=1"`
@@ -104,6 +113,7 @@ func (h *ChatHandler) Completions(c *gin.Context) {
 		Metadata            map[string]string     `json:"metadata"`
 		ServiceTier         *string               `json:"service_tier"`
 		ReasoningEffort     *string               `json:"reasoning_effort"`
+		ConversationID      json.RawMessage       `json:"conversation_id"`
 		// PreviousResponseID 客户端托管的火山 B 模式续话:带上次响应的 provider_response_id,
 		// 上游只需处理本轮新消息即可省 token(自愈失效见 pipeline.Complete)。
 		PreviousResponseID string `json:"previous_response_id"`
@@ -137,6 +147,30 @@ func (h *ChatHandler) Completions(c *gin.Context) {
 	}
 
 	token := middleware.GetToken(c)
+	bodyConversationID, err := parseJSONConversationID(req.ConversationID)
+	if err != nil {
+		param := "conversation_id"
+		openaierror.InvalidRequest(c, err.Error(), &param, "invalid_conversation_id")
+		return
+	}
+	conversationID, err := parsePrismConversationID(bodyConversationID, c.GetHeader(prismConversationIDHeader))
+	if err != nil {
+		param := "conversation_id"
+		openaierror.InvalidRequest(c, err.Error(), &param, "invalid_conversation_id")
+		return
+	}
+	if err := service.ValidateAPIConversationID(conversationID, token.UserID, token.ID); err != nil {
+		param := "conversation_id"
+		if errors.Is(err, service.ErrConversationNotFound) {
+			openaierror.Write(c, http.StatusNotFound, "conversation not found", "invalid_request_error", &param, "conversation_not_found")
+		} else {
+			openaierror.Write(c, http.StatusInternalServerError, "failed to validate conversation", "server_error", &param, "conversation_validation_failed")
+		}
+		return
+	}
+	if conversationID > 0 {
+		c.Header(prismConversationIDHeader, strconv.FormatUint(uint64(conversationID), 10))
+	}
 	resolvedMessages, err := resolveOwnedChatFiles(token.ID, req.Messages)
 	if err != nil {
 		param := "messages"
@@ -148,49 +182,94 @@ func (h *ChatHandler) Completions(c *gin.Context) {
 	downstreamRequest, _ := json.Marshal(req)
 	c.Header("X-Prism-Call-ID", callID)
 	completionReq := &service.CompletionRequest{
-		UserID:              token.UserID,
-		TokenID:             token.ID,
-		CallID:              callID,
-		RequestID:           requestID,
-		DownstreamEndpoint:  "/v1/chat/completions",
-		DownstreamRequest:   downstreamRequest,
-		Model:               req.Model,
-		Messages:            resolvedMessages,
-		Temperature:         req.Temperature,
-		MaxTokens:           maxTokens,
-		MaxCompletionTokens: req.MaxCompletionTokens,
-		TopP:                req.TopP,
-		FrequencyPenalty:    req.FrequencyPenalty,
-		PresencePenalty:     req.PresencePenalty,
-		Stop:                []string(req.Stop),
-		Stream:              req.Stream,
-		StreamSpecified:     true,
-		StreamOptions:       req.StreamOptions,
-		N:                   req.N,
-		Logprobs:            req.Logprobs,
-		TopLogprobs:         req.TopLogprobs,
-		Tools:               req.Tools,
-		ToolChoice:          req.ToolChoice,
-		ParallelToolCalls:   req.ParallelToolCalls,
-		ResponseFormat:      req.ResponseFormat,
-		Seed:                req.Seed,
-		User:                req.User,
-		Modalities:          req.Modalities,
-		Audio:               req.Audio,
-		Prediction:          req.Prediction,
-		Store:               req.Store,
-		Metadata:            req.Metadata,
-		ServiceTier:         req.ServiceTier,
-		ReasoningEffort:     req.ReasoningEffort,
-		PreviousResponseID:  req.PreviousResponseID,
+		UserID:               token.UserID,
+		TokenID:              token.ID,
+		CallID:               callID,
+		RequestID:            requestID,
+		DownstreamEndpoint:   "/v1/chat/completions",
+		DownstreamRequest:    downstreamRequest,
+		ConversationRecordID: conversationID,
+		Model:                req.Model,
+		Messages:             resolvedMessages,
+		Temperature:          req.Temperature,
+		MaxTokens:            maxTokens,
+		MaxCompletionTokens:  req.MaxCompletionTokens,
+		TopP:                 req.TopP,
+		FrequencyPenalty:     req.FrequencyPenalty,
+		PresencePenalty:      req.PresencePenalty,
+		Stop:                 []string(req.Stop),
+		Stream:               req.Stream,
+		StreamSpecified:      true,
+		StreamOptions:        req.StreamOptions,
+		N:                    req.N,
+		Logprobs:             req.Logprobs,
+		TopLogprobs:          req.TopLogprobs,
+		Tools:                req.Tools,
+		ToolChoice:           req.ToolChoice,
+		ParallelToolCalls:    req.ParallelToolCalls,
+		ResponseFormat:       req.ResponseFormat,
+		Seed:                 req.Seed,
+		User:                 req.User,
+		Modalities:           req.Modalities,
+		Audio:                req.Audio,
+		Prediction:           req.Prediction,
+		Store:                req.Store,
+		Metadata:             req.Metadata,
+		ServiceTier:          req.ServiceTier,
+		ReasoningEffort:      req.ReasoningEffort,
+		PreviousResponseID:   req.PreviousResponseID,
+	}
+	canonicalRequest, err := pipeline.CanonicalChatRequest(completionReq, req.Messages, req.Model)
+	if err != nil {
+		respondChatPipelineError(c, err)
+		return
+	}
+	store := req.Store != nil && *req.Store
+	if err := createAPIConversationCall(&service.StartCallRequest{
+		ID: callID, RequestID: requestID, UserID: token.UserID, TokenID: token.ID,
+		Endpoint: "/v1/chat/completions", Operation: string(transport.OperationChat), Model: req.Model,
+		IsStream: req.Stream, Store: store, ConversationID: conversationID,
+	}, service.ConversationProjectionInputRequest{
+		ConversationID: conversationID, PreviousResponseID: req.PreviousResponseID,
+		InputItems: canonical.CloneItems(canonicalRequest.Items),
+	}); err != nil {
+		respondChatPipelineError(c, err)
+		return
+	}
+	projectionBase := service.ConversationProjectionRequest{
+		UserID: token.UserID, TokenID: token.ID, Model: req.Model, CallID: callID,
+		ConversationID: conversationID, PreviousResponseID: req.PreviousResponseID,
+		InputItems: canonicalRequest.Items,
+	}
+	project := func(action string, requestLogID uint, providerResponseID string, keyID uint, upstreamTransport model.UpstreamTransport, response *service.CompletionResponse, streamResponse *canonical.Response) {
+		projection := projectionBase
+		projection.RequestLogID = requestLogID
+		projection.ProviderResponseID = providerResponseID
+		projection.Provenance = service.ConversationProvenance{KeyID: keyID, Transport: upstreamTransport}
+		if response != nil && response.CanonicalResponse != nil {
+			projection.OutputItems = response.CanonicalResponse.Output
+			projection.FinishReason = response.CanonicalResponse.FinishReason
+		}
+		if streamResponse != nil {
+			projection.OutputItems = streamResponse.Output
+			projection.FinishReason = streamResponse.FinishReason
+			if projection.ProviderResponseID == "" {
+				projection.ProviderResponseID = canonicalProviderResponseID(*streamResponse)
+			}
+		}
+		projectAPIConversationBestEffort(action, projection)
 	}
 	if req.Stream {
 		session, err := h.pipe.StreamComplete(c.Request.Context(), completionReq)
 		if err != nil {
 			respondChatPipelineError(c, err)
+			project("project failed chat stream", 0, "", 0, "", nil, nil)
 			return
 		}
 		defer session.Cleanup()
+		if session.RequestLogID() > 0 {
+			c.Header("X-Prism-Request-Log-ID", strconv.FormatUint(uint64(session.RequestLogID()), 10))
+		}
 
 		c.Header("Content-Type", "text/event-stream")
 		c.Header("Cache-Control", "no-cache")
@@ -203,25 +282,53 @@ func (h *ChatHandler) Completions(c *gin.Context) {
 			session.CallID(), session.AttemptID(), model.APICallPayloadResponse, "text/event-stream",
 		)
 		defer capture.SaveBestEffort()
-		writer := stream.Writer(c.Writer)
-		if capture != nil {
-			writer = &payloadStreamWriter{writer: writer, capture: capture}
-		}
-		agg, streamErr := stream.ProxyStream(writer, session.UpstreamResp.Body)
+		writer := &payloadStreamWriter{writer: stream.Writer(c.Writer), capture: capture}
+		_, streamErr := stream.ProxyStream(writer, session.UpstreamResp.Body)
 		session.Cleanup()
-		session.FinalizeStream(agg, streamErr)
+		clientDisconnected := writer.writeErr != nil || c.Request.Context().Err() != nil
+		canonicalResponse := session.CanonicalResponse()
+		stageAPIConversationOutputBestEffort("stage chat stream output", service.ConversationProjectionOutputRequest{
+			CallID: session.CallID(), OutputItems: canonical.CloneItems(canonicalResponse.Output),
+			RequestLogID: session.RequestLogID(), ProviderResponseID: canonicalProviderResponseID(canonicalResponse),
+			FinishReason: canonicalResponse.FinishReason,
+		})
+		providerResponseID, finalizeErr := session.FinalizeStreamDelivery(streamErr, clientDisconnected)
+		logDeliveryError("finalize chat stream delivery", session.CallID(), finalizeErr)
+		if finalizeErr == nil {
+			project("project chat stream", session.RequestLogID(), providerResponseID,
+				session.ProviderKeyID(), session.UpstreamTransport(), nil, &canonicalResponse)
+		}
 		return
 	}
 
 	chatResp, err := h.pipe.Complete(c.Request.Context(), completionReq)
 	if err != nil {
 		respondChatPipelineError(c, err)
+		project("project failed chat completion", 0, "", 0, "", nil, nil)
 		return
+	}
+	if chatResp.RequestLogID > 0 {
+		c.Header("X-Prism-Request-Log-ID", strconv.FormatUint(uint64(chatResp.RequestLogID), 10))
+	}
+	if conversationID > 0 {
+		chatResp.ConversationID = strconv.FormatUint(uint64(conversationID), 10)
+	}
+	if chatResp.CanonicalResponse != nil {
+		stageAPIConversationOutputBestEffort("stage chat completion output", service.ConversationProjectionOutputRequest{
+			CallID: chatResp.CallID, OutputItems: canonical.CloneItems(chatResp.CanonicalResponse.Output),
+			RequestLogID: chatResp.RequestLogID, ProviderResponseID: chatResp.ProviderResponseID,
+			FinishReason: chatResp.CanonicalResponse.FinishReason,
+		})
 	}
 	encoded, err := json.Marshal(chatResp)
 	if err != nil {
-		_ = failChatDelivery(chatResp, err, false)
+		deliveryErr := failChatDelivery(chatResp, err, false)
+		logDeliveryError("fail chat completion delivery", chatResp.CallID, deliveryErr)
 		respondChatPipelineError(c, err)
+		if deliveryErr == nil {
+			project("project failed chat completion", chatResp.RequestLogID, chatResp.ProviderResponseID,
+				chatResp.ProviderKeyID, chatResp.UpstreamTransport, chatResp, nil)
+		}
 		return
 	}
 	service.NewAPICallService().RecordPayloadBestEffort(&model.APICallPayload{
@@ -235,10 +342,20 @@ func (h *ChatHandler) Completions(c *gin.Context) {
 		writeErr = io.ErrShortWrite
 	}
 	if writeErr != nil {
-		_ = failChatDelivery(chatResp, writeErr, true)
+		deliveryErr := failChatDelivery(chatResp, writeErr, true)
+		logDeliveryError("fail chat completion delivery", chatResp.CallID, deliveryErr)
+		if deliveryErr == nil {
+			project("project aborted chat completion", chatResp.RequestLogID, chatResp.ProviderResponseID,
+				chatResp.ProviderKeyID, chatResp.UpstreamTransport, chatResp, nil)
+		}
 		return
 	}
-	logDeliveryError("complete chat call delivery", chatResp.CallID, completeChatDelivery(chatResp))
+	deliveryErr := completeChatDelivery(chatResp)
+	logDeliveryError("complete chat call delivery", chatResp.CallID, deliveryErr)
+	if deliveryErr == nil {
+		project("project chat completion", chatResp.RequestLogID, chatResp.ProviderResponseID,
+			chatResp.ProviderKeyID, chatResp.UpstreamTransport, chatResp, nil)
+	}
 }
 
 func completeChatDelivery(response *service.CompletionResponse) error {
@@ -251,6 +368,7 @@ func completeChatDelivery(response *service.CompletionResponse) error {
 	completion := &service.CompleteCallRequest{
 		FinalAttemptID: response.AttemptID, HTTPStatus: http.StatusOK,
 		ProviderResponseID: response.ProviderResponseID, CompleteStartedAttempt: true,
+		ConversationProjection: chatConversationProjectionOutput(response),
 	}
 	if response.Usage != nil {
 		completion.InputTokens = response.Usage.PromptTokens
@@ -273,16 +391,33 @@ func failChatDelivery(response *service.CompletionResponse, err error, clientDis
 	if response.FailDelivery != nil {
 		return response.FailDelivery(err, clientDisconnected)
 	}
+	projection := chatConversationProjectionOutput(response)
 	if clientDisconnected {
 		return service.NewAPICallService().CancelCall(response.CallID, &service.CancelCallRequest{
 			FinalAttemptID: response.AttemptID, ErrorType: "cancelled", ErrorCode: "client_disconnected",
-			ErrorMessage: err.Error(), ClientDisconnected: true,
+			ErrorMessage: err.Error(), ClientDisconnected: true, ConversationProjection: projection,
 		})
 	}
 	return service.NewAPICallService().FailCall(response.CallID, &service.FailCallRequest{
 		FinalAttemptID: response.AttemptID, HTTPStatus: http.StatusBadGateway,
 		ErrorType: "server_error", ErrorCode: "downstream_delivery_failed", ErrorMessage: err.Error(),
+		ConversationProjection: projection,
 	})
+}
+
+func chatConversationProjectionOutput(response *service.CompletionResponse) *service.ConversationProjectionOutputRequest {
+	if response == nil || response.CanonicalResponse == nil {
+		return nil
+	}
+	providerResponseID := response.ProviderResponseID
+	if providerResponseID == "" {
+		providerResponseID = canonicalProviderResponseID(*response.CanonicalResponse)
+	}
+	return &service.ConversationProjectionOutputRequest{
+		CallID: response.CallID, OutputItems: canonical.CloneItems(response.CanonicalResponse.Output),
+		RequestLogID: response.RequestLogID, ProviderResponseID: providerResponseID,
+		FinishReason: response.CanonicalResponse.FinishReason,
+	}
 }
 
 func validateChatMessages(messages []chat.ChatMessage) (message, param, code string) {

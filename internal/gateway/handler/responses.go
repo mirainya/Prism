@@ -18,6 +18,7 @@ import (
 	"github.com/mirainya/Prism/internal/gateway/routing"
 	gatewaytransport "github.com/mirainya/Prism/internal/gateway/transport"
 	protocol "github.com/mirainya/Prism/internal/provider/responses"
+	"github.com/mirainya/Prism/internal/service"
 	"github.com/mirainya/Prism/pkg/httputil"
 	"gorm.io/gorm"
 )
@@ -29,7 +30,7 @@ func NewResponsesHandler(pipe *responsepipeline.Pipeline) *ResponsesHandler {
 }
 
 func (h *ResponsesHandler) Create(c *gin.Context) {
-	c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, 70*1024*1024)
+	c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, maxPublicConversationRequestBytes)
 	var req protocol.Request
 	if err := decodeStrictJSON(c, &req); err != nil {
 		message, param, code := describeJSONError(err)
@@ -41,10 +42,28 @@ func (h *ResponsesHandler) Create(c *gin.Context) {
 		return
 	}
 	token := middleware.GetToken(c)
-	result, err := h.pipe.Create(
-		c.Request.Context(), token.UserID, token.ID, &req,
-		c.GetHeader("Idempotency-Key"), middleware.GetRequestID(c.Request.Context()),
-	)
+	conversationID, err := parsePrismConversationID("", c.GetHeader(prismConversationIDHeader))
+	if err != nil {
+		param := prismConversationIDHeader
+		openaierror.InvalidRequest(c, err.Error(), &param, "invalid_conversation_id")
+		return
+	}
+	if err := service.ValidateAPIConversationID(conversationID, token.UserID, token.ID); err != nil {
+		param := prismConversationIDHeader
+		if errors.Is(err, service.ErrConversationNotFound) {
+			openaierror.Write(c, http.StatusNotFound, "conversation not found", "invalid_request_error", &param, "conversation_not_found")
+		} else {
+			openaierror.Write(c, http.StatusInternalServerError, "failed to validate conversation", "server_error", &param, "conversation_validation_failed")
+		}
+		return
+	}
+	if conversationID > 0 {
+		c.Header(prismConversationIDHeader, strconv.FormatUint(uint64(conversationID), 10))
+	}
+	result, err := h.pipe.CreateWithOptions(c.Request.Context(), token.UserID, token.ID, &req,
+		c.GetHeader("Idempotency-Key"), responsepipeline.CreateOptions{
+			RequestID: middleware.GetRequestID(c.Request.Context()), ConversationID: conversationID,
+		})
 	if err != nil {
 		if callID := responsepipeline.CallIDFromError(err); callID != "" {
 			c.Header("X-Prism-Call-ID", callID)

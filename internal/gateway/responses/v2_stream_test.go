@@ -8,8 +8,12 @@ import (
 	"io"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/mirainya/Prism/internal/gateway/canonical"
+	openairesponses "github.com/mirainya/Prism/internal/gateway/codec/openai_responses"
+	"github.com/mirainya/Prism/internal/model"
+	protocol "github.com/mirainya/Prism/internal/provider/responses"
 )
 
 type v2StreamEvents struct {
@@ -17,6 +21,19 @@ type v2StreamEvents struct {
 	errors []error
 	index  int
 	closed int
+}
+
+type v2FailingWriter struct {
+	bytes.Buffer
+	match string
+	err   error
+}
+
+func (w *v2FailingWriter) Write(data []byte) (int, error) {
+	if strings.Contains(string(data), w.match) {
+		return 0, w.err
+	}
+	return w.Buffer.Write(data)
 }
 
 func (s *v2StreamEvents) Next(context.Context) (canonical.Event, error) {
@@ -220,6 +237,158 @@ func TestConsumeV2StreamBuildsConvertedToolLifecycle(t *testing.T) {
 	if summary == nil || summary.Response == nil || len(summary.Response.Output) != 1 || string(summary.Response.Output[0].Arguments) != `{"query":"hi"}` {
 		t.Fatalf("aggregated tool output = %#v", summary)
 	}
+}
+
+func TestConsumeV2StreamPreservesAnthropicReasoningTextAndParallelTools(t *testing.T) {
+	reasoning := canonical.Item{
+		ID: "thinking_0", Type: "reasoning", Role: canonical.RoleAssistant,
+		Content: []canonical.Content{{Type: "reasoning_text"}},
+	}
+	message := canonical.Item{
+		ID: "message_0", Type: "message", Role: canonical.RoleAssistant,
+		Content: []canonical.Content{{Type: "output_text"}},
+	}
+	firstTool := canonical.Item{
+		ID: "tool_1", Type: "function_call", CallID: "tool_1", Name: "search",
+		Arguments: json.RawMessage(`{}`), Status: "in_progress",
+	}
+	secondTool := canonical.Item{
+		ID: "tool_3", Type: "function_call", CallID: "tool_3", Name: "lookup",
+		Arguments: json.RawMessage(`{}`), Status: "in_progress",
+	}
+	completedFirstTool := firstTool
+	completedFirstTool.Arguments = json.RawMessage(`{"query":"alpha"}`)
+	completedFirstTool.Status = "completed"
+	completedSecondTool := secondTool
+	completedSecondTool.Arguments = json.RawMessage(`{"id":42}`)
+	completedSecondTool.Status = "completed"
+
+	events := &v2StreamEvents{events: []canonical.Event{
+		{Type: canonical.EventContentPartAdded, OutputIndex: 0, ContentIndex: 0, Item: &reasoning},
+		{Type: canonical.EventReasoningDelta, OutputIndex: 0, ContentIndex: 0, Item: &reasoning, Delta: "think"},
+		{Type: canonical.EventContentPartDone, OutputIndex: 0, ContentIndex: 0, Item: &reasoning},
+		{Type: canonical.EventOutputItemAdded, OutputIndex: 0, ToolIndex: 1, Item: &firstTool},
+		{Type: canonical.EventToolArgumentsDelta, OutputIndex: 0, ToolIndex: 1, Item: &firstTool, Delta: `{"query":"alpha"}`},
+		{Type: canonical.EventOutputItemDone, OutputIndex: 0, ToolIndex: 1, Item: &completedFirstTool},
+		{Type: canonical.EventContentPartAdded, OutputIndex: 0, ContentIndex: 2, Item: &message},
+		{Type: canonical.EventTextDelta, OutputIndex: 0, ContentIndex: 2, Item: &message, Delta: "answer"},
+		{Type: canonical.EventContentPartDone, OutputIndex: 0, ContentIndex: 2, Item: &message},
+		{Type: canonical.EventOutputItemAdded, OutputIndex: 0, ToolIndex: 3, Item: &secondTool},
+		{Type: canonical.EventToolArgumentsDelta, OutputIndex: 0, ToolIndex: 3, Item: &secondTool, Delta: `{"id":42}`},
+		{Type: canonical.EventOutputItemDone, OutputIndex: 0, ToolIndex: 3, Item: &completedSecondTool},
+		{Type: canonical.EventCompleted, ProviderResponseID: "provider_resp"},
+	}}
+	var output bytes.Buffer
+	summary, err := consumeV2Stream(context.Background(), &output, events, V2StreamPublicOptions{
+		ResponseID: "resp_public", Model: "public-model", CreatedAt: 123,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertAnthropicCompositeOutput(t, summary.Response.Output)
+	wire := output.String()
+	for _, index := range []string{`"output_index":0`, `"output_index":1`, `"output_index":2`, `"output_index":3`} {
+		if !strings.Contains(wire, index) {
+			t.Fatalf("converted stream is missing %s: %s", index, wire)
+		}
+	}
+	if strings.Contains(wire, `"content_index":2`) {
+		t.Fatalf("converted stream leaked the Anthropic block index as a content index: %s", wire)
+	}
+
+	publicResponse, err := publicV2StreamResponse(summary, &model.AIResponse{
+		ID: "resp_public", Model: "public-model", CreatedAt: time.Unix(123, 0),
+	}, &protocol.Request{Model: "public-model"}, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	persisted, err := openairesponses.DecodeItems(publicResponse.Output)
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertAnthropicCompositeOutput(t, persisted)
+}
+
+func TestConsumeV2StreamPreservesNormalizedPartialAnthropicOutput(t *testing.T) {
+	reasoning := canonical.Item{
+		ID: "thinking_0", Type: "reasoning", Role: canonical.RoleAssistant,
+		Content: []canonical.Content{{Type: "reasoning_text"}},
+	}
+	message := canonical.Item{
+		ID: "message_2", Type: "message", Role: canonical.RoleAssistant,
+		Content: []canonical.Content{{Type: "output_text"}},
+	}
+	events := &v2StreamEvents{events: []canonical.Event{
+		{Type: canonical.EventContentPartAdded, OutputIndex: 0, ContentIndex: 0, Item: &reasoning},
+		{Type: canonical.EventReasoningDelta, OutputIndex: 0, ContentIndex: 0, Item: &reasoning, Delta: "partial thought"},
+		{Type: canonical.EventContentPartDone, OutputIndex: 0, ContentIndex: 0, Item: &reasoning},
+		{Type: canonical.EventContentPartAdded, OutputIndex: 0, ContentIndex: 2, Item: &message},
+		{Type: canonical.EventTextDelta, OutputIndex: 0, ContentIndex: 2, Item: &message, Delta: "partial answer"},
+	}}
+	writeErr := errors.New("client disconnected")
+	writer := &v2FailingWriter{match: "response.output_text.delta", err: writeErr}
+	summary, err := consumeV2Stream(context.Background(), writer, events, V2StreamPublicOptions{
+		ResponseID: "resp_public", Model: "public-model", CreatedAt: 123,
+	})
+	if !errors.Is(err, writeErr) {
+		t.Fatalf("stream error = %v", err)
+	}
+	if summary == nil || summary.Response == nil || summary.Terminal != "" {
+		t.Fatalf("partial summary = %#v", summary)
+	}
+	if len(summary.Response.Output) != 2 {
+		t.Fatalf("partial output = %#v", summary.Response.Output)
+	}
+	for _, item := range summary.Response.Output {
+		for _, content := range item.Content {
+			if content.Type == "" {
+				t.Fatalf("partial output contains an empty content type: %#v", summary.Response.Output)
+			}
+		}
+	}
+	if canonicalItemText(summary.Response.Output[0]) != "partial thought" || canonicalItemText(summary.Response.Output[1]) != "partial answer" {
+		t.Fatalf("partial output text = %#v", summary.Response.Output)
+	}
+}
+
+func assertAnthropicCompositeOutput(t *testing.T, items []canonical.Item) {
+	t.Helper()
+	if len(items) != 4 {
+		t.Fatalf("output count = %d, want 4: %#v", len(items), items)
+	}
+	byType := make(map[string][]canonical.Item)
+	for _, item := range items {
+		for _, content := range item.Content {
+			if content.Type == "" {
+				t.Fatalf("output contains an empty content type: %#v", items)
+			}
+		}
+		byType[item.Type] = append(byType[item.Type], item)
+	}
+	if len(byType["reasoning"]) != 1 || canonicalItemText(byType["reasoning"][0]) != "think" {
+		t.Fatalf("reasoning output = %#v", byType["reasoning"])
+	}
+	if len(byType["message"]) != 1 || canonicalItemText(byType["message"][0]) != "answer" {
+		t.Fatalf("message output = %#v", byType["message"])
+	}
+	if len(byType["function_call"]) != 2 {
+		t.Fatalf("tool output = %#v", byType["function_call"])
+	}
+	arguments := map[string]string{}
+	for _, item := range byType["function_call"] {
+		arguments[item.CallID] = string(item.Arguments)
+	}
+	if arguments["tool_1"] != `{"query":"alpha"}` || arguments["tool_3"] != `{"id":42}` {
+		t.Fatalf("tool arguments = %#v", arguments)
+	}
+}
+
+func canonicalItemText(item canonical.Item) string {
+	var text strings.Builder
+	for _, content := range item.Content {
+		text.WriteString(content.Text)
+	}
+	return text.String()
 }
 
 func TestConsumeV2StreamPreservesUnknownNativeEventWithoutNumericLoss(t *testing.T) {

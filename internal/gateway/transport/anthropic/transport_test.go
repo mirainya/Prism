@@ -102,7 +102,8 @@ func TestStreamMapsToolUseUsageAndTerminal(t *testing.T) {
 		writer.Header().Set("Content-Type", "text/event-stream")
 		frames := "event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"id\":\"msg_1\",\"model\":\"claude\",\"usage\":{\"input_tokens\":2}}}\n\n" +
 			"event: content_block_start\ndata: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"tool_use\",\"id\":\"tool_1\",\"name\":\"lookup\",\"input\":{}}}\n\n" +
-			"event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"input_json_delta\",\"partial_json\":\"{\\\"q\\\":\\\"x\\\"}\"}}\n\n" +
+			"event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"input_json_delta\",\"partial_json\":\"{\\\"q\\\":\"}}\n\n" +
+			"event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"input_json_delta\",\"partial_json\":\"\\\"x\\\"}\"}}\n\n" +
 			"event: content_block_stop\ndata: {\"type\":\"content_block_stop\",\"index\":0}\n\n" +
 			"event: message_delta\ndata: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"tool_use\"},\"usage\":{\"output_tokens\":3}}\n\n" +
 			"event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n"
@@ -114,13 +115,15 @@ func TestStreamMapsToolUseUsageAndTerminal(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer stream.Close()
-	want := []canonical.EventType{canonical.EventResponseCreated, canonical.EventOutputItemAdded, canonical.EventToolArgumentsDelta, canonical.EventOutputItemDone, canonical.EventUsage, canonical.EventCompleted}
+	want := []canonical.EventType{canonical.EventResponseCreated, canonical.EventOutputItemAdded, canonical.EventToolArgumentsDelta, canonical.EventToolArgumentsDelta, canonical.EventOutputItemDone, canonical.EventUsage, canonical.EventCompleted}
+	accumulator := canonical.NewEventAccumulator()
 	var events []canonical.Event
 	for range want {
 		event, nextErr := stream.Next(context.Background())
 		if nextErr != nil {
 			t.Fatal(nextErr)
 		}
+		accumulator.Observe(event)
 		events = append(events, event)
 	}
 	for index, event := range events {
@@ -130,6 +133,13 @@ func TestStreamMapsToolUseUsageAndTerminal(t *testing.T) {
 	}
 	if events[1].Item == nil || events[1].Item.CallID != "tool_1" || events[2].Item == nil || events[2].Item.Name != "lookup" {
 		t.Fatalf("tool events = %#v %#v", events[1], events[2])
+	}
+	if events[4].Item == nil || string(events[4].Item.Arguments) != `{"q":"x"}` {
+		t.Fatalf("tool done event = %#v", events[4])
+	}
+	output := accumulator.Snapshot().Output
+	if len(output) != 1 || string(output[0].Arguments) != `{"q":"x"}` {
+		t.Fatalf("accumulated tool output = %#v", output)
 	}
 	terminal := events[len(events)-1]
 	if terminal.ProviderResponseID != "msg_1" || terminal.Usage == nil || terminal.Usage.TotalTokens != 5 {

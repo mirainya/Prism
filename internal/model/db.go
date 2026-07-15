@@ -18,7 +18,7 @@ func SetDB(d *gorm.DB) {
 
 // AutoMigrate 自动迁移数据库表结构
 func AutoMigrate() error {
-	return db.AutoMigrate(
+	if err := db.AutoMigrate(
 		&User{},
 		&Token{},
 		&Channel{},
@@ -32,6 +32,7 @@ func AutoMigrate() error {
 		&Message{},
 		&ConversationTurn{},
 		&ConversationItem{},
+		&ConversationProjectionOutbox{},
 		&BillingLog{},
 		&APICall{},
 		&APICallAttempt{},
@@ -51,5 +52,12 @@ func AutoMigrate() error {
 		&AIResponse{},
 		&AIResponseIdempotencyCache{},
 		&AIFile{},
-	)
+	); err != nil {
+		return err
+	}
+	migrator := db.Migrator()
+	if migrator.HasIndex(&Conversation{}, conversationCanonicalMatchIndexName) {
+		return nil
+	}
+	return migrator.CreateIndex(&conversationCanonicalMatchIndex{}, conversationCanonicalMatchIndexName)
 }

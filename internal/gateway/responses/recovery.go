@@ -99,13 +99,18 @@ func ReconcilePendingResponseRefunds(ctx context.Context) (int, error) {
 			reconciliationErr = errors.Join(reconciliationErr, fmt.Errorf("refund response %s: %w", record.ID, err))
 			continue
 		}
+		terminalProjection, err := terminalResponseConversationOutputRequest(record, nil, false)
+		if err != nil {
+			reconciliationErr = errors.Join(reconciliationErr, fmt.Errorf("prepare response projection %s: %w", record.ID, err))
+			continue
+		}
 		target := "failed"
 		if record.Status == "refund_pending_cancelled" {
 			target = "cancelled"
 		}
 		now := time.Now()
 		updated := false
-		err := model.DB().WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		err = model.DB().WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 			result := tx.Model(&model.AIResponse{}).
 				Where("id = ? AND status = ?", record.ID, record.Status).
 				Updates(map[string]any{
@@ -124,13 +129,15 @@ func ReconcilePendingResponseRefunds(ctx context.Context) (int, error) {
 				return calls.CancelCallTx(tx, record.CallID, &service.CancelCallRequest{
 					FinalAttemptID: latestResponseAttemptIDTx(tx, record.CallID),
 					ErrorType:      "cancelled_error", ErrorCode: "response_cancelled",
-					ErrorMessage: "Response was cancelled",
+					ErrorMessage:           "Response was cancelled",
+					ConversationProjection: terminalProjection,
 				})
 			}
 			return calls.FailCallTx(tx, record.CallID, &service.FailCallRequest{
 				FinalAttemptID: latestResponseAttemptIDTx(tx, record.CallID),
 				HTTPStatus:     502, ErrorType: "server_error", ErrorCode: "response_failed",
-				ErrorMessage: "Response failed",
+				ErrorMessage:           "Response failed",
+				ConversationProjection: terminalProjection,
 			})
 		})
 		if err != nil {
@@ -139,6 +146,7 @@ func ReconcilePendingResponseRefunds(ctx context.Context) (int, error) {
 		}
 		if updated {
 			reconciled++
+			projectResponseConversationBestEffort(record)
 		}
 	}
 	return reconciled, reconciliationErr

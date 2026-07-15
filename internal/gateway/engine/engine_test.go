@@ -6,6 +6,7 @@ import (
 	"errors"
 	"io"
 	"net/http"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -368,6 +369,207 @@ func TestExecuteErrorCancelsReservationAndLogsFailure(t *testing.T) {
 	}
 }
 
+func TestExecuteStagesConversationOutputBeforeCompletingCall(t *testing.T) {
+	db, user, token := executionTestDB(t)
+	callService := service.NewAPICallService()
+	callID := stageEngineConversationProjection(t, callService, user, token, false)
+	observation := observeProjectionBeforeCallTerminal(t, db, callID)
+	item := &scriptedTransport{
+		id:       transport.OpenAIChat,
+		prepared: testPrepared(false),
+		executeResponse: canonical.Response{
+			ID: "provider-response",
+			Output: []canonical.Item{{
+				Type: "message", Role: canonical.RoleAssistant,
+				Content: []canonical.Content{{Type: "output_text", Text: "complete answer"}},
+			}},
+		},
+	}
+	_, executionEngine := newExecutionTestEngineWithCallService(t, item, requestPriceRoute(0), callService)
+	result, err := executionEngine.Execute(context.Background(), canonical.Request{
+		Endpoint: canonical.EndpointOpenAIChat,
+		Model:    "public",
+	}, ExecuteOptions{UserID: user.ID, TokenID: token.ID, CallID: callID, BillingKey: t.Name(), ProjectConversation: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.CallID != callID {
+		t.Fatalf("call id=%q, want %q", result.CallID, callID)
+	}
+	entry := observation.require(t, model.APICallStatusCompleted)
+	items := decodeProjectionOutput(t, entry)
+	if len(items) != 1 || len(items[0].Content) != 1 || items[0].Content[0].Text != "complete answer" {
+		t.Fatalf("projection output before completion=%#v", items)
+	}
+	if entry.RequestLogID == 0 || entry.ProviderResponseID != "provider-response" {
+		t.Fatalf("projection metadata before completion=%#v", entry)
+	}
+}
+
+func TestDeferredExecuteStagesConversationOutputBeforeDeliveryFinalization(t *testing.T) {
+	db, user, token := executionTestDB(t)
+	callService := service.NewAPICallService()
+	callID := stageEngineConversationProjection(t, callService, user, token, false)
+	item := &scriptedTransport{
+		id: transport.OpenAIChat, prepared: testPrepared(false),
+		executeResponse: canonical.Response{
+			ID: "provider-deferred", FinishReason: "stop",
+			Output: []canonical.Item{{
+				Type: "message", Role: canonical.RoleAssistant,
+				Content: []canonical.Content{{Type: "output_text", Text: "deferred answer"}},
+			}},
+		},
+	}
+	_, executionEngine := newExecutionTestEngineWithCallService(t, item, requestPriceRoute(0), callService)
+	result, err := executionEngine.Execute(context.Background(), canonical.Request{
+		Endpoint: canonical.EndpointOpenAIChat, Model: "public",
+	}, ExecuteOptions{
+		UserID: user.ID, TokenID: token.ID, CallID: callID,
+		BillingKey: t.Name(), ProjectConversation: true, DeferCallCompletion: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var call model.APICall
+	if err := db.First(&call, "id = ?", callID).Error; err != nil {
+		t.Fatal(err)
+	}
+	if call.Status != model.APICallStatusInProgress {
+		t.Fatalf("deferred call finalized early: %#v", call)
+	}
+	var entry model.ConversationProjectionOutbox
+	if err := db.First(&entry, "call_id = ?", callID).Error; err != nil {
+		t.Fatal(err)
+	}
+	if !entry.OutputReady || entry.ProviderResponseID != "provider-deferred" || entry.FinishReason != "stop" {
+		t.Fatalf("deferred projection = %#v", entry)
+	}
+	assertProjectionText(t, entry, "deferred answer")
+	if err := result.CompleteDelivery(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestExecuteRejectsConversationProjectionForUnmarkedExistingCall(t *testing.T) {
+	db, user, token := executionTestDB(t)
+	calls := service.NewAPICallService()
+	call, err := calls.StartCall(&service.StartCallRequest{
+		RequestID: "request-unmarked-conversation-call",
+		UserID:    user.ID, TokenID: token.ID,
+		Endpoint: "/v1/chat/completions", Operation: string(transport.OperationChat), Model: "public",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	item := &scriptedTransport{
+		id: transport.OpenAIChat, prepared: testPrepared(false),
+		executeResponse: canonical.Response{ID: "must-not-run"},
+	}
+	_, executionEngine := newExecutionTestEngineWithCallService(t, item, requestPriceRoute(0), calls)
+	result, err := executionEngine.Execute(context.Background(), canonical.Request{
+		Endpoint: canonical.EndpointOpenAIChat, Model: "public",
+	}, ExecuteOptions{
+		UserID: user.ID, TokenID: token.ID, CallID: call.ID,
+		BillingKey: t.Name(), ProjectConversation: true,
+	})
+	if result != nil || !errors.Is(err, service.ErrAPICallInvalidInput) {
+		t.Fatalf("result=%#v err=%v", result, err)
+	}
+	if calls := item.callSequence(); len(calls) != 0 {
+		t.Fatalf("unmarked call reached upstream: %v", calls)
+	}
+	var stored model.APICall
+	if err := db.First(&stored, "id = ?", call.ID).Error; err != nil {
+		t.Fatal(err)
+	}
+	if stored.Status != model.APICallStatusReceived {
+		t.Fatalf("unmarked call changed status: %#v", stored)
+	}
+}
+
+func TestExecuteRejectsMissingConversationProjectionForMarkedExistingCall(t *testing.T) {
+	db, user, token := executionTestDB(t)
+	calls := service.NewAPICallService()
+	callID := stageEngineConversationProjection(t, calls, user, token, false)
+	item := &scriptedTransport{
+		id: transport.OpenAIChat, prepared: testPrepared(false),
+		executeResponse: canonical.Response{ID: "must-not-run"},
+	}
+	_, executionEngine := newExecutionTestEngineWithCallService(t, item, requestPriceRoute(0), calls)
+	result, err := executionEngine.Execute(context.Background(), canonical.Request{
+		Endpoint: canonical.EndpointOpenAIChat, Model: "public",
+	}, ExecuteOptions{
+		UserID: user.ID, TokenID: token.ID, CallID: callID,
+		BillingKey: t.Name(),
+	})
+	if result != nil || !errors.Is(err, service.ErrAPICallInvalidInput) {
+		t.Fatalf("result=%#v err=%v", result, err)
+	}
+	if calls := item.callSequence(); len(calls) != 0 {
+		t.Fatalf("mismatched projected call reached upstream: %v", calls)
+	}
+	var stored model.APICall
+	if err := db.First(&stored, "id = ?", callID).Error; err != nil {
+		t.Fatal(err)
+	}
+	if stored.Status != model.APICallStatusReceived {
+		t.Fatalf("mismatched projected call changed status: %#v", stored)
+	}
+}
+
+func TestExecuteRejectsConversationProjectionWithoutPrecreatedCall(t *testing.T) {
+	db, user, token := executionTestDB(t)
+	item := &scriptedTransport{
+		id: transport.OpenAIChat, prepared: testPrepared(false),
+		executeResponse: canonical.Response{ID: "must-not-run"},
+	}
+	_, executionEngine := newExecutionTestEngine(t, item, requestPriceRoute(0))
+	callID := "call_missing_conversation_projection"
+	result, err := executionEngine.Execute(context.Background(), canonical.Request{
+		Endpoint: canonical.EndpointOpenAIChat, Model: "public",
+	}, ExecuteOptions{
+		UserID: user.ID, TokenID: token.ID, CallID: callID,
+		BillingKey: t.Name(), ProjectConversation: true,
+	})
+	if result != nil || !errors.Is(err, service.ErrAPICallNotFound) {
+		t.Fatalf("result=%#v err=%v", result, err)
+	}
+	if calls := item.callSequence(); len(calls) != 0 {
+		t.Fatalf("missing projected call reached upstream: %v", calls)
+	}
+	var count int64
+	if err := db.Model(&model.APICall{}).Where("id = ?", callID).Count(&count).Error; err != nil {
+		t.Fatal(err)
+	}
+	if count != 0 {
+		t.Fatalf("engine created %d projected calls without staged input", count)
+	}
+}
+
+func TestExecuteStagesEmptyConversationOutputBeforeAutomaticFailure(t *testing.T) {
+	db, user, token := executionTestDB(t)
+	callService := service.NewAPICallService()
+	callID := stageEngineConversationProjection(t, callService, user, token, false)
+	observation := observeProjectionBeforeCallTerminal(t, db, callID)
+	upstreamErr := errors.New("upstream failed")
+	item := &scriptedTransport{id: transport.OpenAIChat, prepared: testPrepared(false), executeErr: upstreamErr}
+	_, executionEngine := newExecutionTestEngineWithCallService(t, item, requestPriceRoute(0), callService)
+	_, err := executionEngine.Execute(context.Background(), canonical.Request{
+		Endpoint: canonical.EndpointOpenAIChat,
+		Model:    "public",
+	}, ExecuteOptions{UserID: user.ID, TokenID: token.ID, CallID: callID, BillingKey: t.Name(), ProjectConversation: true})
+	if !errors.Is(err, upstreamErr) {
+		t.Fatalf("error=%v", err)
+	}
+	entry := observation.require(t, model.APICallStatusFailed)
+	if string(entry.CanonicalOutput) != "[]" {
+		t.Fatalf("projection output before failure=%s, want []", entry.CanonicalOutput)
+	}
+	if items := decodeProjectionOutput(t, entry); len(items) != 0 {
+		t.Fatalf("projection output before failure=%#v", items)
+	}
+}
+
 func TestPrepareErrorDoesNotReserveOrLog(t *testing.T) {
 	db, user, token := executionTestDB(t)
 	prepareErr := errors.New("cannot prepare")
@@ -663,6 +865,117 @@ func TestStreamFailureAfterOutputRetainsReservation(t *testing.T) {
 	if selector.releaseCount() != 1 || upstream.closeCount() != 1 {
 		t.Fatalf("releases=%d closes=%d", selector.releaseCount(), upstream.closeCount())
 	}
+}
+
+func TestStreamFailureStagesPartialConversationBeforeFailingCall(t *testing.T) {
+	db, user, token := executionTestDB(t)
+	callService := service.NewAPICallService()
+	callID := stageEngineConversationProjection(t, callService, user, token, true)
+	observation := observeProjectionBeforeCallTerminal(t, db, callID)
+	upstreamErr := errors.New("truncated")
+	upstream := &scriptedEventStream{steps: []streamStep{
+		{event: canonical.Event{Type: canonical.EventTextDelta, Delta: "partial answer"}},
+		{err: upstreamErr},
+	}}
+	item := &scriptedTransport{id: transport.OpenAIChat, prepared: testPrepared(true), stream: upstream}
+	_, executionEngine := newExecutionTestEngineWithCallService(t, item, requestPriceRoute(0), callService)
+	result, err := executionEngine.Execute(context.Background(), canonical.Request{
+		Endpoint: canonical.EndpointOpenAIChat,
+		Model:    "public",
+		Stream:   true,
+	}, ExecuteOptions{UserID: user.ID, TokenID: token.ID, CallID: callID, BillingKey: t.Name(), ProjectConversation: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = result.Stream.Next(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = result.Stream.Next(context.Background()); !errors.Is(err, upstreamErr) {
+		t.Fatalf("stream error=%v", err)
+	}
+	entry := observation.require(t, model.APICallStatusFailed)
+	assertProjectionText(t, entry, "partial answer")
+}
+
+func TestStreamFailureStagesIncompleteToolArgumentsBeforeFailingCall(t *testing.T) {
+	db, user, token := executionTestDB(t)
+	callService := service.NewAPICallService()
+	callID := stageEngineConversationProjection(t, callService, user, token, true)
+	observation := observeProjectionBeforeCallTerminal(t, db, callID)
+	upstreamErr := errors.New("tool arguments truncated")
+	tool := &canonical.Item{
+		ID: "tool_1", Type: "function_call", CallID: "tool_1", Name: "weather", Arguments: json.RawMessage(`{}`),
+	}
+	upstream := &scriptedEventStream{steps: []streamStep{
+		{event: canonical.Event{
+			Type: canonical.EventOutputItemAdded, ToolIndex: 0, Item: tool,
+		}},
+		{event: canonical.Event{
+			Type: canonical.EventToolArgumentsDelta, ToolIndex: 0, Delta: `{"city":`,
+			ProviderResponseID: "provider-partial-tool",
+			Item:               tool,
+		}},
+		{err: upstreamErr},
+	}}
+	item := &scriptedTransport{id: transport.OpenAIChat, prepared: testPrepared(true), stream: upstream}
+	_, executionEngine := newExecutionTestEngineWithCallService(t, item, requestPriceRoute(0), callService)
+	result, err := executionEngine.Execute(context.Background(), canonical.Request{
+		Endpoint: canonical.EndpointOpenAIChat,
+		Model:    "public",
+		Stream:   true,
+	}, ExecuteOptions{UserID: user.ID, TokenID: token.ID, CallID: callID, BillingKey: t.Name(), ProjectConversation: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = result.Stream.Next(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = result.Stream.Next(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = result.Stream.Next(context.Background()); !errors.Is(err, upstreamErr) {
+		t.Fatalf("stream error=%v", err)
+	}
+
+	entry := observation.require(t, model.APICallStatusFailed)
+	items := decodeProjectionOutput(t, entry)
+	if len(items) != 1 || items[0].Type != "function_call" || items[0].CallID != "tool_1" || items[0].Name != "weather" {
+		t.Fatalf("partial tool projection=%#v", items)
+	}
+	if !json.Valid(items[0].Arguments) || !strings.Contains(string(items[0].Arguments), `city`) {
+		t.Fatalf("partial tool arguments=%s", items[0].Arguments)
+	}
+	if entry.RequestLogID == 0 || entry.ProviderResponseID != "provider-partial-tool" {
+		t.Fatalf("partial tool projection metadata=%#v", entry)
+	}
+}
+
+func TestStreamCancellationStagesPartialConversationBeforeCancellingCall(t *testing.T) {
+	db, user, token := executionTestDB(t)
+	callService := service.NewAPICallService()
+	callID := stageEngineConversationProjection(t, callService, user, token, true)
+	observation := observeProjectionBeforeCallTerminal(t, db, callID)
+	upstream := &scriptedEventStream{steps: []streamStep{
+		{event: canonical.Event{Type: canonical.EventTextDelta, Delta: "partial before disconnect"}},
+	}}
+	item := &scriptedTransport{id: transport.OpenAIChat, prepared: testPrepared(true), stream: upstream}
+	_, executionEngine := newExecutionTestEngineWithCallService(t, item, requestPriceRoute(0), callService)
+	result, err := executionEngine.Execute(context.Background(), canonical.Request{
+		Endpoint: canonical.EndpointOpenAIChat,
+		Model:    "public",
+		Stream:   true,
+	}, ExecuteOptions{UserID: user.ID, TokenID: token.ID, CallID: callID, BillingKey: t.Name(), ProjectConversation: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = result.Stream.Next(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if err = result.Stream.Close(); !errors.Is(err, ErrStreamClosedWithoutTerminal) {
+		t.Fatalf("close error=%v", err)
+	}
+	entry := observation.require(t, model.APICallStatusCancelled)
+	assertProjectionText(t, entry, "partial before disconnect")
 }
 
 func TestStreamEOFWithoutTerminalIsFailureAndCancelsWhenEmpty(t *testing.T) {
@@ -1044,6 +1357,7 @@ func executionTestDB(t *testing.T) (*gorm.DB, model.User, model.Token) {
 		&model.APICall{},
 		&model.APICallAttempt{},
 		&model.BalanceEntry{},
+		&model.ConversationProjectionOutbox{},
 	); err != nil {
 		t.Fatal(err)
 	}
@@ -1057,6 +1371,139 @@ func executionTestDB(t *testing.T) (*gorm.DB, model.User, model.Token) {
 		t.Fatal(err)
 	}
 	return db, user, token
+}
+
+type projectionTerminalObservation struct {
+	mu     sync.Mutex
+	seen   bool
+	status model.APICallStatus
+	entry  model.ConversationProjectionOutbox
+	err    error
+}
+
+func observeProjectionBeforeCallTerminal(t *testing.T, db *gorm.DB, callID string) *projectionTerminalObservation {
+	t.Helper()
+	observation := &projectionTerminalObservation{}
+	callbackName := "test:projection-before-terminal:" + t.Name()
+	err := db.Callback().Update().Before("gorm:update").Register(callbackName, func(tx *gorm.DB) {
+		status, terminal := terminalCallStatus(tx)
+		if !terminal {
+			return
+		}
+		var entry model.ConversationProjectionOutbox
+		queryErr := tx.Session(&gorm.Session{NewDB: true}).First(&entry, "call_id = ?", callID).Error
+		observation.mu.Lock()
+		if !observation.seen {
+			observation.seen = true
+			observation.status = status
+			observation.entry = entry
+			observation.err = queryErr
+		}
+		observation.mu.Unlock()
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if err := db.Callback().Update().Remove(callbackName); err != nil {
+			t.Errorf("remove terminal observation callback: %v", err)
+		}
+	})
+	return observation
+}
+
+func terminalCallStatus(tx *gorm.DB) (model.APICallStatus, bool) {
+	if tx.Statement.Schema == nil || tx.Statement.Schema.Table != "api_calls" {
+		return "", false
+	}
+	updates, ok := tx.Statement.Dest.(map[string]any)
+	if !ok {
+		return "", false
+	}
+	var status model.APICallStatus
+	switch value := updates["status"].(type) {
+	case model.APICallStatus:
+		status = value
+	case string:
+		status = model.APICallStatus(value)
+	default:
+		return "", false
+	}
+	switch status {
+	case model.APICallStatusCompleted, model.APICallStatusFailed, model.APICallStatusCancelled:
+		return status, true
+	default:
+		return "", false
+	}
+}
+
+func (o *projectionTerminalObservation) require(t *testing.T, expected model.APICallStatus) model.ConversationProjectionOutbox {
+	t.Helper()
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	if !o.seen {
+		t.Fatal("API call terminal transition was not observed")
+	}
+	if o.err != nil {
+		t.Fatalf("load projection before API call terminal transition: %v", o.err)
+	}
+	if o.status != expected {
+		t.Fatalf("terminal status=%q, want %q", o.status, expected)
+	}
+	if !o.entry.InputReady || !o.entry.OutputReady {
+		t.Fatalf("projection was not ready before %s: %#v", expected, o.entry)
+	}
+	return o.entry
+}
+
+func stageEngineConversationProjection(
+	t *testing.T,
+	callService *service.APICallService,
+	user model.User,
+	token model.Token,
+	stream bool,
+) string {
+	t.Helper()
+	call, err := callService.StartCall(&service.StartCallRequest{
+		UserID: user.ID, TokenID: token.ID,
+		Endpoint: "/v1/chat/completions", Operation: string(transport.OperationChat),
+		Model: "public", IsStream: stream, ProjectConversation: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = service.StageAPIConversationProjectionInput(service.ConversationProjectionInputRequest{
+		CallID: call.ID,
+		InputItems: []canonical.Item{{
+			Type: "message", Role: canonical.RoleUser,
+			Content: []canonical.Content{{Type: "input_text", Text: "question"}},
+		}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return call.ID
+}
+
+func decodeProjectionOutput(t *testing.T, entry model.ConversationProjectionOutbox) []canonical.Item {
+	t.Helper()
+	var items []canonical.Item
+	if err := json.Unmarshal(entry.CanonicalOutput, &items); err != nil {
+		t.Fatalf("decode projection output: %v", err)
+	}
+	return items
+}
+
+func assertProjectionText(t *testing.T, entry model.ConversationProjectionOutbox, expected string) {
+	t.Helper()
+	items := decodeProjectionOutput(t, entry)
+	if len(items) != 1 || items[0].Type != "message" || items[0].Role != canonical.RoleAssistant ||
+		len(items[0].Content) != 1 || items[0].Content[0].Type != "output_text" || items[0].Content[0].Text != expected {
+		t.Fatalf("projection output=%#v, want assistant text %q", items, expected)
+	}
+	if entry.RequestLogID == 0 {
+		t.Fatalf("projection request log id was not staged: %#v", entry)
+	}
 }
 
 func testRoute(inputPrice, outputPrice decimal.Decimal) *routing.RouteResult {

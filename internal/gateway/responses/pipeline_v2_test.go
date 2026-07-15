@@ -48,13 +48,16 @@ func (s *pipelineV2Selector) SelectTransport(_ string, _ routing.RouteRequiremen
 func (s *pipelineV2Selector) Release(uint) {}
 
 type pipelineV2Transport struct {
-	id       transport.ID
-	response canonical.Response
-	mu       sync.Mutex
-	request  canonical.Request
-	failures []error
-	calls    int
-	stream   []canonical.Event
+	id        transport.ID
+	response  canonical.Response
+	mu        sync.Mutex
+	request   canonical.Request
+	failures  []error
+	calls     int
+	stream    []canonical.Event
+	started   chan struct{}
+	release   chan struct{}
+	startOnce sync.Once
 }
 
 func (t *pipelineV2Transport) ID() transport.ID { return t.id }
@@ -66,9 +69,18 @@ func (t *pipelineV2Transport) Prepare(_ context.Context, invocation transport.In
 }
 func (t *pipelineV2Transport) ExecutePrepared(_ context.Context, invocation transport.Invocation, _ transport.PreparedRequest) (canonical.Response, error) {
 	t.mu.Lock()
-	defer t.mu.Unlock()
 	t.request = invocation.Request
 	t.calls++
+	started, release := t.started, t.release
+	t.mu.Unlock()
+	if started != nil {
+		t.startOnce.Do(func() { close(started) })
+	}
+	if release != nil {
+		<-release
+	}
+	t.mu.Lock()
+	defer t.mu.Unlock()
 	if len(t.failures) > 0 {
 		err := t.failures[0]
 		t.failures = t.failures[1:]
@@ -114,7 +126,8 @@ func TestPipelineV2CreatesStableCallLedger(t *testing.T) {
 	if call.Status != model.APICallStatusInProgress || call.RequestID != "request-response-ledger" {
 		t.Fatalf("call status=%s request_id=%q", call.Status, call.RequestID)
 	}
-	if call.Endpoint != "/v1/responses" || call.Operation != "responses" || call.ResourceType != "response" || call.ResourceID != result.Record.ID {
+	if call.Endpoint != "/v1/responses" || call.Operation != "responses" || call.ResourceType != "response" ||
+		call.ResourceID != result.Record.ID || !call.ProjectConversation {
 		t.Fatalf("unexpected call correlation: %#v", call)
 	}
 	if !call.Store || call.Background || call.IsStream || call.AttemptCount != 1 || upstream.callCount() != 1 {
@@ -129,6 +142,7 @@ func TestPipelineV2CreatesStableCallLedger(t *testing.T) {
 	if call.Status != model.APICallStatusCompleted || call.FinalAttemptID != result.AttemptID {
 		t.Fatalf("delivered call=%#v", call)
 	}
+	requireResponseConversationTurn(t, result.Record.CallID, model.ConversationTurnCompleted)
 }
 
 func TestPipelineV2StreamUsesStableCallLedger(t *testing.T) {
@@ -147,6 +161,13 @@ func TestPipelineV2StreamUsesStableCallLedger(t *testing.T) {
 	if result.Record.CallID == "" || result.V2Stream == nil {
 		t.Fatalf("stream result=%#v", result)
 	}
+	var pendingProjection model.ConversationProjectionOutbox
+	if err := model.DB().First(&pendingProjection, "call_id = ?", result.Record.CallID).Error; err != nil {
+		t.Fatal(err)
+	}
+	if !pendingProjection.InputReady || pendingProjection.OutputReady {
+		t.Fatalf("stream projection was ready before output: %#v", pendingProjection)
+	}
 	recorder := httptest.NewRecorder()
 	if err := pipeline.ProxyV2Stream(context.Background(), recorder, result, request); err != nil {
 		t.Fatal(err)
@@ -158,6 +179,8 @@ func TestPipelineV2StreamUsesStableCallLedger(t *testing.T) {
 	if call.Status != model.APICallStatusCompleted || !call.IsStream || call.RequestID != "request-response-stream" || call.AttemptCount != 1 {
 		t.Fatalf("stream call=%#v", call)
 	}
+	turn := requireResponseConversationTurn(t, result.Record.CallID, model.ConversationTurnCompleted)
+	requireResponseConversationItemText(t, turn.ID, model.ConversationItemOutput, "done")
 }
 
 func TestPipelineV2StreamCancelsCallWhenClientWriteFails(t *testing.T) {
@@ -199,6 +222,7 @@ func TestPipelineV2StreamCancelsCallWhenClientWriteFails(t *testing.T) {
 	if cacheRows != 0 {
 		t.Fatalf("stream write failure retained %d pending idempotency rows", cacheRows)
 	}
+	requireResponseConversationTurn(t, result.Record.CallID, model.ConversationTurnAborted)
 }
 
 func TestPipelineV2StoreFalseStreamReplaysCachedTerminalEvent(t *testing.T) {
@@ -305,6 +329,15 @@ func TestPipelineV2StoreFalseKeepsOnlyRequestDigest(t *testing.T) {
 	}
 	if call.Store {
 		t.Fatal("store=false call was marked retained")
+	}
+	turn := requireResponseConversationTurn(t, stored.CallID, model.ConversationTurnCompleted)
+	requireResponseConversationItemText(t, turn.ID, model.ConversationItemInput, "private")
+	var turnCount int64
+	if err := model.DB().Model(&model.ConversationTurn{}).Count(&turnCount).Error; err != nil {
+		t.Fatal(err)
+	}
+	if turnCount != 1 || replayCall.ConversationID != turn.ConversationID {
+		t.Fatalf("turn_count=%d replay_conversation=%d original_conversation=%d", turnCount, replayCall.ConversationID, turn.ConversationID)
 	}
 }
 
@@ -422,6 +455,7 @@ func TestPipelineV2FailureReturnsPersistedCallID(t *testing.T) {
 	if call.Status != model.APICallStatusFailed || call.RequestID != "request-failed" {
 		t.Fatalf("failed call=%#v", call)
 	}
+	requireResponseConversationTurn(t, callID, model.ConversationTurnFailed)
 }
 
 func TestPipelineV2BackgroundRetryReusesCall(t *testing.T) {
@@ -457,6 +491,7 @@ func TestPipelineV2BackgroundRetryReusesCall(t *testing.T) {
 	if call.Status != model.APICallStatusCompleted || call.AttemptCount != 4 || upstream.callCount() != 4 {
 		t.Fatalf("completed retried call=%#v upstream_calls=%d", call, upstream.callCount())
 	}
+	requireResponseConversationTurn(t, record.CallID, model.ConversationTurnCompleted)
 }
 
 func TestBackgroundResponseLeasePreventsConcurrentExecution(t *testing.T) {
@@ -480,6 +515,81 @@ func TestBackgroundResponseLeasePreventsConcurrentExecution(t *testing.T) {
 	third, acquired, err := acquireBackgroundResponseLease(context.Background(), record.ID, 1)
 	if err != nil || !acquired || third.LeaseOwner == first.LeaseOwner || third.ExecutionAttempt != 2 {
 		t.Fatalf("replacement lease: record=%#v acquired=%v err=%v", third, acquired, err)
+	}
+}
+
+func TestBackgroundCancellationDoesNotLeaveOutboxWhenWorkerReturnsLate(t *testing.T) {
+	pipeline, upstream, token := setupPipelineV2Test(t, transport.OpenAIResponses, 7)
+	upstream.started = make(chan struct{})
+	upstream.release = make(chan struct{})
+	t.Cleanup(func() {
+		select {
+		case <-upstream.release:
+		default:
+			close(upstream.release)
+		}
+	})
+	previousEnqueue := enqueueResponseBackground
+	enqueueResponseBackground = func(string) error { return nil }
+	t.Cleanup(func() { enqueueResponseBackground = previousEnqueue })
+
+	result, err := pipeline.Create(context.Background(), token.UserID, token.ID, &protocol.Request{
+		Model: "public", Input: json.RawMessage(`"cancel race"`), Background: true,
+	}, "", "request-background-cancel-race")
+	if err != nil {
+		t.Fatal(err)
+	}
+	workerResult := make(chan error, 1)
+	go func() {
+		workerResult <- pipeline.ExecuteBackground(context.Background(), result.Record.ID, true, 0)
+	}()
+	select {
+	case <-upstream.started:
+	case <-time.After(5 * time.Second):
+		t.Fatal("background worker did not reach upstream")
+	}
+
+	cancelled, err := pipeline.Cancel(token.ID, result.Record.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cancelled.Status != "cancelled" {
+		t.Fatalf("cancel response status=%s", cancelled.Status)
+	}
+	close(upstream.release)
+	select {
+	case workerErr := <-workerResult:
+		if workerErr != nil {
+			t.Fatalf("late background worker returned error: %v", workerErr)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("background worker did not finish after cancellation")
+	}
+
+	var stored model.AIResponse
+	if err := model.DB().First(&stored, "id = ?", result.Record.ID).Error; err != nil {
+		t.Fatal(err)
+	}
+	if stored.Status != "cancelled" {
+		t.Fatalf("stored response status=%s", stored.Status)
+	}
+	var call model.APICall
+	if err := model.DB().First(&call, "id = ?", result.Record.CallID).Error; err != nil {
+		t.Fatal(err)
+	}
+	if call.Status != model.APICallStatusCancelled {
+		t.Fatalf("call status=%s", call.Status)
+	}
+	turn := requireResponseConversationTurn(t, result.Record.CallID, model.ConversationTurnAborted)
+	var turnCount, outboxCount int64
+	if err := model.DB().Model(&model.ConversationTurn{}).Where("call_id = ?", result.Record.CallID).Count(&turnCount).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := model.DB().Model(&model.ConversationProjectionOutbox{}).Where("call_id = ?", result.Record.CallID).Count(&outboxCount).Error; err != nil {
+		t.Fatal(err)
+	}
+	if turn.ID == 0 || turnCount != 1 || outboxCount != 0 {
+		t.Fatalf("turn=%#v turn_count=%d outbox_count=%d", turn, turnCount, outboxCount)
 	}
 }
 
@@ -591,6 +701,7 @@ func TestPipelineV2FinalBackgroundFailureFailsCall(t *testing.T) {
 	if call.Status != model.APICallStatusFailed || call.AttemptCount != 3 || call.FinalAttemptID == 0 {
 		t.Fatalf("failed call=%#v", call)
 	}
+	requireResponseConversationTurn(t, record.CallID, model.ConversationTurnFailed)
 }
 
 func TestPipelineV2ReusesProviderStateOnlyForSameKeyAndTransport(t *testing.T) {
@@ -671,6 +782,7 @@ func setupPipelineV2Test(t *testing.T, transportID transport.ID, keyID uint) (*P
 		&model.User{}, &model.Token{}, &model.BillingLog{}, &model.ChannelRequestLog{}, &model.AIResponse{},
 		&model.AIResponseIdempotencyCache{},
 		&model.APICall{}, &model.APICallAttempt{}, &model.APICallPayload{}, &model.BalanceEntry{},
+		&model.Conversation{}, &model.ConversationTurn{}, &model.ConversationItem{}, &model.ConversationProjectionOutbox{}, &model.Message{},
 	); err != nil {
 		t.Fatal(err)
 	}
@@ -717,7 +829,11 @@ func createPipelineV2Background(t *testing.T, token model.Token, responseID, req
 		ResponseJSON:   datatypes.JSON(`{"id":"` + responseID + `","status":"queued"}`),
 		IdempotencyKey: "background-" + responseID,
 	}
-	if err := createResponseWithCall(record, requestID, false); err != nil {
+	projection, err := newResponseConversationProjection(request, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := createResponseWithCall(record, requestID, false, projection); err != nil {
 		t.Fatal(err)
 	}
 	return record

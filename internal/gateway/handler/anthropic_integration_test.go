@@ -188,6 +188,10 @@ func TestAnthropicMessagesConvertsAcrossUpstreamTransports(t *testing.T) {
 			defer upstream.Close()
 
 			db, token := setupAnthropicHandlerIntegrationDB(t)
+			conversation := model.Conversation{UserID: token.UserID, TokenID: token.ID, Title: "messages", Status: 1}
+			if err := db.Create(&conversation).Error; err != nil {
+				t.Fatal(err)
+			}
 			registry := gatewaytransport.NewRegistry()
 			if err := registry.Register(test.newTransport(upstream.Client())); err != nil {
 				t.Fatal(err)
@@ -216,6 +220,7 @@ func TestAnthropicMessagesConvertsAcrossUpstreamTransports(t *testing.T) {
 			request := httptest.NewRequest(http.MethodPost, "/v1/messages", strings.NewReader(`{"model":"public-model","max_tokens":64,"messages":[{"role":"user","content":[{"type":"text","text":"hello from anthropic"}]}]}`))
 			request.Header.Set("Content-Type", "application/json")
 			request.Header.Set("X-Request-ID", "messages-request")
+			request.Header.Set(prismConversationIDHeader, fmt.Sprint(conversation.ID))
 			response := httptest.NewRecorder()
 			router.ServeHTTP(response, request)
 
@@ -227,6 +232,9 @@ func TestAnthropicMessagesConvertsAcrossUpstreamTransports(t *testing.T) {
 			}
 			if response.Header().Get("X-Prism-Request-Log-ID") == "" {
 				t.Fatal("X-Prism-Request-Log-ID is missing")
+			}
+			if response.Header().Get(prismConversationIDHeader) != fmt.Sprint(conversation.ID) {
+				t.Fatalf("%s = %q", prismConversationIDHeader, response.Header().Get(prismConversationIDHeader))
 			}
 			callID := response.Header().Get("X-Prism-Call-ID")
 			if !strings.HasPrefix(callID, "call_") {
@@ -266,7 +274,7 @@ func TestAnthropicMessagesConvertsAcrossUpstreamTransports(t *testing.T) {
 			}
 			if call.RequestID != "messages-request" || call.Endpoint != "/v1/messages" ||
 				call.UserID != token.UserID || call.TokenID != token.ID || call.Model != "public-model" ||
-				call.Status != model.APICallStatusCompleted || call.AttemptCount != 1 || call.FinalAttemptID == 0 {
+				call.Status != model.APICallStatusCompleted || call.AttemptCount != 1 || call.FinalAttemptID == 0 || !call.ProjectConversation {
 				t.Fatalf("unexpected API call: %#v", call)
 			}
 			var attempt model.APICallAttempt
@@ -275,6 +283,16 @@ func TestAnthropicMessagesConvertsAcrossUpstreamTransports(t *testing.T) {
 			}
 			if attempt.CallID != call.ID || attempt.Transport != test.transportID || attempt.Status != model.APICallAttemptStatusCompleted {
 				t.Fatalf("unexpected API call attempt: %#v", attempt)
+			}
+			turn, items := loadProjectedTurn(t, db, callID)
+			if call.ConversationID != conversation.ID || requestLog.ConversationID != conversation.ID ||
+				turn.ConversationID != conversation.ID || turn.Status != model.ConversationTurnCompleted ||
+				turn.RequestLogID != requestLog.ID {
+				t.Fatalf("unexpected conversation links: call=%#v log=%#v turn=%#v", call, requestLog, turn)
+			}
+			if !containsCanonicalText(items, model.ConversationItemInput, "hello from anthropic") ||
+				!containsCanonicalText(items, model.ConversationItemOutput, test.responseText) {
+				t.Fatalf("unexpected projected items: %#v", items)
 			}
 		})
 	}
@@ -291,6 +309,8 @@ func setupAnthropicHandlerIntegrationDB(t *testing.T) (*gorm.DB, *model.Token) {
 	if err := db.AutoMigrate(
 		&model.User{}, &model.Token{}, &model.BillingLog{}, &model.ChannelRequestLog{},
 		&model.APICall{}, &model.APICallAttempt{}, &model.BalanceEntry{},
+		&model.Conversation{}, &model.ConversationTurn{}, &model.ConversationItem{}, &model.Message{},
+		&model.ConversationProjectionOutbox{},
 	); err != nil {
 		t.Fatal(err)
 	}

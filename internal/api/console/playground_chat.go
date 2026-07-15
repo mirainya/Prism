@@ -21,14 +21,24 @@ import (
 )
 
 type playgroundPayloadStreamWriter struct {
-	writer  gwstream.Writer
-	capture io.Writer
+	writer   gwstream.Writer
+	capture  io.Writer
+	writeErr error
 }
 
 func (w *playgroundPayloadStreamWriter) Write(data []byte) (int, error) {
 	written, err := w.writer.Write(data)
+	if err != nil {
+		w.writeErr = err
+	} else if written != len(data) {
+		w.writeErr = io.ErrShortWrite
+	}
 	if written > 0 && w.capture != nil {
-		_, _ = w.capture.Write(data[:written])
+		captured := written
+		if captured > len(data) {
+			captured = len(data)
+		}
+		_, _ = w.capture.Write(data[:captured])
 	}
 	return written, err
 }
@@ -151,12 +161,14 @@ func playgroundStream(c *gin.Context, req *service.CompletionRequest, cc *servic
 		session.CallID(), session.AttemptID(), model.APICallPayloadResponse, "text/event-stream",
 	)
 	defer capture.SaveBestEffort()
-	writer := gwstream.Writer(c.Writer)
-	if capture != nil {
-		writer = &playgroundPayloadStreamWriter{writer: writer, capture: capture}
-	}
+	writer := &playgroundPayloadStreamWriter{writer: gwstream.Writer(c.Writer), capture: capture}
 	agg, streamErr := gwstream.ProxyStream(writer, session.UpstreamResp.Body)
-	provRespID := session.FinalizeStream(agg, streamErr)
+	clientDisconnected := writer.writeErr != nil || c.Request.Context().Err() != nil
+	provRespID, finalizeErr := session.FinalizeStreamDelivery(streamErr, clientDisconnected)
+	if finalizeErr != nil {
+		logger.Error("finalize playground stream call",
+			zap.String("call_id", session.CallID()), zap.Error(finalizeErr))
+	}
 	reqLogID := session.RequestLogID()
 	if streamErr != nil {
 		var assistant *chat.ChatMessage
@@ -167,7 +179,7 @@ func playgroundStream(c *gin.Context, req *service.CompletionRequest, cc *servic
 			}
 		}
 		status := model.ConversationTurnFailed
-		if c.Request.Context().Err() != nil || errors.Is(streamErr, io.ErrClosedPipe) {
+		if clientDisconnected {
 			status = model.ConversationTurnAborted
 		}
 		recordPlaygroundFailedTurn(cc, req, newMessages, assistant, reqLogID, status, streamErr)

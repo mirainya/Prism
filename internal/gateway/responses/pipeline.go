@@ -58,40 +58,86 @@ type Result struct {
 	IdempotentReplay         bool
 	idempotencyClaim         *responseIdempotencyClaim
 	execution                *engine.Result
+	conversation             *responseConversationProjection
 }
 
 func (r *Result) CompleteDelivery() error {
 	if r == nil || strings.TrimSpace(r.CallID) == "" {
 		return nil
 	}
+	var err error
 	if r.execution != nil {
-		return r.execution.CompleteDelivery()
+		err = r.execution.CompleteDelivery()
+	} else {
+		projection, projectionErr := terminalResponseConversationOutputRequest(r.Record, r.conversation, r.IdempotentReplay)
+		if projectionErr != nil {
+			return projectionErr
+		}
+		err = service.NewAPICallService().CompleteCall(r.CallID, &service.CompleteCallRequest{
+			FinalAttemptID: r.AttemptID, HTTPStatus: http.StatusOK, ConversationProjection: projection,
+		})
 	}
-	return service.NewAPICallService().CompleteCall(r.CallID, &service.CompleteCallRequest{
-		FinalAttemptID: r.AttemptID, HTTPStatus: http.StatusOK,
-	})
+	if err == nil {
+		if r.IdempotentReplay {
+			linkResponseReplayBestEffort(r.CallID, r.Record)
+		} else {
+			projectResponseConversationBestEffort(r.Record)
+		}
+	}
+	return err
 }
 
 func (r *Result) FailDelivery(err error, clientDisconnected bool) error {
 	if r == nil || strings.TrimSpace(r.CallID) == "" {
 		return nil
 	}
-	if r.execution != nil {
-		return r.execution.FailDelivery(err, clientDisconnected)
-	}
 	if err == nil {
 		err = errors.New("downstream response delivery failed")
 	}
-	if clientDisconnected {
-		return service.NewAPICallService().CancelCall(r.CallID, &service.CancelCallRequest{
-			FinalAttemptID: r.AttemptID, ErrorType: "cancelled", ErrorCode: "client_disconnected",
-			ErrorMessage: err.Error(), ClientDisconnected: true,
-		})
+	var deliveryErr error
+	if r.execution != nil {
+		deliveryErr = r.execution.FailDelivery(err, clientDisconnected)
+	} else {
+		projection, projectionErr := terminalResponseConversationOutputRequest(r.Record, r.conversation, r.IdempotentReplay)
+		if projectionErr != nil {
+			return projectionErr
+		}
+		if clientDisconnected {
+			deliveryErr = service.NewAPICallService().CancelCall(r.CallID, &service.CancelCallRequest{
+				FinalAttemptID: r.AttemptID, ErrorType: "cancelled", ErrorCode: "client_disconnected",
+				ErrorMessage: err.Error(), ClientDisconnected: true, ConversationProjection: projection,
+			})
+		} else {
+			deliveryErr = service.NewAPICallService().FailCall(r.CallID, &service.FailCallRequest{
+				FinalAttemptID: r.AttemptID, HTTPStatus: http.StatusBadGateway,
+				ErrorType: "server_error", ErrorCode: "downstream_delivery_failed", ErrorMessage: err.Error(),
+				ConversationProjection: projection,
+			})
+		}
 	}
-	return service.NewAPICallService().FailCall(r.CallID, &service.FailCallRequest{
-		FinalAttemptID: r.AttemptID, HTTPStatus: http.StatusBadGateway,
-		ErrorType: "server_error", ErrorCode: "downstream_delivery_failed", ErrorMessage: err.Error(),
-	})
+	if deliveryErr == nil {
+		if r.IdempotentReplay {
+			linkResponseReplayBestEffort(r.CallID, r.Record)
+		} else {
+			projectResponseConversationBestEffort(r.Record)
+		}
+	}
+	return deliveryErr
+}
+
+func terminalResponseConversationOutputRequest(
+	record *model.AIResponse,
+	projection *responseConversationProjection,
+	skip bool,
+) (*service.ConversationProjectionOutputRequest, error) {
+	if skip || record == nil || strings.TrimSpace(record.CallID) == "" {
+		return nil, nil
+	}
+	request, err := responseConversationOutputRequest(record, projection)
+	if err != nil {
+		return nil, err
+	}
+	return &request, nil
 }
 
 type responseCallError struct {
@@ -192,6 +238,14 @@ func (p *Pipeline) recordIdempotentReplay(existing *Result, requestID string, re
 	if existing == nil || existing.Record == nil {
 		return existing, nil
 	}
+	conversationID := uint(0)
+	if existing.Record.CallID != "" {
+		var originalCall model.APICall
+		if err := model.DB().Select("conversation_id").First(&originalCall, "id = ?", existing.Record.CallID).Error; err != nil {
+			return nil, err
+		}
+		conversationID = originalCall.ConversationID
+	}
 	callID := service.GenerateAPICallID()
 	err := model.DB().Transaction(func(tx *gorm.DB) error {
 		call, err := p.callService().StartCallTx(tx, &service.StartCallRequest{
@@ -200,6 +254,7 @@ func (p *Pipeline) recordIdempotentReplay(existing *Result, requestID string, re
 			Endpoint: "/v1/responses", Operation: "responses.replay", Model: existing.Record.Model,
 			Background: existing.Record.Background, Store: existing.Record.Store,
 			ResourceType: "response", ResourceID: existing.Record.ID,
+			ConversationID: conversationID,
 		})
 		if err != nil {
 			return err
@@ -211,6 +266,7 @@ func (p *Pipeline) recordIdempotentReplay(existing *Result, requestID string, re
 	}
 	existing.CallID = callID
 	existing.IdempotentReplay = true
+	linkResponseReplayBestEffort(callID, existing.Record)
 	p.callService().RecordPayloadBestEffort(&model.APICallPayload{
 		CallID: callID, Kind: model.APICallPayloadRequest,
 		ContentType: "application/json", Data: requestJSON,
@@ -222,6 +278,20 @@ func (p *Pipeline) recordIdempotentReplay(existing *Result, requestID string, re
 func hashResponseRequest(requestJSON []byte) string {
 	sum := sha256.Sum256(bytes.TrimSpace(requestJSON))
 	return fmt.Sprintf("%x", sum[:])
+}
+
+func responseIdempotencyRequestJSON(requestJSON []byte, conversationID uint) []byte {
+	if conversationID == 0 {
+		return requestJSON
+	}
+	encoded, err := json.Marshal(struct {
+		Request        json.RawMessage `json:"request"`
+		ConversationID uint            `json:"prism_conversation_id"`
+	}{Request: requestJSON, ConversationID: conversationID})
+	if err != nil {
+		return requestJSON
+	}
+	return encoded
 }
 
 func cloneResponseRequest(req *protocol.Request) *protocol.Request {
@@ -266,7 +336,7 @@ func isResponseCancelled(id string) bool {
 	return status == "cancelling" || status == "cancelled" || status == "refund_pending_cancelled"
 }
 
-func createRecord(userID, tokenID uint, req *protocol.Request, requestJSON []byte, inputItems datatypes.JSON, publicPreviousResponseID, key, requestID string, route *routing.RouteResult) (*model.AIResponse, error) {
+func createRecord(userID, tokenID uint, req *protocol.Request, requestJSON []byte, requestHash string, inputItems datatypes.JSON, publicPreviousResponseID, key, requestID string, route *routing.RouteResult, projection *responseConversationProjection, conversationIDs ...uint) (*model.AIResponse, error) {
 	metadata, _ := json.Marshal(req.Metadata)
 	responseID := "resp_" + strings.ReplaceAll(uuid.NewString(), "-", "")
 	store := true
@@ -289,7 +359,7 @@ func createRecord(userID, tokenID uint, req *protocol.Request, requestJSON []byt
 		ID: responseID, UserID: userID, TokenID: tokenID,
 		Model: req.Model, Status: "in_progress", Background: req.Background, Store: store,
 		PreviousResponseID: publicPreviousResponseID,
-		RequestJSON:        storedRequest, RequestHash: hashResponseRequest(requestJSON),
+		RequestJSON:        storedRequest, RequestHash: requestHash,
 		InputItems: storedInput, Metadata: metadata,
 		IdempotencyKey: storedKey, CreatedAt: time.Now(),
 	}
@@ -298,13 +368,13 @@ func createRecord(userID, tokenID uint, req *protocol.Request, requestJSON []byt
 		record.KeyID = route.KeyID
 		record.UpstreamTransport = route.Transport
 	}
-	if err := createResponseWithCall(record, requestID, req.Stream); err != nil {
+	if err := createResponseWithCall(record, requestID, req.Stream, projection, conversationIDs...); err != nil {
 		return nil, err
 	}
 	return record, nil
 }
 
-func createResponseWithCall(record *model.AIResponse, requestID string, stream bool) error {
+func createResponseWithCall(record *model.AIResponse, requestID string, stream bool, projection *responseConversationProjection, conversationIDs ...uint) error {
 	if record == nil {
 		return errors.New("response record is required")
 	}
@@ -313,7 +383,7 @@ func createResponseWithCall(record *model.AIResponse, requestID string, stream b
 	}
 	store := record.Store
 	return model.DB().Transaction(func(tx *gorm.DB) error {
-		if _, err := service.NewAPICallService().StartCallTx(tx, responseCallRequest(record, requestID, stream)); err != nil {
+		if _, err := service.NewAPICallService().StartCallTx(tx, responseCallRequest(record, requestID, stream, conversationIDs...)); err != nil {
 			return err
 		}
 		if err := tx.Create(record).Error; err != nil {
@@ -325,17 +395,22 @@ func createResponseWithCall(record *model.AIResponse, requestID string, stream b
 			}
 			record.Store = false
 		}
-		return nil
+		return stageResponseConversationInputTx(tx, record, projection)
 	})
 }
 
-func responseCallRequest(record *model.AIResponse, requestID string, stream bool) *service.StartCallRequest {
-	return &service.StartCallRequest{
+func responseCallRequest(record *model.AIResponse, requestID string, stream bool, conversationIDs ...uint) *service.StartCallRequest {
+	request := &service.StartCallRequest{
 		ID: record.CallID, RequestID: requestID, UserID: record.UserID, TokenID: record.TokenID,
 		Endpoint: "/v1/responses", Operation: "responses", Model: record.Model,
 		IsStream: stream, Background: record.Background, Store: record.Store,
 		ResourceType: "response", ResourceID: record.ID,
+		ProjectConversation: true,
 	}
+	if len(conversationIDs) > 0 {
+		request.ConversationID = conversationIDs[0]
+	}
+	return request
 }
 
 func ensureResponseCall(record *model.AIResponse) (string, error) {
@@ -358,14 +433,57 @@ func ensureResponseCall(record *model.AIResponse) (string, error) {
 	}
 
 	var call model.APICall
-	err := model.DB().Select("id", "request_id").First(&call, "id = ?", record.CallID).Error
+	err := model.DB().Select("id", "request_id", "status", "project_conversation").First(&call, "id = ?", record.CallID).Error
 	if err == nil {
+		if !call.ProjectConversation && (call.Status == model.APICallStatusReceived || call.Status == model.APICallStatusInProgress) {
+			projectionInput, projectionErr := responseConversationInputRequest(record, nil)
+			if projectionErr != nil {
+				return "", fmt.Errorf("rebuild legacy Responses conversation input: %w", projectionErr)
+			}
+			projectionErr = model.DB().Transaction(func(tx *gorm.DB) error {
+				updated := tx.Model(&model.APICall{}).
+					Where("id = ? AND status IN ?", call.ID, []model.APICallStatus{
+						model.APICallStatusReceived, model.APICallStatusInProgress,
+					}).
+					Update("project_conversation", true)
+				if updated.Error != nil {
+					return updated.Error
+				}
+				if updated.RowsAffected == 0 {
+					var current model.APICall
+					if err := tx.Select("status", "project_conversation").First(&current, "id = ?", call.ID).Error; err != nil {
+						return err
+					}
+					if !current.ProjectConversation || (current.Status != model.APICallStatusReceived && current.Status != model.APICallStatusInProgress) {
+						return errors.New("legacy Responses call is no longer active")
+					}
+				}
+				projectionInput.CallID = call.ID
+				return service.StageAPIConversationProjectionInputTx(tx, projectionInput)
+			})
+			if projectionErr != nil {
+				return "", projectionErr
+			}
+		}
 		return call.RequestID, nil
 	}
 	if !errors.Is(err, gorm.ErrRecordNotFound) {
 		return "", err
 	}
-	created, err := service.NewAPICallService().StartCall(responseCallRequest(record, "", false))
+	projectionInput, err := responseConversationInputRequest(record, nil)
+	if err != nil {
+		return "", fmt.Errorf("rebuild Responses conversation input: %w", err)
+	}
+	var created *model.APICall
+	err = model.DB().Transaction(func(tx *gorm.DB) error {
+		var createErr error
+		created, createErr = service.NewAPICallService().StartCallTx(tx, responseCallRequest(record, "", false))
+		if createErr != nil {
+			return createErr
+		}
+		projectionInput.CallID = created.ID
+		return service.StageAPIConversationProjectionInputTx(tx, projectionInput)
+	})
 	if err != nil {
 		var existing model.APICall
 		if lookupErr := model.DB().Select("request_id").First(&existing, "id = ?", record.CallID).Error; lookupErr != nil {
@@ -385,14 +503,29 @@ func setPublicPreviousResponseID(response *protocol.Response, id string) {
 }
 
 func completeRecord(record *model.AIResponse, response *protocol.Response, idempotencyClaims ...*responseIdempotencyClaim) error {
-	return updateCompletedRecord(record, response, true, idempotencyClaims...)
+	return updateCompletedRecord(record, response, nil, true, idempotencyClaims...)
+}
+
+func completeRecordWithProjection(
+	record *model.AIResponse,
+	response *protocol.Response,
+	projection *responseConversationProjection,
+	idempotencyClaims ...*responseIdempotencyClaim,
+) error {
+	return updateCompletedRecord(record, response, projection, true, idempotencyClaims...)
 }
 
 func persistCompletedRecord(record *model.AIResponse, response *protocol.Response, idempotencyClaims ...*responseIdempotencyClaim) error {
-	return updateCompletedRecord(record, response, false, idempotencyClaims...)
+	return updateCompletedRecord(record, response, nil, false, idempotencyClaims...)
 }
 
-func updateCompletedRecord(record *model.AIResponse, response *protocol.Response, completeCall bool, idempotencyClaims ...*responseIdempotencyClaim) error {
+func updateCompletedRecord(
+	record *model.AIResponse,
+	response *protocol.Response,
+	projection *responseConversationProjection,
+	completeCall bool,
+	idempotencyClaims ...*responseIdempotencyClaim,
+) error {
 	var idempotencyClaim *responseIdempotencyClaim
 	if len(idempotencyClaims) > 0 {
 		idempotencyClaim = idempotencyClaims[0]
@@ -434,6 +567,18 @@ func updateCompletedRecord(record *model.AIResponse, response *protocol.Response
 		updates["response_json"] = nil
 		updates["output_items"] = nil
 	}
+	var terminalProjection *service.ConversationProjectionOutputRequest
+	if completeCall && record.CallID != "" && (status == "completed" || status == "incomplete") {
+		projectionRecord := *record
+		projectionRecord.Status = status
+		projectionRecord.ResponseJSON = datatypes.JSON(append([]byte(nil), responseJSON...))
+		projectionRecord.OutputItems = datatypes.JSON(append([]byte(nil), output...))
+		var err error
+		terminalProjection, err = terminalResponseConversationOutputRequest(&projectionRecord, projection, false)
+		if err != nil {
+			return err
+		}
+	}
 	return model.DB().Transaction(func(tx *gorm.DB) error {
 		result := tx.Model(record).Where("status IN ?", []string{"queued", "in_progress", "result_ready", "finalizing"}).Updates(updates)
 		if result.Error != nil {
@@ -453,6 +598,7 @@ func updateCompletedRecord(record *model.AIResponse, response *protocol.Response
 		attemptID := latestResponseAttemptIDTx(tx, record.CallID)
 		return service.NewAPICallService().CompleteCallTx(tx, record.CallID, &service.CompleteCallRequest{
 			FinalAttemptID: attemptID, HTTPStatus: http.StatusOK,
+			ConversationProjection: terminalProjection,
 		})
 	})
 }
@@ -475,13 +621,21 @@ func latestResponseAttemptIDTx(db *gorm.DB, callID string) uint {
 	return attempt.ID
 }
 
-func (p *Pipeline) recordResponseFailure(record *model.AIResponse, cause error, retryable bool) error {
+func (p *Pipeline) recordResponseFailure(record *model.AIResponse, cause error, retryable bool, projections ...*responseConversationProjection) error {
 	if record == nil {
 		return nil
 	}
+	var projection *responseConversationProjection
+	if len(projections) > 0 {
+		projection = projections[0]
+	}
+	terminalProjection, err := terminalResponseConversationOutputRequest(record, projection, false)
+	if err != nil {
+		return err
+	}
 	errorJSON, _ := json.Marshal(responseErrorFromError(cause))
 	now := time.Now()
-	return model.DB().Transaction(func(tx *gorm.DB) error {
+	err = model.DB().Transaction(func(tx *gorm.DB) error {
 		if err := tx.Model(record).
 			Where("status IN ?", []string{"queued", "in_progress", "result_ready", "finalizing", "failed"}).
 			Updates(map[string]any{
@@ -493,12 +647,18 @@ func (p *Pipeline) recordResponseFailure(record *model.AIResponse, cause error, 
 		if record.CallID == "" {
 			return nil
 		}
-		err := p.callService().FailCallTx(tx, record.CallID, responseFailCallRequest(tx, record, cause, retryable))
+		request := responseFailCallRequest(tx, record, cause, retryable)
+		request.ConversationProjection = terminalProjection
+		err := p.callService().FailCallTx(tx, record.CallID, request)
 		if errors.Is(err, service.ErrAPICallInvalidTransition) {
 			return nil
 		}
 		return err
 	})
+	if err == nil {
+		projectResponseConversationBestEffort(record)
+	}
+	return err
 }
 
 func responseFailCallRequest(db *gorm.DB, record *model.AIResponse, err error, retryable bool) *service.FailCallRequest {
@@ -518,12 +678,20 @@ func responseFailCallRequest(db *gorm.DB, record *model.AIResponse, err error, r
 	}
 }
 
-func (p *Pipeline) recordResponseCancellation(record *model.AIResponse) error {
+func (p *Pipeline) recordResponseCancellation(record *model.AIResponse, projections ...*responseConversationProjection) error {
 	if record == nil {
 		return nil
 	}
+	var projection *responseConversationProjection
+	if len(projections) > 0 {
+		projection = projections[0]
+	}
+	terminalProjection, err := terminalResponseConversationOutputRequest(record, projection, false)
+	if err != nil {
+		return err
+	}
 	now := time.Now()
-	return model.DB().Transaction(func(tx *gorm.DB) error {
+	err = model.DB().Transaction(func(tx *gorm.DB) error {
 		if err := tx.Model(record).
 			Where("status IN ?", []string{"queued", "in_progress", "result_ready", "finalizing", "cancelling", "cancelled"}).
 			Updates(map[string]any{
@@ -538,8 +706,13 @@ func (p *Pipeline) recordResponseCancellation(record *model.AIResponse) error {
 		return p.callService().CancelCallTx(tx, record.CallID, &service.CancelCallRequest{
 			FinalAttemptID: latestResponseAttemptIDTx(tx, record.CallID),
 			ErrorType:      "cancelled_error", ErrorCode: "response_cancelled", ErrorMessage: "Response was cancelled",
+			ConversationProjection: terminalProjection,
 		})
 	})
+	if err == nil {
+		projectResponseConversationBestEffort(record)
+	}
+	return err
 }
 
 func responseErrorFromError(err error) protocol.Error {

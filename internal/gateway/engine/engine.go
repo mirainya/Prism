@@ -22,6 +22,7 @@ import (
 	"github.com/mirainya/Prism/pkg/logger"
 	"go.uber.org/zap"
 	"gorm.io/datatypes"
+	"gorm.io/gorm"
 )
 
 var (
@@ -75,6 +76,7 @@ type ExecuteOptions struct {
 	ResourceType        string
 	ResourceID          string
 	ConversationID      uint
+	ProjectConversation bool
 	KeepCallOpenOnError bool
 	DeferCallCompletion bool
 	BillingKey          string
@@ -92,8 +94,9 @@ type Result struct {
 	AttemptID    uint
 	Stream       *StreamResult
 
-	ledger *callLifecycle
-	usage  *canonical.Usage
+	ledger                 *callLifecycle
+	usage                  *canonical.Usage
+	conversationProjection *service.ConversationProjectionOutputRequest
 }
 
 type StreamResult struct {
@@ -108,19 +111,22 @@ type StreamResult struct {
 	ledger              *callLifecycle
 	keepCallOpenOnError bool
 	deferCallCompletion bool
+	projectConversation bool
 	release             func()
 
-	nextMu             sync.Mutex
-	prefetched         *canonical.Event
-	stateMu            sync.Mutex
-	produced           bool
-	terminal           bool
-	usage              *canonical.Usage
-	providerResponseID string
-	done               bool
-	finishErr          error
-	ledgerActive       bool
-	ledgerOutcome      *streamLedgerOutcome
+	nextMu                 sync.Mutex
+	prefetched             *canonical.Event
+	stateMu                sync.Mutex
+	produced               bool
+	terminal               bool
+	usage                  *canonical.Usage
+	providerResponseID     string
+	transcript             *canonical.EventAccumulator
+	done                   bool
+	finishErr              error
+	ledgerActive           bool
+	ledgerOutcome          *streamLedgerOutcome
+	conversationProjection *service.ConversationProjectionOutputRequest
 
 	finishOnce    sync.Once
 	firstByteOnce sync.Once
@@ -140,11 +146,12 @@ type callLifecycle struct {
 	leaseDuration   time.Duration
 	leaseHeartbeat  time.Duration
 
-	mu                 sync.Mutex
-	finalAttemptID     uint
-	providerResponseID string
-	leaseErr           error
-	finished           bool
+	mu                     sync.Mutex
+	finalAttemptID         uint
+	providerResponseID     string
+	conversationProjection *service.ConversationProjectionOutputRequest
+	leaseErr               error
+	finished               bool
 }
 
 const (
@@ -153,11 +160,12 @@ const (
 )
 
 type streamLedgerOutcome struct {
-	usage              *canonical.Usage
-	requestErr         error
-	attemptCompleted   bool
-	cancelled          bool
-	clientDisconnected bool
+	usage                  *canonical.Usage
+	requestErr             error
+	attemptCompleted       bool
+	cancelled              bool
+	clientDisconnected     bool
+	conversationProjection *service.ConversationProjectionOutputRequest
 }
 
 func newCallLifecycle(ctx context.Context, callService *service.APICallService, callID string) (*callLifecycle, error) {
@@ -271,7 +279,27 @@ func (e *Engine) beginCall(
 	}
 
 	callID := strings.TrimSpace(options.CallID)
+	if options.ProjectConversation && callID == "" {
+		return nil, fmt.Errorf("%w: projected API calls must be created with their conversation input before execution", service.ErrAPICallInvalidInput)
+	}
 	if callID != "" {
+		var existing model.APICall
+		projectionErr := model.DB().Select("id", "project_conversation").First(&existing, "id = ?", callID).Error
+		if projectionErr == nil && existing.ProjectConversation != options.ProjectConversation {
+			return nil, fmt.Errorf(
+				"%w: call %s conversation projection setting does not match execution options",
+				service.ErrAPICallInvalidInput,
+				callID,
+			)
+		}
+		if options.ProjectConversation {
+			if errors.Is(projectionErr, gorm.ErrRecordNotFound) {
+				return nil, fmt.Errorf("%w: projected call %s must be created with its conversation input before execution", service.ErrAPICallNotFound, callID)
+			}
+		}
+		if projectionErr != nil && !errors.Is(projectionErr, gorm.ErrRecordNotFound) {
+			return nil, projectionErr
+		}
 		err := e.apiCalls.MarkCallRunning(callID)
 		if err == nil {
 			return newCallLifecycle(ctx, e.apiCalls, callID)
@@ -279,23 +307,27 @@ func (e *Engine) beginCall(
 		if !errors.Is(err, service.ErrAPICallNotFound) {
 			return nil, err
 		}
+		if options.ProjectConversation {
+			return nil, fmt.Errorf("%w: projected call %s disappeared before execution", service.ErrAPICallNotFound, callID)
+		}
 	}
 
 	store := request.Store != nil && *request.Store
 	call, err := e.apiCalls.StartCall(&service.StartCallRequest{
-		ID:             callID,
-		RequestID:      options.RequestID,
-		UserID:         options.UserID,
-		TokenID:        options.TokenID,
-		Endpoint:       downstreamEndpoint(options.DownstreamEndpoint, request.Endpoint),
-		Operation:      string(operation),
-		Model:          request.Model,
-		IsStream:       request.Stream,
-		Background:     request.Background,
-		Store:          store,
-		ResourceType:   options.ResourceType,
-		ResourceID:     options.ResourceID,
-		ConversationID: options.ConversationID,
+		ID:                  callID,
+		RequestID:           options.RequestID,
+		UserID:              options.UserID,
+		TokenID:             options.TokenID,
+		Endpoint:            downstreamEndpoint(options.DownstreamEndpoint, request.Endpoint),
+		Operation:           string(operation),
+		Model:               request.Model,
+		IsStream:            request.Stream,
+		Background:          request.Background,
+		Store:               store,
+		ResourceType:        options.ResourceType,
+		ResourceID:          options.ResourceID,
+		ConversationID:      options.ConversationID,
+		ProjectConversation: options.ProjectConversation,
 	})
 	if err != nil {
 		return nil, err
@@ -438,7 +470,11 @@ func (l *callLifecycle) cancelAttempt(attemptID uint, requestErr error) {
 	}
 }
 
-func (l *callLifecycle) completeCall(attemptID uint, usage *canonical.Usage) error {
+func (l *callLifecycle) completeCall(
+	attemptID uint,
+	usage *canonical.Usage,
+	projection *service.ConversationProjectionOutputRequest,
+) error {
 	_, ok := l.beginFinish(attemptID)
 	if !ok {
 		return nil
@@ -459,6 +495,7 @@ func (l *callLifecycle) completeCall(attemptID uint, usage *canonical.Usage) err
 		ProviderResponseID:     providerResponseID,
 		HTTPStatus:             http.StatusOK,
 		CompleteStartedAttempt: true,
+		ConversationProjection: projection,
 	})
 	if err != nil {
 		logLedgerError("complete API call", l.callID, attemptID, err)
@@ -467,7 +504,12 @@ func (l *callLifecycle) completeCall(attemptID uint, usage *canonical.Usage) err
 	return err
 }
 
-func (l *callLifecycle) failCall(requestErr error, usage *canonical.Usage, clientDisconnected bool) error {
+func (l *callLifecycle) failCall(
+	requestErr error,
+	usage *canonical.Usage,
+	clientDisconnected bool,
+	projection *service.ConversationProjectionOutputRequest,
+) error {
 	attemptID, ok := l.beginFinish(0)
 	if !ok {
 		return nil
@@ -475,21 +517,22 @@ func (l *callLifecycle) failCall(requestErr error, usage *canonical.Usage, clien
 	detail := ledgerErrorDetail(requestErr)
 	values := usageValues(usage)
 	err := l.service.FailCall(l.callID, &service.FailCallRequest{
-		LeaseOwner:            l.leaseOwner,
-		FinalAttemptID:        attemptID,
-		HTTPStatus:            detail.status,
-		ErrorType:             detail.errorType,
-		ErrorCode:             detail.code,
-		ErrorMessage:          detail.message,
-		ErrorRetryable:        detail.retryable,
-		InputTokens:           values.input,
-		OutputTokens:          values.output,
-		TotalTokens:           values.total,
-		CachedInputTokens:     values.cached,
-		ReasoningOutputTokens: values.reasoning,
-		UsageJSON:             values.raw,
-		ClientDisconnected:    clientDisconnected,
-		FailStartedAttempt:    true,
+		LeaseOwner:             l.leaseOwner,
+		FinalAttemptID:         attemptID,
+		HTTPStatus:             detail.status,
+		ErrorType:              detail.errorType,
+		ErrorCode:              detail.code,
+		ErrorMessage:           detail.message,
+		ErrorRetryable:         detail.retryable,
+		InputTokens:            values.input,
+		OutputTokens:           values.output,
+		TotalTokens:            values.total,
+		CachedInputTokens:      values.cached,
+		ReasoningOutputTokens:  values.reasoning,
+		UsageJSON:              values.raw,
+		ClientDisconnected:     clientDisconnected,
+		FailStartedAttempt:     true,
+		ConversationProjection: projection,
 	})
 	if err != nil {
 		logLedgerError("fail API call", l.callID, attemptID, err)
@@ -498,20 +541,25 @@ func (l *callLifecycle) failCall(requestErr error, usage *canonical.Usage, clien
 	return err
 }
 
-func (l *callLifecycle) cancelCall(requestErr error, clientDisconnected bool) error {
+func (l *callLifecycle) cancelCall(
+	requestErr error,
+	clientDisconnected bool,
+	projection *service.ConversationProjectionOutputRequest,
+) error {
 	attemptID, ok := l.beginFinish(0)
 	if !ok {
 		return nil
 	}
 	detail := ledgerErrorDetail(requestErr)
 	err := l.service.CancelCall(l.callID, &service.CancelCallRequest{
-		LeaseOwner:         l.leaseOwner,
-		FinalAttemptID:     attemptID,
-		HTTPStatus:         detail.status,
-		ErrorType:          detail.errorType,
-		ErrorCode:          detail.code,
-		ErrorMessage:       detail.message,
-		ClientDisconnected: clientDisconnected,
+		LeaseOwner:             l.leaseOwner,
+		FinalAttemptID:         attemptID,
+		HTTPStatus:             detail.status,
+		ErrorType:              detail.errorType,
+		ErrorCode:              detail.code,
+		ErrorMessage:           detail.message,
+		ClientDisconnected:     clientDisconnected,
+		ConversationProjection: projection,
 	})
 	if err != nil {
 		logLedgerError("cancel API call", l.callID, 0, err)
@@ -526,7 +574,7 @@ func (r *Result) CompleteDelivery() error {
 	if r == nil || r.ledger == nil {
 		return nil
 	}
-	return r.ledger.completeCall(r.AttemptID, r.usage)
+	return r.ledger.completeCall(r.AttemptID, r.usage, r.conversationProjection)
 }
 
 // FailDelivery terminates a deferred call when downstream encoding or writing
@@ -539,9 +587,9 @@ func (r *Result) FailDelivery(err error, clientDisconnected bool) error {
 		err = errors.New("downstream response delivery failed")
 	}
 	if clientDisconnected {
-		return r.ledger.cancelCall(err, true)
+		return r.ledger.cancelCall(err, true, r.conversationProjection)
 	}
-	return r.ledger.failCall(err, r.usage, false)
+	return r.ledger.failCall(err, r.usage, false, r.conversationProjection)
 }
 
 // CancelDelivery terminates a deferred call without treating an explicit
@@ -553,7 +601,7 @@ func (r *Result) CancelDelivery(err error, clientDisconnected bool) error {
 	if err == nil {
 		err = context.Canceled
 	}
-	return r.ledger.cancelCall(err, clientDisconnected)
+	return r.ledger.cancelCall(err, clientDisconnected, r.conversationProjection)
 }
 
 func (l *callLifecycle) beginFinish(preferredAttemptID uint) (uint, bool) {
@@ -582,6 +630,24 @@ func (l *callLifecycle) isFinished() bool {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	return l.finished
+}
+
+func (l *callLifecycle) setConversationProjection(request *service.ConversationProjectionOutputRequest) {
+	if l == nil {
+		return
+	}
+	l.mu.Lock()
+	l.conversationProjection = cloneConversationProjectionOutputRequest(request)
+	l.mu.Unlock()
+}
+
+func (l *callLifecycle) currentConversationProjection() *service.ConversationProjectionOutputRequest {
+	if l == nil {
+		return nil
+	}
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return cloneConversationProjectionOutputRequest(l.conversationProjection)
 }
 
 type canonicalUsageValues struct {
@@ -679,6 +745,41 @@ func logLedgerError(action, callID string, attemptID uint, err error) {
 	)
 }
 
+func conversationProjectionOutputRequest(
+	callID string,
+	requestLogID uint,
+	response canonical.Response,
+) *service.ConversationProjectionOutputRequest {
+	providerResponseID := response.ProviderResponseID
+	if providerResponseID == "" {
+		providerResponseID = response.ID
+	}
+	return &service.ConversationProjectionOutputRequest{
+		CallID: callID, OutputItems: canonical.CloneItems(response.Output),
+		RequestLogID: requestLogID, ProviderResponseID: providerResponseID,
+		FinishReason: response.FinishReason,
+	}
+}
+
+func stageConversationProjectionOutputBestEffort(request *service.ConversationProjectionOutputRequest) {
+	if request == nil {
+		return
+	}
+	_, err := service.StageAPIConversationProjectionOutputIfPresent(*request)
+	logLedgerError("stage conversation projection output", request.CallID, 0, err)
+}
+
+func cloneConversationProjectionOutputRequest(
+	request *service.ConversationProjectionOutputRequest,
+) *service.ConversationProjectionOutputRequest {
+	if request == nil {
+		return nil
+	}
+	clone := *request
+	clone.OutputItems = canonical.CloneItems(request.OutputItems)
+	return &clone
+}
+
 func (e *Engine) Execute(
 	ctx context.Context,
 	request canonical.Request,
@@ -714,15 +815,19 @@ func (e *Engine) Execute(
 		if failure == nil {
 			failure = errors.New("Gateway V2 execution ended without a result")
 		}
+		projection := ledger.currentConversationProjection()
+		if options.ProjectConversation && projection == nil {
+			projection = conversationProjectionOutputRequest(options.CallID, 0, canonical.Response{})
+		}
 		if leaseErr := ledger.leaseFailure(); leaseErr != nil {
-			ledger.failCall(errors.Join(failure, leaseErr), nil, false)
+			ledger.failCall(errors.Join(failure, leaseErr), nil, false, projection)
 			return
 		}
 		if errors.Is(failure, context.Canceled) || errors.Is(requestCtx.Err(), context.Canceled) {
-			ledger.cancelCall(failure, true)
+			ledger.cancelCall(failure, true, projection)
 			return
 		}
-		ledger.failCall(failure, nil, false)
+		ledger.failCall(failure, nil, false, projection)
 	}()
 
 	requirements := request.RequiredFeatures()
@@ -891,6 +996,7 @@ func (e *Engine) executeSelected(
 	options ExecuteOptions,
 	ledger *callLifecycle,
 ) (*Result, bool, error) {
+	var terminalProjection *service.ConversationProjectionOutputRequest
 	selected, ok := e.transports.Get(route.Transport)
 	if !ok {
 		e.selector.Release(route.KeyID)
@@ -963,8 +1069,10 @@ func (e *Engine) executeSelected(
 			Stream: &StreamResult{
 				stream: stream, Prepared: prepared, Route: route, CallID: options.CallID, AttemptID: attemptID,
 				reservation: reservation, requestLog: requestLog, ledger: ledger,
+				transcript:          canonical.NewEventAccumulator(),
 				keepCallOpenOnError: options.KeepCallOpenOnError,
 				deferCallCompletion: options.DeferCallCompletion,
+				projectConversation: options.ProjectConversation,
 				release:             func() { e.selector.Release(route.KeyID) },
 			}}, false, nil
 	}
@@ -1005,18 +1113,24 @@ func (e *Engine) executeSelected(
 	}
 	settleErr := reservation.Settle(response.Usage)
 	logErr := requestLog.CompleteResponse(&response, http.StatusOK, settleErr)
+	if options.ProjectConversation {
+		terminalProjection = conversationProjectionOutputRequest(options.CallID, requestLog.Record().ID, response)
+		ledger.setConversationProjection(terminalProjection)
+		stageConversationProjectionOutputBestEffort(terminalProjection)
+	}
 	ledger.completeAttempt(attemptID, response.Usage, providerResponseID)
 	if settleErr != nil || logErr != nil {
 		return nil, false, errors.Join(settleErr, logErr)
 	}
 	if !options.DeferCallCompletion {
-		if completeErr := ledger.completeCall(attemptID, response.Usage); errors.Is(completeErr, service.ErrAPICallLeaseUnavailable) {
+		if completeErr := ledger.completeCall(attemptID, response.Usage, terminalProjection); errors.Is(completeErr, service.ErrAPICallLeaseUnavailable) {
 			return nil, false, completeErr
 		}
 	}
 	return &Result{
 		Response: &response, Prepared: prepared, Route: route, RequestLogID: requestLog.Record().ID,
 		CallID: options.CallID, AttemptID: attemptID, ledger: ledger, usage: cloneUsage(response.Usage),
+		conversationProjection: cloneConversationProjectionOutputRequest(terminalProjection),
 	}, false, nil
 }
 
@@ -1182,7 +1296,7 @@ func (s *StreamResult) CompleteDelivery() error {
 	if s == nil || s.ledger == nil {
 		return nil
 	}
-	return s.ledger.completeCall(s.AttemptID, s.currentUsage())
+	return s.ledger.completeCall(s.AttemptID, s.currentUsage(), s.currentConversationProjection())
 }
 
 // FailDelivery records a deferred streaming response that could not be sent.
@@ -1193,10 +1307,11 @@ func (s *StreamResult) FailDelivery(err error, clientDisconnected bool) error {
 	if err == nil {
 		err = errors.New("downstream stream delivery failed")
 	}
+	projection := s.currentConversationProjection()
 	if clientDisconnected {
-		return s.ledger.cancelCall(err, true)
+		return s.ledger.cancelCall(err, true, projection)
 	}
-	return s.ledger.failCall(err, s.currentUsage(), false)
+	return s.ledger.failCall(err, s.currentUsage(), false, projection)
 }
 
 func (s *StreamResult) observe(event canonical.Event) {
@@ -1206,6 +1321,10 @@ func (s *StreamResult) observe(event canonical.Event) {
 	})
 	s.stateMu.Lock()
 	s.produced = true
+	if s.transcript == nil {
+		s.transcript = canonical.NewEventAccumulator()
+	}
+	s.transcript.Observe(event)
 	if usage := usageFromEvent(event); usage != nil {
 		copy := *usage
 		s.usage = &copy
@@ -1221,6 +1340,20 @@ func (s *StreamResult) observe(event canonical.Event) {
 		}
 	}
 	s.stateMu.Unlock()
+}
+
+// CanonicalResponse returns an immutable snapshot of stream output observed
+// before any downstream protocol encoder flattened the events.
+func (s *StreamResult) CanonicalResponse() canonical.Response {
+	if s == nil {
+		return canonical.Response{}
+	}
+	s.stateMu.Lock()
+	defer s.stateMu.Unlock()
+	if s.transcript == nil {
+		return canonical.Response{}
+	}
+	return s.transcript.Snapshot()
 }
 
 func (s *StreamResult) finish(
@@ -1245,6 +1378,16 @@ func (s *StreamResult) finish(
 		recordedErr := errors.Join(requestErr, billingErr, closeErr)
 		s.ledger.recordPayload(s.AttemptID, model.APICallPayloadUpstreamResponse, s.requestLog.StreamPayload())
 		logErr := s.requestLog.CompleteStream(0, recordedErr)
+		var projection *service.ConversationProjectionOutputRequest
+		if s.projectConversation {
+			projectionResponse := s.CanonicalResponse()
+			if projectionResponse.ProviderResponseID == "" {
+				projectionResponse.ProviderResponseID = s.currentProviderResponseID()
+			}
+			projection = conversationProjectionOutputRequest(s.CallID, s.requestLog.Record().ID, projectionResponse)
+			s.ledger.setConversationProjection(projection)
+			stageConversationProjectionOutputBestEffort(projection)
+		}
 		if s.release != nil {
 			s.release()
 		}
@@ -1260,12 +1403,14 @@ func (s *StreamResult) finish(
 		outcome := &streamLedgerOutcome{
 			usage: cloneUsage(usage), requestErr: ledgerErr,
 			attemptCompleted: attemptCompleted, cancelled: cancelled,
-			clientDisconnected: clientDisconnected,
+			clientDisconnected:     clientDisconnected,
+			conversationProjection: cloneConversationProjectionOutputRequest(projection),
 		}
 		s.finalizeLedgerAttempt(outcome)
 		s.stateMu.Lock()
 		s.done = true
 		s.finishErr = resultErr
+		s.conversationProjection = cloneConversationProjectionOutputRequest(projection)
 		ledgerActive := s.ledgerActive
 		if !ledgerActive {
 			s.ledgerOutcome = outcome
@@ -1317,17 +1462,17 @@ func (s *StreamResult) finalizeLedgerCall(outcome *streamLedgerOutcome) {
 		return
 	}
 	if outcome.cancelled {
-		s.ledger.cancelCall(outcome.requestErr, outcome.clientDisconnected)
+		s.ledger.cancelCall(outcome.requestErr, outcome.clientDisconnected, outcome.conversationProjection)
 		return
 	}
 	if outcome.attemptCompleted && outcome.requestErr == nil {
 		if s.deferCallCompletion {
 			return
 		}
-		s.ledger.completeCall(s.AttemptID, outcome.usage)
+		s.ledger.completeCall(s.AttemptID, outcome.usage, outcome.conversationProjection)
 		return
 	}
-	s.ledger.failCall(outcome.requestErr, outcome.usage, outcome.clientDisconnected)
+	s.ledger.failCall(outcome.requestErr, outcome.usage, outcome.clientDisconnected, outcome.conversationProjection)
 }
 
 func cloneUsage(usage *canonical.Usage) *canonical.Usage {
@@ -1348,6 +1493,15 @@ func (s *StreamResult) currentProviderResponseID() string {
 	s.stateMu.Lock()
 	defer s.stateMu.Unlock()
 	return s.providerResponseID
+}
+
+func (s *StreamResult) currentConversationProjection() *service.ConversationProjectionOutputRequest {
+	if s == nil {
+		return nil
+	}
+	s.stateMu.Lock()
+	defer s.stateMu.Unlock()
+	return cloneConversationProjectionOutputRequest(s.conversationProjection)
 }
 
 func (s *StreamResult) closeUnderlying() error {

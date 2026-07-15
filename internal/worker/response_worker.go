@@ -3,6 +3,7 @@ package worker
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"time"
 
@@ -11,7 +12,10 @@ import (
 	"github.com/mirainya/Prism/internal/service"
 )
 
-const staleForegroundCallBatchSize = 100
+const (
+	staleForegroundCallBatchSize    = 100
+	conversationProjectionBatchSize = 100
+)
 
 func HandleResponseBackground(ctx context.Context, task *asynq.Task) error {
 	var payload ResponseBackgroundPayload
@@ -34,22 +38,35 @@ func HandleResponseBackground(ctx context.Context, task *asynq.Task) error {
 }
 
 func HandleResponseRecovery(ctx context.Context, _ *asynq.Task) error {
+	var recoveryErr error
 	if _, err := responsepipeline.ReconcilePendingResponseRefunds(ctx); err != nil {
-		return err
+		recoveryErr = errors.Join(recoveryErr, err)
 	}
 	if _, err := responsepipeline.RequeueQueuedBackground(ctx); err != nil {
-		return err
+		recoveryErr = errors.Join(recoveryErr, err)
 	}
 	calls := service.NewAPICallService()
 	for {
 		reconciled, err := calls.ReconcileStaleForegroundCalls(ctx, time.Now().Add(-time.Hour), staleForegroundCallBatchSize)
 		if err != nil {
-			return err
+			recoveryErr = errors.Join(recoveryErr, err)
+			break
 		}
 		if reconciled < staleForegroundCallBatchSize {
-			return nil
+			break
 		}
 	}
+	for {
+		reconciled, err := service.ReconcilePendingAPIConversations(ctx, conversationProjectionBatchSize)
+		if err != nil {
+			recoveryErr = errors.Join(recoveryErr, err)
+			break
+		}
+		if reconciled < conversationProjectionBatchSize {
+			break
+		}
+	}
+	return recoveryErr
 }
 
 func NewResponseRecoveryTask() *asynq.Task {

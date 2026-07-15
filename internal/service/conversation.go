@@ -63,7 +63,9 @@ func LoadConversationContextStrict(conversationID string, tokenID uint, targetMo
 		return nil, fmt.Errorf("%w: %v", ErrConversationHistoryLoad, err)
 	}
 	if conv.SystemPrompt != "" {
-		history = append([]chat.ChatMessage{{Role: model.RoleSystem, Content: conv.SystemPrompt}}, history...)
+		if len(history) == 0 || history[0].Role != model.RoleSystem || history[0].ContentText() != conv.SystemPrompt {
+			history = append([]chat.ChatMessage{{Role: model.RoleSystem, Content: conv.SystemPrompt}}, history...)
+		}
 	}
 	cc.History = history
 	// 有状态对话(B模式):有有效 response_id 时只发新消息,历史由上游维护
@@ -346,6 +348,12 @@ type ConversationTurnRecord struct {
 	Model               string
 	NewMessages         []chat.ChatMessage
 	Assistant           *chat.ChatMessage
+	InputItems          []canonical.Item
+	OutputItems         []canonical.Item
+	ConversationID      uint
+	PreviousResponseID  string
+	InputPrepared       bool
+	MatchCanonicalInput bool
 	Status              model.ConversationTurnStatus
 	FinishReason        string
 	ProviderResponseID  string
@@ -374,16 +382,39 @@ func RecordConversationTurn(cc *ConversationContext, record ConversationTurnReco
 	var conversationID uint
 	err := retryConversationWrite(func() error {
 		return model.DB().Transaction(func(tx *gorm.DB) error {
-			conv, messages, err := resolveConversationForTurnTx(tx, cc, &record)
-			if err != nil {
-				return err
-			}
-			conversationID = conv.ID
-
 			var call model.APICall
 			if err := tx.First(&call, "id = ?", record.CallID).Error; err != nil {
 				return fmt.Errorf("load API call %s: %w", record.CallID, err)
 			}
+			if call.UserID != record.UserID || call.TokenID != record.TokenID {
+				return errors.New("conversation turn API call ownership mismatch")
+			}
+			expectedStatus, statusErr := conversationTurnStatusForAPICall(&call)
+			if statusErr != nil {
+				return statusErr
+			}
+			if record.Status != expectedStatus {
+				return fmt.Errorf("%w: API call %s requires %s conversation status", ErrInvalidConversationTurnState, call.ID, expectedStatus)
+			}
+			if err := hydrateConversationTurnRecordTx(tx, &record, &call); err != nil {
+				return err
+			}
+
+			var (
+				conv       *model.Conversation
+				messages   []chat.ChatMessage
+				inputItems []canonical.Item
+				err        error
+			)
+			if recordUsesCanonicalItems(&record) {
+				conv, inputItems, err = resolveCanonicalConversationForTurnTx(tx, &record, &call)
+			} else {
+				conv, messages, err = resolveConversationForTurnTx(tx, cc, &record)
+			}
+			if err != nil {
+				return err
+			}
+			conversationID = conv.ID
 
 			sequence, err := allocateConversationTurnSequenceTx(tx, conv.ID)
 			if err != nil {
@@ -396,16 +427,24 @@ func RecordConversationTurn(cc *ConversationContext, record ConversationTurnReco
 				InputTokens: call.InputTokens, OutputTokens: call.OutputTokens,
 				TotalTokens: call.TotalTokens, Cost: call.FinalCost, LatencyMs: call.DurationMs,
 				FinishReason: record.FinishReason,
-				ErrorType:    firstNonEmpty(record.ErrorType, call.ErrorType),
-				ErrorCode:    firstNonEmpty(record.ErrorCode, call.ErrorCode),
-				ErrorMessage: firstNonEmpty(record.ErrorMessage, call.ErrorMessage),
+				ErrorType:    firstNonEmpty(call.ErrorType, record.ErrorType),
+				ErrorCode:    firstNonEmpty(call.ErrorCode, record.ErrorCode),
+				ErrorMessage: SanitizeAPICallErrorMessage(firstNonEmpty(call.ErrorMessage, record.ErrorMessage)),
 			}
 			if err := tx.Create(&turn).Error; err != nil {
 				return err
 			}
 
-			if err := createConversationItemsTx(tx, &turn, messages, record.Assistant); err != nil {
-				return err
+			var canonicalBytes uint64
+			if recordUsesCanonicalItems(&record) {
+				canonicalBytes, err = createCanonicalConversationItemsTx(tx, &turn, inputItems, record.OutputItems)
+				if err != nil {
+					return err
+				}
+			} else {
+				if err := createConversationItemsTx(tx, &turn, messages, record.Assistant); err != nil {
+					return err
+				}
 			}
 
 			legacyCount := 0
@@ -415,23 +454,48 @@ func RecordConversationTurn(cc *ConversationContext, record ConversationTurnReco
 					return err
 				}
 			}
+			messageCount := legacyCount
+			if recordUsesCanonicalItems(&record) {
+				messageCount = countCanonicalConversationMessages(inputItems) + countCanonicalConversationMessages(record.OutputItems)
+			}
 
 			updates := map[string]any{
 				"total_tokens":  gorm.Expr("total_tokens + ?", call.TotalTokens),
-				"message_count": gorm.Expr("message_count + ?", legacyCount),
+				"message_count": gorm.Expr("message_count + ?", messageCount),
 				"model":         record.Model,
 				"last_status":   string(record.Status),
 				"call_id":       record.CallID,
 			}
+			if recordUsesCanonicalItems(&record) && record.Status == model.ConversationTurnCompleted {
+				updates["canonical_bytes"] = gorm.Expr("canonical_bytes + ?", canonicalBytes)
+				stateKnown := conv.CanonicalStateVersion == 1
+				if stateKnown {
+					combined := append(canonical.CloneItems(inputItems), canonical.CloneItems(record.OutputItems)...)
+					fingerprints, _, valid := canonicalConversationMatchFingerprints(combined)
+					hashes := canonicalConversationRollingHashes(conv.CanonicalMatchHash, fingerprints)
+					if valid && len(hashes) > 0 {
+						updates["canonical_item_count"] = conv.CanonicalItemCount + uint64(len(fingerprints))
+						updates["canonical_match_hash"] = hashes[len(hashes)-1]
+						updates["canonical_state_version"] = 1
+					}
+				}
+			} else if !recordUsesCanonicalItems(&record) && record.Status == model.ConversationTurnCompleted {
+				updates["canonical_item_count"] = 0
+				updates["canonical_bytes"] = 0
+				updates["canonical_match_hash"] = ""
+				updates["canonical_state_version"] = 0
+			}
 			if record.RequestLogID > 0 {
 				updates["last_request_log_id"] = record.RequestLogID
 			}
-			if record.ProviderResponseID != "" && record.ProviderResponseID != conv.ProviderResponseID {
-				updates["provider_response_id"] = record.ProviderResponseID
-			}
-			if record.Provenance.KeyID != 0 || record.Provenance.Transport != "" {
-				updates["provider_key_id"] = record.Provenance.KeyID
-				updates["upstream_transport"] = record.Provenance.Transport
+			if record.Status == model.ConversationTurnCompleted {
+				if record.ProviderResponseID != "" && record.ProviderResponseID != conv.ProviderResponseID {
+					updates["provider_response_id"] = record.ProviderResponseID
+				}
+				if record.Provenance.KeyID != 0 || record.Provenance.Transport != "" {
+					updates["provider_key_id"] = record.Provenance.KeyID
+					updates["upstream_transport"] = record.Provenance.Transport
+				}
 			}
 			result := tx.Model(&model.Conversation{}).Where("id = ?", conv.ID).Updates(updates)
 			if result.Error != nil {
@@ -441,11 +505,14 @@ func RecordConversationTurn(cc *ConversationContext, record ConversationTurnReco
 				return errors.New("conversation was not updated")
 			}
 			if record.RequestLogID > 0 {
-				if err := linkConversationRequestLog(tx, record.RequestLogID, conv.ID); err != nil {
+				if err := linkConversationRequestLog(tx, record.RequestLogID, conv.ID, record.CallID, call.FinalAttemptID); err != nil {
 					return err
 				}
 			}
-			return linkConversationCall(tx, record.CallID, conv.ID)
+			if err := linkConversationCall(tx, record.CallID, conv.ID); err != nil {
+				return err
+			}
+			return linkRelatedConversationCalls(tx, &call, conv.ID)
 		})
 	})
 	if err != nil {
@@ -486,22 +553,33 @@ func validateConversationTurnRecord(record *ConversationTurnRecord) error {
 	default:
 		return fmt.Errorf("%w: %s", ErrInvalidConversationTurnState, record.Status)
 	}
-	if record.Status == model.ConversationTurnCompleted && record.Assistant == nil {
+	if record.Status == model.ConversationTurnCompleted && record.Assistant == nil && !recordUsesCanonicalItems(record) {
 		return errors.New("completed conversation turn requires an assistant message")
+	}
+	if record.InputPrepared && record.ConversationID == 0 {
+		return errors.New("prepared conversation input requires conversation_id")
 	}
 	return nil
 }
 
-func linkConversationRequestLog(tx *gorm.DB, requestLogID, conversationID uint) error {
-	result := tx.Model(&model.ChannelRequestLog{}).
-		Where("id = ? AND conversation_id = 0", requestLogID).
+func linkConversationRequestLog(tx *gorm.DB, requestLogID, conversationID uint, callID string, attemptID uint) error {
+	query := tx.Model(&model.ChannelRequestLog{}).
+		Where("id = ? AND call_id = ? AND conversation_id = 0", requestLogID, callID)
+	if attemptID > 0 {
+		query = query.Where("attempt_id = ?", attemptID)
+	}
+	result := query.
 		Update("conversation_id", conversationID)
 	if result.Error != nil || result.RowsAffected > 0 {
 		return result.Error
 	}
 	var count int64
-	if err := tx.Model(&model.ChannelRequestLog{}).
-		Where("id = ? AND conversation_id = ?", requestLogID, conversationID).Count(&count).Error; err != nil {
+	verify := tx.Model(&model.ChannelRequestLog{}).
+		Where("id = ? AND call_id = ? AND conversation_id = ?", requestLogID, callID, conversationID)
+	if attemptID > 0 {
+		verify = verify.Where("attempt_id = ?", attemptID)
+	}
+	if err := verify.Count(&count).Error; err != nil {
 		return err
 	}
 	if count == 0 {
@@ -526,6 +604,15 @@ func linkConversationCall(tx *gorm.DB, callID string, conversationID uint) error
 		return fmt.Errorf("API call %s was not linked", callID)
 	}
 	return nil
+}
+
+func linkRelatedConversationCalls(tx *gorm.DB, call *model.APICall, conversationID uint) error {
+	if call == nil || call.ResourceType != "response" || strings.TrimSpace(call.ResourceID) == "" {
+		return nil
+	}
+	return tx.Model(&model.APICall{}).
+		Where("resource_type = ? AND resource_id = ? AND operation = ? AND conversation_id = 0", "response", call.ResourceID, "responses.replay").
+		Update("conversation_id", conversationID).Error
 }
 
 type ConversationProvenance struct {

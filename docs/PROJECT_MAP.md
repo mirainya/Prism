@@ -92,7 +92,7 @@ Task 行是持久的异步提交意图。Submit、Poll、Upload 和 Notify 使�
 | `gw_route_states` | Key + 模型 + Transport 熔断状态 |
 | `api_calls` | 所有协议与能力调用的事实源，统一记录状态、usage、计费和资源关联 |
 | `api_call_attempts` | 一次真实上游执行 |
-| `api_call_payloads` | 可选的脱敏、限长、过期、可加密正文 |
+| `api_call_payloads` | 可选的下游/上游原始 HTTP 正文；脱敏、限长、可加密并按期删除 |
 | `channel_request_logs` | 上游 HTTP 路径、状态、耗时和 usage 摘要 |
 | `ai_responses` | Responses 资源与后台执行检查点 |
 | `ai_response_idempotency_cache` | 24 小时短期幂等结果 |
@@ -101,7 +101,7 @@ Task 行是持久的异步提交意图。Submit、Poll、Upload 和 Notify 使�
 | `balance_entries` | 用户与 Token 的追加式余额流水，历史非零余额以 `opening_balance` 建立迁移基线 |
 | `api_access_logs` | 不含正文和凭据的 API 访问元数据 |
 | `audit_events` | 控制台和资源状态变更审计 |
-| `conversations` | Playground 对话容器 |
+| `conversations` | Playground 与开放对话 API 的会话容器 |
 | `conversation_turns` | 每轮请求的顺序、`call_id`、状态、usage 和费用投影 |
 | `conversation_items` | 每轮有序的 canonical 输入/输出，包含多模态、推理、工具调用与结果 |
 | `messages` | 旧消息结构与独立分页 `/messages` 查询的兼容投影；新记录使用 `/turns` |
@@ -114,6 +114,7 @@ Task 行是持久的异步提交意图。Submit、Poll、Upload 和 Notify 使�
 - `Idempotency-Key` 并发请求等待首个执行者；哈希冲突返回 400。
 - 密码、角色或状态变更递增 `SessionVersion`，旧 JWT 随即失效。
 - Conversation Turn、canonical items、旧消息投影及 Call/请求日志关联在同一事务保存。
+- Chat、Messages、Responses 的终态调用都会生成 canonical Conversation 投影；`store: false` 不关闭该投影。
 - `api_calls` 是调用执行事实，`tasks`、`ai_responses` 和 Conversation Turn 只保存各自资源或展示投影。
 - 异步 Task Submit 使用确定性队列 ID，并在服务启动和定时检查时从 SQL 状态恢复。
 
@@ -121,11 +122,11 @@ Task 行是持久的异步提交意图。Submit、Poll、Upload 和 Notify 使�
 
 `observability` 配置控制：
 
-- 调用正文默认不保留；启用后默认最多 256 KiB、保留 168 小时，可使用 AES-256-GCM 独立密钥。
+- `api_call_payloads` 中的下游与上游原始 HTTP 正文默认不保留；启用后默认最多 256 KiB、保留 168 小时，可使用 AES-256-GCM 独立密钥。
 - Call/Attempt 与上游请求日志元数据默认保留 90 天。
-- 终态异步任务和闲置 Playground 对话、轮次、项目及旧消息默认保留 90 天。
+- 终态异步任务和闲置 Conversation、轮次、项目及旧消息默认保留 90 天。
 - API 访问日志默认保留 30 天，审计事件默认 180 天，计费和余额流水默认 365 天。
-- 历史 Task、`store: false` Responses 与上游请求日志正文沿用同一正文策略清理。
+- canonical Conversation 是独立的结构化投影，不受原始正文捕获开关或 Responses `store: false` 影响。
 
 小时级清理任务使用小批次物理删除，避免单次处理大量历史数据。
 
@@ -140,7 +141,7 @@ Task 行是持久的异步提交意图。Submit、Poll、Upload 和 Notify 使�
 | Call Logs | 全调用事实、Attempt、usage、计费和正文详情，支持 `call_id` 定位 |
 | Observability | API 访问日志、审计事件、余额流水 |
 | Async Tasks | 图片、视频等异步任务，使用 `snapshot_at` 稳定分页并链接 Call |
-| Chat Logs | Playground 对话、轮次、附件和关联 Call |
+| Chat Logs | Playground 与开放 API 对话、轮次、附件和关联 Call |
 | API Docs | 在线协议文档与试用 |
 
 ## 启动与构建

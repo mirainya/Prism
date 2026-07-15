@@ -59,11 +59,12 @@ type APICall struct {
 	RetainPayload    bool          `gorm:"not null;default:false" json:"retain_payload"`
 	PayloadExpiresAt *time.Time    `gorm:"index" json:"payload_expires_at"`
 
-	ResourceType   string `gorm:"type:varchar(32);not null;default:'';index:idx_api_calls_resource,priority:1" json:"resource_type"`
-	ResourceID     string `gorm:"type:varchar(64);not null;default:'';index:idx_api_calls_resource,priority:2" json:"resource_id"`
-	ConversationID uint   `gorm:"not null;default:0;index" json:"conversation_id"`
-	FinalAttemptID uint   `gorm:"not null;default:0;index" json:"final_attempt_id"`
-	AttemptCount   int    `gorm:"not null;default:0" json:"attempt_count"`
+	ResourceType        string `gorm:"type:varchar(32);not null;default:'';index:idx_api_calls_resource,priority:1" json:"resource_type"`
+	ResourceID          string `gorm:"type:varchar(64);not null;default:'';index:idx_api_calls_resource,priority:2" json:"resource_id"`
+	ConversationID      uint   `gorm:"not null;default:0;index" json:"conversation_id"`
+	ProjectConversation bool   `gorm:"not null;default:false" json:"project_conversation"`
+	FinalAttemptID      uint   `gorm:"not null;default:0;index" json:"final_attempt_id"`
+	AttemptCount        int    `gorm:"not null;default:0" json:"attempt_count"`
 
 	InputTokens           int            `gorm:"not null;default:0" json:"input_tokens"`
 	OutputTokens          int            `gorm:"not null;default:0" json:"output_tokens"`

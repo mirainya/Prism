@@ -1,6 +1,7 @@
 package service
 
 import (
+	"github.com/mirainya/Prism/internal/gateway/canonical"
 	"github.com/mirainya/Prism/internal/model"
 	"github.com/mirainya/Prism/internal/provider/chat"
 )
@@ -78,6 +79,7 @@ type CompletionResponse struct {
 	AttemptID         uint                    `json:"-"`
 	ProviderKeyID     uint                    `json:"-"`
 	UpstreamTransport model.UpstreamTransport `json:"-"`
+	CanonicalResponse *canonical.Response     `json:"-"`
 	CompleteDelivery  func() error            `json:"-"`
 	FailDelivery      func(error, bool) error `json:"-"`
 }

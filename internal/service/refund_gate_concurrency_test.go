@@ -51,6 +51,7 @@ func setupTestDB(t *testing.T) *gorm.DB {
 		&model.AccountModelState{},
 		&model.APICall{},
 		&model.APICallAttempt{},
+		&model.ConversationProjectionOutbox{},
 	); err != nil {
 		t.Fatalf("migrate: %v", err)
 	}

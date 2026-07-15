@@ -9,6 +9,7 @@ import (
 
 	"github.com/glebarez/sqlite"
 	"github.com/mirainya/Prism/internal/domain"
+	"github.com/mirainya/Prism/internal/gateway/canonical"
 	"github.com/mirainya/Prism/internal/gateway/routing"
 	"github.com/mirainya/Prism/internal/model"
 	protocol "github.com/mirainya/Prism/internal/provider/responses"
@@ -108,7 +109,7 @@ func TestResolveImageFileIDUsesDataURLWithoutPersistingExpandedInput(t *testing.
 }
 
 func TestCancelOnlyAllowsBackgroundAndCancelledCannotBeCompleted(t *testing.T) {
-	db := setupResponsesLifecycleDB(t, &model.AIResponse{}, &model.BillingLog{}, &model.APICall{}, &model.APICallAttempt{}, &model.APICallPayload{})
+	db := setupResponsesLifecycleDB(t, &model.AIResponse{}, &model.BillingLog{}, &model.APICall{}, &model.APICallAttempt{}, &model.APICallPayload{}, &model.ConversationProjectionOutbox{})
 	pipeline := &Pipeline{billing: service.NewBillingService(), calls: service.NewAPICallService()}
 	now := time.Now()
 	foreground := model.AIResponse{ID: "resp_foreground", UserID: 1, TokenID: 10, Model: "m", Status: "in_progress", Store: true, IdempotencyKey: "foreground", CreatedAt: now}
@@ -124,12 +125,18 @@ func TestCancelOnlyAllowsBackgroundAndCancelledCannotBeCompleted(t *testing.T) {
 		Endpoint: "/v1/responses", Operation: "responses", Model: background.Model,
 		Status: model.APICallStatusInProgress, Background: true, Store: true,
 		ResourceType: "response", ResourceID: background.ID, AttemptCount: 1, StartedAt: now,
+		ProjectConversation: true,
 	}).Error; err != nil {
 		t.Fatal(err)
 	}
 	if err := db.Create(&model.APICallAttempt{
 		CallID: background.CallID, AttemptNo: 1, Status: model.APICallAttemptStatusStarted, StartedAt: now,
 	}).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := service.StageAPIConversationProjectionInput(service.ConversationProjectionInputRequest{
+		CallID: background.CallID, InputItems: []canonical.Item{},
+	}); err != nil {
 		t.Fatal(err)
 	}
 

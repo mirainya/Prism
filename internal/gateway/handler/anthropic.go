@@ -31,10 +31,14 @@ func NewAnthropicHandler(executionEngine *engine.Engine) *AnthropicHandler {
 }
 
 func (h *AnthropicHandler) Messages(c *gin.Context) {
-	c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, 32*1024*1024)
+	c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, maxPublicConversationRequestBytes)
 	body, err := io.ReadAll(c.Request.Body)
 	if err != nil {
 		writeAnthropicError(c, http.StatusBadRequest, "invalid_request_error", "request body is invalid")
+		return
+	}
+	if requestJSONHasField(body, "conversation_id") {
+		writeAnthropicError(c, http.StatusBadRequest, "invalid_request_error", "conversation_id must be provided through X-Prism-Conversation-ID")
 		return
 	}
 	request, err := codec.DecodeRequestJSON(body)
@@ -42,14 +46,47 @@ func (h *AnthropicHandler) Messages(c *gin.Context) {
 		writeAnthropicError(c, http.StatusBadRequest, "invalid_request_error", err.Error())
 		return
 	}
+	token := middleware.GetToken(c)
+	conversationID, err := parsePrismConversationID("", c.GetHeader(prismConversationIDHeader))
+	if err != nil {
+		writeAnthropicError(c, http.StatusBadRequest, "invalid_request_error", err.Error())
+		return
+	}
+	if err := service.ValidateAPIConversationID(conversationID, token.UserID, token.ID); err != nil {
+		if errors.Is(err, service.ErrConversationNotFound) {
+			writeAnthropicError(c, http.StatusNotFound, "not_found_error", "conversation not found")
+		} else {
+			writeAnthropicError(c, http.StatusInternalServerError, "api_error", "failed to validate conversation")
+		}
+		return
+	}
+	if conversationID > 0 {
+		c.Header(prismConversationIDHeader, strconv.FormatUint(uint64(conversationID), 10))
+	}
 	callID := "call_" + uuid.NewString()
 	requestID := middleware.GetRequestID(c.Request.Context())
 	c.Header("X-Prism-Call-ID", callID)
-	token := middleware.GetToken(c)
+	projectionBase := service.ConversationProjectionRequest{
+		UserID: token.UserID, TokenID: token.ID, Model: request.Model,
+		CallID: callID, ConversationID: conversationID, InputItems: request.Items,
+	}
+	store := request.Store != nil && *request.Store
+	if err := createAPIConversationCall(&service.StartCallRequest{
+		ID: callID, RequestID: requestID, UserID: token.UserID, TokenID: token.ID,
+		Endpoint: "/v1/messages", Operation: string(transport.OperationMessages), Model: request.Model,
+		IsStream: request.Stream, Store: store, ConversationID: conversationID,
+	}, service.ConversationProjectionInputRequest{
+		ConversationID: conversationID, InputItems: canonical.CloneItems(request.Items),
+	}); err != nil {
+		writeAnthropicError(c, http.StatusInternalServerError, "api_error", "failed to initialize conversation history")
+		return
+	}
 	result, err := h.engine.Execute(c.Request.Context(), request, engine.ExecuteOptions{
 		UserID: token.UserID, TokenID: token.ID,
 		CallID: callID, RequestID: requestID, DownstreamEndpoint: "/v1/messages",
 		DownstreamRequest:   body,
+		ConversationID:      conversationID,
+		ProjectConversation: true,
 		DeferCallCompletion: true,
 		BillingKey:          requestID, MaxAttempts: 3,
 		PrepareRoute: func(_ context.Context, candidate canonical.Request, route *routing.RouteResult) (canonical.Request, error) {
@@ -58,25 +95,45 @@ func (h *AnthropicHandler) Messages(c *gin.Context) {
 	})
 	if err != nil {
 		writeAnthropicExecutionError(c, err)
+		projectAPIConversationBestEffort("project failed anthropic message", projectionBase)
 		return
 	}
 	if result.RequestLogID > 0 {
 		c.Header("X-Prism-Request-Log-ID", strconv.FormatUint(uint64(result.RequestLogID), 10))
 	}
 	if result.Stream != nil {
-		h.writeStream(c, request.Model, result.Stream)
+		h.writeStream(c, request.Model, result.Stream, result.RequestLogID, projectionBase)
 		return
 	}
 	if result.Response == nil {
-		_ = result.FailDelivery(errors.New("Gateway V2 returned no response"), false)
+		stageAPIConversationOutputBestEffort("stage failed anthropic message output", service.ConversationProjectionOutputRequest{
+			CallID: result.CallID, OutputItems: []canonical.Item{}, RequestLogID: result.RequestLogID,
+		})
+		deliveryErr := result.FailDelivery(errors.New("Gateway V2 returned no response"), false)
+		logDeliveryError("fail anthropic message delivery", result.CallID, deliveryErr)
 		writeAnthropicError(c, http.StatusBadGateway, "api_error", "Gateway V2 returned no response")
+		if deliveryErr == nil {
+			projectCanonicalResponseBestEffort("project failed anthropic message", projectionBase,
+				canonical.Response{}, result.RequestLogID, "", result.Route.KeyID, result.Route.Transport)
+		}
 		return
 	}
 	result.Response.Model = request.Model
+	canonicalResponse := cloneAnthropicCanonicalResponse(*result.Response)
+	stageAPIConversationOutputBestEffort("stage anthropic message output", service.ConversationProjectionOutputRequest{
+		CallID: result.CallID, OutputItems: canonical.CloneItems(canonicalResponse.Output),
+		RequestLogID: result.RequestLogID, ProviderResponseID: canonicalProviderResponseID(canonicalResponse),
+		FinishReason: canonicalResponse.FinishReason,
+	})
 	encoded, err := codec.EncodeResponseJSON(*result.Response)
 	if err != nil {
-		_ = result.FailDelivery(err, false)
+		deliveryErr := result.FailDelivery(err, false)
+		logDeliveryError("fail anthropic message delivery", result.CallID, deliveryErr)
 		writeAnthropicError(c, http.StatusBadGateway, "api_error", err.Error())
+		if deliveryErr == nil {
+			projectCanonicalResponseBestEffort("project failed anthropic message", projectionBase,
+				canonicalResponse, result.RequestLogID, "", result.Route.KeyID, result.Route.Transport)
+		}
 		return
 	}
 	c.Header("Content-Type", "application/json; charset=utf-8")
@@ -96,13 +153,29 @@ func (h *AnthropicHandler) Messages(c *gin.Context) {
 		writeErr = io.ErrShortWrite
 	}
 	if writeErr != nil {
-		logDeliveryError("fail anthropic call delivery", result.CallID, result.FailDelivery(writeErr, true))
+		deliveryErr := result.FailDelivery(writeErr, true)
+		logDeliveryError("fail anthropic call delivery", result.CallID, deliveryErr)
+		if deliveryErr == nil {
+			projectCanonicalResponseBestEffort("project aborted anthropic message", projectionBase,
+				canonicalResponse, result.RequestLogID, "", result.Route.KeyID, result.Route.Transport)
+		}
 		return
 	}
-	logDeliveryError("complete anthropic call delivery", result.CallID, result.CompleteDelivery())
+	deliveryErr := result.CompleteDelivery()
+	logDeliveryError("complete anthropic call delivery", result.CallID, deliveryErr)
+	if deliveryErr == nil {
+		projectCanonicalResponseBestEffort("project anthropic message", projectionBase,
+			canonicalResponse, result.RequestLogID, "", result.Route.KeyID, result.Route.Transport)
+	}
 }
 
-func (h *AnthropicHandler) writeStream(c *gin.Context, publicModel string, stream *engine.StreamResult) {
+func (h *AnthropicHandler) writeStream(
+	c *gin.Context,
+	publicModel string,
+	stream *engine.StreamResult,
+	requestLogID uint,
+	projectionBase service.ConversationProjectionRequest,
+) {
 	defer stream.Close()
 	capture := service.NewAPICallService().NewPayloadCaptureBestEffort(
 		stream.CallID, stream.AttemptID, model.APICallPayloadResponse, "text/event-stream",
@@ -120,19 +193,30 @@ func (h *AnthropicHandler) writeStream(c *gin.Context, publicModel string, strea
 	c.Status(http.StatusOK)
 	flusher, ok := c.Writer.(http.Flusher)
 	if !ok {
-		logDeliveryError("abort anthropic stream delivery", stream.CallID,
-			stream.Abort(errors.New("downstream response writer does not support streaming"), false))
+		stageAnthropicStreamOutput("stage failed anthropic stream output", stream, requestLogID)
+		deliveryErr := stream.Abort(errors.New("downstream response writer does not support streaming"), false)
+		logDeliveryError("abort anthropic stream delivery", stream.CallID, deliveryErr)
+		projectAnthropicStream("project failed anthropic stream", projectionBase, stream, requestLogID)
 		return
 	}
 	for {
 		event, err := stream.Next(c.Request.Context())
 		if errors.Is(err, io.EOF) {
-			logDeliveryError("complete anthropic stream delivery", stream.CallID, stream.CompleteDelivery())
+			stageAnthropicStreamOutput("stage anthropic stream output", stream, requestLogID)
+			deliveryErr := stream.CompleteDelivery()
+			logDeliveryError("complete anthropic stream delivery", stream.CallID, deliveryErr)
+			if deliveryErr == nil {
+				projectAnthropicStream("project anthropic stream", projectionBase, stream, requestLogID)
+			}
 			return
 		}
 		if err != nil {
-			logDeliveryError("fail anthropic stream delivery", stream.CallID,
-				stream.FailDelivery(err, c.Request.Context().Err() != nil))
+			stageAnthropicStreamOutput("stage failed anthropic stream output", stream, requestLogID)
+			deliveryErr := stream.FailDelivery(err, c.Request.Context().Err() != nil)
+			logDeliveryError("fail anthropic stream delivery", stream.CallID, deliveryErr)
+			if deliveryErr == nil {
+				projectAnthropicStream("project failed anthropic stream", projectionBase, stream, requestLogID)
+			}
 			return
 		}
 		if !normalizeAnthropicEvent(&event, publicModel, upstreamTransport) {
@@ -140,7 +224,10 @@ func (h *AnthropicHandler) writeStream(c *gin.Context, publicModel string, strea
 		}
 		frame, encodeErr := encoder.Encode(event)
 		if encodeErr != nil {
-			logDeliveryError("abort anthropic stream delivery", stream.CallID, stream.Abort(encodeErr, false))
+			stageAnthropicStreamOutput("stage failed anthropic stream output", stream, requestLogID)
+			deliveryErr := stream.Abort(encodeErr, false)
+			logDeliveryError("abort anthropic stream delivery", stream.CallID, deliveryErr)
+			projectAnthropicStream("project failed anthropic stream", projectionBase, stream, requestLogID)
 			return
 		}
 		if len(frame) == 0 {
@@ -155,15 +242,49 @@ func (h *AnthropicHandler) writeStream(c *gin.Context, publicModel string, strea
 			_, _ = capture.Write(frame[:captured])
 		}
 		if writeErr != nil {
-			logDeliveryError("abort anthropic stream delivery", stream.CallID, stream.Abort(writeErr, true))
+			stageAnthropicStreamOutput("stage aborted anthropic stream output", stream, requestLogID)
+			deliveryErr := stream.Abort(writeErr, true)
+			logDeliveryError("abort anthropic stream delivery", stream.CallID, deliveryErr)
+			projectAnthropicStream("project aborted anthropic stream", projectionBase, stream, requestLogID)
 			return
 		}
 		if written != len(frame) {
-			logDeliveryError("abort anthropic stream delivery", stream.CallID, stream.Abort(io.ErrShortWrite, true))
+			stageAnthropicStreamOutput("stage aborted anthropic stream output", stream, requestLogID)
+			deliveryErr := stream.Abort(io.ErrShortWrite, true)
+			logDeliveryError("abort anthropic stream delivery", stream.CallID, deliveryErr)
+			projectAnthropicStream("project aborted anthropic stream", projectionBase, stream, requestLogID)
 			return
 		}
 		flusher.Flush()
 	}
+}
+
+func stageAnthropicStreamOutput(action string, stream *engine.StreamResult, requestLogID uint) canonical.Response {
+	response := stream.CanonicalResponse()
+	stageAPIConversationOutputBestEffort(action, service.ConversationProjectionOutputRequest{
+		CallID: stream.CallID, OutputItems: canonical.CloneItems(response.Output),
+		RequestLogID: requestLogID, ProviderResponseID: canonicalProviderResponseID(response),
+		FinishReason: response.FinishReason,
+	})
+	return response
+}
+
+func projectAnthropicStream(action string, projection service.ConversationProjectionRequest, stream *engine.StreamResult, requestLogID uint) {
+	response := stream.CanonicalResponse()
+	keyID := uint(0)
+	upstreamTransport := model.UpstreamTransport("")
+	if stream.Route != nil {
+		keyID = stream.Route.KeyID
+		upstreamTransport = stream.Route.Transport
+	}
+	projectCanonicalResponseBestEffort(action, projection, response, requestLogID,
+		canonicalProviderResponseID(response), keyID, upstreamTransport)
+}
+
+func cloneAnthropicCanonicalResponse(source canonical.Response) canonical.Response {
+	clone := source
+	clone.Output = canonical.CloneItems(source.Output)
+	return clone
 }
 
 func normalizeAnthropicEvent(event *canonical.Event, publicModel string, upstreamTransport transport.ID) bool {

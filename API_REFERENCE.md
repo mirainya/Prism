@@ -65,6 +65,14 @@ Header: `Authorization: Bearer {jwt}`。无请求体。
 
 ## V1 API (Token 认证，用于 AI 调用)
 
+### 对话保存与续接
+
+`/v1/chat/completions`、`/v1/messages` 和 `/v1/responses` 都会把 canonical 输入及已产生的输出投影到 Conversation，并通过 `call_id` 关联调用记录。该投影覆盖成功、失败、取消和客户端中断；Responses 的 `store: false` 不会关闭投影。
+
+三个端点都接受请求头 `X-Prism-Conversation-ID: <正整数>`，用于显式续接当前 Token 的 Prism 对话。Chat 还接受请求体 `conversation_id`，两者同时提供时必须一致。显式 ID 有效时，响应头返回同一 `X-Prism-Conversation-ID`；未显式提供 ID 时，Prism 可按 `previous_response_id` 或唯一完整历史前缀识别续话，但隐式匹配或新建对话不会返回该响应头。
+
+Conversation 保存的是结构化 canonical 内容，不是原始 HTTP 正文。下游及上游原始 HTTP 请求/响应正文仅在启用 `observability.retain_api_call_payloads` 时写入 `api_call_payloads`，并按脱敏、限长、加密和过期策略处理。
+
 ### POST /v1/chat/completions
 
 OpenAI 兼容的 Chat Completions 接口。
@@ -208,7 +216,7 @@ Header：
 ```
 
 - `stream: true`：返回 Responses SSE 事件流。
-- `Idempotency-Key` 同时支持 `store: true` 与 `store: false`。`store: false` 的短期幂等缓存不允许通过 `GET /v1/responses/:id` 查询。
+- `Idempotency-Key` 同时支持 `store: true` 与 `store: false`。`store: false` 的短期幂等缓存不允许通过 `GET /v1/responses/:id` 查询，但仍保存 canonical Conversation 投影。
 - `background: true`：立即返回 `queued`；通过 `GET /v1/responses/:id` 查询。不能同时启用 `stream`，且 `store` 必须为 `true`。
 - `previous_response_id`：必须使用同一 Token 创建且已保存的 Prism `resp_` ID。
 - `file_id`：必须属于当前 Token；Prism 会在调用上游前解析文件内容。
@@ -464,7 +472,7 @@ curl "$BASE_URL/v1/files" \
 | GET | /api/conversations/:id/messages | 旧消息兼容投影，独立分页 |
 | GET | /api/conversations/:id/turns | canonical 对话轮次，独立分页 |
 
-这些接口只展示 Playground 保存的对话，不代表全部 API 调用历史。数据按 `conversations -> conversation_turns -> conversation_items` 保存；`conversation_items` 保留有序 canonical 多模态、推理和工具内容。`/turns` 是新记录主查询，`/messages` 保留旧数据兼容，两者各自使用 `page/page_size`。Turn、Item 的 64 位 ID 与轮次序号以十进制字符串返回；`call_id` 可用于定位 `/api/calls`。
+这些接口展示 Playground 及 `/v1/chat/completions`、`/v1/messages`、`/v1/responses` 保存的对话，但不替代完整的 API 调用历史；全部调用仍以 `/api/calls` 为准。数据按 `conversations -> conversation_turns -> conversation_items` 保存；`conversation_items` 保留有序 canonical 多模态、推理和工具内容。`/turns` 是新记录主查询，`/messages` 保留旧数据兼容，两者各自使用 `page/page_size`。Turn、Item 的 64 位 ID 与轮次序号以十进制字符串返回；`call_id` 可用于定位 `/api/calls`。
 
 ### 查询
 
@@ -484,6 +492,8 @@ curl "$BASE_URL/v1/files" \
 | GET | `/api/observability/access-logs` | API 访问元数据，不保存认证头或请求正文 |
 | GET | `/api/observability/audit-events` | 登录、Token、文件、取消及控制台写操作审计 |
 | GET | `/api/observability/balance-entries` | 用户与 Token 的初始额度、历史余额基线、扣费、退款、充值和结算流水 |
+
+`/api/calls/:id` 中的下游与上游原始 HTTP 正文来自可选的 `api_call_payloads` 捕获；默认不保存，且与始终生成的 canonical Conversation 投影相互独立。
 
 三个观测接口都支持 `page`、`page_size`、`start_date`、`end_date`。访问日志另支持 `request_id`、`call_id`、`method`、`path`、`status_code`、`error_code`；审计事件支持 `action`、`resource_type`、`outcome`；余额流水支持 `account_type`、`direction`、`category`、`call_id`。
 

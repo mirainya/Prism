@@ -5,22 +5,7 @@ import "encoding/json"
 // Clone returns a request whose mutable fields do not share storage with the source.
 func (r Request) Clone() Request {
 	clone := r
-	if r.Items != nil {
-		clone.Items = make([]Item, len(r.Items))
-		for i, item := range r.Items {
-			clone.Items[i] = item
-			clone.Items[i].Arguments = cloneRaw(item.Arguments)
-			clone.Items[i].Output = cloneRaw(item.Output)
-			clone.Items[i].Extra = cloneRawMap(item.Extra)
-			if item.Content != nil {
-				clone.Items[i].Content = make([]Content, len(item.Content))
-				for j, content := range item.Content {
-					clone.Items[i].Content[j] = content
-					clone.Items[i].Content[j].Extra = cloneRawMap(content.Extra)
-				}
-			}
-		}
-	}
+	clone.Items = CloneItems(r.Items)
 	if r.Tools != nil {
 		clone.Tools = make([]Tool, len(r.Tools))
 		for i, tool := range r.Tools {
@@ -66,6 +51,29 @@ func (r Request) Clone() Request {
 		options.ExpireAt = clonePointer(options.ExpireAt)
 		options.Unknown = cloneRawMap(options.Unknown)
 		clone.ProviderOptions.Volcengine = &options
+	}
+	return clone
+}
+
+// CloneItems returns a deep copy suitable for retaining request or stream
+// snapshots after protocol processing continues.
+func CloneItems(items []Item) []Item {
+	if items == nil {
+		return nil
+	}
+	clone := make([]Item, len(items))
+	for i, item := range items {
+		clone[i] = item
+		clone[i].Arguments = cloneRaw(item.Arguments)
+		clone[i].Output = cloneRaw(item.Output)
+		clone[i].Extra = cloneRawMap(item.Extra)
+		if item.Content != nil {
+			clone[i].Content = make([]Content, len(item.Content))
+			for j, content := range item.Content {
+				clone[i].Content[j] = content
+				clone[i].Content[j].Extra = cloneRawMap(content.Extra)
+			}
+		}
 	}
 	return clone
 }

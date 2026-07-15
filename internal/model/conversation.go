@@ -10,26 +10,42 @@ import (
 // Conversation 对话
 type Conversation struct {
 	BaseModel
-	UserID             uint              `gorm:"not null;index;comment:用户ID" json:"user_id"`
-	TokenID            uint              `gorm:"not null;index;comment:Token ID" json:"token_id"`
-	CallID             string            `gorm:"type:varchar(64);not null;default:'';index;comment:最近关联调用ID" json:"call_id"`
-	Title              string            `gorm:"type:varchar(200);comment:对话标题" json:"title"`
-	Model              string            `gorm:"type:varchar(50);comment:最后使用模型" json:"model"`
-	SystemPrompt       string            `gorm:"type:text;comment:系统提示词" json:"system_prompt"`
-	LastRequestLogID   uint              `gorm:"default:0;index;comment:最近一次请求日志ID" json:"last_request_log_id"`
-	LastStatus         string            `gorm:"type:varchar(20);comment:最近一次请求状态" json:"last_status"`
-	ProviderResponseID string            `gorm:"type:varchar(128);default:'';comment:上游有状态对话ID(如火山response_id)" json:"provider_response_id"`
-	ProviderKeyID      uint              `gorm:"not null;default:0;comment:上游状态所属网关Key" json:"provider_key_id"`
-	UpstreamTransport  UpstreamTransport `gorm:"type:varchar(64);not null;default:'';comment:上游状态所属Transport" json:"upstream_transport"`
-	TotalTokens        int               `gorm:"default:0;comment:累计token" json:"total_tokens"`
-	MessageCount       int               `gorm:"default:0;comment:消息数量" json:"message_count"`
-	TurnSequence       uint64            `gorm:"not null;default:0;comment:最后分配的轮次序号" json:"-"`
-	Status             int8              `gorm:"default:1;comment:状态(1启用/0禁用)" json:"status"`
+	UserID                uint              `gorm:"not null;index;comment:用户ID" json:"user_id"`
+	TokenID               uint              `gorm:"not null;index;comment:Token ID" json:"token_id"`
+	CallID                string            `gorm:"type:varchar(64);not null;default:'';index;comment:最近关联调用ID" json:"call_id"`
+	Title                 string            `gorm:"type:varchar(200);comment:对话标题" json:"title"`
+	Model                 string            `gorm:"type:varchar(80);comment:最后使用模型" json:"model"`
+	SystemPrompt          string            `gorm:"type:longtext;comment:系统提示词" json:"system_prompt"`
+	LastRequestLogID      uint              `gorm:"default:0;index;comment:最近一次请求日志ID" json:"last_request_log_id"`
+	LastStatus            string            `gorm:"type:varchar(20);comment:最近一次请求状态" json:"last_status"`
+	ProviderResponseID    string            `gorm:"type:varchar(128);default:'';index:idx_conversations_provider_response_id;comment:上游有状态对话ID(如火山response_id)" json:"provider_response_id"`
+	ProviderKeyID         uint              `gorm:"not null;default:0;comment:上游状态所属网关Key" json:"provider_key_id"`
+	UpstreamTransport     UpstreamTransport `gorm:"type:varchar(64);not null;default:'';comment:上游状态所属Transport" json:"upstream_transport"`
+	TotalTokens           int               `gorm:"default:0;comment:累计token" json:"total_tokens"`
+	MessageCount          int               `gorm:"default:0;comment:消息数量" json:"message_count"`
+	CanonicalItemCount    uint64            `gorm:"not null;default:0;comment:可匹配 canonical 项数" json:"-"`
+	CanonicalBytes        uint64            `gorm:"not null;default:0;comment:已完成 canonical 正文字节数" json:"-"`
+	CanonicalMatchHash    string            `gorm:"type:char(64);not null;default:'';comment:已完成 canonical 滚动匹配哈希" json:"-"`
+	CanonicalStateVersion uint8             `gorm:"not null;default:0;comment:canonical 匹配状态版本" json:"-"`
+	TurnSequence          uint64            `gorm:"not null;default:0;comment:最后分配的轮次序号" json:"-"`
+	Status                int8              `gorm:"default:1;comment:状态(1启用/0禁用)" json:"status"`
 }
 
 func (Conversation) TableName() string {
 	return "conversations"
 }
+
+const conversationCanonicalMatchIndexName = "idx_conversations_canonical_match"
+
+type conversationCanonicalMatchIndex struct {
+	UserID    uint      `gorm:"column:user_id;index:idx_conversations_canonical_match,priority:1"`
+	TokenID   uint      `gorm:"column:token_id;index:idx_conversations_canonical_match,priority:2"`
+	Status    int8      `gorm:"column:status;index:idx_conversations_canonical_match,priority:3"`
+	UpdatedAt time.Time `gorm:"column:updated_at;index:idx_conversations_canonical_match,priority:4"`
+	ID        uint      `gorm:"column:id;index:idx_conversations_canonical_match,priority:5"`
+}
+
+func (conversationCanonicalMatchIndex) TableName() string { return "conversations" }
 
 // Role 常量
 const (

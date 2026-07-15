@@ -176,6 +176,7 @@ const CHAT_COMPLETIONS_PARAMS = [
   { name: 'response_format', type: 'object', required: false, description: '{type:"text"|"json_object"|"json_schema"}' },
   { name: 'seed', type: 'integer', required: false, description: '随机种子，相同 seed 尽量返回相同结果' },
   { name: 'user', type: 'string', required: false, description: '终端用户标识' },
+  { name: 'conversation_id', type: 'integer|string', required: false, description: '续接当前 Token 所属的 Prism 对话；也可使用 X-Prism-Conversation-ID 请求头' },
 ];
 
 const ANTHROPIC_MESSAGES_ENDPOINTS: ApiEndpoint[] = [{
@@ -183,7 +184,7 @@ const ANTHROPIC_MESSAGES_ENDPOINTS: ApiEndpoint[] = [{
   method: 'POST',
   path: '/v1/messages',
   name: '创建消息',
-  description: '兼容 Anthropic Messages API。Prism 会按模型已配置的 Transport 原生调用或无损转换，支持文本、图片、文档、工具调用和 SSE。',
+  description: '兼容 Anthropic Messages API。Prism 会按模型已配置的 Transport 原生调用或无损转换，支持文本、图片、文档、工具调用和 SSE，并自动保存成功、失败和中断的对话轮次。',
   params: [
     { name: 'model', type: 'string', required: true, description: '模型标识' },
     { name: 'max_tokens', type: 'integer', required: true, description: '最大输出 token 数' },
@@ -196,6 +197,7 @@ const ANTHROPIC_MESSAGES_ENDPOINTS: ApiEndpoint[] = [{
     { name: 'top_p', type: 'number', required: false, description: '核采样参数' },
     { name: 'stop_sequences', type: 'string[]', required: false, description: '停止序列' },
     { name: 'metadata', type: 'object', required: false, description: '请求元数据' },
+    { name: 'X-Prism-Conversation-ID (header)', type: 'integer', required: false, description: '续接当前 Token 所属的 Prism 对话' },
   ],
   requestExample: JSON.stringify({
     model: 'claude-sonnet-4-20250514',
@@ -231,6 +233,7 @@ const RESPONSES_PARAMS = [
   { name: 'caching', type: 'object', required: false, description: '火山方舟缓存配置' },
   { name: 'text', type: 'object', required: false, description: '文本输出及结构化输出配置' },
   { name: 'conversation', type: 'string|object', required: false, description: '上游会话配置' },
+  { name: 'X-Prism-Conversation-ID (header)', type: 'integer', required: false, description: '续接当前 Token 所属的 Prism 对话；不改变原生 conversation 字段' },
   { name: 'prompt', type: 'object', required: false, description: '提示模板配置' },
   { name: 'stream_options', type: 'object', required: false, description: '流式输出配置' },
   { name: 'context_management', type: 'array', required: false, description: '上下文管理配置' },
@@ -252,7 +255,7 @@ const RESPONSES_ENDPOINTS: ApiEndpoint[] = [
     method: 'POST',
     path: '/v1/responses',
     name: '创建响应',
-    description: 'OpenAI Responses 兼容入口，支持多模态、函数工具、流式、续话和后台执行。Idempotency-Key 结果保留 24 小时，store=false 也可完整重放。火山 v3 专属字段及未来扩展会原样保留；无法无损转换的字段返回 400。',
+    description: 'OpenAI Responses 兼容入口，支持多模态、函数工具、流式、续话和后台执行，并自动保存成功、失败和中断的对话轮次。JSON 请求体上限 32 MiB，大文件应先上传到 /v1/files 并使用 file_id。Idempotency-Key 结果保留 24 小时；store=false 不保存 Responses 资源正文，但仍保存 Conversation 投影。火山 v3 专属字段及未来扩展会原样保留；无法无损转换的字段返回 400。',
     params: RESPONSES_PARAMS,
     requestExample: JSON.stringify({
       model: 'doubao-seed-2-0-pro',
@@ -667,7 +670,7 @@ const ApiDocs: React.FC = () => {
               method: 'POST',
               path: '/v1/chat/completions',
               name: '对话补全',
-              description: '发送消息获取模型回复，支持流式/非流式、多模态、Tool Use',
+              description: '发送消息获取模型回复，支持流式/非流式、多模态、Tool Use，并自动保存成功、失败和中断的对话轮次',
               params: CHAT_COMPLETIONS_PARAMS,
               requestExample: JSON.stringify({
                 model: chatModels[0]?.code || "gpt-4o",

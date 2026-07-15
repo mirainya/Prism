@@ -39,19 +39,37 @@ func (s *RetentionService) DeleteExpiredConversationHistory(cutoff time.Time, li
 	}
 	limit = normalizeRetentionBatchSize(limit)
 	var ids []uint
-	if err := model.DB().Model(&model.Conversation{}).
+	hasProjectionOutbox := model.DB().Migrator().HasTable(&model.ConversationProjectionOutbox{})
+	query := model.DB().Model(&model.Conversation{}).
 		Where("updated_at < ?", cutoff).
-		Order("id ASC").Limit(limit).Pluck("id", &ids).Error; err != nil || len(ids) == 0 {
+		Order("id ASC").Limit(limit)
+	if hasProjectionOutbox {
+		query = excludePendingConversationProjections(query)
+	}
+	if err := query.Pluck("id", &ids).Error; err != nil || len(ids) == 0 {
 		return 0, err
 	}
+	return deleteExpiredConversationCandidates(model.DB(), cutoff, ids, hasProjectionOutbox)
+}
+
+func deleteExpiredConversationCandidates(
+	database *gorm.DB,
+	cutoff time.Time,
+	ids []uint,
+	hasProjectionOutbox bool,
+) (int64, error) {
 	var deleted int64
-	err := model.DB().Transaction(func(tx *gorm.DB) error {
-		var locked []model.Conversation
-		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).
+	err := database.Transaction(func(tx *gorm.DB) error {
+		lockedQuery := tx.Clauses(clause.Locking{Strength: "UPDATE"}).
 			Model(&model.Conversation{}).
 			Select("id").
 			Where("id IN ? AND updated_at < ?", ids, cutoff).
-			Order("id ASC").Find(&locked).Error; err != nil {
+			Order("id ASC")
+		if hasProjectionOutbox {
+			lockedQuery = excludePendingConversationProjections(lockedQuery)
+		}
+		var locked []model.Conversation
+		if err := lockedQuery.Find(&locked).Error; err != nil {
 			return err
 		}
 		if len(locked) == 0 {
@@ -86,36 +104,195 @@ func (s *RetentionService) DeleteExpiredConversationHistory(cutoff time.Time, li
 	return deleted, nil
 }
 
+// excludePendingConversationProjections preserves every conversation that an
+// unresolved previous_response_id could select. Protecting all same-owner
+// matches also keeps an ambiguous identifier from changing meaning mid-call.
+func excludePendingConversationProjections(query *gorm.DB) *gorm.DB {
+	publicResponseMatch := ""
+	if query.Migrator().HasTable(&model.ConversationTurn{}) && query.Migrator().HasTable(&model.AIResponse{}) {
+		publicResponseMatch = `
+					OR EXISTS (
+						SELECT 1
+						FROM conversation_turns AS response_turn
+						JOIN ai_responses AS response ON response.call_id = response_turn.call_id
+						WHERE response_turn.conversation_id = conversations.id
+							AND response.id = projection.previous_response_id
+							AND response.user_id = conversations.user_id
+							AND response.token_id = conversations.token_id
+					)`
+	}
+	return query.Where(`NOT EXISTS (
+		SELECT 1
+		FROM conversation_projection_outbox AS projection
+		LEFT JOIN api_calls AS projection_call ON projection_call.id = projection.call_id
+		LEFT JOIN api_calls AS latest_call ON latest_call.id = conversations.call_id
+		WHERE projection.conversation_id = conversations.id
+			OR (
+				projection.conversation_id = 0
+				AND projection.previous_response_id <> ''
+				AND conversations.status = 1
+				AND projection_call.user_id = conversations.user_id
+				AND projection_call.token_id = conversations.token_id
+				AND (
+					(conversations.provider_response_id <> '' AND projection.previous_response_id = conversations.provider_response_id)
+					OR (latest_call.resource_id <> '' AND projection.previous_response_id = latest_call.resource_id)
+					` + publicResponseMatch + `
+				)
+			)
+	)`)
+}
+
 func (s *RetentionService) DeleteExpiredCallMetadata(cutoff time.Time, limit int) (int64, error) {
 	if !model.DB().Migrator().HasTable(&model.APICall{}) {
 		return 0, nil
 	}
 	limit = normalizeRetentionBatchSize(limit)
+	hasProjectionOutbox := model.DB().Migrator().HasTable(&model.ConversationProjectionOutbox{})
+	hasConversations := model.DB().Migrator().HasTable(&model.Conversation{})
 	var ids []string
-	if err := model.DB().Model(&model.APICall{}).
+	query := model.DB().Model(&model.APICall{}).
 		Where("status IN ? AND COALESCE(completed_at, updated_at) < ?", []model.APICallStatus{
 			model.APICallStatusCompleted, model.APICallStatusFailed, model.APICallStatusCancelled,
 		}, cutoff).
-		Order("created_at ASC").Limit(limit).Pluck("id", &ids).Error; err != nil || len(ids) == 0 {
+		Order("created_at ASC").Limit(limit)
+	if hasProjectionOutbox {
+		query = query.Where("NOT EXISTS (SELECT 1 FROM conversation_projection_outbox AS projection WHERE projection.call_id = api_calls.id)")
+	}
+	if hasConversations {
+		query = excludeConversationLatestCalls(query)
+	}
+	if err := query.Pluck("id", &ids).Error; err != nil || len(ids) == 0 {
 		return 0, err
 	}
-	err := model.DB().Transaction(func(tx *gorm.DB) error {
-		if err := tx.Where("call_id IN ?", ids).Delete(&model.APICallPayload{}).Error; err != nil {
+	return deleteExpiredCallCandidates(model.DB(), cutoff, ids, hasProjectionOutbox, hasConversations)
+}
+
+func deleteExpiredCallCandidates(
+	database *gorm.DB,
+	cutoff time.Time,
+	ids []string,
+	hasProjectionOutbox bool,
+	hasConversations bool,
+) (int64, error) {
+	var deleted int64
+	err := database.Transaction(func(tx *gorm.DB) error {
+		lockedQuery := tx.Clauses(clause.Locking{Strength: "UPDATE"}).
+			Model(&model.APICall{}).
+			Select("id").
+			Where("id IN ?", ids).
+			Where("status IN ? AND COALESCE(completed_at, updated_at) < ?", []model.APICallStatus{
+				model.APICallStatusCompleted, model.APICallStatusFailed, model.APICallStatusCancelled,
+			}, cutoff).
+			Order("created_at ASC")
+		if hasProjectionOutbox {
+			lockedQuery = lockedQuery.Where("NOT EXISTS (SELECT 1 FROM conversation_projection_outbox AS projection WHERE projection.call_id = api_calls.id)")
+		}
+		if hasConversations {
+			lockedQuery = excludeConversationLatestCalls(lockedQuery)
+		}
+		var locked []model.APICall
+		if err := lockedQuery.Find(&locked).Error; err != nil {
 			return err
 		}
-		if err := tx.Where("call_id IN ?", ids).Delete(&model.APICallAttempt{}).Error; err != nil {
+		if len(locked) == 0 {
+			return nil
+		}
+		lockedIDs := make([]string, len(locked))
+		for i := range locked {
+			lockedIDs[i] = locked[i].ID
+		}
+		if err := tx.Where("call_id IN ?", lockedIDs).Delete(&model.APICallPayload{}).Error; err != nil {
 			return err
 		}
-		return tx.Where("id IN ?", ids).Delete(&model.APICall{}).Error
+		if err := tx.Where("call_id IN ?", lockedIDs).Delete(&model.APICallAttempt{}).Error; err != nil {
+			return err
+		}
+		result := tx.Where("id IN ?", lockedIDs).Delete(&model.APICall{})
+		deleted = result.RowsAffected
+		return result.Error
 	})
 	if err != nil {
 		return 0, err
 	}
-	return int64(len(ids)), nil
+	return deleted, nil
+}
+
+func excludeConversationLatestCalls(query *gorm.DB) *gorm.DB {
+	return query.Where(`NOT EXISTS (
+		SELECT 1
+		FROM conversations AS conversation
+		WHERE conversation.call_id = api_calls.id
+			AND conversation.deleted_at IS NULL
+	)`)
 }
 
 func (s *RetentionService) DeleteExpiredRequestLogs(cutoff time.Time, limit int) (int64, error) {
-	return deleteBaseModelBatch(&model.ChannelRequestLog{}, "created_at", cutoff, limit)
+	if !model.DB().Migrator().HasTable(&model.ChannelRequestLog{}) {
+		return 0, nil
+	}
+	limit = normalizeRetentionBatchSize(limit)
+	hasProjectionOutbox := model.DB().Migrator().HasTable(&model.ConversationProjectionOutbox{})
+	var ids []uint
+	query := model.DB().Unscoped().Model(&model.ChannelRequestLog{}).
+		Where("created_at < ?", cutoff).
+		Order("created_at ASC").Limit(limit)
+	if hasProjectionOutbox {
+		query = excludePendingRequestLogProjections(query)
+	}
+	if err := query.Pluck("id", &ids).Error; err != nil || len(ids) == 0 {
+		return 0, err
+	}
+	return deleteExpiredRequestLogCandidates(model.DB(), cutoff, ids, hasProjectionOutbox)
+}
+
+func deleteExpiredRequestLogCandidates(
+	database *gorm.DB,
+	cutoff time.Time,
+	ids []uint,
+	hasProjectionOutbox bool,
+) (int64, error) {
+	var deleted int64
+	err := database.Transaction(func(tx *gorm.DB) error {
+		lockedQuery := tx.Unscoped().Clauses(clause.Locking{Strength: "UPDATE"}).
+			Model(&model.ChannelRequestLog{}).
+			Select("id").
+			Where("id IN ? AND created_at < ?", ids, cutoff).
+			Order("created_at ASC")
+		if hasProjectionOutbox {
+			lockedQuery = excludePendingRequestLogProjections(lockedQuery)
+		}
+		var locked []model.ChannelRequestLog
+		if err := lockedQuery.Find(&locked).Error; err != nil {
+			return err
+		}
+		if len(locked) == 0 {
+			return nil
+		}
+		lockedIDs := make([]uint, len(locked))
+		for i := range locked {
+			lockedIDs[i] = locked[i].ID
+		}
+		result := tx.Unscoped().Where("id IN ?", lockedIDs).Delete(&model.ChannelRequestLog{})
+		deleted = result.RowsAffected
+		return result.Error
+	})
+	if err != nil {
+		return 0, err
+	}
+	return deleted, nil
+}
+
+func excludePendingRequestLogProjections(query *gorm.DB) *gorm.DB {
+	return query.Where(`NOT EXISTS (
+		SELECT 1
+		FROM conversation_projection_outbox AS projection
+		WHERE (projection.request_log_id <> 0 AND projection.request_log_id = channel_request_logs.id)
+			OR (
+				projection.call_id <> ''
+				AND channel_request_logs.call_id <> ''
+				AND projection.call_id = channel_request_logs.call_id
+			)
+	)`)
 }
 
 func (s *RetentionService) DeleteExpiredBillingLogs(cutoff time.Time, limit int) (int64, error) {

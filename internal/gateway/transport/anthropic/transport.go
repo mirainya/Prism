@@ -165,7 +165,12 @@ func (t *Transport) StreamPrepared(ctx context.Context, invocation transport.Inv
 		response.Body.Close()
 		return nil, newHTTPError(response.StatusCode, raw)
 	}
-	return &stream{body: response.Body, reader: transport.NewSSEReader(response.Body), publicModel: invocation.Route.PublicModel, blocks: map[int]canonical.Item{}}, nil
+	return &stream{
+		body: response.Body, reader: transport.NewSSEReader(response.Body),
+		publicModel: invocation.Route.PublicModel,
+		blocks:      map[int]canonical.Item{},
+		toolDeltas:  map[int]bool{},
+	}, nil
 }
 
 func (t *Transport) do(ctx context.Context, prepared transport.PreparedRequest) (*http.Response, error) {
@@ -206,6 +211,7 @@ type stream struct {
 	usage       canonical.Usage
 	hasUsage    bool
 	blocks      map[int]canonical.Item
+	toolDeltas  map[int]bool
 }
 
 func (s *stream) Close() error { return s.body.Close() }
@@ -289,6 +295,7 @@ func (s *stream) decode(name string, raw []byte) (canonical.Event, bool, error) 
 			base.Type = canonical.EventContentPartAdded
 		}
 		s.blocks[index] = item
+		delete(s.toolDeltas, index)
 		base.ContentIndex, base.ToolIndex, base.Item = index, index, &item
 		return base, true, nil
 	case "content_block_delta":
@@ -303,19 +310,30 @@ func (s *stream) decode(name string, raw []byte) (canonical.Event, bool, error) 
 			return canonical.Event{}, false, err
 		}
 		base.ContentIndex, base.ToolIndex, base.Delta = index, index, delta.Text
-		if item, ok := s.blocks[index]; ok {
-			copy := item
-			base.Item = &copy
-		}
 		switch delta.Type {
 		case "thinking_delta":
 			base.Type, base.Delta = canonical.EventReasoningDelta, delta.Thinking
 		case "input_json_delta":
 			base.Type, base.Delta = canonical.EventToolArgumentsDelta, delta.PartialJSON
+			if s.toolDeltas == nil {
+				s.toolDeltas = make(map[int]bool)
+			}
+			if item, ok := s.blocks[index]; ok {
+				if !s.toolDeltas[index] {
+					item.Arguments = nil
+				}
+				item.Arguments = append(item.Arguments, delta.PartialJSON...)
+				s.blocks[index] = item
+			}
+			s.toolDeltas[index] = true
 		case "text_delta":
 			base.Type = canonical.EventTextDelta
 		default:
 			base.Type = canonical.EventRaw
+		}
+		if item, ok := s.blocks[index]; ok {
+			copy := item
+			base.Item = &copy
 		}
 		return base, true, nil
 	case "content_block_stop":
@@ -328,6 +346,7 @@ func (s *stream) decode(name string, raw []byte) (canonical.Event, bool, error) 
 			}
 			base.Item = &item
 			delete(s.blocks, index)
+			delete(s.toolDeltas, index)
 		}
 		return base, true, nil
 	case "message_delta":

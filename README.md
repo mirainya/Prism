@@ -85,13 +85,17 @@ Chat、Responses 和 Messages 并不与某个模型固定绑定。一个公开�
 - `tasks` 只保存图片、视频等异步能力任务的资源状态和结果，不承担通用调用日志职责；任务通过 `call_id` 返回统一调用记录。
 - 所有 API 请求写入不含正文和凭据的 `api_access_logs`；控制台状态变更写入 `audit_events`；扣费、退款、充值和初始额度写入追加式 `balance_entries`。升级时会为历史非零余额写入幂等 `opening_balance` 基线。
 - 用户 API Token 仅在创建时返回一次，数据库只保留 SHA256 哈希与后四位提示；渠道和网关密钥不会由管理接口返回原值。
-- 请求与响应正文默认不保存。启用后会先脱敏、限长、按期限删除；配置独立密钥后使用 AES-256-GCM 加密。历史 Task、`store: false` Responses 和上游请求日志正文也由同一清理任务按策略处理。
-- Playground 复用同一个 Gateway Engine，支持 Chat、Responses、Messages、多模态粘贴/拖放、能力调用、历史记录和调试信息。对话按 `conversations -> conversation_turns -> conversation_items` 保存有序 canonical 内容，旧 `messages` 表与消息接口保留为兼容投影。
+- `api_call_payloads` 中的下游与上游原始 HTTP 请求/响应正文默认不保存。启用后会先脱敏、限长、按期限删除；配置独立密钥后使用 AES-256-GCM 加密。该策略不控制结构化的 Conversation 投影。
+- Playground 复用同一个 Gateway Engine，支持 Chat、Responses、Messages、多模态粘贴/拖放、能力调用、历史记录和调试信息。Playground 与三种开放对话 API 均按 `conversations -> conversation_turns -> conversation_items` 保存有序 canonical 内容，旧 `messages` 表与消息接口保留为兼容投影。
 - 图片与视频生成支持统一能力接口、同步/轮询/回调渠道及后台任务。异步提交使用确定性 Asynq Task ID；服务启动时和定时超时检查都会从 SQL 任务意图恢复缺失队列项。
 - `callback_url` 仅允许解析到公网地址的 HTTP/HTTPS URL；本机、内网、链路本地、多播等地址会在创建任务前被拒绝。
 - `/health` 检查 MySQL 与 Redis，`/metrics` 暴露 Prometheus 指标。
 
-普通 `/v1/chat/completions`、`/v1/messages` 和 `/v1/responses` 都会进入 `api_calls`，但不会自动创建 Conversation；对话历史由 Playground 保存。Responses 资源状态单独存储在 `ai_responses`，异步能力资源状态单独存储在 `tasks`。
+普通 `/v1/chat/completions`、`/v1/messages` 和 `/v1/responses` 都会进入 `api_calls`，并在调用终态后投影到 Conversation。成功、失败、取消和客户端中断都会保存 canonical 输入及已产生的输出，通过 `call_id` 关联调用、最终尝试和请求日志。`store: false` 不关闭该投影，只影响 Responses 资源正文及查询；Responses 资源状态仍单独存储在 `ai_responses`，异步能力资源状态单独存储在 `tasks`。
+
+`/v1/chat/completions`、`/v1/messages` 和 `/v1/responses` 均可通过请求头 `X-Prism-Conversation-ID` 显式续接当前 Token 的 Prism 对话；Chat 还接受请求体 `conversation_id`，两处同时提供时必须一致。显式 ID 有效时，响应头返回同一 `X-Prism-Conversation-ID`；隐式匹配或新建对话时不返回该头。未提供显式 ID 时，Prism 会使用 `previous_response_id` 或唯一的完整历史前缀识别续话，歧义时创建新对话。
+
+三种对话接口的 JSON 请求体上限均为 `32 MiB`。Chat 与 Responses 的大文件可先上传到 `/v1/files`，再通过 `file_id` 引用；Messages 使用 Anthropic 原生的 URL、Base64 或上游文件引用。
 
 ## 项目结构
 
@@ -228,10 +232,10 @@ Responses 资源接口包括：
 - `worker.*`、`http_client.*`
 - `file_storage.max_total_size_mb`
 - `rate_limit.*`
-- `observability.retain_api_call_payloads`：是否保存 API 与上游调用正文，默认 `false`；不影响任务参数
+- `observability.retain_api_call_payloads`：是否将下游与上游原始 HTTP 正文保存到 `api_call_payloads`，默认 `false`；不影响 canonical Conversation 投影或任务参数
 - `observability.api_call_payload_retention_hours`、`api_call_payload_max_bytes`、`api_call_payload_encryption_key`：正文默认保留 168 小时、最多 256 KiB，可使用独立 AES-256-GCM 密钥
 - `observability.api_call_metadata_retention_days`：Call、Attempt 与上游请求日志元数据，默认 90 天
-- `observability.resource_history_retention_days`：终态异步任务（含任务参数）与闲置 Playground 对话历史，默认 90 天
+- `observability.resource_history_retention_days`：终态异步任务（含任务参数）与闲置 Conversation 历史，默认 90 天
 - `observability.api_access_log_retention_days`、`audit_event_retention_days`：访问日志默认 30 天，审计事件默认 180 天
 - `observability.billing_ledger_retention_days`：计费日志和余额流水，默认 365 天
 

@@ -26,8 +26,16 @@ HTTP <- downstream codec <- canonical response/event <- engine <- transport <- u
 - `gw_ability_transports` stores each ability's enabled upstream transports and probe status.
 - `gw_route_states` stores circuit state by key, public model, and transport.
 - Responses, conversations, and request logs store the selected upstream transport.
+- Terminal Chat, Responses, and Messages calls are projected into ordered canonical conversation
+  turns, including `store=false` Responses. `call_id` is the idempotency key, while explicit Prism
+  conversation IDs, `previous_response_id`, and unique completed-history prefixes provide
+  continuation hints.
+- All three downstream endpoints accept `X-Prism-Conversation-ID` for explicit continuation; Chat
+  also accepts the `conversation_id` body field. A valid explicit ID is echoed in the response
+  header; implicit matches and newly created conversations do not emit this header.
 - `api_calls` stores one downstream invocation; `api_call_attempts` stores every concrete upstream
-  execution; `api_call_payloads` optionally stores bounded, redacted, expiring payloads.
+  execution. `api_call_payloads` optionally stores bounded, redacted, expiring raw downstream and
+  upstream HTTP payloads; this capture is independent of the canonical conversation projection.
 - `ai_response_idempotency_cache` provides a 24-hour replay window independent of `store=true`.
 - `balance_entries`, `api_access_logs`, and `audit_events` separate financial, HTTP access, and
   state-change histories from model execution records.

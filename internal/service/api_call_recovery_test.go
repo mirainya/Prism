@@ -6,10 +6,69 @@ import (
 	"testing"
 	"time"
 
+	"github.com/mirainya/Prism/internal/gateway/canonical"
 	"github.com/mirainya/Prism/internal/model"
 	"github.com/shopspring/decimal"
 	"gorm.io/datatypes"
 )
+
+func TestReconcileStaleForegroundCallFinalizesPendingConversationOutput(t *testing.T) {
+	db := setupTestDB(t)
+	if err := db.AutoMigrate(
+		&model.Conversation{}, &model.ConversationTurn{}, &model.ConversationItem{}, &model.Message{},
+		&model.ChannelRequestLog{},
+	); err != nil {
+		t.Fatal(err)
+	}
+	user, token := seedBillingAccount(t, decimal.NewFromInt(10), decimal.NewFromInt(10))
+	calls := NewAPICallService()
+	call, err := calls.StartCall(&StartCallRequest{
+		UserID: user.ID, TokenID: token.ID, Endpoint: "/v1/chat/completions",
+		Operation: "chat", Model: "test-model", ProjectConversation: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := StageAPIConversationProjectionInput(ConversationProjectionInputRequest{
+		CallID: call.ID,
+		InputItems: []canonical.Item{{
+			Type: "message", Role: canonical.RoleUser,
+			Content: []canonical.Content{{Type: "input_text", Text: "interrupted"}},
+		}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := calls.MarkCallRunning(call.ID); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Model(&model.APICall{}).Where("id = ?", call.ID).
+		UpdateColumn("updated_at", time.Now().Add(-2*time.Hour)).Error; err != nil {
+		t.Fatal(err)
+	}
+
+	reconciled, err := calls.ReconcileStaleForegroundCalls(context.Background(), time.Now().Add(-time.Hour), 100)
+	if err != nil || reconciled != 1 {
+		t.Fatalf("reconcile stale call: count=%d err=%v", reconciled, err)
+	}
+	var entry model.ConversationProjectionOutbox
+	if err := db.First(&entry, "call_id = ?", call.ID).Error; err != nil {
+		t.Fatal(err)
+	}
+	if !entry.OutputReady || string(entry.CanonicalOutput) != "[]" {
+		t.Fatalf("stale projection output = %#v", entry)
+	}
+	conversationID, err := ProjectPendingAPIConversation(call.ID)
+	if err != nil || conversationID == 0 {
+		t.Fatalf("project stale call: conversation_id=%d err=%v", conversationID, err)
+	}
+	var turn model.ConversationTurn
+	if err := db.First(&turn, "call_id = ?", call.ID).Error; err != nil {
+		t.Fatal(err)
+	}
+	if turn.Status != model.ConversationTurnFailed {
+		t.Fatalf("stale turn status = %s", turn.Status)
+	}
+}
 
 func TestReconcileStaleForegroundCallCompletesPendingRefund(t *testing.T) {
 	db := setupTestDB(t)

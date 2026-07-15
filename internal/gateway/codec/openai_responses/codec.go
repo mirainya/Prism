@@ -55,6 +55,13 @@ func DecodeRequest(source protocol.Request) (canonical.Request, error) {
 	}, nil
 }
 
+// DecodeItems maps a Responses input or output item array into canonical
+// items. It is used when a persisted Responses resource is projected after
+// the original gateway execution has finished.
+func DecodeItems(raw json.RawMessage) ([]canonical.Item, error) {
+	return decodeInput(raw)
+}
+
 // EncodeResponseJSON renders a canonical response as an OpenAI Responses JSON
 // object. Provider extensions and usage extensions are preserved verbatim.
 func EncodeResponseJSON(source canonical.Response) ([]byte, error) {

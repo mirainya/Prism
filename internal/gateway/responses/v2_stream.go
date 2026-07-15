@@ -91,6 +91,7 @@ func consumeV2Stream(ctx context.Context, writer io.Writer, stream v2EventSource
 		event = normalizeV2RawEventType(event)
 		aggregator.add(event)
 		for _, publicEvent := range publicStream.events(event) {
+			aggregator.addPublic(publicEvent)
 			frame, encodeErr := openairesponses.EncodeSSEFrame(publicEvent)
 			if encodeErr != nil {
 				abortV2Stream(stream, encodeErr, false)
@@ -159,11 +160,12 @@ type v2ConvertedStream struct {
 }
 
 type v2ConvertedOutput struct {
-	index int
-	item  canonical.Item
-	added bool
-	done  bool
-	parts map[int]*v2ConvertedPart
+	index       int
+	item        canonical.Item
+	added       bool
+	done        bool
+	parts       map[int]*v2ConvertedPart
+	sourceParts map[int]int
 }
 
 type v2ConvertedPart struct {
@@ -209,14 +211,16 @@ func (s *v2ConvertedStream) events(event canonical.Event) []canonical.Event {
 		events = append(events, s.ensureOutputAdded(output)...)
 		if event.Item != nil {
 			for index, content := range event.Item.Content {
-				events = append(events, s.ensureContentAdded(output, index, content)...)
+				contentIndex := s.contentIndex(output, index)
+				events = append(events, s.ensureContentAdded(output, contentIndex, content)...)
 			}
 		}
 	case canonical.EventContentPartAdded:
 		output := s.outputFor(event, itemType(event.Item, "message"))
 		events = append(events, s.ensureOutputAdded(output)...)
 		content := eventContent(event, event.ContentIndex)
-		events = append(events, s.ensureContentAdded(output, event.ContentIndex, content)...)
+		contentIndex := s.contentIndex(output, event.ContentIndex)
+		events = append(events, s.ensureContentAdded(output, contentIndex, content)...)
 	case canonical.EventTextDelta:
 		output := s.outputFor(event, "message")
 		events = append(events, s.ensureOutputAdded(output)...)
@@ -224,18 +228,29 @@ func (s *v2ConvertedStream) events(event canonical.Event) []canonical.Event {
 		if content.Type == "" {
 			content.Type = "output_text"
 		}
-		events = append(events, s.ensureContentAdded(output, event.ContentIndex, content)...)
-		part := output.parts[event.ContentIndex]
+		contentIndex := s.contentIndex(output, event.ContentIndex)
+		events = append(events, s.ensureContentAdded(output, contentIndex, content)...)
+		part := output.parts[contentIndex]
 		part.content.Text += event.Delta
 		delta := event
 		delta.OutputIndex = output.index
+		delta.ContentIndex = contentIndex
 		delta.Item = eventItemReference(output.item)
 		events = append(events, delta)
 	case canonical.EventReasoningDelta:
 		output := s.outputFor(event, "reasoning")
 		events = append(events, s.ensureOutputAdded(output)...)
+		content := eventContent(event, event.ContentIndex)
+		if content.Type == "" || content.Type == "output_text" {
+			content.Type = "reasoning_text"
+		}
+		contentIndex := s.contentIndex(output, event.ContentIndex)
+		events = append(events, s.ensureContentAdded(output, contentIndex, content)...)
+		part := output.parts[contentIndex]
+		part.content.Text += event.Delta
 		delta := event
 		delta.OutputIndex = output.index
+		delta.ContentIndex = contentIndex
 		delta.Item = eventItemReference(output.item)
 		events = append(events, delta)
 	case canonical.EventToolArgumentsDelta:
@@ -254,18 +269,20 @@ func (s *v2ConvertedStream) events(event canonical.Event) []canonical.Event {
 		output := s.outputFor(event, "message")
 		events = append(events, s.ensureOutputAdded(output)...)
 		content := eventContent(event, event.ContentIndex)
-		events = append(events, s.ensureContentAdded(output, event.ContentIndex, content)...)
-		part := output.parts[event.ContentIndex]
+		contentIndex := s.contentIndex(output, event.ContentIndex)
+		events = append(events, s.ensureContentAdded(output, contentIndex, content)...)
+		part := output.parts[contentIndex]
 		if event.Delta != "" {
 			part.content.Text = event.Delta
 		}
-		events = append(events, s.finishTextPart(output, event.ContentIndex, false)...)
+		events = append(events, s.finishTextPart(output, contentIndex, false)...)
 	case canonical.EventContentPartDone:
 		output := s.outputFor(event, itemType(event.Item, "message"))
 		events = append(events, s.ensureOutputAdded(output)...)
 		content := eventContent(event, event.ContentIndex)
-		events = append(events, s.ensureContentAdded(output, event.ContentIndex, content)...)
-		events = append(events, s.finishTextPart(output, event.ContentIndex, true)...)
+		contentIndex := s.contentIndex(output, event.ContentIndex)
+		events = append(events, s.ensureContentAdded(output, contentIndex, content)...)
+		events = append(events, s.finishTextPart(output, contentIndex, true)...)
 	case canonical.EventOutputItemDone:
 		output := s.outputFor(event, itemType(event.Item, "message"))
 		events = append(events, s.ensureOutputAdded(output)...)
@@ -274,7 +291,8 @@ func (s *v2ConvertedStream) events(event canonical.Event) []canonical.Event {
 				output.item.Arguments = append(json.RawMessage(nil), event.Item.Arguments...)
 			}
 			for index, content := range event.Item.Content {
-				events = append(events, s.ensureContentAdded(output, index, content)...)
+				contentIndex := s.contentIndex(output, index)
+				events = append(events, s.ensureContentAdded(output, contentIndex, content)...)
 			}
 		}
 		events = append(events, s.finishOutput(output)...)
@@ -347,13 +365,28 @@ func (s *v2ConvertedStream) outputFor(event canonical.Event, fallbackType string
 	if item.Type == "function_call" && item.CallID == "" {
 		item.CallID = "call_" + compactID()
 	}
-	output := &v2ConvertedOutput{index: index, item: item, parts: make(map[int]*v2ConvertedPart)}
+	output := &v2ConvertedOutput{
+		index: index, item: item,
+		parts: make(map[int]*v2ConvertedPart), sourceParts: make(map[int]int),
+	}
 	s.outputs[key] = output
 	s.byID[item.ID] = output
 	if event.Item != nil && event.Item.ID != "" {
 		s.byID[event.Item.ID] = output
 	}
 	return output
+}
+
+func (s *v2ConvertedStream) contentIndex(output *v2ConvertedOutput, sourceIndex int) int {
+	if sourceIndex < 0 {
+		sourceIndex = 0
+	}
+	if index, ok := output.sourceParts[sourceIndex]; ok {
+		return index
+	}
+	index := len(output.sourceParts)
+	output.sourceParts[sourceIndex] = index
+	return index
 }
 
 func (s *v2ConvertedStream) nextOutputIndex(preferred int) int {
@@ -730,12 +763,17 @@ type v2StreamAggregator struct {
 	providerResponseID string
 	terminalType       canonical.EventType
 	eventCount         int64
+	transcript         *canonical.EventAccumulator
 	output             map[int]canonical.Item
 	maxOutputIndex     int
 }
 
 func newV2StreamAggregator() *v2StreamAggregator {
-	return &v2StreamAggregator{output: make(map[int]canonical.Item), maxOutputIndex: -1}
+	return &v2StreamAggregator{
+		transcript:     canonical.NewEventAccumulator(),
+		output:         make(map[int]canonical.Item),
+		maxOutputIndex: -1,
+	}
 }
 
 func (a *v2StreamAggregator) add(event canonical.Event) {
@@ -785,6 +823,13 @@ func (a *v2StreamAggregator) add(event canonical.Event) {
 		}
 		a.ensureResponseStatus("failed")
 	}
+}
+
+func (a *v2StreamAggregator) addPublic(event canonical.Event) {
+	if a == nil || a.transcript == nil {
+		return
+	}
+	a.transcript.Observe(event)
 }
 
 func (a *v2StreamAggregator) addRaw(raw json.RawMessage) {
@@ -953,12 +998,27 @@ func (a *v2StreamAggregator) summary() *V2StreamSummary {
 		Terminal:           a.terminalType,
 		EventCount:         a.eventCount,
 	}
+	var response *canonical.Response
 	if a.response != nil {
-		response := cloneV2Response(*a.response)
+		clone := cloneV2Response(*a.response)
+		response = &clone
+	}
+	transcriptOutput := false
+	if a.transcript != nil {
+		snapshot := a.transcript.Snapshot()
+		transcriptOutput = len(snapshot.Output) > 0
+		if response == nil && (snapshot.Status != "" || transcriptOutput || snapshot.ID != "" || snapshot.ProviderResponseID != "") {
+			clone := cloneV2Response(snapshot)
+			response = &clone
+		} else if response != nil {
+			mergeV2Response(response, snapshot)
+		}
+	}
+	if response != nil {
 		if response.ProviderResponseID == "" {
 			response.ProviderResponseID = a.providerResponseID
 		}
-		if a.maxOutputIndex >= 0 {
+		if !transcriptOutput && a.maxOutputIndex >= 0 {
 			response.Output = make([]canonical.Item, a.maxOutputIndex+1)
 			for index := 0; index <= a.maxOutputIndex; index++ {
 				response.Output[index] = cloneV2Item(a.output[index])
@@ -970,7 +1030,7 @@ func (a *v2StreamAggregator) summary() *V2StreamSummary {
 		if result.Error != nil {
 			response.Error = cloneV2Error(result.Error)
 		}
-		result.Response = &response
+		result.Response = response
 	}
 	return result
 }
