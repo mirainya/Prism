@@ -7,3 +7,5 @@ export * from './capabilityApi';
 export * from './dashboardApi';
 export * from './conversationApi';
 export * from './playgroundApi';
+export * from './callApi';
+export * from './observabilityApi';

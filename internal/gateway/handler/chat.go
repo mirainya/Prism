@@ -12,6 +12,7 @@ import (
 	"strings"
 
 	"github.com/gin-gonic/gin"
+	"github.com/google/uuid"
 	"github.com/mirainya/Prism/internal/api/middleware"
 	"github.com/mirainya/Prism/internal/api/openaierror"
 	"github.com/mirainya/Prism/internal/domain"
@@ -27,6 +28,25 @@ import (
 type ChatHandler struct {
 	pipe *pipeline.Pipeline
 }
+
+type payloadStreamWriter struct {
+	writer  stream.Writer
+	capture io.Writer
+}
+
+func (w *payloadStreamWriter) Write(data []byte) (int, error) {
+	written, err := w.writer.Write(data)
+	if written > 0 && w.capture != nil {
+		captured := written
+		if captured > len(data) {
+			captured = len(data)
+		}
+		_, _ = w.capture.Write(data[:captured])
+	}
+	return written, err
+}
+
+func (w *payloadStreamWriter) Flush() { w.writer.Flush() }
 
 type stopSequences []string
 
@@ -123,9 +143,17 @@ func (h *ChatHandler) Completions(c *gin.Context) {
 		openaierror.InvalidRequest(c, err.Error(), &param, "file_not_found")
 		return
 	}
+	callID := "call_" + uuid.NewString()
+	requestID := middleware.GetRequestID(c.Request.Context())
+	downstreamRequest, _ := json.Marshal(req)
+	c.Header("X-Prism-Call-ID", callID)
 	completionReq := &service.CompletionRequest{
 		UserID:              token.UserID,
 		TokenID:             token.ID,
+		CallID:              callID,
+		RequestID:           requestID,
+		DownstreamEndpoint:  "/v1/chat/completions",
+		DownstreamRequest:   downstreamRequest,
 		Model:               req.Model,
 		Messages:            resolvedMessages,
 		Temperature:         req.Temperature,
@@ -170,7 +198,17 @@ func (h *ChatHandler) Completions(c *gin.Context) {
 		c.Header("X-Accel-Buffering", "no")
 		c.Status(http.StatusOK)
 
-		agg, streamErr := stream.ProxyStream(c.Writer, session.UpstreamResp.Body)
+		callService := service.NewAPICallService()
+		capture := callService.NewPayloadCaptureBestEffort(
+			session.CallID(), session.AttemptID(), model.APICallPayloadResponse, "text/event-stream",
+		)
+		defer capture.SaveBestEffort()
+		writer := stream.Writer(c.Writer)
+		if capture != nil {
+			writer = &payloadStreamWriter{writer: writer, capture: capture}
+		}
+		agg, streamErr := stream.ProxyStream(writer, session.UpstreamResp.Body)
+		session.Cleanup()
 		session.FinalizeStream(agg, streamErr)
 		return
 	}
@@ -180,7 +218,71 @@ func (h *ChatHandler) Completions(c *gin.Context) {
 		respondChatPipelineError(c, err)
 		return
 	}
-	c.JSON(http.StatusOK, chatResp)
+	encoded, err := json.Marshal(chatResp)
+	if err != nil {
+		_ = failChatDelivery(chatResp, err, false)
+		respondChatPipelineError(c, err)
+		return
+	}
+	service.NewAPICallService().RecordPayloadBestEffort(&model.APICallPayload{
+		CallID: chatResp.CallID, AttemptID: chatResp.AttemptID,
+		Kind: model.APICallPayloadResponse, ContentType: "application/json", Data: encoded,
+	})
+	c.Header("Content-Type", "application/json; charset=utf-8")
+	c.Status(http.StatusOK)
+	written, writeErr := c.Writer.Write(encoded)
+	if writeErr == nil && written != len(encoded) {
+		writeErr = io.ErrShortWrite
+	}
+	if writeErr != nil {
+		_ = failChatDelivery(chatResp, writeErr, true)
+		return
+	}
+	logDeliveryError("complete chat call delivery", chatResp.CallID, completeChatDelivery(chatResp))
+}
+
+func completeChatDelivery(response *service.CompletionResponse) error {
+	if response == nil || response.CallID == "" {
+		return nil
+	}
+	if response.CompleteDelivery != nil {
+		return response.CompleteDelivery()
+	}
+	completion := &service.CompleteCallRequest{
+		FinalAttemptID: response.AttemptID, HTTPStatus: http.StatusOK,
+		ProviderResponseID: response.ProviderResponseID, CompleteStartedAttempt: true,
+	}
+	if response.Usage != nil {
+		completion.InputTokens = response.Usage.PromptTokens
+		completion.OutputTokens = response.Usage.CompletionTokens
+		completion.TotalTokens = response.Usage.TotalTokens
+		if raw, err := json.Marshal(response.Usage); err == nil {
+			completion.UsageJSON = raw
+		}
+	}
+	return service.NewAPICallService().CompleteCall(response.CallID, completion)
+}
+
+func failChatDelivery(response *service.CompletionResponse, err error, clientDisconnected bool) error {
+	if response == nil || response.CallID == "" {
+		return nil
+	}
+	if err == nil {
+		err = errors.New("downstream response delivery failed")
+	}
+	if response.FailDelivery != nil {
+		return response.FailDelivery(err, clientDisconnected)
+	}
+	if clientDisconnected {
+		return service.NewAPICallService().CancelCall(response.CallID, &service.CancelCallRequest{
+			FinalAttemptID: response.AttemptID, ErrorType: "cancelled", ErrorCode: "client_disconnected",
+			ErrorMessage: err.Error(), ClientDisconnected: true,
+		})
+	}
+	return service.NewAPICallService().FailCall(response.CallID, &service.FailCallRequest{
+		FinalAttemptID: response.AttemptID, HTTPStatus: http.StatusBadGateway,
+		ErrorType: "server_error", ErrorCode: "downstream_delivery_failed", ErrorMessage: err.Error(),
+	})
 }
 
 func validateChatMessages(messages []chat.ChatMessage) (message, param, code string) {

@@ -11,6 +11,7 @@ import (
 	"github.com/mirainya/Prism/pkg/logger"
 	"github.com/shopspring/decimal"
 	"go.uber.org/zap"
+	"gorm.io/datatypes"
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
 )
@@ -25,6 +26,7 @@ var (
 
 type CreateTaskRequest struct {
 	TaskNo        string
+	CallID        string
 	UserID        uint
 	TokenID       uint
 	ModelCode     string
@@ -73,6 +75,7 @@ func (s *TaskService) createTask(db *gorm.DB, req *CreateTaskRequest) (*model.Ta
 	}
 	task := &model.Task{
 		TaskNo:        taskNo,
+		CallID:        req.CallID,
 		UserID:        req.UserID,
 		TokenID:       req.TokenID,
 		ModelCode:     req.ModelCode,
@@ -289,14 +292,28 @@ func (s *TaskService) updateTaskSuccess(
 	logger.Info("task succeeded", zap.Uint("task_id", taskID))
 
 	err = model.DB().Transaction(func(tx *gorm.DB) error {
+		var current model.Task
+		if err := tx.Select("id", "task_no", "call_id", "user_id", "token_id", "model_code", "endpoint_id", "account_id", "cost").
+			First(&current, taskID).Error; err != nil {
+			if errors.Is(err, gorm.ErrRecordNotFound) {
+				return ErrTaskNotFound
+			}
+			return err
+		}
 		res := tx.Model(&model.Task{}).
 			Where("id = ? AND status IN ?", taskID, allowed).
 			Updates(map[string]any{
-				"status":       model.TaskStatusSuccess,
-				"progress":     100,
-				"result":       resultJSON,
-				"cost":         cost,
-				"completed_at": now,
+				"status":                  model.TaskStatusSuccess,
+				"progress":                100,
+				"result":                  resultJSON,
+				"cost":                    cost,
+				"completed_at":            now,
+				"request_params":          nil,
+				"mapped_params":           nil,
+				"submit_checkpoint":       nil,
+				"worker_lease_owner":      "",
+				"worker_lease_stage":      "",
+				"worker_lease_expires_at": nil,
 			})
 		if res.Error != nil {
 			return res.Error
@@ -304,9 +321,31 @@ func (s *TaskService) updateTaskSuccess(
 		if res.RowsAffected == 0 {
 			return nil
 		}
-		var current model.Task
-		if err := tx.Select("account_id").First(&current, taskID).Error; err != nil {
-			return err
+		if current.CallID != "" {
+			attemptID, err := latestCallAttemptIDTx(tx, current.CallID)
+			if err != nil {
+				return fmt.Errorf("load final task attempt: %w", err)
+			}
+			if err := billingService.settleReservationWithBillingContextTx(
+				tx,
+				current.TokenID,
+				current.UserID,
+				current.Cost,
+				cost,
+				current.TaskNo+":settle",
+				BillingContext{
+					CallID: current.CallID, AttemptID: attemptID, Phase: model.BillingPhaseSettle,
+					PricingSnapshot: taskPricingSnapshotTx(tx, &current, cost),
+				},
+			); err != nil {
+				return fmt.Errorf("settle successful task: %w", err)
+			}
+			if err := NewAPICallService().CompleteCallTx(tx, current.CallID, &CompleteCallRequest{
+				FinalAttemptID: attemptID,
+				HTTPStatus:     200,
+			}); err != nil {
+				return fmt.Errorf("complete task call: %w", err)
+			}
 		}
 		if err := releaseTaskAccountSlot(tx, taskID, current.AccountID); err != nil {
 			return err
@@ -340,7 +379,7 @@ func (s *TaskService) FailTaskUpload(taskID uint, errMsg string) (committed bool
 // UpdateTaskTimeoutFail can release a task stuck in processing or finalizing.
 func (s *TaskService) UpdateTaskTimeoutFail(taskID uint, errMsg string) (committed bool, err error) {
 	return s.updateTaskFail(taskID, errMsg,
-		[]model.TaskStatus{model.TaskStatusProcessing, model.TaskStatusFinalizing})
+		[]model.TaskStatus{model.TaskStatusPending, model.TaskStatusProcessing, model.TaskStatusFinalizing})
 }
 
 func (s *TaskService) updateTaskFail(
@@ -349,6 +388,7 @@ func (s *TaskService) updateTaskFail(
 	allowed []model.TaskStatus,
 ) (committed bool, err error) {
 	now := time.Now()
+	errMsg = SanitizeAPICallErrorMessage(errMsg)
 
 	logger.Warn("task failed",
 		zap.Uint("task_id", taskID),
@@ -366,9 +406,15 @@ func (s *TaskService) updateTaskFail(
 		result := tx.Model(&model.Task{}).
 			Where("id = ? AND status IN ?", taskID, allowed).
 			Updates(map[string]any{
-				"status":        model.TaskStatusFailed,
-				"error_message": errMsg,
-				"completed_at":  now,
+				"status":                  model.TaskStatusFailed,
+				"error_message":           errMsg,
+				"completed_at":            now,
+				"request_params":          nil,
+				"mapped_params":           nil,
+				"submit_checkpoint":       nil,
+				"worker_lease_owner":      "",
+				"worker_lease_stage":      "",
+				"worker_lease_expires_at": nil,
 			})
 		if result.Error != nil {
 			return result.Error
@@ -376,8 +422,26 @@ func (s *TaskService) updateTaskFail(
 		if result.RowsAffected == 0 {
 			return nil
 		}
-		if err := s.refundTask(tx, &task); err != nil {
+		attemptID, err := terminalizeLatestTaskAttemptTx(
+			tx, task.CallID, model.APICallAttemptStatusFailed,
+			500, "capability_error", "task_failed", errMsg,
+		)
+		if err != nil {
+			return fmt.Errorf("load final task attempt: %w", err)
+		}
+		if err := s.refundTask(tx, &task, attemptID); err != nil {
 			return fmt.Errorf("refund failed task: %w", err)
+		}
+		if task.CallID != "" {
+			if err := NewAPICallService().FailCallTx(tx, task.CallID, &FailCallRequest{
+				FinalAttemptID: attemptID,
+				HTTPStatus:     500,
+				ErrorType:      "capability_error",
+				ErrorCode:      "task_failed",
+				ErrorMessage:   errMsg,
+			}); err != nil {
+				return fmt.Errorf("fail task call: %w", err)
+			}
 		}
 		var current model.Task
 		if err := tx.Select("account_id").First(&current, task.ID).Error; err != nil {
@@ -397,12 +461,22 @@ func (s *TaskService) updateTaskFail(
 
 // refundTask runs in the same transaction as the terminal state change. A
 // refund error rolls the whole transition back so the caller can retry it.
-func (s *TaskService) refundTask(tx *gorm.DB, task *model.Task) error {
+func (s *TaskService) refundTask(tx *gorm.DB, task *model.Task, attemptID uint) error {
 	if !task.Cost.GreaterThan(decimal.Zero) || task.Refunded {
 		return nil
 	}
 
-	if err := billingService.refundWithKeyTx(tx, task.TokenID, task.UserID, task.Cost, task.TaskNo); err != nil {
+	if err := billingService.refundWithBillingContextTx(
+		tx,
+		task.TokenID,
+		task.UserID,
+		task.Cost,
+		task.TaskNo,
+		BillingContext{
+			CallID: task.CallID, AttemptID: attemptID, Phase: model.BillingPhaseRefund,
+			PricingSnapshot: taskPricingSnapshotTx(tx, task, task.Cost),
+		},
+	); err != nil {
 		return err
 	}
 	result := tx.Model(&model.Task{}).
@@ -461,18 +535,112 @@ func (s *TaskService) CancelTask(taskNo string, userID uint) error {
 		result := tx.Model(&model.Task{}).
 			Where("id = ? AND status IN ?", task.ID,
 				[]model.TaskStatus{model.TaskStatusPending, model.TaskStatusProcessing, model.TaskStatusFinalizing}).
-			Update("status", model.TaskStatusCancelled)
+			Updates(map[string]any{
+				"status":                  model.TaskStatusCancelled,
+				"completed_at":            time.Now(),
+				"request_params":          nil,
+				"mapped_params":           nil,
+				"submit_checkpoint":       nil,
+				"worker_lease_owner":      "",
+				"worker_lease_stage":      "",
+				"worker_lease_expires_at": nil,
+			})
 		if result.Error != nil {
 			return result.Error
 		}
 		if result.RowsAffected == 0 {
 			return errors.New("task not found or cannot be cancelled")
 		}
-		if err := s.refundTask(tx, &task); err != nil {
+		attemptID, err := terminalizeLatestTaskAttemptTx(
+			tx, task.CallID, model.APICallAttemptStatusCancelled,
+			499, "cancelled_error", "task_cancelled", "task cancelled",
+		)
+		if err != nil {
+			return fmt.Errorf("load final task attempt: %w", err)
+		}
+		if err := s.refundTask(tx, &task, attemptID); err != nil {
 			return fmt.Errorf("refund cancelled task: %w", err)
+		}
+		if task.CallID != "" {
+			if err := NewAPICallService().CancelCallTx(tx, task.CallID, &CancelCallRequest{
+				FinalAttemptID: attemptID,
+				ErrorType:      "cancelled_error",
+				ErrorCode:      "task_cancelled",
+				ErrorMessage:   "task cancelled",
+			}); err != nil {
+				return fmt.Errorf("cancel task call: %w", err)
+			}
 		}
 		return releaseTaskAccountSlot(tx, task.ID, task.AccountID)
 	})
+}
+
+func latestCallAttemptIDTx(tx *gorm.DB, callID string) (uint, error) {
+	if callID == "" {
+		return 0, nil
+	}
+	var attempt model.APICallAttempt
+	err := tx.Select("id").Where("call_id = ?", callID).Order("attempt_no DESC").First(&attempt).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return 0, nil
+	}
+	return attempt.ID, err
+}
+
+func terminalizeLatestTaskAttemptTx(
+	tx *gorm.DB,
+	callID string,
+	status model.APICallAttemptStatus,
+	httpStatus int,
+	errorType string,
+	errorCode string,
+	errorMessage string,
+) (uint, error) {
+	if callID == "" {
+		return 0, nil
+	}
+	var attempt model.APICallAttempt
+	err := tx.Where("call_id = ?", callID).Order("attempt_no DESC").First(&attempt).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return 0, nil
+	}
+	if err != nil {
+		return 0, err
+	}
+	if attempt.Status != model.APICallAttemptStatusStarted {
+		return attempt.ID, nil
+	}
+	now := time.Now()
+	result := tx.Model(&model.APICallAttempt{}).
+		Where("id = ? AND status = ?", attempt.ID, model.APICallAttemptStatusStarted).
+		Updates(map[string]any{
+			"status":          status,
+			"http_status":     httpStatus,
+			"error_type":      errorType,
+			"error_code":      errorCode,
+			"error_message":   SanitizeAPICallErrorMessage(errorMessage),
+			"error_retryable": false,
+			"completed_at":    now,
+			"duration_ms":     elapsedMilliseconds(attempt.StartedAt, now),
+		})
+	if result.Error != nil {
+		return 0, result.Error
+	}
+	return attempt.ID, nil
+}
+
+func taskPricingSnapshotTx(tx *gorm.DB, task *model.Task, cost decimal.Decimal) datatypes.JSON {
+	if task == nil || task.EndpointID == 0 {
+		return nil
+	}
+	var endpoint model.Endpoint
+	if err := tx.First(&endpoint, task.EndpointID).Error; err != nil {
+		return nil
+	}
+	return capabilityPricingSnapshot(&InvokeRequest{
+		Capability: task.ModelCode,
+		Model:      task.ModelCode,
+	}, &endpoint, cost)
 }
 
 func (s *TaskService) UpdateCallbackStatus(taskID uint, status model.CallbackStatus, attempts int) error {

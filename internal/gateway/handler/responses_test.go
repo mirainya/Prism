@@ -9,8 +9,10 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/mirainya/Prism/internal/gateway/canonical"
+	responsepipeline "github.com/mirainya/Prism/internal/gateway/responses"
 	"github.com/mirainya/Prism/internal/gateway/routing"
 	volcenginetransport "github.com/mirainya/Prism/internal/gateway/transport/volcengine"
+	"github.com/mirainya/Prism/internal/model"
 	protocol "github.com/mirainya/Prism/internal/provider/responses"
 	"github.com/mirainya/Prism/pkg/httputil"
 )
@@ -36,6 +38,22 @@ func TestValidateResponseRequest(t *testing.T) {
 				t.Fatalf("message=%q valid=%v", message, tt.valid)
 			}
 		})
+	}
+}
+
+func TestSetResponsesRecordHeadersIncludesCallID(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	recorder := httptest.NewRecorder()
+	context, _ := gin.CreateTestContext(recorder)
+	setResponsesRecordHeaders(context, &responsepipeline.Result{
+		CallID: "call_response", Record: &model.AIResponse{CallID: "call_response", RequestLogID: 42},
+	})
+
+	if got := recorder.Header().Get("X-Prism-Call-ID"); got != "call_response" {
+		t.Fatalf("X-Prism-Call-ID = %q", got)
+	}
+	if got := recorder.Header().Get("X-Prism-Request-Log-ID"); got != "42" {
+		t.Fatalf("X-Prism-Request-Log-ID = %q", got)
 	}
 }
 

@@ -17,7 +17,8 @@ HTTP <- downstream codec <- canonical response/event <- engine <- transport <- u
 - `internal/gateway/codec`: OpenAI Chat, OpenAI Responses, and Anthropic Messages wire codecs.
 - `internal/gateway/transport`: OpenAI Chat, OpenAI Responses, Anthropic Messages, Google
   GenerateContent, and Volcengine Responses v3 upstream transports.
-- `internal/gateway/engine`: routing, retries, billing, persistence, files, and stream lifecycle.
+- `internal/gateway/engine`: execution plans, retries, billing reservation/settlement, call lifecycle,
+  delivery state, and streaming.
 - `internal/gateway/routing`: selects an ability plus a transport. It never decides an HTTP path.
 
 ## Persistence
@@ -25,7 +26,16 @@ HTTP <- downstream codec <- canonical response/event <- engine <- transport <- u
 - `gw_ability_transports` stores each ability's enabled upstream transports and probe status.
 - `gw_route_states` stores circuit state by key, public model, and transport.
 - Responses, conversations, and request logs store the selected upstream transport.
+- `api_calls` stores one downstream invocation; `api_call_attempts` stores every concrete upstream
+  execution; `api_call_payloads` optionally stores bounded, redacted, expiring payloads.
+- `ai_response_idempotency_cache` provides a 24-hour replay window independent of `store=true`.
+- `balance_entries`, `api_access_logs`, and `audit_events` separate financial, HTTP access, and
+  state-change histories from model execution records.
 - Existing Responses JSON remains in its current OpenAI Responses wire format during migration.
+
+Foreground and background executions use leases. Background Responses persist a result checkpoint
+before finalization, so recovery can finish accounting without repeating a successful upstream call.
+Calls become successful only after the downstream codec and server-side response write complete.
 
 ## Selection Rules
 

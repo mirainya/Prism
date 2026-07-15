@@ -42,3 +42,13 @@ file_storage:
 rate_limit:
   enabled: false
   requests_per_min: 60      # 每分钟请求上限(按Token)
+
+observability:
+  retain_api_call_payloads: false      # 默认不保存请求和响应正文
+  api_call_payload_retention_hours: 168
+  api_call_payload_max_bytes: 262144
+  api_call_payload_encryption_key: "" # 建议使用随机 32 字节密钥的 Base64 编码
+  api_call_metadata_retention_days: 90
+  api_access_log_retention_days: 30
+  audit_event_retention_days: 180
+  billing_ledger_retention_days: 365

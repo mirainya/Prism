@@ -108,15 +108,28 @@ func TestResolveImageFileIDUsesDataURLWithoutPersistingExpandedInput(t *testing.
 }
 
 func TestCancelOnlyAllowsBackgroundAndCancelledCannotBeCompleted(t *testing.T) {
-	db := setupResponsesLifecycleDB(t, &model.AIResponse{}, &model.BillingLog{})
-	pipeline := &Pipeline{billing: service.NewBillingService()}
+	db := setupResponsesLifecycleDB(t, &model.AIResponse{}, &model.BillingLog{}, &model.APICall{}, &model.APICallAttempt{}, &model.APICallPayload{})
+	pipeline := &Pipeline{billing: service.NewBillingService(), calls: service.NewAPICallService()}
 	now := time.Now()
 	foreground := model.AIResponse{ID: "resp_foreground", UserID: 1, TokenID: 10, Model: "m", Status: "in_progress", Store: true, IdempotencyKey: "foreground", CreatedAt: now}
-	background := model.AIResponse{ID: "resp_background", UserID: 1, TokenID: 10, Model: "m", Status: "queued", Background: true, Store: true, IdempotencyKey: "background", CreatedAt: now}
+	background := model.AIResponse{ID: "resp_background", UserID: 1, TokenID: 10, CallID: "call_background", Model: "m", Status: "queued", Background: true, Store: true, IdempotencyKey: "background", CreatedAt: now}
 	if err := db.Create(&foreground).Error; err != nil {
 		t.Fatal(err)
 	}
 	if err := db.Create(&background).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Create(&model.APICall{
+		ID: background.CallID, RequestID: "request-background", UserID: background.UserID, TokenID: background.TokenID,
+		Endpoint: "/v1/responses", Operation: "responses", Model: background.Model,
+		Status: model.APICallStatusInProgress, Background: true, Store: true,
+		ResourceType: "response", ResourceID: background.ID, AttemptCount: 1, StartedAt: now,
+	}).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Create(&model.APICallAttempt{
+		CallID: background.CallID, AttemptNo: 1, Status: model.APICallAttemptStatusStarted, StartedAt: now,
+	}).Error; err != nil {
 		t.Fatal(err)
 	}
 
@@ -140,6 +153,72 @@ func TestCancelOnlyAllowsBackgroundAndCancelledCannotBeCompleted(t *testing.T) {
 	}
 	if stored.Status != "cancelled" {
 		t.Fatalf("stored status = %q, want cancelled", stored.Status)
+	}
+	var call model.APICall
+	if err := db.First(&call, "id = ?", background.CallID).Error; err != nil {
+		t.Fatal(err)
+	}
+	if call.Status != model.APICallStatusCancelled {
+		t.Fatalf("call status = %q, want cancelled", call.Status)
+	}
+	var attempt model.APICallAttempt
+	if err := db.First(&attempt, "call_id = ?", background.CallID).Error; err != nil {
+		t.Fatal(err)
+	}
+	if attempt.Status != model.APICallAttemptStatusCancelled {
+		t.Fatalf("attempt status = %q, want cancelled", attempt.Status)
+	}
+}
+
+func TestDeleteResponseDeletesPayloadButRetainsCall(t *testing.T) {
+	db := setupResponsesLifecycleDB(t, &model.AIResponse{}, &model.AIResponseIdempotencyCache{}, &model.APICall{}, &model.APICallPayload{})
+	now := time.Now()
+	record := model.AIResponse{
+		ID: "resp_delete", UserID: 1, TokenID: 10, CallID: "call_delete", Model: "m",
+		Status: "completed", Store: true, IdempotencyKey: "delete", CreatedAt: now,
+	}
+	call := model.APICall{
+		ID: record.CallID, RequestID: "request-delete", UserID: record.UserID, TokenID: record.TokenID,
+		Endpoint: "/v1/responses", Operation: "responses", Model: record.Model,
+		Status: model.APICallStatusCompleted, Store: true, ResourceType: "response", ResourceID: record.ID,
+		StartedAt: now, CompletedAt: &now,
+	}
+	if err := db.Create(&record).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Create(&call).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Create(&model.APICallPayload{CallID: call.ID, Kind: model.APICallPayloadRequest, Data: []byte(`{"secret":true}`)}).Error; err != nil {
+		t.Fatal(err)
+	}
+	cache := model.AIResponseIdempotencyCache{
+		TokenID: record.TokenID, IdempotencyKey: record.IdempotencyKey, RequestHash: "hash",
+		Status: model.ResponseIdempotencyCompleted, ResponseID: record.ID,
+		ResponseJSON: []byte(`{"id":"resp_delete","status":"completed"}`), ExpiresAt: now.Add(time.Hour),
+	}
+	if err := db.Create(&cache).Error; err != nil {
+		t.Fatal(err)
+	}
+
+	if err := (&Pipeline{}).Delete(record.TokenID, record.ID); err != nil {
+		t.Fatal(err)
+	}
+	var responseCount, payloadCount, callCount, cacheCount int64
+	if err := db.Model(&model.AIResponse{}).Where("id = ?", record.ID).Count(&responseCount).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Model(&model.APICallPayload{}).Where("call_id = ?", call.ID).Count(&payloadCount).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Model(&model.APICall{}).Where("id = ?", call.ID).Count(&callCount).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Model(&model.AIResponseIdempotencyCache{}).Where("response_id = ?", record.ID).Count(&cacheCount).Error; err != nil {
+		t.Fatal(err)
+	}
+	if responseCount != 0 || payloadCount != 0 || callCount != 1 || cacheCount != 0 {
+		t.Fatalf("response=%d payload=%d call=%d cache=%d", responseCount, payloadCount, callCount, cacheCount)
 	}
 }
 

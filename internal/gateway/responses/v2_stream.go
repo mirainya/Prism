@@ -93,9 +93,11 @@ func consumeV2Stream(ctx context.Context, writer io.Writer, stream v2EventSource
 		for _, publicEvent := range publicStream.events(event) {
 			frame, encodeErr := openairesponses.EncodeSSEFrame(publicEvent)
 			if encodeErr != nil {
+				abortV2Stream(stream, encodeErr, false)
 				return aggregator.summary(), encodeErr
 			}
 			if writeErr := writeV2SSEFrame(writer, frame); writeErr != nil {
+				abortV2Stream(stream, writeErr, true)
 				return aggregator.summary(), writeErr
 			}
 			if flusher, ok := writer.(interface{ Flush() }); ok {
@@ -108,6 +110,14 @@ func consumeV2Stream(ctx context.Context, writer io.Writer, stream v2EventSource
 		if nextErr != nil {
 			return aggregator.summary(), nextErr
 		}
+	}
+}
+
+func abortV2Stream(stream v2EventSource, err error, clientDisconnected bool) {
+	if aborter, ok := stream.(interface {
+		Abort(error, bool) error
+	}); ok {
+		_ = aborter.Abort(err, clientDisconnected)
 	}
 }
 

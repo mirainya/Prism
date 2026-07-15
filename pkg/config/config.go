@@ -9,14 +9,24 @@ import (
 
 const DefaultFileStorageMaxTotalSizeMB = 1024
 
+const (
+	DefaultAPICallPayloadRetentionHours = 24 * 7
+	DefaultAPICallPayloadMaxBytes       = 256 * 1024
+	DefaultAPICallMetadataRetentionDays = 90
+	DefaultAPIAccessLogRetentionDays    = 30
+	DefaultAuditEventRetentionDays      = 180
+	DefaultBillingLedgerRetentionDays   = 365
+)
+
 type Config struct {
-	Server      ServerConfig      `mapstructure:"server"`
-	Database    DatabaseConfig    `mapstructure:"database"`
-	Redis       RedisConfig       `mapstructure:"redis"`
-	Worker      WorkerConfig      `mapstructure:"worker"`
-	HTTPClient  HTTPClientConfig  `mapstructure:"http_client"`
-	RateLimit   RateLimitConfig   `mapstructure:"rate_limit"`
-	FileStorage FileStorageConfig `mapstructure:"file_storage"`
+	Server        ServerConfig        `mapstructure:"server"`
+	Database      DatabaseConfig      `mapstructure:"database"`
+	Redis         RedisConfig         `mapstructure:"redis"`
+	Worker        WorkerConfig        `mapstructure:"worker"`
+	HTTPClient    HTTPClientConfig    `mapstructure:"http_client"`
+	RateLimit     RateLimitConfig     `mapstructure:"rate_limit"`
+	FileStorage   FileStorageConfig   `mapstructure:"file_storage"`
+	Observability ObservabilityConfig `mapstructure:"observability"`
 }
 
 type ServerConfig struct {
@@ -81,6 +91,17 @@ type FileStorageConfig struct {
 	AllowedTypes   []string `mapstructure:"allowed_types"`
 }
 
+type ObservabilityConfig struct {
+	RetainAPICallPayloads        bool   `mapstructure:"retain_api_call_payloads"`
+	APICallPayloadRetentionHours int    `mapstructure:"api_call_payload_retention_hours"`
+	APICallPayloadMaxBytes       int    `mapstructure:"api_call_payload_max_bytes"`
+	APICallPayloadEncryptionKey  string `mapstructure:"api_call_payload_encryption_key"`
+	APICallMetadataRetentionDays int    `mapstructure:"api_call_metadata_retention_days"`
+	APIAccessLogRetentionDays    int    `mapstructure:"api_access_log_retention_days"`
+	AuditEventRetentionDays      int    `mapstructure:"audit_event_retention_days"`
+	BillingLedgerRetentionDays   int    `mapstructure:"billing_ledger_retention_days"`
+}
+
 var (
 	C         *Config
 	mu        sync.RWMutex
@@ -139,5 +160,23 @@ func Watch() {
 func applyDefaults(cfg *Config) {
 	if cfg.FileStorage.MaxTotalSizeMB <= 0 {
 		cfg.FileStorage.MaxTotalSizeMB = DefaultFileStorageMaxTotalSizeMB
+	}
+	if cfg.Observability.APICallPayloadRetentionHours <= 0 {
+		cfg.Observability.APICallPayloadRetentionHours = DefaultAPICallPayloadRetentionHours
+	}
+	if cfg.Observability.APICallPayloadMaxBytes <= 0 {
+		cfg.Observability.APICallPayloadMaxBytes = DefaultAPICallPayloadMaxBytes
+	}
+	if cfg.Observability.APICallMetadataRetentionDays <= 0 {
+		cfg.Observability.APICallMetadataRetentionDays = DefaultAPICallMetadataRetentionDays
+	}
+	if cfg.Observability.APIAccessLogRetentionDays <= 0 {
+		cfg.Observability.APIAccessLogRetentionDays = DefaultAPIAccessLogRetentionDays
+	}
+	if cfg.Observability.AuditEventRetentionDays <= 0 {
+		cfg.Observability.AuditEventRetentionDays = DefaultAuditEventRetentionDays
+	}
+	if cfg.Observability.BillingLedgerRetentionDays <= 0 {
+		cfg.Observability.BillingLedgerRetentionDays = DefaultBillingLedgerRetentionDays
 	}
 }

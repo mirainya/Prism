@@ -70,14 +70,16 @@ func createGeneration(c *gin.Context, capabilityCode string) {
 		}
 	}
 
-	invokeResp, err := capabilityService.Invoke(c.Request.Context(), &service.InvokeRequest{
+	invokeReq := &service.InvokeRequest{
 		UserID:      token.UserID,
 		TokenID:     token.ID,
 		Capability:  capabilityCode,
 		Model:       model,
 		CallbackURL: callbackURL,
 		Params:      params,
-	})
+	}
+	attachCapabilityCallIdentity(c, invokeReq, "videos.generate")
+	invokeResp, err := capabilityService.Invoke(c.Request.Context(), invokeReq)
 	if err != nil {
 		if errors.Is(err, service.ErrInsufficientTokenBalance) || errors.Is(err, service.ErrInsufficientUserBalance) {
 			resp.BadRequest(c, perrors.WithMessage(perrors.ErrInsufficientQuota, err.Error()))

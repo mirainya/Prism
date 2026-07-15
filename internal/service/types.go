@@ -7,36 +7,41 @@ import (
 
 // CompletionRequest 对话补全请求
 type CompletionRequest struct {
-	UserID              uint
-	TokenID             uint
-	Model               string
-	Messages            []chat.ChatMessage
-	Temperature         *float64
-	MaxTokens           int
-	MaxCompletionTokens *int
-	TopP                *float64
-	FrequencyPenalty    *float64
-	PresencePenalty     *float64
-	Stop                []string
-	Stream              bool
-	StreamSpecified     bool
-	StreamOptions       *chat.StreamOptions
-	N                   *int
-	Logprobs            *bool
-	TopLogprobs         *int
-	Tools               []chat.ToolDefinition
-	ToolChoice          any
-	ParallelToolCalls   *bool
-	ResponseFormat      *chat.ResponseFormat
-	Seed                *int
-	User                string
-	Modalities          []string
-	Audio               *chat.AudioConfig
-	Prediction          *chat.Prediction
-	Store               *bool
-	Metadata            map[string]string
-	ServiceTier         *string
-	ConversationID      string
+	UserID               uint
+	TokenID              uint
+	CallID               string
+	RequestID            string
+	DownstreamEndpoint   string
+	DownstreamRequest    []byte
+	ConversationRecordID uint
+	Model                string
+	Messages             []chat.ChatMessage
+	Temperature          *float64
+	MaxTokens            int
+	MaxCompletionTokens  *int
+	TopP                 *float64
+	FrequencyPenalty     *float64
+	PresencePenalty      *float64
+	Stop                 []string
+	Stream               bool
+	StreamSpecified      bool
+	StreamOptions        *chat.StreamOptions
+	N                    *int
+	Logprobs             *bool
+	TopLogprobs          *int
+	Tools                []chat.ToolDefinition
+	ToolChoice           any
+	ParallelToolCalls    *bool
+	ResponseFormat       *chat.ResponseFormat
+	Seed                 *int
+	User                 string
+	Modalities           []string
+	Audio                *chat.AudioConfig
+	Prediction           *chat.Prediction
+	Store                *bool
+	Metadata             map[string]string
+	ServiceTier          *string
+	ConversationID       string
 
 	// ReasoningEffort 请求级思考档位覆盖(nil=未指定,用模型默认)
 	// 值为模型 thinking_config.options 里的某个 value
@@ -69,8 +74,12 @@ type CompletionResponse struct {
 	// RequestLogID 本次请求的 channel_request_logs 主键(内部用,不对外)。
 	// playground 据此下发 prism-debug 事件让前端拉完整调试详情。
 	RequestLogID      uint                    `json:"-"`
+	CallID            string                  `json:"-"`
+	AttemptID         uint                    `json:"-"`
 	ProviderKeyID     uint                    `json:"-"`
 	UpstreamTransport model.UpstreamTransport `json:"-"`
+	CompleteDelivery  func() error            `json:"-"`
+	FailDelivery      func(error, bool) error `json:"-"`
 }
 
 // StreamAggregationResult 流式聚合结果

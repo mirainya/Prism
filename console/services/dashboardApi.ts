@@ -50,6 +50,7 @@ export const fetchLogs = async (): Promise<any[]> => {
 export interface RequestLogListParams {
   page?: number;
   page_size?: number;
+  snapshot_id?: number;
   channel_id?: number;
   capability_code?: string;
   request_type?: string;
@@ -63,12 +64,14 @@ export interface RequestLogListResponse {
   total: number;
   page: number;
   page_size: number;
+  snapshot_id: number;
 }
 
 export const fetchRequestLogs = async (params?: RequestLogListParams): Promise<RequestLogListResponse> => {
   const query = new URLSearchParams();
   if (params?.page) query.append('page', String(params.page));
   if (params?.page_size) query.append('page_size', String(params.page_size));
+  if (params?.snapshot_id) query.append('snapshot_id', String(params.snapshot_id));
   if (params?.channel_id) query.append('channel_id', String(params.channel_id));
   if (params?.capability_code) query.append('capability_code', params.capability_code);
   if (params?.request_type) query.append('request_type', params.request_type);
@@ -82,10 +85,4 @@ export const fetchRequestLogs = async (params?: RequestLogListParams): Promise<R
 
 export const fetchRequestLogDetail = async (id: number): Promise<ChannelRequestLog> => {
   return await request<ChannelRequestLog>(`/admin/request-logs/${id}`);
-};
-
-export const retryRequestLog = async (id: number): Promise<ChannelRequestLog> => {
-    return await request<ChannelRequestLog>(`/admin/request-logs/${id}/retry`, {
-        method: 'POST',
-    });
 };

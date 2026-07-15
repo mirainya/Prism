@@ -9,6 +9,7 @@ import (
 	"github.com/mirainya/Prism/internal/model"
 	"github.com/mirainya/Prism/internal/service"
 	"github.com/mirainya/Prism/pkg/queue"
+	"gorm.io/gorm"
 )
 
 var recoverResponseBackground = queue.RecoverResponseBackground
@@ -16,25 +17,27 @@ var recoverResponseBackground = queue.RecoverResponseBackground
 // RequeuePendingBackground restores records left between record creation,
 // billing reservation, and queue insertion.
 func RequeuePendingBackground(ctx context.Context) (int, error) {
-	return requeueBackground(ctx, []string{"queued", "in_progress", "finalizing"}, true)
+	return requeueBackground(ctx)
 }
 
 // RequeueQueuedBackground repairs Redis task loss without changing records
 // that another worker may currently own.
 func RequeueQueuedBackground(ctx context.Context) (int, error) {
-	return requeueBackground(ctx, []string{"queued"}, false)
+	return requeueBackground(ctx)
 }
 
-func requeueBackground(ctx context.Context, statuses []string, resetActive bool) (int, error) {
+func requeueBackground(ctx context.Context) (int, error) {
 	const batchSize = 100
 	lastID := ""
 	recovered := 0
 	var recoveryErr error
 
 	for {
+		now := time.Now()
 		var records []model.AIResponse
 		query := model.DB().WithContext(ctx).
-			Where("background = ? AND status IN ? AND id > ?", true, statuses, lastID).
+			Where("background = ? AND status IN ? AND id > ?", true, []string{"queued", "in_progress", "result_ready", "finalizing"}, lastID).
+			Where("status = ? OR lease_owner = '' OR lease_expires_at IS NULL OR lease_expires_at <= ?", "queued", now).
 			Order("id ASC").Limit(batchSize)
 		if err := query.Find(&records).Error; err != nil {
 			return recovered, errors.Join(recoveryErr, err)
@@ -49,10 +52,18 @@ func requeueBackground(ctx context.Context, statuses []string, resetActive bool)
 			if err := ctx.Err(); err != nil {
 				return recovered, errors.Join(recoveryErr, err)
 			}
-			if resetActive && record.Status != "queued" {
+			if record.Status != "queued" {
+				targetStatus := "queued"
+				if (record.Status == "result_ready" || record.Status == "finalizing") && len(record.ResponseJSON) > 0 {
+					targetStatus = "result_ready"
+				}
 				result := model.DB().WithContext(ctx).Model(&model.AIResponse{}).
 					Where("id = ? AND background = ? AND status = ?", record.ID, true, record.Status).
-					Updates(map[string]any{"status": "queued", "completed_at": nil})
+					Where("lease_owner = '' OR lease_expires_at IS NULL OR lease_expires_at <= ?", now).
+					Updates(map[string]any{
+						"status": targetStatus, "completed_at": nil,
+						"lease_owner": "", "lease_expires_at": nil,
+					})
 				if result.Error != nil {
 					recoveryErr = errors.Join(recoveryErr, fmt.Errorf("reset background response %s: %w", record.ID, result.Error))
 					continue
@@ -84,26 +95,49 @@ func ReconcilePendingResponseRefunds(ctx context.Context) (int, error) {
 	var reconciliationErr error
 	for index := range records {
 		record := &records[index]
-		reservation := loadResponseReservation(billing, record)
-		if reservation != nil {
-			if err := reservation.cancel(); err != nil {
-				reconciliationErr = errors.Join(reconciliationErr, fmt.Errorf("refund response %s: %w", record.ID, err))
-				continue
-			}
+		if err := reconcileV2BackgroundReservations(billing, record); err != nil {
+			reconciliationErr = errors.Join(reconciliationErr, fmt.Errorf("refund response %s: %w", record.ID, err))
+			continue
 		}
 		target := "failed"
 		if record.Status == "refund_pending_cancelled" {
 			target = "cancelled"
 		}
 		now := time.Now()
-		result := model.DB().WithContext(ctx).Model(&model.AIResponse{}).
-			Where("id = ? AND status = ?", record.ID, record.Status).
-			Updates(map[string]any{"status": target, "completed_at": &now})
-		if result.Error != nil {
-			reconciliationErr = errors.Join(reconciliationErr, fmt.Errorf("finish response refund %s: %w", record.ID, result.Error))
+		updated := false
+		err := model.DB().WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+			result := tx.Model(&model.AIResponse{}).
+				Where("id = ? AND status = ?", record.ID, record.Status).
+				Updates(map[string]any{
+					"status": target, "completed_at": &now,
+					"lease_owner": "", "lease_expires_at": nil,
+				})
+			if result.Error != nil || result.RowsAffected == 0 {
+				return result.Error
+			}
+			updated = true
+			if record.CallID == "" {
+				return nil
+			}
+			calls := service.NewAPICallService()
+			if target == "cancelled" {
+				return calls.CancelCallTx(tx, record.CallID, &service.CancelCallRequest{
+					FinalAttemptID: latestResponseAttemptIDTx(tx, record.CallID),
+					ErrorType:      "cancelled_error", ErrorCode: "response_cancelled",
+					ErrorMessage: "Response was cancelled",
+				})
+			}
+			return calls.FailCallTx(tx, record.CallID, &service.FailCallRequest{
+				FinalAttemptID: latestResponseAttemptIDTx(tx, record.CallID),
+				HTTPStatus:     502, ErrorType: "server_error", ErrorCode: "response_failed",
+				ErrorMessage: "Response failed",
+			})
+		})
+		if err != nil {
+			reconciliationErr = errors.Join(reconciliationErr, fmt.Errorf("finish response refund %s: %w", record.ID, err))
 			continue
 		}
-		if result.RowsAffected > 0 {
+		if updated {
 			reconciled++
 		}
 	}

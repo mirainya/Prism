@@ -13,6 +13,8 @@ const Capabilities = lazy(() => import('./pages/Capabilities'));
 const Users = lazy(() => import('./pages/Users'));
 const Tokens = lazy(() => import('./pages/Tokens'));
 const Logs = lazy(() => import('./pages/Logs'));
+const CallLogs = lazy(() => import('./pages/CallLogs'));
+const Observability = lazy(() => import('./pages/Observability'));
 const RequestLogs = lazy(() => import('./pages/RequestLogs'));
 const ApiDocs = lazy(() => import('./pages/ApiDocs'));
 const ChatLogs = lazy(() => import('./pages/ChatLogs'));
@@ -268,6 +270,8 @@ const App: React.FC = () => {
             <Route path="/playground" element={<Playground/>}/>
             <Route path="/api-docs" element={<ApiDocs/>}/>
           <Route path="/logs" element={<Logs />} />
+            <Route path="/calls" element={<CallLogs/>}/>
+            <Route path="/observability" element={<Observability/>}/>
             <Route path="/chat-logs" element={<ChatLogs/>}/>
             <Route path="/change-password" element={<ChangePassword/>}/>
 

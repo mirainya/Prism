@@ -69,6 +69,7 @@ func InvokeCapability(c *gin.Context) {
 		CallbackURL:     callbackURL,
 		Params:          params,
 	}
+	attachCapabilityCallIdentity(c, req, "capability.invoke")
 
 	invokeResp, err := capabilityService.Invoke(c.Request.Context(), req)
 	if err != nil {

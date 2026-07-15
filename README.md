@@ -19,7 +19,7 @@ Prism 使用 Go + React 构建，对外提供 OpenAI Chat Completions、OpenAI R
   -> Gin Handler（鉴权、校验、协议错误格式）
   -> Downstream Codec（Chat / Responses / Messages）
   -> Canonical Request / Response / Event
-  -> Engine（执行计划、选路、重试、计费、日志、流生命周期）
+  -> Engine（执行计划、选路、重试、计费、调用账本、交付与流生命周期）
   -> Router（语义能力、Transport、并发、熔断、权重）
   -> Upstream Transport
   -> 上游 API
@@ -29,7 +29,7 @@ Prism 使用 Go + React 构建，对外提供 OpenAI Chat Completions、OpenAI R
 |---|---|
 | `gateway/codec` | 解码下游请求，并把响应或 SSE 编码为下游协议 |
 | `gateway/canonical` | 表示消息、多模态内容、工具、推理、usage 和流事件 |
-| `gateway/engine` | 生成执行计划，管理重试、计费预授权、请求日志和流终态 |
+| `gateway/engine` | 生成执行计划，管理重试、计费预授权、调用账本、请求日志和交付终态 |
 | `gateway/routing` | 从 `gw_*` 数据中选择能力与 Transport，管理并发和熔断 |
 | `gateway/transport` | 处理上游 URL、鉴权、请求编码、HTTP/SSE 和响应解码 |
 | `gateway/responses` | 管理 Responses 存储、续话、幂等、后台任务、取消和恢复 |
@@ -79,14 +79,17 @@ Chat、Responses 和 Messages 并不与某个模型固定绑定。一个公开�
 ## 主要能力
 
 - 文本、图片、文件、音频、视频、函数工具、推理和结构化输出的 canonical 表达；实际支持范围由 Transport 与 Ability 能力共同校验。
-- Responses 使用 Prism `resp_` ID，支持 `Idempotency-Key`、`previous_response_id`、`GET`、`DELETE`、取消和 `input_items`。
+- Responses 使用 Prism `resp_` ID，支持 `Idempotency-Key`、`previous_response_id`、`GET`、`DELETE`、取消和 `input_items`。幂等结果保留 24 小时，`store: false` 也能完整重放。
 - 上游执行前预授权计费，终态 usage 到达后按实际用量结算；未指定输出上限时的 `4096` 仅用于预授权估算，不代表模型最大输出。
-- 每次真实上游尝试写入请求日志，记录 Transport、路径、模型、状态、耗时和 usage，并对凭据及大型 data URL 脱敏。
+- 每个下游模型请求写入 `api_calls`，每次真实上游执行写入 `api_call_attempts`；响应头返回 `X-Prism-Call-ID`，可关联重试、usage、计费、任务、Responses 和 Playground 对话。
+- 所有 API 请求写入不含正文和凭据的 `api_access_logs`；控制台状态变更写入 `audit_events`；扣费、退款、充值和初始额度写入追加式 `balance_entries`。升级时会为历史非零余额写入幂等 `opening_balance` 基线。
+- 用户 API Token 仅在创建时返回一次，数据库只保留 SHA256 哈希与后四位提示；渠道和网关密钥不会由管理接口返回原值。
+- 请求与响应正文默认不保存。启用后会先脱敏、限长、按期限删除；配置独立密钥后使用 AES-256-GCM 加密。历史 Task、`store: false` Responses 和上游请求日志正文也由同一清理任务按策略处理。
 - Playground 复用同一个 Gateway Engine，支持 Chat、Responses、Messages、多模态粘贴/拖放、能力调用、历史记录和调试信息。
 - 图片与视频生成支持统一能力接口、同步/轮询/回调渠道及后台任务。
 - `/health` 检查 MySQL 与 Redis，`/metrics` 暴露 Prometheus 指标。
 
-普通 `/v1/chat/completions` 调用会记录请求日志，但不会自动创建 Conversation；对话记录由 Playground 保存。Responses 状态单独存储在 `ai_responses`。
+普通 `/v1/chat/completions`、`/v1/messages` 和 `/v1/responses` 都会进入统一调用账本，但不会自动创建 Conversation；对话记录由 Playground 保存。Responses 状态单独存储在 `ai_responses`。
 
 ## 项目结构
 
@@ -153,7 +156,7 @@ go build -trimpath -ldflags="-s -w" -o prism ./cmd/server
 
 `console/dist` 未提交到仓库，构建后端前必须先构建前端。Windows 可运行 `build.bat` 生成 Linux AMD64 二进制。
 
-首次启动会执行 GORM AutoMigrate 创建或补充表结构。已有实例升级时，还需备份数据库并按文件名顺序执行 `database/migrations/` 中尚未应用的 SQL；这些数据迁移不会由 AutoMigrate 自动执行。
+首次启动会执行 GORM AutoMigrate 创建或补充表结构。已有实例升级必须先停止全部 Prism HTTP 与 Worker 进程并备份数据库，再按文件名顺序执行 `database/migrations/` 中尚未应用的 SQL，最后启动新版本；这些数据迁移不会由 AutoMigrate 自动执行。不要滚动混跑新旧版本：历史余额回填需要稳定快照，且 `20260714_223000_remove_token_plain_keys.sql` 执行后旧版本会通过 AutoMigrate 重建明文字段。
 
 当前版本没有管理员自举命令。首次部署需先注册用户，再由数据库管理员将该用户的 `users.role` 提升为 `admin`，才能配置网关。
 
@@ -207,7 +210,9 @@ Responses 资源接口包括：
 - 能力渠道与能力配置：管理图片、视频等异步能力的渠道、账号和参数。
 - Playground：测试 Chat、Responses、Messages 和异步能力，查看历史与调试信息。
 - 用户与令牌：管理用户角色、余额、API Token、限流和充值。
-- 日志：查看调用日志、对话记录及管理员请求详情与重试。
+- 调用记录：查看下游 Call、上游 Attempt、usage、计费、正文保留状态和资源关联。
+- 审计与流水：查看 API 访问日志、控制台审计事件和用户/Token 余额流水。
+- 对话与上游日志：查看 Playground 会话，以及管理员可见的上游请求详情。
 - 仪表盘与 API 文档：查看用量统计，并在登录状态下试用接口。
 
 ## 配置
@@ -220,6 +225,11 @@ Responses 资源接口包括：
 - `worker.*`、`http_client.*`
 - `file_storage.max_total_size_mb`
 - `rate_limit.*`
+- `observability.retain_api_call_payloads`：是否保存调用正文，默认 `false`
+- `observability.api_call_payload_retention_hours`、`api_call_payload_max_bytes`、`api_call_payload_encryption_key`：正文默认保留 168 小时、最多 256 KiB，可使用独立 AES-256-GCM 密钥
+- `observability.api_call_metadata_retention_days`：Call、Attempt 与上游请求日志元数据，默认 90 天
+- `observability.api_access_log_retention_days`、`audit_event_retention_days`：访问日志默认 30 天，审计事件默认 180 天
+- `observability.billing_ledger_retention_days`：计费日志和余额流水，默认 365 天
 
 数据库、Redis、Worker、HTTP Client 和监听端口都在启动时初始化，修改这些配置后需要重启服务。
 

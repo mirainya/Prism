@@ -6,6 +6,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"reflect"
 	"strings"
 	"testing"
@@ -59,6 +60,38 @@ func TestRequestLoggerLogsSmallNonSensitiveRequestBody(t *testing.T) {
 	entry := logs.All()[0]
 	if got := entry.ContextMap()["request"]; got != body {
 		t.Fatalf("logged request body = %q, want %q", got, body)
+	}
+}
+
+func TestRequestLoggerOmitsAIRequestBodiesWithoutReadingThem(t *testing.T) {
+	paths := []string{
+		"/v1/chat/completions",
+		"/v1/responses",
+		"/api/playground/1/messages",
+		"/internal/callback/v1/provider/task/signature",
+	}
+
+	for _, path := range paths {
+		t.Run(path, func(t *testing.T) {
+			logs := installObservedLogger(t)
+			body := []byte(`{"input":"private prompt"}`)
+			reader := &countingReadCloser{Reader: bytes.NewReader(body)}
+			router := newLoggerTestRouter(func(c *gin.Context) {
+				if reader.bytesRead != 0 {
+					t.Fatalf("middleware read %d AI request bytes before handler", reader.bytesRead)
+				}
+				_, _ = io.Copy(io.Discard, c.Request.Body)
+				c.Status(http.StatusNoContent)
+			})
+
+			request := httptest.NewRequest(http.MethodPost, path, reader)
+			request.Header.Set("Content-Type", "application/json")
+			router.ServeHTTP(httptest.NewRecorder(), request)
+
+			if _, exists := logs.All()[0].ContextMap()["request"]; exists {
+				t.Fatalf("AI request body was logged for %s", path)
+			}
+		})
 	}
 }
 
@@ -203,6 +236,28 @@ func TestRequestLoggerUsesRouteTemplateForSignedCallback(t *testing.T) {
 	}
 	if strings.Contains(path, "sensitive-signature") {
 		t.Fatal("logged callback path contains signature")
+	}
+}
+
+func TestRequestLoggerSanitizesQueryCredentials(t *testing.T) {
+	logs := installObservedLogger(t)
+	router := newLoggerTestRouter(func(c *gin.Context) {
+		c.Status(http.StatusNoContent)
+	})
+	query := url.Values{
+		"apiKey":   {"query-secret"},
+		"redirect": {"https://user:password@storage.example/file?sig=signed-secret"},
+	}.Encode()
+	router.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/api/test?"+query, nil))
+
+	loggedQuery, _ := logs.All()[0].ContextMap()["query"].(string)
+	for _, secret := range []string{"query-secret", "signed-secret", "password", "user@"} {
+		if strings.Contains(loggedQuery, secret) {
+			t.Fatalf("query log retained %q: %s", secret, loggedQuery)
+		}
+	}
+	if !strings.Contains(loggedQuery, "%5BREDACTED%5D") {
+		t.Fatalf("query log was not redacted: %s", loggedQuery)
 	}
 }
 

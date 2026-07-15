@@ -4,10 +4,14 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"time"
 
 	"github.com/hibiken/asynq"
 	responsepipeline "github.com/mirainya/Prism/internal/gateway/responses"
+	"github.com/mirainya/Prism/internal/service"
 )
+
+const staleForegroundCallBatchSize = 100
 
 func HandleResponseBackground(ctx context.Context, task *asynq.Task) error {
 	var payload ResponseBackgroundPayload
@@ -33,8 +37,19 @@ func HandleResponseRecovery(ctx context.Context, _ *asynq.Task) error {
 	if _, err := responsepipeline.ReconcilePendingResponseRefunds(ctx); err != nil {
 		return err
 	}
-	_, err := responsepipeline.RequeueQueuedBackground(ctx)
-	return err
+	if _, err := responsepipeline.RequeueQueuedBackground(ctx); err != nil {
+		return err
+	}
+	calls := service.NewAPICallService()
+	for {
+		reconciled, err := calls.ReconcileStaleForegroundCalls(ctx, time.Now().Add(-time.Hour), staleForegroundCallBatchSize)
+		if err != nil {
+			return err
+		}
+		if reconciled < staleForegroundCallBatchSize {
+			return nil
+		}
+	}
 }
 
 func NewResponseRecoveryTask() *asynq.Task {

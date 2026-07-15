@@ -3,6 +3,7 @@ package worker
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"time"
@@ -11,6 +12,7 @@ import (
 	"github.com/mirainya/Prism/internal/domain"
 	"github.com/mirainya/Prism/internal/model"
 	"github.com/mirainya/Prism/internal/provider"
+	"github.com/mirainya/Prism/internal/service"
 	"github.com/mirainya/Prism/pkg/logger"
 	"github.com/mirainya/Prism/pkg/queue"
 	"go.uber.org/zap"
@@ -24,6 +26,27 @@ func HandleTaskPoll(ctx context.Context, t *asynq.Task) error {
 	if err := json.Unmarshal(t.Payload(), &payload); err != nil {
 		return fmt.Errorf("unmarshal payload: %w", err)
 	}
+	lease, acquired, err := service.AcquireTaskWorkerLease(ctx, payload.TaskID, service.TaskWorkerStagePoll)
+	if err != nil {
+		return fmt.Errorf("acquire poll lease: %w", err)
+	}
+	if !acquired {
+		current, stateErr := taskService.GetTaskByID(payload.TaskID)
+		if stateErr != nil {
+			return fmt.Errorf("load task after busy poll lease: %w", stateErr)
+		}
+		if (current.Status == model.TaskStatusProcessing || current.Status == model.TaskStatusFinalizing) &&
+			current.PollCursor == payload.PollCount {
+			return fmt.Errorf("%w: task %d poll round %d", service.ErrTaskWorkerLeaseBusy, payload.TaskID, payload.PollCount)
+		}
+		return nil
+	}
+	defer func() {
+		if err := lease.Stop(); err != nil && !errors.Is(err, service.ErrTaskWorkerLeaseLost) {
+			logger.Error("release poll lease failed", zap.Uint("task_id", payload.TaskID), zap.Error(err))
+		}
+	}()
+	ctx = lease.Context()
 
 	logger.Info("processing poll task", zap.Uint("task_id", payload.TaskID), zap.Int("poll_count", payload.PollCount))
 
@@ -35,6 +58,25 @@ func HandleTaskPoll(ctx context.Context, t *asynq.Task) error {
 
 	// 终态任务不再轮询。finalizing 仍可重试查询，以恢复一次失败的上传入队。
 	if task.Status.IsTerminal() {
+		return nil
+	}
+	currentRound, err := taskService.CurrentTaskPollRound(task.ID, lease.Owner(), payload.PollCount)
+	if err != nil {
+		return fmt.Errorf("validate poll round: %w", err)
+	}
+	if !currentRound && task.PollCursor == -1 {
+		currentRound, err = taskService.AdoptLegacyTaskPollRound(task.ID, lease.Owner(), payload.PollCount)
+		if err != nil {
+			return fmt.Errorf("adopt legacy poll round: %w", err)
+		}
+	}
+	if !currentRound && payload.PollCount == task.PollCursor+1 {
+		currentRound, err = taskService.AdoptQueuedTaskPollRound(task.ID, lease.Owner(), payload.PollCount)
+		if err != nil {
+			return fmt.Errorf("adopt queued poll round: %w", err)
+		}
+	}
+	if !currentRound {
 		return nil
 	}
 
@@ -88,17 +130,58 @@ func HandleTaskPoll(ctx context.Context, t *asynq.Task) error {
 	}
 
 	// 4. 创建 Provider 并查询进度
-	prov, err := provider.NewProvider(&channel, &account, &endpoint)
+	prov, err := newProvider(&channel, &account, &endpoint)
 	if err != nil {
 		return fmt.Errorf("create provider: %w", err)
 	}
 
+	attempt, err := service.StartCapabilityAttempt(task, &endpoint, model.APICallStagePoll)
+	if err != nil {
+		return fmt.Errorf("start poll attempt: %w", err)
+	}
 	result, err := prov.GetProgress(ctx, task.VendorTaskID)
+	attemptErr := err
+	if attemptErr == nil && result.Status == provider.StatusFail {
+		if result.Error == "" {
+			result.Error = "upstream task failed"
+		}
+		attemptErr = errors.New(result.Error)
+	}
+	if finishErr := service.FinishCapabilityAttempt(
+		task,
+		&channel,
+		&endpoint,
+		attempt,
+		model.APICallStagePoll,
+		result.RequestMetadata,
+		attemptErr,
+	); finishErr != nil {
+		return fmt.Errorf("finish poll attempt: %w", finishErr)
+	}
+	if leaseErr := lease.Check(); leaseErr != nil {
+		terminal, stateErr := taskIsTerminalAfterLeaseLoss(task.ID, leaseErr)
+		if stateErr != nil {
+			return stateErr
+		}
+		if terminal {
+			return nil
+		}
+	}
+	current, stateErr := taskService.GetTaskByID(task.ID)
+	if stateErr != nil {
+		return fmt.Errorf("reload task after poll attempt: %w", stateErr)
+	}
+	if current.Status == model.TaskStatusFinalizing || current.Status.IsTerminal() {
+		return nil
+	}
 	if err != nil {
 		// 错误分级: 可恢复错误(网络抖动/408/429/5xx)继续轮询; 不可恢复(4xx 硬错误)快速失败
 		if isRetryablePollError(err) {
 			logger.Warn("get progress transient error, retry poll", zap.Uint("task_id", payload.TaskID), zap.Error(err))
-			return requeuePoll(payload.TaskID, payload.PollCount+1, pollInterval)
+			if err := requeueTaskPoll(payload.TaskID, payload.PollCount+1, pollInterval); err != nil {
+				return err
+			}
+			return taskService.CompleteTaskPollRound(task.ID, lease.Owner(), payload.PollCount)
 		}
 		logger.Error("get progress fatal error, fail task", zap.Uint("task_id", payload.TaskID), zap.Error(err))
 		_, failErr := taskService.UpdateTaskFail(payload.TaskID, "poll error: "+err.Error())
@@ -128,11 +211,17 @@ func HandleTaskPoll(ctx context.Context, t *asynq.Task) error {
 			return fmt.Errorf("update poll progress: %w", err)
 		}
 		// 继续轮询
-		return requeuePoll(payload.TaskID, payload.PollCount+1, pollInterval)
+		if err := requeueTaskPoll(payload.TaskID, payload.PollCount+1, pollInterval); err != nil {
+			return err
+		}
+		return taskService.CompleteTaskPollRound(task.ID, lease.Owner(), payload.PollCount)
 
 	default:
 		// 未知状态，继续轮询
-		return requeuePoll(payload.TaskID, payload.PollCount+1, pollInterval)
+		if err := requeueTaskPoll(payload.TaskID, payload.PollCount+1, pollInterval); err != nil {
+			return err
+		}
+		return taskService.CompleteTaskPollRound(task.ID, lease.Owner(), payload.PollCount)
 	}
 }
 
@@ -158,7 +247,15 @@ func requeuePoll(taskID uint, pollCount int, intervalSeconds int) error {
 	}
 	payloadBytes, _ := json.Marshal(payload)
 	task := asynq.NewTask(TypeTaskPoll, payloadBytes)
-	info, err := queue.Client.Enqueue(task, asynq.ProcessIn(time.Duration(intervalSeconds)*time.Second), asynq.Queue("default"))
+	info, err := queue.Client.Enqueue(
+		task,
+		asynq.ProcessIn(time.Duration(intervalSeconds)*time.Second),
+		asynq.Queue("default"),
+		asynq.TaskID(fmt.Sprintf("task-poll-%d-%d", taskID, pollCount)),
+	)
+	if errors.Is(err, asynq.ErrTaskIDConflict) {
+		return nil
+	}
 	if err != nil {
 		logger.Error("requeue poll failed", zap.Uint("task_id", taskID), zap.Error(err))
 	} else {
@@ -166,6 +263,8 @@ func requeuePoll(taskID uint, pollCount int, intervalSeconds int) error {
 	}
 	return err
 }
+
+var requeueTaskPoll = requeuePoll
 
 var enqueueUpload = queue.EnqueueTaskUpload
 

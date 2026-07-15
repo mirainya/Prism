@@ -41,17 +41,21 @@ func (p *Pipeline) completeV2(ctx context.Context, request *service.CompletionRe
 	}
 	encoded, err := openai_chat.EncodeResponseJSON(*result.Response)
 	if err != nil {
+		_ = result.FailDelivery(err, false)
 		return nil, err
 	}
 	var wire chat.ChatResponse
 	if err := json.Unmarshal(encoded, &wire); err != nil {
+		_ = result.FailDelivery(err, false)
 		return nil, err
 	}
 	return &service.CompletionResponse{
 		ID: wire.ID, Object: wire.Object, Created: wire.Created, Model: request.Model,
 		Choices: wire.Choices, Usage: wire.Usage, SystemFingerprint: wire.SystemFingerprint,
 		ServiceTier: wire.ServiceTier, ProviderResponseID: providerResponseID,
-		RequestLogID: result.RequestLogID, ProviderKeyID: result.Route.KeyID, UpstreamTransport: result.Route.Transport,
+		RequestLogID: result.RequestLogID, CallID: result.CallID, AttemptID: result.AttemptID,
+		ProviderKeyID: result.Route.KeyID, UpstreamTransport: result.Route.Transport,
+		CompleteDelivery: result.CompleteDelivery, FailDelivery: result.FailDelivery,
 	}, nil
 }
 
@@ -71,15 +75,27 @@ func (p *Pipeline) streamCompleteV2(ctx context.Context, request *service.Comple
 	reader, writer := io.Pipe()
 	session := &StreamSession{
 		UpstreamResp: &http.Response{StatusCode: http.StatusOK, Header: http.Header{"Content-Type": []string{"text/event-stream"}}, Body: reader},
-		requestLogID: result.RequestLogID, keyID: result.Route.KeyID, transport: result.Route.Transport,
+		requestLogID: result.RequestLogID, callID: result.CallID, attemptID: result.AttemptID,
+		keyID: result.Route.KeyID, transport: result.Route.Transport, stream: result.Stream,
+		done: make(chan struct{}),
 	}
 	go session.proxyV2ChatStream(ctx, writer, result.Stream, request.Model)
 	return session, nil
 }
 
 func (p *Pipeline) v2Options(request *service.CompletionRequest) engine.ExecuteOptions {
+	deferCallCompletion := request.DownstreamEndpoint == "/v1/chat/completions"
+	downstreamEndpoint := request.DownstreamEndpoint
+	if downstreamEndpoint == "" {
+		downstreamEndpoint = "/v1/chat/completions"
+	}
 	return engine.ExecuteOptions{
-		UserID: request.UserID, TokenID: request.TokenID, BillingKey: uuid.NewString(), MaxAttempts: 3,
+		UserID: request.UserID, TokenID: request.TokenID,
+		CallID: request.CallID, RequestID: request.RequestID,
+		DownstreamEndpoint: downstreamEndpoint, DownstreamRequest: request.DownstreamRequest,
+		ConversationID:      request.ConversationRecordID,
+		DeferCallCompletion: deferCallCompletion,
+		BillingKey:          uuid.NewString(), MaxAttempts: 3,
 		PrepareTransport: func(_ context.Context, candidate canonical.Request, transportID transport.ID) (canonical.Request, error) {
 			if err := adaptChatExtensions(&candidate, transportID); err != nil {
 				return canonical.Request{}, err
@@ -263,6 +279,7 @@ func canonicalChatRequest(request *service.CompletionRequest, messages []chat.Ch
 }
 
 func (s *StreamSession) proxyV2ChatStream(ctx context.Context, writer *io.PipeWriter, stream *engine.StreamResult, publicModel string) {
+	defer close(s.done)
 	defer stream.Close()
 	defer writer.Close()
 	sentDone := false
@@ -284,6 +301,7 @@ func (s *StreamSession) proxyV2ChatStream(ctx context.Context, writer *io.PipeWr
 		}
 		frame, encodeErr := openai_chat.EncodeSSEFrame(event)
 		if encodeErr != nil {
+			_ = stream.Abort(encodeErr, false)
 			_ = writer.CloseWithError(encodeErr)
 			return
 		}
@@ -292,6 +310,7 @@ func (s *StreamSession) proxyV2ChatStream(ctx context.Context, writer *io.PipeWr
 		}
 		sentDone = sentDone || bytes.Contains(frame, []byte("[DONE]"))
 		if _, err := writer.Write(frame); err != nil {
+			_ = stream.Abort(err, true)
 			return
 		}
 	}

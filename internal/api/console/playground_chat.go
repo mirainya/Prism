@@ -4,15 +4,36 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 
 	"github.com/gin-gonic/gin"
+	"github.com/google/uuid"
+	"github.com/mirainya/Prism/internal/api/middleware"
 	"github.com/mirainya/Prism/internal/api/resp"
 	gwstream "github.com/mirainya/Prism/internal/gateway/stream"
+	"github.com/mirainya/Prism/internal/model"
 	"github.com/mirainya/Prism/internal/provider/chat"
 	"github.com/mirainya/Prism/internal/service"
 	perrors "github.com/mirainya/Prism/pkg/errors"
+	"github.com/mirainya/Prism/pkg/logger"
+	"go.uber.org/zap"
 )
+
+type playgroundPayloadStreamWriter struct {
+	writer  gwstream.Writer
+	capture io.Writer
+}
+
+func (w *playgroundPayloadStreamWriter) Write(data []byte) (int, error) {
+	written, err := w.writer.Write(data)
+	if written > 0 && w.capture != nil {
+		_, _ = w.capture.Write(data[:written])
+	}
+	return written, err
+}
+
+func (w *playgroundPayloadStreamWriter) Flush() { w.writer.Flush() }
 
 // PlaygroundChatCompletions POST /api/playground/:token_id/chat/completions
 // 走共享 gateway pipeline(与 /v1 同源)。会话续聊/历史/火山 B 模式由本 handler 编排,
@@ -56,26 +77,36 @@ func PlaygroundChatCompletions(c *gin.Context) {
 	newMessages := req.Messages
 	cc := service.LoadConversationContext(req.ConversationID, token.ID, req.Model)
 	fullMessages := append(append([]chat.ChatMessage{}, cc.History...), newMessages...)
+	callID := "call_" + uuid.NewString()
+	c.Header("X-Prism-Call-ID", callID)
+	downstreamRequest, _ := json.Marshal(req)
 
 	completionReq := &service.CompletionRequest{
-		UserID:           token.UserID,
-		TokenID:          token.ID,
-		Model:            req.Model,
-		Messages:         fullMessages,
-		Temperature:      req.Temperature,
-		MaxTokens:        req.MaxTokens,
-		TopP:             req.TopP,
-		FrequencyPenalty: req.FrequencyPenalty,
-		PresencePenalty:  req.PresencePenalty,
-		Stop:             req.Stop,
-		Stream:           stream,
-		StreamSpecified:  req.Stream != nil,
-		Tools:            req.Tools,
-		ToolChoice:       req.ToolChoice,
-		ResponseFormat:   req.ResponseFormat,
-		Seed:             req.Seed,
-		User:             req.User,
-		ReasoningEffort:  req.ReasoningEffort,
+		UserID:             token.UserID,
+		TokenID:            token.ID,
+		CallID:             callID,
+		RequestID:          middleware.GetRequestID(c.Request.Context()),
+		DownstreamEndpoint: c.FullPath(),
+		DownstreamRequest:  downstreamRequest,
+		Model:              req.Model,
+		Messages:           fullMessages,
+		Temperature:        req.Temperature,
+		MaxTokens:          req.MaxTokens,
+		TopP:               req.TopP,
+		FrequencyPenalty:   req.FrequencyPenalty,
+		PresencePenalty:    req.PresencePenalty,
+		Stop:               req.Stop,
+		Stream:             stream,
+		StreamSpecified:    req.Stream != nil,
+		Tools:              req.Tools,
+		ToolChoice:         req.ToolChoice,
+		ResponseFormat:     req.ResponseFormat,
+		Seed:               req.Seed,
+		User:               req.User,
+		ReasoningEffort:    req.ReasoningEffort,
+	}
+	if cc.Conv != nil {
+		completionReq.ConversationRecordID = cc.Conv.ID
 	}
 	// 有状态对话:只发新消息,历史由上游维护
 	if cc.PreviousResponseID != "" {
@@ -107,7 +138,15 @@ func playgroundStream(c *gin.Context, req *service.CompletionRequest, cc *servic
 	c.Header("X-Accel-Buffering", "no")
 	c.Status(http.StatusOK)
 
-	agg, streamErr := gwstream.ProxyStream(c.Writer, session.UpstreamResp.Body)
+	capture := service.NewAPICallService().NewPayloadCaptureBestEffort(
+		session.CallID(), session.AttemptID(), model.APICallPayloadResponse, "text/event-stream",
+	)
+	defer capture.SaveBestEffort()
+	writer := gwstream.Writer(c.Writer)
+	if capture != nil {
+		writer = &playgroundPayloadStreamWriter{writer: writer, capture: capture}
+	}
+	agg, streamErr := gwstream.ProxyStream(writer, session.UpstreamResp.Body)
 	provRespID := session.FinalizeStream(agg, streamErr)
 	if streamErr != nil {
 		return
@@ -120,9 +159,13 @@ func playgroundStream(c *gin.Context, req *service.CompletionRequest, cc *servic
 			Content:          agg.AssistantContent,
 			ReasoningContent: agg.ReasoningContent,
 		}
-		service.SaveConversationTurn(cc, req.UserID, req.TokenID, req.Model,
-			newMessages, assistant, agg.Usage, agg.FinishReason, provRespID, reqLogID,
+		_, saveErr := service.SaveConversationTurn(cc, req.UserID, req.TokenID, req.Model,
+			newMessages, assistant, agg.Usage, agg.FinishReason, provRespID, session.CallID(), reqLogID,
 			service.ConversationProvenance{KeyID: session.ProviderKeyID(), Transport: session.UpstreamTransport()})
+		if saveErr != nil {
+			logger.Error("save playground stream conversation",
+				zap.String("call_id", session.CallID()), zap.Error(saveErr))
+		}
 	}
 
 	// 下发 prism-debug 事件,前端据 request_log_id 拉完整调试详情
@@ -142,10 +185,14 @@ func playgroundNonStream(c *gin.Context, req *service.CompletionRequest, cc *ser
 	}
 
 	if len(chatResp.Choices) > 0 {
-		convID := service.SaveConversationTurn(cc, req.UserID, req.TokenID, req.Model,
+		convID, saveErr := service.SaveConversationTurn(cc, req.UserID, req.TokenID, req.Model,
 			newMessages, chatResp.Choices[0].Message, chatResp.Usage,
-			chatResp.Choices[0].FinishReason, chatResp.ProviderResponseID, chatResp.RequestLogID,
+			chatResp.Choices[0].FinishReason, chatResp.ProviderResponseID, chatResp.CallID, chatResp.RequestLogID,
 			service.ConversationProvenance{KeyID: chatResp.ProviderKeyID, Transport: chatResp.UpstreamTransport})
+		if saveErr != nil {
+			logger.Error("save playground conversation",
+				zap.String("call_id", chatResp.CallID), zap.Error(saveErr))
+		}
 		if convID > 0 {
 			chatResp.ConversationID = fmt.Sprint(convID)
 		}

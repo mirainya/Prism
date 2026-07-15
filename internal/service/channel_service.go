@@ -282,7 +282,16 @@ func (s *ChannelService) UpdateChannelAccount(id uint, req *UpdateChannelAccount
 		updates["name"] = req.Name
 	}
 	if req.APIKey != "" {
-		updates["api_key"] = req.APIKey
+		var account model.ChannelAccount
+		if err := model.DB().Select("id", "api_key").First(&account, id).Error; err != nil {
+			if errors.Is(err, gorm.ErrRecordNotFound) {
+				return ErrChannelAccountNotFound
+			}
+			return err
+		}
+		if !isCurrentCredentialMask(req.APIKey, account.APIKey) {
+			updates["api_key"] = req.APIKey
+		}
 	}
 	if req.Config != nil {
 		configJSON, err := json.Marshal(req.Config)

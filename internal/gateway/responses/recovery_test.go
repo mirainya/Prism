@@ -47,13 +47,16 @@ func TestRequeuePendingBackgroundRestoresNonTerminalRecords(t *testing.T) {
 	if !slices.Equal(recoveredIDs, want) {
 		t.Fatalf("recovered IDs = %v, want %v", recoveredIDs, want)
 	}
+	expectedStatus := map[string]string{
+		"resp_queued": "queued", "resp_progress": "queued", "resp_finalizing": "result_ready",
+	}
 	for _, id := range want {
 		var record model.AIResponse
 		if err := db.First(&record, "id = ?", id).Error; err != nil {
 			t.Fatal(err)
 		}
-		if record.Status != "queued" {
-			t.Fatalf("response %s status = %s, want queued", id, record.Status)
+		if record.Status != expectedStatus[id] {
+			t.Fatalf("response %s status = %s, want %s", id, record.Status, expectedStatus[id])
 		}
 	}
 }
@@ -96,6 +99,9 @@ func TestRequeueQueuedBackgroundDoesNotResetActiveRecords(t *testing.T) {
 		backgroundRecoveryRecord("resp_runtime_queued", "queued", now),
 		backgroundRecoveryRecord("resp_runtime_active", "in_progress", now),
 	}
+	leaseExpiresAt := now.Add(time.Hour)
+	records[1].LeaseOwner = "active-worker"
+	records[1].LeaseExpiresAt = &leaseExpiresAt
 	if err := db.Create(&records).Error; err != nil {
 		t.Fatal(err)
 	}
@@ -121,7 +127,7 @@ func TestRequeueQueuedBackgroundDoesNotResetActiveRecords(t *testing.T) {
 }
 
 func TestReconcilePendingResponseRefunds(t *testing.T) {
-	db := setupResponsesLifecycleDB(t, &model.User{}, &model.Token{}, &model.BillingLog{}, &model.AIResponse{})
+	db := setupResponsesLifecycleDB(t, &model.User{}, &model.Token{}, &model.BillingLog{}, &model.BalanceEntry{}, &model.AIResponse{})
 	user := model.User{Username: "refund-recovery", Balance: decimal.NewFromInt(10), Status: 1}
 	if err := db.Create(&user).Error; err != nil {
 		t.Fatal(err)

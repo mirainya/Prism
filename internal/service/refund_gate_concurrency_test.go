@@ -41,7 +41,17 @@ func setupTestDB(t *testing.T) *gorm.DB {
 	}
 	// SQLite 单写者,提高 busy_timeout 避免并发写立即报错
 	db.Exec("PRAGMA busy_timeout = 5000")
-	if err := db.AutoMigrate(&model.User{}, &model.Token{}, &model.Task{}, &model.BillingLog{}, &model.ChannelAccount{}); err != nil {
+	if err := db.AutoMigrate(
+		&model.User{},
+		&model.Token{},
+		&model.Task{},
+		&model.BillingLog{},
+		&model.BalanceEntry{},
+		&model.ChannelAccount{},
+		&model.AccountModelState{},
+		&model.APICall{},
+		&model.APICallAttempt{},
+	); err != nil {
 		t.Fatalf("migrate: %v", err)
 	}
 	model.SetDB(db)
@@ -161,8 +171,22 @@ func TestUpdateTaskSuccess_GuardedByTerminalState(t *testing.T) {
 // TestCancelTask_RefundAndDecrementOnce 验证 CancelTask 抢占取消后退款一次、计数减一次;
 // 且对已取消任务重复调用不再退款/递减。
 func TestCancelTask_RefundAndDecrementOnce(t *testing.T) {
-	setupTestDB(t)
+	db := setupTestDB(t)
 	task := seedTask(t, decimal.NewFromFloat(2), decimal.NewFromFloat(10), 1)
+	call, err := NewAPICallService().StartCall(&StartCallRequest{
+		ID: "call_cancelled_task", UserID: task.UserID, TokenID: task.TokenID,
+		ResourceType: "task", ResourceID: task.TaskNo, ReservedAmount: task.Cost,
+	})
+	if err != nil {
+		t.Fatalf("create task call: %v", err)
+	}
+	params := []byte(`{"prompt":"cancel me"}`)
+	if err := db.Model(&model.Task{}).Where("id = ?", task.ID).Updates(map[string]any{
+		"call_id": call.ID, "request_params": params, "mapped_params": params,
+	}).Error; err != nil {
+		t.Fatalf("link task call: %v", err)
+	}
+	task.CallID = call.ID
 	svc := NewTaskService()
 
 	if err := svc.CancelTask(task.TaskNo, task.UserID); err != nil {
@@ -187,6 +211,23 @@ func TestCancelTask_RefundAndDecrementOnce(t *testing.T) {
 	if acc.CurrentTasks != 0 {
 		t.Fatalf("账号计数应减到 0, 实际 %d", acc.CurrentTasks)
 	}
+
+	var storedCall model.APICall
+	if err := db.First(&storedCall, "id = ?", call.ID).Error; err != nil {
+		t.Fatalf("reload cancelled call: %v", err)
+	}
+	if storedCall.Status != model.APICallStatusCancelled || storedCall.ErrorCode != "task_cancelled" ||
+		!storedCall.RefundedAmount.Equal(task.Cost) {
+		t.Fatalf("cancelled call = %#v", storedCall)
+	}
+	var storedTask model.Task
+	if err := db.First(&storedTask, task.ID).Error; err != nil {
+		t.Fatalf("reload cancelled task: %v", err)
+	}
+	if storedTask.CompletedAt == nil || len(storedTask.RequestParams) != 0 || len(storedTask.MappedParams) != 0 {
+		t.Fatalf("cancelled task retained terminal data: %#v", storedTask)
+	}
+	assertCapabilityBillingContext(t, task.TaskNo, call.ID, model.BillingPhaseRefund)
 }
 
 // TestConcurrentFail_DecrementOnce verifies that the terminal transaction

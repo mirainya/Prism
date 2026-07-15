@@ -34,3 +34,13 @@ worker:
   concurrency: 10
   poll_interval: 5s
   max_retry: 3
+
+observability:
+  retain_api_call_payloads: false
+  api_call_payload_retention_hours: 168
+  api_call_payload_max_bytes: 262144
+  api_call_payload_encryption_key: ""
+  api_call_metadata_retention_days: 90
+  api_access_log_retention_days: 30
+  audit_event_retention_days: 180
+  billing_ledger_retention_days: 365

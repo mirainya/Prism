@@ -3,6 +3,7 @@ package cache
 import (
 	"context"
 	"fmt"
+	"strconv"
 	"time"
 
 	"github.com/mirainya/Prism/pkg/config"
@@ -14,6 +15,8 @@ var Client *redis.Client
 const (
 	// 登录 token 前缀
 	LoginTokenPrefix = "login:token:"
+	// 用户登录 token 集合前缀，用于角色、状态或密码变更后撤销全部会话。
+	LoginUserTokensPrefix = "login:user:"
 	// 登录 token 默认过期时间 24 小时
 	LoginTokenExpiration = 24 * time.Hour
 )
@@ -75,7 +78,14 @@ func Close() error {
 // SetLoginToken 存储登录 token
 func SetLoginToken(ctx context.Context, token string, userID uint) error {
 	key := LoginTokenPrefix + token
-	return Client.Set(ctx, key, userID, LoginTokenExpiration).Err()
+	userTokensKey := loginUserTokensKey(userID)
+	_, err := Client.TxPipelined(ctx, func(pipe redis.Pipeliner) error {
+		pipe.Set(ctx, key, userID, LoginTokenExpiration)
+		pipe.SAdd(ctx, userTokensKey, token)
+		pipe.Expire(ctx, userTokensKey, LoginTokenExpiration)
+		return nil
+	})
+	return err
 }
 
 // GetLoginToken 获取登录 token 对应的用户 ID
@@ -91,11 +101,57 @@ func GetLoginToken(ctx context.Context, token string) (uint, error) {
 // DeleteLoginToken 删除登录 token (登出)
 func DeleteLoginToken(ctx context.Context, token string) error {
 	key := LoginTokenPrefix + token
-	return Client.Del(ctx, key).Err()
+	userID, err := GetLoginToken(ctx, token)
+	if err != nil && !errorsIsRedisNil(err) {
+		return err
+	}
+	_, err = Client.TxPipelined(ctx, func(pipe redis.Pipeliner) error {
+		pipe.Del(ctx, key)
+		if userID > 0 {
+			pipe.SRem(ctx, loginUserTokensKey(userID), token)
+		}
+		return nil
+	})
+	return err
+}
+
+// DeleteUserLoginTokens revokes every active console session for a user.
+func DeleteUserLoginTokens(ctx context.Context, userID uint) error {
+	if userID == 0 {
+		return nil
+	}
+	setKey := loginUserTokensKey(userID)
+	tokens, err := Client.SMembers(ctx, setKey).Result()
+	if err != nil && !errorsIsRedisNil(err) {
+		return err
+	}
+	keys := make([]string, 0, len(tokens)+1)
+	for _, token := range tokens {
+		keys = append(keys, LoginTokenPrefix+token)
+	}
+	keys = append(keys, setKey)
+	return Client.Del(ctx, keys...).Err()
 }
 
 // RefreshLoginToken 刷新登录 token 过期时间
 func RefreshLoginToken(ctx context.Context, token string) error {
 	key := LoginTokenPrefix + token
-	return Client.Expire(ctx, key, LoginTokenExpiration).Err()
+	userID, err := GetLoginToken(ctx, token)
+	if err != nil {
+		return err
+	}
+	_, err = Client.TxPipelined(ctx, func(pipe redis.Pipeliner) error {
+		pipe.Expire(ctx, key, LoginTokenExpiration)
+		pipe.Expire(ctx, loginUserTokensKey(userID), LoginTokenExpiration)
+		return nil
+	})
+	return err
+}
+
+func loginUserTokensKey(userID uint) string {
+	return LoginUserTokensPrefix + strconv.FormatUint(uint64(userID), 10)
+}
+
+func errorsIsRedisNil(err error) bool {
+	return err == redis.Nil
 }

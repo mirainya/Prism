@@ -196,3 +196,27 @@ func TestBuildChatRequestRejectsUnconfiguredConvertedReasoning(t *testing.T) {
 		t.Fatal("unconfigured reasoning translation was accepted")
 	}
 }
+
+func TestV2OptionsCarryCallContext(t *testing.T) {
+	request := &service.CompletionRequest{
+		UserID: 11, TokenID: 12, CallID: "call_chat", RequestID: "request-chat",
+		ConversationRecordID: 13,
+	}
+	options := (&Pipeline{}).v2Options(request)
+	if options.UserID != request.UserID || options.TokenID != request.TokenID ||
+		options.CallID != request.CallID || options.RequestID != request.RequestID ||
+		options.DownstreamEndpoint != "/v1/chat/completions" || options.ConversationID != request.ConversationRecordID {
+		t.Fatalf("unexpected execute options: %#v", options)
+	}
+}
+
+func TestStreamSessionExposesCallIdentifiers(t *testing.T) {
+	session := &StreamSession{callID: "call_stream", attemptID: 17}
+	if session.CallID() != "call_stream" || session.AttemptID() != 17 {
+		t.Fatalf("unexpected stream identifiers: call=%q attempt=%d", session.CallID(), session.AttemptID())
+	}
+	var empty *StreamSession
+	if empty.CallID() != "" || empty.AttemptID() != 0 {
+		t.Fatal("nil stream session returned identifiers")
+	}
+}

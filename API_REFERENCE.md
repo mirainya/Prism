@@ -12,8 +12,9 @@
 {"code": 400, "message": "error reason"}           // 失败
 ```
 
-- `/v1/*` 兼容接口直接返回对应协议结构，不使用 `{code,data}` 包装。
+- `/v1/chat/completions`、`/v1/responses`、`/v1/messages`、`/v1/files`、`/v1/models` 与图像生成接口直接返回兼容协议结构。能力、任务、渠道及视频生成接口使用 `{code,data}` 包装。
 - `/v1/responses`、`/v1/files` 的错误使用 OpenAI Error 结构：`{"error":{"message":"...","type":"...","code":"..."}}`。
+- 所有请求响应都会返回 `X-Request-ID`。模型调用在建立调用账本后还会返回 `X-Prism-Call-ID`。
 
 ---
 
@@ -147,7 +148,7 @@ Header：
 | Header | 必填 | 说明 |
 |--------|------|------|
 | `Authorization: Bearer sk-prism-xxx` | 是 | API Token |
-| `Idempotency-Key` | 否 | 相同 Token、Key 与请求体返回同一响应；同 Key 不同请求体返回 400 |
+| `Idempotency-Key` | 否 | 相同 Token、Key 与请求体在 24 小时内返回同一响应；同 Key 不同请求体返回 400 |
 
 ```json
 // Request
@@ -207,6 +208,7 @@ Header：
 ```
 
 - `stream: true`：返回 Responses SSE 事件流。
+- `Idempotency-Key` 同时支持 `store: true` 与 `store: false`。`store: false` 的短期幂等缓存不允许通过 `GET /v1/responses/:id` 查询。
 - `background: true`：立即返回 `queued`；通过 `GET /v1/responses/:id` 查询。不能同时启用 `stream`，且 `store` 必须为 `true`。
 - `previous_response_id`：必须使用同一 Token 创建且已保存的 Prism `resp_` ID。
 - `file_id`：必须属于当前 Token；Prism 会在调用上游前解析文件内容。
@@ -340,7 +342,7 @@ curl "$BASE_URL/v1/files" \
 }
 
 // Response.data
-{"task_id": "xxx", "status": "pending|processing|completed|failed", "result": {}}
+{"task_id": "xxx", "status": "pending|processing|success"}
 ```
 
 ### POST /v1/images/generations
@@ -396,12 +398,12 @@ curl "$BASE_URL/v1/files" \
 
 ```json
 // Response.data
-{"task_id": "xxx", "status": "pending|processing|completed|failed", "progress": 50, "result": {}, "error": "", "cost": "0.10"}
+{"task_id": "xxx", "status": "pending|processing|success|failed|cancelled", "progress": 50, "result": {}, "error": "", "cost": "0.10"}
 ```
 
 ### POST /v1/tasks/:task_no/cancel
 
-取消任务。返回 `{"message": "task cancelled"}`。
+取消任务。`Response.data` 为 `{"message": "task cancelled"}`。
 
 ---
 
@@ -425,6 +427,8 @@ curl "$BASE_URL/v1/files" \
 | PUT | /api/tokens/:id | 更新 Token |
 | DELETE | /api/tokens/:id | 删除 Token |
 | POST | /api/tokens/:id/recharge | Token 充值 |
+
+`POST /api/tokens` 仅在创建响应中返回一次完整 Token。列表与详情只返回后四位提示，服务端仅保存 SHA256 哈希。
 
 ```json
 // POST /api/tokens Request
@@ -458,8 +462,23 @@ curl "$BASE_URL/v1/files" \
 | Method | Path | 说明 |
 |--------|------|------|
 | GET | /api/capability-channels | 能力渠道列表 |
-| GET | /api/chat-model-channels | Chat 模型渠道映射 |
 | GET | /api/docs/models | 模型文档 |
+
+### 调用、审计与流水
+
+普通用户只能查看自己的记录；管理员可通过 `user_id`、`token_id` 进一步筛选。
+
+| Method | Path | 说明 |
+|--------|------|------|
+| GET | `/api/calls` | 下游调用账本；支持 Call、Request、模型、状态、日期等筛选 |
+| GET | `/api/calls/:id` | Call、上游 Attempt、计费与管理员可见正文详情 |
+| GET | `/api/observability/access-logs` | API 访问元数据，不保存认证头或请求正文 |
+| GET | `/api/observability/audit-events` | 登录、Token、文件、取消及控制台写操作审计 |
+| GET | `/api/observability/balance-entries` | 用户与 Token 的初始额度、历史余额基线、扣费、退款、充值和结算流水 |
+
+三个观测接口都支持 `page`、`page_size`、`start_date`、`end_date`。访问日志另支持 `request_id`、`call_id`、`method`、`path`、`status_code`、`error_code`；审计事件支持 `action`、`resource_type`、`outcome`；余额流水支持 `account_type`、`direction`、`category`、`call_id`。
+
+余额流水的 `category` 包括 `initial_credit`、`opening_balance`、`recharge`、`deduction`、`reservation`、`settlement`、`refund`。`opening_balance` 是升级迁移为历史非零余额建立的幂等基线，不代表一次新充值。
 
 ### Playground (通过 JWT + token_id 代理)
 
@@ -468,6 +487,8 @@ curl "$BASE_URL/v1/files" \
 | GET | /api/playground/:token_id/models | 模型列表 |
 | GET | /api/playground/:token_id/capabilities | 能力列表 |
 | POST | /api/playground/:token_id/chat/completions | Chat 代理 |
+| POST | /api/playground/:token_id/responses | Responses 代理 |
+| POST | /api/playground/:token_id/messages | Anthropic Messages 代理 |
 | POST | /api/playground/:token_id/upload | 文件上传 |
 | POST | /api/playground/:token_id/capabilities/:capability | 能力调用 |
 | GET | /api/playground/:token_id/conversations | 对话列表 |
@@ -536,40 +557,20 @@ curl "$BASE_URL/v1/files" \
 |--------|------|------|
 | GET | /api/admin/request-logs | 日志列表 |
 | GET | /api/admin/request-logs/:id | 日志详情 |
-| POST | /api/admin/request-logs/:id/retry | 重试请求 |
 
-### Chat 模型管理
+### Gateway V2 管理
 
-| Method | Path | 说明 |
-|--------|------|------|
-| GET | /api/admin/chat-models | 模型列表 |
-| GET | /api/admin/chat-models/presets | 预设模型 |
-| POST | /api/admin/chat-models/quick-setup | 快速配置 |
-| GET | /api/admin/chat-models/:code | 模型详情 |
-| POST | /api/admin/chat-models | 创建模型 |
-| PUT | /api/admin/chat-models/:code | 更新模型 |
-| DELETE | /api/admin/chat-models/:code | 删除模型 |
+所有路径均以 `/api/admin/gw` 开头。
 
-### Chat 模型渠道映射
-
-| Method | Path | 说明 |
-|--------|------|------|
-| GET | /api/admin/chat-model-channels | 映射列表 |
-| GET | /api/admin/chat-model-channels/:id | 映射详情 |
-| POST | /api/admin/chat-model-channels | 创建映射 |
-| PUT | /api/admin/chat-model-channels/:id | 更新映射 |
-| DELETE | /api/admin/chat-model-channels/:id | 删除映射 |
-
-### 模型发现
-
-| Method | Path | 说明 |
-|--------|------|------|
-| POST | /api/admin/discovery/sync | 同步所有渠道模型 |
-| POST | /api/admin/discovery/sync/:channel_id | 同步指定渠道 |
-| GET | /api/admin/discovery/pending | 待审核模型列表 |
-| POST | /api/admin/discovery/approve | 批准模型 |
-| POST | /api/admin/discovery/reject | 拒绝模型 |
-| GET | /api/admin/models/:code/meta | 模型元信息 |
+| 资源 | 主要接口 |
+|------|----------|
+| Channels | `GET/POST /channels`、`GET/PUT/DELETE /channels/:id`、`POST /channels/reorder` |
+| Keys | `GET /channels/:id/keys`、`POST /keys`、`PUT/DELETE /keys/:id` |
+| 模型发现 | `GET /keys/:id/discover`、`POST /keys/:id/import` |
+| Abilities | `GET /abilities`、`PUT/DELETE /abilities/:id` |
+| Transports | `GET/PUT /abilities/:id/transports`、`DELETE /abilities/:id/transports/:transport`、`POST .../:transport/check` |
+| Models | `GET /models`、`POST /models/reorder`、`DELETE /models?name=...` |
+| Model Meta | `GET /model-meta`、`PUT/DELETE /model-meta/:model_name` |
 
 ---
 
@@ -616,5 +617,8 @@ curl "$BASE_URL/v1/files" \
 - `/v1/chat/completions`、`/v1/responses`、`/v1/messages` 和 `/v1/models` 分别返回对应协议的兼容格式
 - 多模态支持: messages.content 可为 string 或 ContentPart 数组
 - 流式响应为标准 SSE 格式 (`data: {...}\n\n`，结束 `data: [DONE]\n\n`)
+- 请求未指定输出上限时，`4096` 仅用于计费预授权估算；实际最大输出由模型元数据、请求参数和上游共同决定
+- 同一个公开模型可通过不同下游协议调用，前提是当前请求能由已启用 Transport 完整表达
 - Token key 格式: `sk-prism-{random_hex}`，存储时 SHA256 哈希
-- 金额字段使用 decimal 字符串 (如 `"10.00"`)
+- 金额字段使用 8 位精度 decimal 字符串；所有余额变化都有独立流水
+- 密码、角色或用户状态变更会使该用户的旧 JWT 失效

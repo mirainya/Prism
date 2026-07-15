@@ -9,6 +9,8 @@ func DB() *gorm.DB {
 	return db.Session(&gorm.Session{NewDB: true})
 }
 
+func HasDB() bool { return db != nil }
+
 // SetDB 设置数据库连接
 func SetDB(d *gorm.DB) {
 	db = d
@@ -29,6 +31,12 @@ func AutoMigrate() error {
 		&Conversation{},
 		&Message{},
 		&BillingLog{},
+		&APICall{},
+		&APICallAttempt{},
+		&APICallPayload{},
+		&BalanceEntry{},
+		&APIAccessLog{},
+		&AuditEvent{},
 		&AccountModelState{},
 		&AccountModel{},
 		// 聊天网关路由表(与老表并存)
@@ -39,6 +47,7 @@ func AutoMigrate() error {
 		&GwRouteState{},
 		&GwModelMeta{},
 		&AIResponse{},
+		&AIResponseIdempotencyCache{},
 		&AIFile{},
 	)
 }

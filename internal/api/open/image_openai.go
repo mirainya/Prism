@@ -1,6 +1,7 @@
 package open
 
 import (
+	"errors"
 	"net/http"
 	"time"
 
@@ -91,14 +92,20 @@ func CreateImageGenerationOpenAI(c *gin.Context) {
 		params["style"] = req.Style
 	}
 
-	result, err := capabilityService.InvokeAndWait(c.Request.Context(), &service.InvokeRequest{
+	invokeReq := &service.InvokeRequest{
 		UserID:     token.UserID,
 		TokenID:    token.ID,
 		Capability: "text2img",
 		Model:      req.Model,
 		Params:     params,
-	}, 0)
+	}
+	attachCapabilityCallIdentity(c, invokeReq, "images.generate")
+	result, err := capabilityService.InvokeAndWait(c.Request.Context(), invokeReq, 0)
 	if err != nil {
+		if errors.Is(err, service.ErrInsufficientTokenBalance) || errors.Is(err, service.ErrInsufficientUserBalance) {
+			openAIError(c, http.StatusBadRequest, err.Error(), "insufficient_quota")
+			return
+		}
 		openAIError(c, http.StatusInternalServerError, err.Error(), "api_error")
 		return
 	}

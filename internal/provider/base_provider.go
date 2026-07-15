@@ -225,7 +225,7 @@ func (p *BaseProvider) appendQueryAuth(rawURL string) string {
 	return rawURL + sep + url.QueryEscape(p.AuthKey) + "=" + url.QueryEscape(p.APIKey)
 }
 
-func (p *BaseProvider) Submit(ctx context.Context, req SubmitRequest) (SubmitResult, error) {
+func (p *BaseProvider) Submit(ctx context.Context, req SubmitRequest) (result SubmitResult, resultErr error) {
 	params := req.Params
 
 	// 图生图自动路由(配置驱动): 端点配了 image_edit 且请求带参考图字段
@@ -241,6 +241,10 @@ func (p *BaseProvider) Submit(ctx context.Context, req SubmitRequest) (SubmitRes
 	// 路径模板变量替换
 	submitPath := resolvePath(effectivePath, params)
 	reqURL := p.appendQueryAuth(p.BaseURL + submitPath)
+	method := p.RequestMethod
+	if method == "" {
+		method = http.MethodPost
+	}
 
 	// body 认证：将 token 注入到请求参数中
 	if p.AuthLocation == "body" {
@@ -269,11 +273,6 @@ func (p *BaseProvider) Submit(ctx context.Context, req SubmitRequest) (SubmitRes
 
 	body, contentType := p.buildRequestBody(params, effectiveContentType)
 
-	method := p.RequestMethod
-	if method == "" {
-		method = "POST"
-	}
-
 	// 流式请求上游持续推 SSE 字节流, http.Client.Timeout 是整请求硬超时(含读 body),
 	// 会中途砍断流,故置 0; 改由 ctx deadline 兜底防永久挂起(endpoint.Timeout 派生,>0 时生效)。
 	if streaming && p.Timeout > 0 {
@@ -282,10 +281,21 @@ func (p *BaseProvider) Submit(ctx context.Context, req SubmitRequest) (SubmitRes
 		defer cancel()
 	}
 
+	metadata := RequestMetadata{
+		Method:      method,
+		RequestPath: submitPath,
+		RequestAt:   time.Now(),
+	}
+	defer func() {
+		metadata.DurationMs = time.Since(metadata.RequestAt).Milliseconds()
+		result.RequestMetadata = metadata
+	}()
+
 	httpReq, err := http.NewRequestWithContext(ctx, method, reqURL, body)
 	if err != nil {
 		return SubmitResult{}, fmt.Errorf("create request: %w", err)
 	}
+	metadata.RequestPath = httpReq.URL.EscapedPath()
 
 	httpReq.Header.Set("Content-Type", contentType)
 	p.setAuth(httpReq)
@@ -306,6 +316,7 @@ func (p *BaseProvider) Submit(ctx context.Context, req SubmitRequest) (SubmitRes
 		return SubmitResult{}, fmt.Errorf("do request: %w", err)
 	}
 	defer resp.Body.Close()
+	metadata.StatusCode = resp.StatusCode
 
 	// SSE 流式响应: 边读边聚合,从 completed 事件提取图片(错误也走 SSE error 事件,
 	// 故先处理 status>=400 再交给流解析)。非流式渠道响应 application/json,不进此分支。
@@ -329,13 +340,13 @@ func (p *BaseProvider) Submit(ctx context.Context, req SubmitRequest) (SubmitRes
 	return p.Parser.ParseSubmitResponse(respBody, p.ResponseMapping)
 }
 
-func (p *BaseProvider) GetProgress(ctx context.Context, providerTaskID string) (ProgressResult, error) {
+func (p *BaseProvider) GetProgress(ctx context.Context, providerTaskID string) (result ProgressResult, resultErr error) {
 	progressPath := resolvePath(p.ProgressPath, map[string]any{"task_id": providerTaskID, "id": providerTaskID})
 	reqURL := p.appendQueryAuth(p.BaseURL + progressPath)
 
 	method := p.PollMethod
 	if method == "" {
-		method = "GET"
+		method = http.MethodGet
 	}
 
 	var body io.Reader
@@ -349,10 +360,21 @@ func (p *BaseProvider) GetProgress(ctx context.Context, providerTaskID string) (
 		body = bytes.NewReader(bodyBytes)
 	}
 
+	metadata := RequestMetadata{
+		Method:      method,
+		RequestPath: progressPath,
+		RequestAt:   time.Now(),
+	}
+	defer func() {
+		metadata.DurationMs = time.Since(metadata.RequestAt).Milliseconds()
+		result.RequestMetadata = metadata
+	}()
+
 	httpReq, err := http.NewRequestWithContext(ctx, method, reqURL, body)
 	if err != nil {
 		return ProgressResult{}, fmt.Errorf("create request: %w", err)
 	}
+	metadata.RequestPath = httpReq.URL.EscapedPath()
 
 	if method == "POST" {
 		httpReq.Header.Set("Content-Type", contentType)
@@ -364,6 +386,7 @@ func (p *BaseProvider) GetProgress(ctx context.Context, providerTaskID string) (
 		return ProgressResult{}, fmt.Errorf("do request: %w", err)
 	}
 	defer resp.Body.Close()
+	metadata.StatusCode = resp.StatusCode
 
 	respBody, err := io.ReadAll(resp.Body)
 	if err != nil {

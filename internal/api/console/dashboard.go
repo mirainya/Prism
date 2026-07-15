@@ -85,25 +85,24 @@ func GetTaskDetail(c *gin.Context) {
 	}
 
 	detail := gin.H{
-		"task_no":        task.TaskNo,
-		"capability":     task.ModelCode,
-		"status":         task.Status.Public(),
-		"progress":       task.Progress,
-		"cost":           task.Cost,
-		"refunded":       task.Refunded,
-		"error":          task.ErrorMessage,
-		"result":         resultMap,
-		"raw_params":     rawParams,
-		"vendor_task_id": task.VendorTaskID,
-		"created_at":     task.CreatedAt.Format("2006-01-02 15:04:05"),
+		"task_no":    task.TaskNo,
+		"capability": task.ModelCode,
+		"status":     task.Status.Public(),
+		"progress":   task.Progress,
+		"cost":       task.Cost,
+		"refunded":   task.Refunded,
+		"error":      task.ErrorMessage,
+		"result":     resultMap,
+		"raw_params": rawParams,
+		"created_at": task.CreatedAt.Format("2006-01-02 15:04:05"),
 	}
 
 	if isAdmin {
 		detail["vendor_response"] = vendorResponse
-	}
-
-	if task.Channel != nil {
-		detail["channel"] = task.Channel.Type
+		detail["vendor_task_id"] = task.VendorTaskID
+		if task.Channel != nil {
+			detail["channel"] = task.Channel.Type
+		}
 	}
 	if task.Endpoint != nil && task.Endpoint.Model != nil {
 		detail["capability_name"] = task.Endpoint.Model.Name
@@ -124,7 +123,9 @@ func ChatStats(c *gin.Context) {
 	if d, err := strconv.Atoi(c.DefaultQuery("days", "7")); err == nil && d > 0 && d <= 90 {
 		days = d
 	}
-	result, err := dashboardService.GetChatStats(days)
+	userID := middleware.GetUserID(c)
+	isAdmin := middleware.GetUserRole(c) == string(model.UserRoleAdmin)
+	result, err := dashboardService.GetChatStats(days, userID, isAdmin)
 	if err != nil {
 		resp.ErrorMsg(c, 500, 500, "failed to get chat stats")
 		return

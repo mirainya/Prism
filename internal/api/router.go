@@ -26,7 +26,6 @@ func SetupRouter(engines ...*engine.Engine) *gin.Engine {
 	r := gin.New()
 
 	// 全局中间件
-	r.Use(gin.Recovery())
 	r.Use(middleware.CORS())
 	r.Use(middleware.RequestID())
 
@@ -40,6 +39,9 @@ func SetupRouter(engines ...*engine.Engine) *gin.Engine {
 	})))
 
 	r.Use(middleware.RequestLogger())
+	r.Use(middleware.PersistentAccessLogger())
+	// Recovery must stay inside the logging middleware so recovered 500s are observable.
+	r.Use(gin.Recovery())
 	r.Use(middleware.ErrorHandler())
 
 	// 健康检查

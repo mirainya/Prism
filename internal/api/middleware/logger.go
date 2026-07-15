@@ -72,7 +72,7 @@ func RequestLogger() gin.HandlerFunc {
 	return func(c *gin.Context) {
 		start := time.Now()
 		requestPath := c.Request.URL.Path
-		query := c.Request.URL.RawQuery
+		query := sanitizeAccessQuery(c.Request.URL.Query())
 
 		// 读取请求体
 		var requestBody []byte
@@ -148,8 +148,18 @@ func shouldLogRequestBody(method, path, contentType string) bool {
 	if method == http.MethodGet {
 		return false
 	}
+	if isAIRequestPath(path) {
+		return false
+	}
 	_, sensitive := sensitiveRequestPaths[strings.TrimRight(path, "/")]
 	return !sensitive && isJSONContentType(contentType)
+}
+
+func isAIRequestPath(path string) bool {
+	path = strings.TrimRight(path, "/")
+	return path == "/v1" || strings.HasPrefix(path, "/v1/") ||
+		path == "/api/playground" || strings.HasPrefix(path, "/api/playground/") ||
+		path == "/internal/callback" || strings.HasPrefix(path, "/internal/callback/")
 }
 
 func isJSONContentType(contentType string) bool {
@@ -215,6 +225,10 @@ func isSensitiveJSONKey(key string) bool {
 		strings.Contains(normalized, "token") ||
 		strings.Contains(normalized, "apikey") ||
 		strings.Contains(normalized, "authorization") ||
+		strings.Contains(normalized, "credential") ||
+		strings.Contains(normalized, "signature") ||
+		strings.Contains(normalized, "cookie") ||
+		normalized == "sig" ||
 		hasKeyFieldSuffix(originalKey)
 }
 

@@ -2,8 +2,6 @@ import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { Book, Search, Copy, Check, ChevronDown, ChevronRight, Play, Loader2, Zap, MessageSquare, ListChecks, Bell, AlertTriangle, RefreshCw, Braces, FileUp } from 'lucide-react';
 import { fetchDocsModels, DocsModel } from '../services/docsApi';
 import { fetchGwModels } from '../services/gatewayApi';
-import { fetchTokens } from '../services/api';
-import { ApiToken } from '../types';
 import { TryItDrawer } from './TryItDrawer';
 
 // ===== 代码块组件 =====
@@ -254,7 +252,7 @@ const RESPONSES_ENDPOINTS: ApiEndpoint[] = [
     method: 'POST',
     path: '/v1/responses',
     name: '创建响应',
-    description: 'OpenAI Responses 兼容入口，支持多模态、函数工具、流式、续话、后台执行和 Idempotency-Key 请求头。火山 v3 专属字段及未来扩展会原样保留；无法无损转换的字段返回 400。',
+    description: 'OpenAI Responses 兼容入口，支持多模态、函数工具、流式、续话和后台执行。Idempotency-Key 结果保留 24 小时，store=false 也可完整重放。火山 v3 专属字段及未来扩展会原样保留；无法无损转换的字段返回 400。',
     params: RESPONSES_PARAMS,
     requestExample: JSON.stringify({
       model: 'doubao-seed-2-0-pro',
@@ -409,7 +407,6 @@ const COMPAT_ENDPOINTS: ApiEndpoint[] = [
 // ===== 主组件 =====
 const ApiDocs: React.FC = () => {
   const [models, setModels] = useState<DocsModel[]>([]);
-  const [tokens, setTokens] = useState<ApiToken[]>([]);
   const [search, setSearch] = useState('');
   const [loading, setLoading] = useState(true);
   const [activeSection, setActiveSection] = useState('quickstart');
@@ -421,8 +418,7 @@ const ApiDocs: React.FC = () => {
     Promise.all([
       fetchDocsModels().catch(() => []),
       fetchGwModels().catch(() => []),
-      fetchTokens().then((list: ApiToken[]) => list.filter(t => t.status === 'active')).catch(() => []),
-    ]).then(([caps, gwModels, t]) => {
+    ]).then(([caps, gwModels]) => {
       // caps 是老 models 表(现只剩 image/video 能力);chat 模型已迁网关,从 gw 拉取补进来
       const chatDocs: DocsModel[] = gwModels
         .filter(g => g.key_available > 0)
@@ -435,7 +431,6 @@ const ApiDocs: React.FC = () => {
           channels: [],
         }));
       setModels([...chatDocs, ...caps]);
-      setTokens(t);
       setLoading(false);
     });
   }, []);
@@ -759,7 +754,7 @@ const ApiDocs: React.FC = () => {
         <section id="responses">
           <h2 className="text-lg font-bold text-[var(--text-primary)] mb-3 flex items-center gap-2"><Braces size={18} /> Responses API</h2>
           <p className="text-sm text-[var(--text-secondary)] mb-2">下游统一调用 OpenAI 兼容的 <code className="text-[var(--primary)]">/v1/responses</code>。</p>
-          <p className="text-xs text-[var(--text-secondary)] mb-4">OpenAI 上游使用 <code>/v1/responses</code>；火山方舟使用原生 <code>/api/v3/responses</code>，保留 v3 扩展字段、工具事件和工具用量；Anthropic 与 Google 由 Prism 转换。后台执行、存储和公开响应 ID 由 Prism 管理。</p>
+          <p className="text-xs text-[var(--text-secondary)] mb-4">OpenAI 上游使用 <code>/v1/responses</code>；火山方舟使用原生 <code>/api/v3/responses</code>，保留 v3 扩展字段、工具事件和工具用量；Anthropic 与 Google 由 Prism 转换。后台执行、存储、24 小时幂等缓存和公开响应 ID 由 Prism 管理。</p>
           <div className="space-y-3">
             {RESPONSES_ENDPOINTS.map(ep => (
               <EndpointCard key={ep.id} api={ep} onTryIt={setTryItApi} />
@@ -895,7 +890,6 @@ const ApiDocs: React.FC = () => {
         path={tryItApi?.path || ''}
         name={tryItApi?.name || ''}
         params={tryItApi?.params || []}
-        tokens={tokens}
         bodyType={tryItApi?.bodyType || 'json'}
       />
     </div>

@@ -19,9 +19,9 @@ func TestRequestLogRecordsPreparedRequestAndRedactsSecrets(t *testing.T) {
 	route := &routing.RouteResult{ChannelID: 2, KeyID: 3, ModelName: "public", VendorModel: "vendor", Transport: model.UpstreamTransportGoogle}
 	prepared := transport.PreparedRequest{
 		Method:  http.MethodPost,
-		URL:     "https://example.test/v1beta/models/vendor:generateContent?key=secret&keep=yes",
+		URL:     "https://upstream-user:secret@example.test/v1beta/models/vendor:generateContent?apiKey=camel-secret&key=secret&keep=yes",
 		Headers: http.Header{"Authorization": []string{"Bearer secret"}, "X-Test": []string{"kept"}},
-		Body:    []byte(`{"api_key":"secret","input":"ok"}`),
+		Body:    []byte(`{"api_key":"secret","accessToken":"camel-secret","input":"ok"}`),
 	}
 	entry, err := StartRequestLog(route, prepared, transport.OperationChat)
 	if err != nil {
@@ -43,6 +43,9 @@ func TestRequestLogRecordsPreparedRequestAndRedactsSecrets(t *testing.T) {
 	}
 	if containsSecret(stored.RequestHeaders) || containsSecret(stored.RequestBody) || containsSecret(stored.URL) {
 		t.Fatalf("secret leaked: headers=%s body=%s url=%s", stored.RequestHeaders, stored.RequestBody, stored.URL)
+	}
+	if contains(stored.URL, "upstream-user") {
+		t.Fatalf("URL userinfo leaked: %s", stored.URL)
 	}
 }
 

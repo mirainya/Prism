@@ -1,6 +1,9 @@
 package console
 
-import "github.com/gin-gonic/gin"
+import (
+	"github.com/gin-gonic/gin"
+	"github.com/mirainya/Prism/internal/api/middleware"
+)
 
 // RegisterAuthRoutes 注册 /api/auth 认证路由（无需登录）
 func RegisterAuthRoutes(group *gin.RouterGroup) {
@@ -31,6 +34,11 @@ func RegisterRoutes(group *gin.RouterGroup) {
 	group.GET("/dashboard/chat-stats", ChatStats)
 	group.GET("/tasks", ListTasks)
 	group.GET("/tasks/:task_no", GetTaskDetail)
+	group.GET("/calls", ListAPICalls)
+	group.GET("/calls/:id", GetAPICall)
+	group.GET("/observability/access-logs", middleware.SkipPersistentAccessLog(), ListAPIAccessLogs)
+	group.GET("/observability/audit-events", ListAuditEvents)
+	group.GET("/observability/balance-entries", ListBalanceEntries)
 
 	// 对话记录
 	group.GET("/conversations", ListConversations)

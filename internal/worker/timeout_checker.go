@@ -13,13 +13,26 @@ import (
 // HandleTaskTimeoutCheck 检查超时任务
 func HandleTaskTimeoutCheck(ctx context.Context, t *asynq.Task) error {
 	logger.Info("checking timeout tasks")
+	now := time.Now()
+	var recoverable []model.Task
+	if err := model.DB().Where("status IN ? AND submit_checkpoint IS NOT NULL",
+		[]model.TaskStatus{model.TaskStatusPending, model.TaskStatusProcessing, model.TaskStatusFinalizing}).
+		Where("worker_lease_owner = '' OR worker_lease_owner IS NULL OR worker_lease_expires_at IS NULL OR worker_lease_expires_at <= ?", now).
+		Find(&recoverable).Error; err != nil {
+		return err
+	}
+	for _, task := range recoverable {
+		if err := enqueueTaskSubmit(task.ID); err != nil {
+			logger.Error("enqueue submit checkpoint recovery failed", zap.Uint("task_id", task.ID), zap.Error(err))
+		}
+	}
 
 	// 查找 30 分钟前提交但仍在处理中的任务
-	timeout := time.Now().Add(-30 * time.Minute)
+	timeout := now.Add(-30 * time.Minute)
 
 	var tasks []model.Task
-	err := model.DB().Where("status IN ? AND updated_at < ?",
-		[]model.TaskStatus{model.TaskStatusProcessing, model.TaskStatusFinalizing},
+	err := model.DB().Where("status IN ? AND updated_at < ? AND submit_checkpoint IS NULL",
+		[]model.TaskStatus{model.TaskStatusPending, model.TaskStatusProcessing, model.TaskStatusFinalizing},
 		timeout,
 	).Find(&tasks).Error
 

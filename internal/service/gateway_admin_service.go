@@ -144,6 +144,15 @@ func (s *GatewayAdminService) UpdateKey(id uint, updates map[string]any) error {
 		"name": {}, "api_key": {}, "weight": {}, "status": {}, "max_conc": {},
 	}
 	clean := filterAllowed(updates, allowed)
+	if candidate, ok := clean["api_key"].(string); ok && strings.HasPrefix(candidate, "****") {
+		var current model.GwChannelKey
+		if err := model.DB().Select("id", "api_key").First(&current, id).Error; err != nil {
+			return err
+		}
+		if isCurrentCredentialMask(candidate, current.APIKey) {
+			delete(clean, "api_key")
+		}
+	}
 	if len(clean) == 0 {
 		return nil
 	}

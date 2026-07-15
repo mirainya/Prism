@@ -30,12 +30,12 @@ func HashTokenKey(key string) string {
 	return hex.EncodeToString(h[:])
 }
 
-// KeyHint 取密钥前缀作为提示（如 sk-prism-ab12...）
+// KeyHint keeps only the final four bytes of a token for display.
 func KeyHint(key string) string {
-	if len(key) <= 16 {
-		return key[:4] + "..."
+	if len(key) <= 4 {
+		return "****"
 	}
-	return key[:16] + "..."
+	return "****" + key[len(key)-4:]
 }
 
 // InvalidateTokenCache 主动失效 Token 缓存（Token 变更时调用）

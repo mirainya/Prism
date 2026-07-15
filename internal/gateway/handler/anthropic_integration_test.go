@@ -199,7 +199,7 @@ func TestAnthropicMessagesConvertsAcrossUpstreamTransports(t *testing.T) {
 				ModelName: "public-model", VendorModel: test.vendorModel,
 				PriceMode: "token", InputPrice: decimal.Zero, OutputPrice: decimal.Zero,
 			}}
-			executionEngine, err := engine.New(selector, registry, service.NewBillingService())
+			executionEngine, err := engine.New(selector, registry, service.NewBillingService(), service.NewAPICallService())
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -215,6 +215,7 @@ func TestAnthropicMessagesConvertsAcrossUpstreamTransports(t *testing.T) {
 
 			request := httptest.NewRequest(http.MethodPost, "/v1/messages", strings.NewReader(`{"model":"public-model","max_tokens":64,"messages":[{"role":"user","content":[{"type":"text","text":"hello from anthropic"}]}]}`))
 			request.Header.Set("Content-Type", "application/json")
+			request.Header.Set("X-Request-ID", "messages-request")
 			response := httptest.NewRecorder()
 			router.ServeHTTP(response, request)
 
@@ -226,6 +227,10 @@ func TestAnthropicMessagesConvertsAcrossUpstreamTransports(t *testing.T) {
 			}
 			if response.Header().Get("X-Prism-Request-Log-ID") == "" {
 				t.Fatal("X-Prism-Request-Log-ID is missing")
+			}
+			callID := response.Header().Get("X-Prism-Call-ID")
+			if !strings.HasPrefix(callID, "call_") {
+				t.Fatalf("X-Prism-Call-ID = %q", callID)
 			}
 
 			var message struct {
@@ -254,6 +259,23 @@ func TestAnthropicMessagesConvertsAcrossUpstreamTransports(t *testing.T) {
 			if requestLog.UpstreamTransport != test.transportID || requestLog.RequestPath != test.upstreamPath || requestLog.StatusCode != http.StatusOK {
 				t.Fatalf("unexpected request log: %#v", requestLog)
 			}
+
+			var call model.APICall
+			if err := db.First(&call, "id = ?", callID).Error; err != nil {
+				t.Fatal(err)
+			}
+			if call.RequestID != "messages-request" || call.Endpoint != "/v1/messages" ||
+				call.UserID != token.UserID || call.TokenID != token.ID || call.Model != "public-model" ||
+				call.Status != model.APICallStatusCompleted || call.AttemptCount != 1 || call.FinalAttemptID == 0 {
+				t.Fatalf("unexpected API call: %#v", call)
+			}
+			var attempt model.APICallAttempt
+			if err := db.First(&attempt, call.FinalAttemptID).Error; err != nil {
+				t.Fatal(err)
+			}
+			if attempt.CallID != call.ID || attempt.Transport != test.transportID || attempt.Status != model.APICallAttemptStatusCompleted {
+				t.Fatalf("unexpected API call attempt: %#v", attempt)
+			}
 		})
 	}
 }
@@ -266,7 +288,10 @@ func setupAnthropicHandlerIntegrationDB(t *testing.T) (*gorm.DB, *model.Token) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := db.AutoMigrate(&model.User{}, &model.Token{}, &model.BillingLog{}, &model.ChannelRequestLog{}); err != nil {
+	if err := db.AutoMigrate(
+		&model.User{}, &model.Token{}, &model.BillingLog{}, &model.ChannelRequestLog{},
+		&model.APICall{}, &model.APICallAttempt{}, &model.BalanceEntry{},
+	); err != nil {
 		t.Fatal(err)
 	}
 	model.SetDB(db)

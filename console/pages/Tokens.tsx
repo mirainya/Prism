@@ -81,12 +81,6 @@ const Tokens: React.FC = () => {
     return Promise.resolve();
   };
 
-  const handleCopy = (id: string, key: string) => {
-    copyText(key);
-    setCopiedId(id);
-    setTimeout(() => setCopiedId(null), 2000);
-  };
-
   const handleCreate = async () => {
     if (!newTokenName.trim()) return;
     setIsCreating(true);
@@ -230,12 +224,6 @@ const Tokens: React.FC = () => {
               </div>
               <div className="flex items-center gap-2 text-xs md:text-sm text-[var(--text-secondary)] font-mono overflow-hidden">
                 <code className="truncate max-w-[180px] md:max-w-none">{token.key}</code>
-                <button
-                  onClick={() => handleCopy(token.id, token.key)}
-                  className={`p-1 rounded hover:bg-[var(--primary-lighter)] transition-colors ${copiedId === token.id ? 'text-green-500' : 'text-[var(--text-secondary)]'}`}
-                >
-                  {copiedId === token.id ? <CheckCircle2 size={16} /> : <Copy size={16} />}
-                </button>
               </div>
             </div>
 

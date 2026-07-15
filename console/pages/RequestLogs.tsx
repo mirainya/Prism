@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import {
     Search,
     Clock,
@@ -8,15 +8,13 @@ import {
     RefreshCw,
     ChevronLeft,
     AlertCircle,
-    CheckCircle,
-    RotateCw
+    CheckCircle
 } from 'lucide-react';
-import { Modal } from '../components/ui/Modal';
 import {
     fetchRequestLogs,
+    fetchRequestLogDetail,
     fetchCapabilities,
     fetchChannels,
-    retryRequestLog,
     RequestLogListParams
 } from '../services/api';
 import { ChannelRequestLog, Capability, Channel } from '../types';
@@ -33,18 +31,20 @@ const RequestLogs: React.FC = () => {
   const [total, setTotal] = useState(0);
   const [page, setPage] = useState(1);
   const [pageSize] = useState(20);
+  const snapshotId = useRef<number | undefined>(undefined);
   const [isLoading, setIsLoading] = useState(true);
+  const [refreshKey, setRefreshKey] = useState(0);
   const [selectedLog, setSelectedLog] = useState<ChannelRequestLog | null>(null);
   const [isDrawerOpen, setIsDrawerOpen] = useState(false);
+  const [detailLoading, setDetailLoading] = useState(false);
+  const [detailError, setDetailError] = useState('');
   const [capabilities, setCapabilities] = useState<Capability[]>([]);
   const [channels, setChannels] = useState<Channel[]>([]);
+  const detailRequest = useRef(0);
 
   // 过滤条件
   const [filters, setFilters] = useState<RequestLogListParams>({});
   const [keyword, setKeyword] = useState('');
-    const [retryingId, setRetryingId] = useState<number | null>(null);
-    const [confirmRetryId, setConfirmRetryId] = useState<number | null>(null);
-    const [retryError, setRetryError] = useState('');
 
   useEffect(() => {
     Promise.all([
@@ -53,54 +53,55 @@ const RequestLogs: React.FC = () => {
     ]);
   }, []);
 
-  const loadLogs = async (params?: RequestLogListParams) => {
+  useEffect(() => {
+    let active = true;
     setIsLoading(true);
+    fetchRequestLogs({ page, page_size: pageSize, snapshot_id: snapshotId.current, ...filters })
+      .then(resp => {
+        if (!active) return;
+        setLogs(resp.items);
+        setTotal(resp.total);
+        snapshotId.current = resp.snapshot_id || undefined;
+      })
+      .catch(e => {
+        if (active) console.error('Failed to load request logs', e);
+      })
+      .finally(() => {
+        if (active) setIsLoading(false);
+      });
+    return () => { active = false; };
+  }, [page, pageSize, filters, refreshKey]);
+
+  const openDetails = async (log: ChannelRequestLog) => {
+    const requestNo = ++detailRequest.current;
+    setSelectedLog(log);
+    setIsDrawerOpen(true);
+    setDetailLoading(true);
+    setDetailError('');
     try {
-      const resp = await fetchRequestLogs({ page, page_size: pageSize, ...filters, ...params });
-      setLogs(resp.items);
-      setTotal(resp.total);
-    } catch (e) {
-      console.error('Failed to load request logs', e);
+      const detail = await fetchRequestLogDetail(log.id);
+      if (requestNo === detailRequest.current) setSelectedLog(detail);
+    } catch (error) {
+      if (requestNo === detailRequest.current) {
+        setDetailError(error instanceof Error ? error.message : '请求详情加载失败');
+      }
     } finally {
-      setIsLoading(false);
+      if (requestNo === detailRequest.current) setDetailLoading(false);
     }
   };
 
-  useEffect(() => {
-    loadLogs();
-  }, [page, filters]);
-
-  const openDetails = (log: ChannelRequestLog) => {
-    setSelectedLog(log);
-    setIsDrawerOpen(true);
+  const closeDetails = () => {
+    detailRequest.current += 1;
+    setIsDrawerOpen(false);
+    setDetailLoading(false);
+    setDetailError('');
   };
 
   const handleSearch = () => {
     setPage(1);
-    loadLogs({ task_no: keyword });
+    snapshotId.current = undefined;
+    setFilters(current => ({ ...current, task_no: keyword.trim() || undefined }));
   };
-
-    const handleRetry = async (e: React.MouseEvent, logId: number) => {
-        e.stopPropagation();
-        setConfirmRetryId(logId);
-    };
-
-    const doRetry = async () => {
-        if (!confirmRetryId) return;
-        setConfirmRetryId(null);
-        setRetryingId(confirmRetryId);
-        setRetryError('');
-        try {
-            const newLog = await retryRequestLog(confirmRetryId);
-            setSelectedLog(newLog);
-            setIsDrawerOpen(true);
-            loadLogs();
-        } catch (err: any) {
-            setRetryError(err.message);
-        } finally {
-            setRetryingId(null);
-        }
-    };
 
   const totalPages = Math.ceil(total / pageSize);
 
@@ -120,7 +121,11 @@ const RequestLogs: React.FC = () => {
           <p className="text-[var(--text-secondary)] mt-1 text-sm md:text-base">查看所有与第三方渠道的 HTTP 交互记录</p>
         </div>
         <button
-          onClick={() => loadLogs()}
+          onClick={() => {
+            snapshotId.current = undefined;
+            setPage(1);
+            setRefreshKey(value => value + 1);
+          }}
           className="px-3 md:px-4 py-2 bg-[var(--surface-card)] border border-[var(--border-soft)] rounded-lg text-sm font-medium hover:bg-[var(--surface)] transition-colors flex items-center gap-2"
         >
           <RefreshCw size={16} className={isLoading ? 'animate-spin' : ''} />
@@ -143,7 +148,11 @@ const RequestLogs: React.FC = () => {
           </div>
           <select
             value={filters.channel_id || ''}
-            onChange={e => { setFilters({ ...filters, channel_id: e.target.value ? Number(e.target.value) : undefined }); setPage(1); }}
+            onChange={e => {
+              snapshotId.current = undefined;
+              setFilters(current => ({ ...current, channel_id: e.target.value ? Number(e.target.value) : undefined }));
+              setPage(1);
+            }}
             className="bg-[var(--surface-card)] border border-[var(--border-soft)] rounded-lg px-3 py-2 text-sm text-[var(--text-secondary)] focus:outline-none focus:ring-2 focus:ring-[var(--primary)]"
           >
             <option value="">所有渠道</option>
@@ -153,7 +162,11 @@ const RequestLogs: React.FC = () => {
           </select>
           <select
             value={filters.capability_code || ''}
-            onChange={e => { setFilters({ ...filters, capability_code: e.target.value || undefined }); setPage(1); }}
+            onChange={e => {
+              snapshotId.current = undefined;
+              setFilters(current => ({ ...current, capability_code: e.target.value || undefined }));
+              setPage(1);
+            }}
             className="bg-[var(--surface-card)] border border-[var(--border-soft)] rounded-lg px-3 py-2 text-sm text-[var(--text-secondary)] focus:outline-none focus:ring-2 focus:ring-[var(--primary)]"
           >
             <option value="">所有能力</option>
@@ -163,7 +176,11 @@ const RequestLogs: React.FC = () => {
           </select>
           <select
             value={filters.request_type || ''}
-            onChange={e => { setFilters({ ...filters, request_type: e.target.value || undefined }); setPage(1); }}
+            onChange={e => {
+              snapshotId.current = undefined;
+              setFilters(current => ({ ...current, request_type: e.target.value || undefined }));
+              setPage(1);
+            }}
             className="bg-[var(--surface-card)] border border-[var(--border-soft)] rounded-lg px-3 py-2 text-sm text-[var(--text-secondary)] focus:outline-none focus:ring-2 focus:ring-[var(--primary)]"
           >
             <option value="">所有类型</option>
@@ -239,19 +256,8 @@ const RequestLogs: React.FC = () => {
                       </div>
                     </td>
                     <td className="px-3 md:px-6 py-3 md:py-4 text-right">
-                        <div className="flex items-center justify-end gap-2">
-                            <button
-                                onClick={(e) => handleRetry(e, log.id)}
-                                disabled={retryingId === log.id}
-                                className="p-1.5 md:px-3 md:py-1.5 bg-[var(--surface-card)] border border-[var(--border-soft)] text-xs font-bold text-[var(--text-secondary)] rounded-lg hover:border-indigo-600 hover:text-[var(--primary)] transition-colors flex items-center gap-1 disabled:opacity-50"
-                                title="重试"
-                            >
-                                <RotateCw size={12} className={retryingId === log.id ? 'animate-spin' : ''}/>
-                                <span className="hidden md:inline">重试</span>
-                            </button>
-                            <ChevronRight size={16}
-                                          className="text-gray-300 group-hover:text-indigo-500 group-hover:translate-x-1 transition-all"/>
-                        </div>
+                        <ChevronRight size={16}
+                                      className="ml-auto text-gray-300 group-hover:text-indigo-500 group-hover:translate-x-1 transition-all"/>
                     </td>
                   </tr>
                 );
@@ -288,7 +294,7 @@ const RequestLogs: React.FC = () => {
 
       {/* Details Drawer */}
       {isDrawerOpen && selectedLog && (
-        <div className="fixed inset-0 z-50 flex justify-end bg-black/50 backdrop-blur-sm" onClick={() => setIsDrawerOpen(false)}>
+        <div className="fixed inset-0 z-50 flex justify-end bg-black/50 backdrop-blur-sm" onClick={closeDetails}>
           <div className="w-full md:max-w-3xl bg-[var(--surface-card)] shadow-2xl h-full flex flex-col" onClick={e => e.stopPropagation()}>
             <div className="p-4 md:p-6 border-b border-[var(--border-soft)] flex items-center justify-between">
               <div>
@@ -296,15 +302,7 @@ const RequestLogs: React.FC = () => {
                 <p className="text-xs text-indigo-500 font-mono mt-1">{selectedLog.task_no}</p>
               </div>
                 <div className="flex items-center gap-3">
-                    <button
-                        onClick={(e) => handleRetry(e, selectedLog.id)}
-                        disabled={retryingId === selectedLog.id}
-                        className="px-4 py-2 bg-[var(--primary)] text-white text-sm font-bold rounded-lg hover:opacity-90 transition-colors flex items-center gap-2 disabled:opacity-50"
-                    >
-                        <RotateCw size={16} className={retryingId === selectedLog.id ? 'animate-spin' : ''}/>
-                        重试请求
-                    </button>
-                    <button onClick={() => setIsDrawerOpen(false)}
+                    <button onClick={closeDetails}
                             className="p-2 hover:bg-[var(--primary-lighter)] rounded-full text-[var(--text-secondary)]">
                         <X size={24}/>
                     </button>
@@ -312,6 +310,16 @@ const RequestLogs: React.FC = () => {
             </div>
 
             <div className="flex-1 overflow-y-auto p-6 space-y-6">
+              {detailLoading && (
+                <div className="flex items-center gap-2 rounded-lg border border-[var(--border-soft)] bg-[var(--surface)] px-4 py-3 text-sm text-[var(--text-secondary)]">
+                  <RefreshCw size={16} className="animate-spin" />正在加载完整详情
+                </div>
+              )}
+              {detailError && (
+                <div className="flex items-center gap-2 rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
+                  <AlertCircle size={16} />{detailError}
+                </div>
+              )}
               <div className="grid grid-cols-2 gap-4 bg-[var(--surface)] p-5 rounded-2xl border border-[var(--border-soft)]">
                 <div className="space-y-1">
                   <label className="text-[10px] font-bold text-[var(--text-secondary)] uppercase">请求类型</label>
@@ -399,52 +407,6 @@ const RequestLogs: React.FC = () => {
         </div>
       )}
 
-        {/* 重试确认弹窗 */}
-        {confirmRetryId && (
-            <Modal open={true} onClose={() => setConfirmRetryId(null)} title="确认重试" width="max-w-sm">
-                    <div className="space-y-4">
-                    <p className="text-sm text-[var(--text-secondary)]">
-                        确定要重新发送该请求吗？这将使用相同的参数向目标地址发起新的 HTTP 请求。
-                    </p>
-                    <div className="flex justify-end gap-3">
-                        <button
-                            className="px-4 py-2 text-sm font-bold text-[var(--text-secondary)] bg-[var(--primary-lighter)] rounded-lg hover:bg-gray-200 transition-colors"
-                            onClick={() => setConfirmRetryId(null)}
-                        >
-                            取消
-                        </button>
-                        <button
-                            className="px-4 py-2 text-sm font-bold text-white bg-[var(--primary)] rounded-lg hover:opacity-90 transition-colors"
-                            onClick={doRetry}
-                        >
-                            确认重试
-                        </button>
-                    </div>
-                    </div>
-            </Modal>
-        )}
-
-        {/* 错误提示弹窗 */}
-        {retryError && (
-            <Modal open={true} onClose={() => setRetryError('')} title="重试失败" width="max-w-sm">
-                    <div className="space-y-4">
-                    <div className="flex items-center gap-3">
-                        <div className="w-10 h-10 bg-red-100 rounded-full flex items-center justify-center">
-                            <AlertCircle size={20} className="text-red-600"/>
-                        </div>
-                        <p className="text-sm text-[var(--text-secondary)]">{retryError}</p>
-                    </div>
-                    <div className="flex justify-end">
-                        <button
-                            className="px-4 py-2 text-sm font-bold text-white bg-[var(--primary)] rounded-lg hover:opacity-90 transition-colors"
-                            onClick={() => setRetryError('')}
-                        >
-                            确定
-                        </button>
-                    </div>
-                    </div>
-            </Modal>
-        )}
     </div>
   );
 };

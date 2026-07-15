@@ -1,11 +1,12 @@
 package console
 
 import (
+	stdErrors "errors"
 	"fmt"
 
 	"github.com/gin-gonic/gin"
-	"github.com/mirainya/Prism/internal/api/resp"
 	"github.com/mirainya/Prism/internal/api/middleware"
+	"github.com/mirainya/Prism/internal/api/resp"
 	"github.com/mirainya/Prism/internal/service"
 	"github.com/mirainya/Prism/pkg/errors"
 	"github.com/shopspring/decimal"
@@ -34,6 +35,10 @@ func CreateToken(c *gin.Context) {
 
 	result, err := tokenService.CreateToken(userID, &req)
 	if err != nil {
+		if stdErrors.Is(err, service.ErrInvalidBalanceAmount) {
+			resp.BadRequest(c, errors.WithMessage(errors.ErrInvalidParams, err.Error()))
+			return
+		}
 		resp.InternalError(c, errors.ErrInternalError)
 		return
 	}
@@ -128,6 +133,10 @@ func RechargeToken(c *gin.Context) {
 
 	token, err := tokenService.RechargeToken(userID, id, req.Amount)
 	if err != nil {
+		if stdErrors.Is(err, service.ErrInvalidBalanceAmount) {
+			resp.BadRequest(c, errors.WithMessage(errors.ErrInvalidParams, err.Error()))
+			return
+		}
 		if err == gorm.ErrRecordNotFound {
 			resp.NotFound(c, errors.ErrTaskNotFound)
 			return

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 
+	"github.com/google/uuid"
 	"github.com/mirainya/Prism/internal/model"
 	"github.com/mirainya/Prism/pkg/auth"
 	"github.com/mirainya/Prism/pkg/cache"
@@ -72,7 +73,7 @@ func (s *UserService) Login(req *LoginRequest) (*LoginResponse, error) {
 		return nil, errors.New("invalid username or password")
 	}
 
-	token, err := auth.GenerateToken(user.ID, user.Username, string(user.Role))
+	token, err := auth.GenerateTokenWithSessionVersion(user.ID, user.Username, string(user.Role), user.SessionVersion)
 	if err != nil {
 		return nil, err
 	}
@@ -111,17 +112,52 @@ func (s *UserService) ListUsers() ([]model.User, error) {
 }
 
 func (s *UserService) UpdateUserRole(userID uint, role model.UserRole) error {
-	return model.DB().Model(&model.User{}).Where("id = ?", userID).Update("role", role).Error
+	if err := model.DB().Model(&model.User{}).Where("id = ?", userID).Updates(map[string]any{
+		"role":            role,
+		"session_version": gorm.Expr("session_version + 1"),
+	}).Error; err != nil {
+		return err
+	}
+	revokeUserSessions(userID)
+	return nil
 }
 
 func (s *UserService) UpdateUserStatus(userID uint, status int8) error {
-	return model.DB().Model(&model.User{}).Where("id = ?", userID).Update("status", status).Error
+	if err := model.DB().Model(&model.User{}).Where("id = ?", userID).Updates(map[string]any{
+		"status":          status,
+		"session_version": gorm.Expr("session_version + 1"),
+	}).Error; err != nil {
+		return err
+	}
+	revokeUserSessions(userID)
+	return nil
 }
 
 // RechargeUser 给指定用户充值额度
 func (s *UserService) RechargeUser(userID uint, amount decimal.Decimal) error {
-	return model.DB().Model(&model.User{}).Where("id = ?", userID).
-		UpdateColumn("balance", gorm.Expr("balance + ?", amount)).Error
+	return s.RechargeUserBy(0, userID, amount)
+}
+
+func (s *UserService) RechargeUserBy(actorUserID, userID uint, amount decimal.Decimal) error {
+	if !amount.IsPositive() {
+		return ErrInvalidBalanceAmount
+	}
+	return model.DB().Transaction(func(tx *gorm.DB) error {
+		result := tx.Model(&model.User{}).Where("id = ?", userID).
+			UpdateColumn("balance", gorm.Expr("balance + ?", amount))
+		if result.Error != nil {
+			return result.Error
+		}
+		if result.RowsAffected == 0 {
+			return gorm.ErrRecordNotFound
+		}
+		return recordBalanceEntryTx(tx, balanceEntryRequest{
+			AccountType: model.BalanceAccountUser, AccountID: userID,
+			UserID: userID, Direction: model.BalanceDirectionCredit,
+			Category: BalanceCategoryRecharge, Amount: amount,
+			SourceKey: "user_recharge:" + uuid.NewString(), ActorUserID: actorUserID,
+		})
+	})
 }
 
 type ChangePasswordRequest struct {
@@ -145,5 +181,21 @@ func (s *UserService) ChangePassword(userID uint, req *ChangePasswordRequest) er
 		return err
 	}
 
-	return model.DB().Model(&model.User{}).Where("id = ?", userID).Update("password", hashedPassword).Error
+	if err := model.DB().Model(&model.User{}).Where("id = ?", userID).Updates(map[string]any{
+		"password":        hashedPassword,
+		"session_version": gorm.Expr("session_version + 1"),
+	}).Error; err != nil {
+		return err
+	}
+	revokeUserSessions(userID)
+	return nil
+}
+
+func revokeUserSessions(userID uint) {
+	if cache.Client == nil {
+		return
+	}
+	if err := cache.DeleteUserLoginTokens(context.Background(), userID); err != nil {
+		logger.Error("failed to revoke user sessions: " + err.Error())
+	}
 }

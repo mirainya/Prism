@@ -52,9 +52,17 @@ func JWTAuth() gin.HandlerFunc {
 			return
 		}
 
-		// 检查 token 是否在缓存中（未被登出）
-		_, err = cache.GetLoginToken(c.Request.Context(), tokenString)
-		if err != nil {
+		var currentUser model.User
+		if err := model.DB().Select("id", "username", "role", "status", "session_version").First(&currentUser, claims.UserID).Error; err != nil || currentUser.Status != 1 {
+			c.JSON(http.StatusUnauthorized, gin.H{
+				"code":    errors.ErrInvalidToken.Code,
+				"message": "user is disabled or no longer exists",
+			})
+			c.Abort()
+			return
+		}
+
+		if claims.SessionVersion != currentUser.SessionVersion {
 			c.JSON(http.StatusUnauthorized, gin.H{
 				"code":    errors.ErrInvalidToken.Code,
 				"message": "token has been revoked or expired",
@@ -63,9 +71,20 @@ func JWTAuth() gin.HandlerFunc {
 			return
 		}
 
-		c.Set(ContextKeyUserID, claims.UserID)
-		c.Set(ContextKeyUsername, claims.Username)
-		c.Set(ContextKeyUserRole, claims.Role)
+		// Redis 记录用于单 token 登出；数据库版本用于可靠撤销该用户的全部旧会话。
+		sessionUserID, err := cache.GetLoginToken(c.Request.Context(), tokenString)
+		if err != nil || sessionUserID != claims.UserID {
+			c.JSON(http.StatusUnauthorized, gin.H{
+				"code":    errors.ErrInvalidToken.Code,
+				"message": "token has been revoked or expired",
+			})
+			c.Abort()
+			return
+		}
+
+		c.Set(ContextKeyUserID, currentUser.ID)
+		c.Set(ContextKeyUsername, currentUser.Username)
+		c.Set(ContextKeyUserRole, string(currentUser.Role))
 		c.Next()
 	}
 }

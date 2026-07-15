@@ -1,6 +1,5 @@
 import React, { useState, useEffect } from 'react';
 import { X, Play, Loader2, Copy, Check, Code, List } from 'lucide-react';
-import { ApiToken } from '../types';
 
 interface ParamDef {
   name: string;
@@ -16,13 +15,12 @@ interface TryItDrawerProps {
   path: string;
   name: string;
   params: ParamDef[];
-  tokens: ApiToken[];
   bodyType?: 'json' | 'multipart';
   initialJson?: string;
   preferJson?: boolean;
 }
 
-export const TryItDrawer: React.FC<TryItDrawerProps> = ({ open, onClose, method, path, name, params, tokens, bodyType = 'json', initialJson = '', preferJson = false }) => {
+export const TryItDrawer: React.FC<TryItDrawerProps> = ({ open, onClose, method, path, name, params, bodyType = 'json', initialJson = '', preferJson = false }) => {
   const [token, setToken] = useState('');
   const [pathValue, setPathValue] = useState(path);
   const [mode, setMode] = useState<'form' | 'json'>('form');
@@ -32,10 +30,6 @@ export const TryItDrawer: React.FC<TryItDrawerProps> = ({ open, onClose, method,
   const [response, setResponse] = useState('');
   const [loading, setLoading] = useState(false);
   const [copied, setCopied] = useState(false);
-
-  useEffect(() => {
-    if (tokens.length > 0 && !token) setToken(tokens[0].key);
-  }, [tokens]);
 
   useEffect(() => {
     setPathValue(path);
@@ -181,15 +175,17 @@ export const TryItDrawer: React.FC<TryItDrawerProps> = ({ open, onClose, method,
 
         {/* 内容 */}
         <div className="flex-1 overflow-y-auto p-5 space-y-4">
-          {/* Token 选择 */}
+          {/* Token */}
           <div>
             <label className="text-xs font-medium text-[var(--text-secondary)] mb-1 block">Token</label>
-            <select value={token} onChange={e => setToken(e.target.value)} className="w-full px-3 py-2 border border-[var(--border-soft)] rounded-lg text-sm bg-[var(--surface)] text-[var(--text-primary)]">
-              {tokens.length === 0
-                ? <option value="">无可用令牌</option>
-                : tokens.map(t => <option key={t.id} value={t.key}>{t.name}</option>)
-              }
-            </select>
+            <input
+              type="password"
+              value={token}
+              onChange={e => setToken(e.target.value)}
+              placeholder="sk-prism-..."
+              autoComplete="off"
+              className="w-full px-3 py-2 border border-[var(--border-soft)] rounded-lg text-sm font-mono bg-[var(--surface)] text-[var(--text-primary)]"
+            />
           </div>
 
           {/* 路径 */}

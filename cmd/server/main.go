@@ -206,6 +206,10 @@ func startScheduler() *asynq.Scheduler {
 	if err != nil {
 		log.Fatalf("failed to register response recovery task: %v", err)
 	}
+	_, err = scheduler.Register("17 * * * *", worker.NewAPICallPayloadCleanupTask(), asynq.Queue("low"))
+	if err != nil {
+		log.Fatalf("failed to register API call payload cleanup task: %v", err)
+	}
 
 	// 每 6 小时同步一次上游模型
 	_, err = scheduler.Register("0 */6 * * *", worker.NewModelDiscoverySyncTask(), asynq.Queue("low"))

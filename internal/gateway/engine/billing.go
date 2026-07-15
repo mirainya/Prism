@@ -7,11 +7,15 @@ import (
 
 	"github.com/mirainya/Prism/internal/gateway/canonical"
 	"github.com/mirainya/Prism/internal/gateway/routing"
+	"github.com/mirainya/Prism/internal/model"
 	"github.com/mirainya/Prism/internal/service"
 	"github.com/shopspring/decimal"
 )
 
-const defaultOutput int64 = 4096
+const (
+	defaultOutput    int64 = 4096
+	billingPrecision int32 = 8
+)
 
 type Reservation struct {
 	billing         *service.BillingService
@@ -19,21 +23,38 @@ type Reservation struct {
 	route           *routing.RouteResult
 	amount          decimal.Decimal
 	key             string
+	billingContext  service.BillingContext
 }
 
 func Reserve(b *service.BillingService, tokenID, userID uint, route *routing.RouteResult, req canonical.Request, key string) (*Reservation, error) {
+	return reserveWithBillingContext(b, tokenID, userID, route, req, key, service.BillingContext{})
+}
+
+func reserveWithBillingContext(
+	b *service.BillingService,
+	tokenID, userID uint,
+	route *routing.RouteResult,
+	req canonical.Request,
+	key string,
+	billingContext service.BillingContext,
+) (*Reservation, error) {
 	if b == nil {
 		return nil, fmt.Errorf("billing service is required")
 	}
-	amount := estimate(route, req).RoundCeil(4)
+	amount := estimate(route, req).RoundCeil(billingPrecision)
 	reserveKey, settleKey := "", ""
 	if key != "" {
 		reserveKey = key + ":reserve"
 		settleKey = key + ":settle"
 	}
-	r := &Reservation{b, tokenID, userID, route, amount, settleKey}
+	r := &Reservation{
+		billing: b, tokenID: tokenID, userID: userID, route: route,
+		amount: amount, key: settleKey, billingContext: billingContext,
+	}
 	if amount.IsPositive() {
-		if err := b.DeductWithKey(tokenID, userID, amount, reserveKey); err != nil {
+		reserveContext := billingContext
+		reserveContext.Phase = model.BillingPhaseReserve
+		if err := b.DeductWithBillingContext(tokenID, userID, amount, reserveKey, reserveContext); err != nil {
 			return nil, err
 		}
 	}
@@ -43,17 +64,36 @@ func (r *Reservation) Cancel() error {
 	if r == nil || !r.amount.IsPositive() {
 		return nil
 	}
-	return r.billing.SettleReservation(r.tokenID, r.userID, r.amount, decimal.Zero, r.key)
+	billingContext := r.billingContext
+	billingContext.Phase = model.BillingPhaseRefund
+	return r.billing.SettleReservationWithBillingContext(
+		r.tokenID, r.userID, r.amount, decimal.Zero, r.key, billingContext,
+	)
 }
 func (r *Reservation) Settle(u *canonical.Usage) error {
 	if r == nil || !r.amount.IsPositive() {
 		return nil
 	}
 	if u == nil {
-		return r.billing.SettleReservation(r.tokenID, r.userID, r.amount, decimal.Zero, r.key)
+		return r.settle(decimal.Zero, model.BillingPhaseSettle)
 	}
 	actual := cost(r.route, int64(u.InputTokens), int64(u.OutputTokens))
-	return r.billing.SettleReservation(r.tokenID, r.userID, r.amount, actual.RoundCeil(4), r.key)
+	return r.settle(actual.RoundCeil(billingPrecision), model.BillingPhaseSettle)
+}
+
+func (r *Reservation) Retain() error {
+	if r == nil || !r.amount.IsPositive() {
+		return nil
+	}
+	return r.settle(r.amount, model.BillingPhaseSettle)
+}
+
+func (r *Reservation) settle(actual decimal.Decimal, phase string) error {
+	billingContext := r.billingContext
+	billingContext.Phase = phase
+	return r.billing.SettleReservationWithBillingContext(
+		r.tokenID, r.userID, r.amount, actual, r.key, billingContext,
+	)
 }
 func estimate(route *routing.RouteResult, req canonical.Request) decimal.Decimal {
 	if route == nil {

@@ -105,7 +105,6 @@ func GetConversationMessages(c *gin.Context) {
 		items[i] = gin.H{
 			"id":                msg.ID,
 			"conversation_id":   msg.ConversationID,
-			"request_log_id":    msg.RequestLogID,
 			"role":              msg.Role,
 			"content":           msg.Content,
 			"attachments":       msg.Attachments,
@@ -114,19 +113,20 @@ func GetConversationMessages(c *gin.Context) {
 			"input_tokens":      msg.InputTokens,
 			"output_tokens":     msg.OutputTokens,
 			"model":             msg.Model,
-			"channel_id":        msg.ChannelID,
-			"account_id":        msg.AccountID,
 			"latency_ms":        msg.LatencyMs,
 			"cost":              msg.Cost,
 			"created_at":        msg.CreatedAt,
+		}
+		if userRole == string(model.UserRoleAdmin) {
+			items[i]["request_log_id"] = msg.RequestLogID
+			items[i]["channel_id"] = msg.ChannelID
+			items[i]["account_id"] = msg.AccountID
 		}
 	}
 
 	// 对话信息
 	convInfo := gin.H{
 		"id":            msgResp.Conversation.ID,
-		"user_id":       msgResp.Conversation.UserID,
-		"token_id":      msgResp.Conversation.TokenID,
 		"title":         msgResp.Conversation.Title,
 		"model":         msgResp.Conversation.Model,
 		"system_prompt": msgResp.Conversation.SystemPrompt,
@@ -135,6 +135,10 @@ func GetConversationMessages(c *gin.Context) {
 		"status":        msgResp.Conversation.Status,
 		"created_at":    msgResp.Conversation.CreatedAt,
 		"updated_at":    msgResp.Conversation.UpdatedAt,
+	}
+	if userRole == string(model.UserRoleAdmin) {
+		convInfo["user_id"] = msgResp.Conversation.UserID
+		convInfo["token_id"] = msgResp.Conversation.TokenID
 	}
 
 	resp.Success(c, gin.H{

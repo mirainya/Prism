@@ -1,9 +1,11 @@
 package admin
 
 import (
+	stdErrors "errors"
 	"fmt"
 
 	"github.com/gin-gonic/gin"
+	"github.com/mirainya/Prism/internal/api/middleware"
 	"github.com/mirainya/Prism/internal/api/resp"
 	"github.com/mirainya/Prism/internal/model"
 	"github.com/mirainya/Prism/internal/service"
@@ -108,7 +110,11 @@ func RechargeUser(c *gin.Context) {
 		return
 	}
 
-	if err := userService.RechargeUser(id, req.Amount); err != nil {
+	if err := userService.RechargeUserBy(middleware.GetUserID(c), id, req.Amount); err != nil {
+		if stdErrors.Is(err, service.ErrInvalidBalanceAmount) {
+			resp.BadRequest(c, errors.WithMessage(errors.ErrInvalidParams, err.Error()))
+			return
+		}
 		resp.InternalError(c, errors.ErrInternalError)
 		return
 	}

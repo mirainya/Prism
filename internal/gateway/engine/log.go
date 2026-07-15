@@ -13,6 +13,7 @@ import (
 	"github.com/mirainya/Prism/internal/gateway/routing"
 	"github.com/mirainya/Prism/internal/gateway/transport"
 	"github.com/mirainya/Prism/internal/model"
+	"github.com/mirainya/Prism/internal/service"
 )
 
 // RequestLog is one concrete upstream attempt. Its request fields are taken
@@ -24,14 +25,29 @@ type RequestLog struct {
 	events  []canonical.Event
 }
 
-func StartRequestLog(route *routing.RouteResult, prepared transport.PreparedRequest, operation transport.Operation) (*RequestLog, error) {
+type RequestLogLink struct {
+	CallID    string
+	AttemptID uint
+}
+
+func StartRequestLog(route *routing.RouteResult, prepared transport.PreparedRequest, operation transport.Operation, links ...RequestLogLink) (*RequestLog, error) {
 	if route == nil {
 		return nil, errors.New("route is required")
 	}
 	requestAt := time.Now()
 	path, requestURL := logURL(prepared.URL)
 	headers, _ := json.Marshal(redactedHeaders(prepared.Headers))
+	link := RequestLogLink{}
+	if len(links) > 0 {
+		link = links[0]
+	}
+	requestBody := ""
+	if link.CallID == "" {
+		requestBody = string(redactedJSON(prepared.Body))
+	}
 	record := &model.ChannelRequestLog{
+		CallID:            link.CallID,
+		AttemptID:         link.AttemptID,
 		ChannelID:         route.ChannelID,
 		AccountID:         route.KeyID,
 		CapabilityCode:    route.ModelName,
@@ -44,7 +60,7 @@ func StartRequestLog(route *routing.RouteResult, prepared transport.PreparedRequ
 		Method:            prepared.Method,
 		URL:               requestURL,
 		RequestHeaders:    string(headers),
-		RequestBody:       string(redactedJSON(prepared.Body)),
+		RequestBody:       requestBody,
 		RequestAt:         requestAt,
 	}
 	if err := model.DB().Create(record).Error; err != nil {
@@ -89,6 +105,17 @@ func (l *RequestLog) CompleteStream(statusCode int, requestErr error) error {
 	return l.complete(body, response, statusCode, requestErr)
 }
 
+func (l *RequestLog) StreamPayload() []byte {
+	if l == nil {
+		return nil
+	}
+	l.mu.Lock()
+	events := append([]canonical.Event(nil), l.events...)
+	l.mu.Unlock()
+	body, _ := json.Marshal(events)
+	return body
+}
+
 func (l *RequestLog) complete(body []byte, response *canonical.Response, statusCode int, requestErr error) error {
 	if l == nil || l.record == nil || l.record.ID == 0 {
 		return nil
@@ -100,16 +127,20 @@ func (l *RequestLog) complete(body []byte, response *canonical.Response, statusC
 		}
 	}
 	updates := map[string]any{
-		"duration_ms":   time.Since(l.started).Milliseconds(),
-		"status_code":   statusCode,
-		"response_body": string(redactedJSON(body)),
+		"duration_ms": time.Since(l.started).Milliseconds(),
+		"status_code": statusCode,
+	}
+	if l.record.CallID == "" {
+		updates["response_body"] = string(redactedJSON(body))
 	}
 	if requestErr != nil {
-		updates["error_message"] = requestErr.Error()
+		updates["error_message"] = service.SanitizeAPICallErrorMessage(requestErr.Error())
 	}
 	if response != nil {
 		updates["finish_reason"] = response.FinishReason
-		updates["response_preview"] = responsePreview(response)
+		if l.record.CallID == "" {
+			updates["response_preview"] = responsePreview(response)
+		}
 		if response.Usage != nil {
 			updates["usage_prompt_tokens"] = response.Usage.InputTokens
 			updates["usage_completion_tokens"] = response.Usage.OutputTokens
@@ -131,6 +162,7 @@ func logURL(raw string) (string, string) {
 	if err != nil {
 		return "", raw
 	}
+	parsed.User = nil
 	query := parsed.Query()
 	for key := range query {
 		if sensitiveName(key) {
@@ -191,12 +223,20 @@ func redactValue(value any) {
 }
 
 func sensitiveName(name string) bool {
-	name = strings.ToLower(strings.ReplaceAll(name, "-", "_"))
-	switch name {
+	normalized := strings.ToLower(strings.NewReplacer("-", "_", ".", "_", " ", "_").Replace(strings.TrimSpace(name)))
+	compact := strings.ReplaceAll(normalized, "_", "")
+	switch normalized {
 	case "authorization", "proxy_authorization", "api_key", "x_api_key", "x_goog_api_key", "key", "access_token", "refresh_token", "cookie", "set_cookie":
 		return true
 	}
-	return strings.Contains(name, "secret") || strings.Contains(name, "password") || strings.HasSuffix(name, "_token")
+	switch compact {
+	case "apikey", "xapikey", "xgoogapikey", "clientkey", "privatekey", "secretkey", "accesskey", "awsaccesskeyid", "accesstoken", "refreshtoken", "idtoken", "sessiontoken":
+		return true
+	}
+	return strings.Contains(normalized, "secret") || strings.Contains(normalized, "password") ||
+		strings.Contains(normalized, "signature") || strings.Contains(normalized, "credential") ||
+		strings.HasSuffix(normalized, "_token") || strings.HasSuffix(normalized, "_key") ||
+		strings.Contains(compact, "accesskey") || strings.HasSuffix(compact, "token")
 }
 
 func responseFromEvents(events []canonical.Event) *canonical.Response {

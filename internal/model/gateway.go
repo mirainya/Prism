@@ -47,7 +47,7 @@ type GwChannelKey struct {
 	ID          uint           `gorm:"primaryKey" json:"id"`
 	ChannelID   uint           `gorm:"not null;index" json:"channel_id"`
 	Name        string         `gorm:"type:varchar(100)" json:"name"`
-	APIKey      string         `gorm:"type:text;not null" json:"api_key"`
+	APIKey      string         `gorm:"type:text;not null" json:"-"`
 	Weight      int            `gorm:"default:10" json:"weight"`
 	Status      int8           `gorm:"default:1" json:"status"`
 	MaxConc     int            `gorm:"default:0" json:"max_conc"`     // 0=不限并发

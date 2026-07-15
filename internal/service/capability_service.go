@@ -23,6 +23,10 @@ import (
 type InvokeRequest struct {
 	UserID          uint
 	TokenID         uint
+	CallID          string
+	RequestID       string
+	Endpoint        string
+	Operation       string
 	Capability      string
 	Channel         string
 	Model           string
@@ -39,25 +43,31 @@ type InvokeRequest struct {
 type InvokeResponse struct {
 	TaskID string `json:"task_id"`
 	Status string `json:"status"`
+	CallID string `json:"-"`
 }
 
 var (
-	enqueueCallbackUpload = queue.EnqueueTaskUpload
+	enqueueCallbackUpload              = queue.EnqueueTaskUpload
+	enqueueCapabilitySubmitRecovery    = queue.EnqueueTaskSubmit
+	finishSynchronousCapabilityAttempt = FinishCapabilityAttempt
+	saveSynchronousSubmitCheckpoint    = func(taskID uint, leaseOwner string, checkpoint *TaskSubmitCheckpoint) error {
+		return NewTaskService().SaveTaskSubmitCheckpoint(taskID, leaseOwner, checkpoint)
+	}
 	errNoAvailableAccount = errors.New("no available account")
 )
 
 // Invoke 调用能力
 func (s *UnifiedService) Invoke(ctx context.Context, req *InvokeRequest) (*InvokeResponse, error) {
+	ensureInvokeIdentity(req)
 	// 查找该能力所有可用端点(priority 降序),供跨端点/渠道 fallback
 	endpoints, err := s.findEndpointsForCapability(req)
 	if err != nil {
+		s.recordCapabilityCallFailure(req, err)
 		return nil, err
 	}
-	primary := &endpoints[0]
-
-	cost := primary.InputPrice
-	task, chosen, channel, account, err := s.reserveInitialCapabilityTask(req, endpoints, cost)
+	task, chosen, channel, account, err := s.reserveInitialCapabilityTask(req, endpoints)
 	if err != nil {
+		s.recordCapabilityCallFailure(req, err)
 		if errors.Is(err, ErrInsufficientTokenBalance) || errors.Is(err, ErrInsufficientUserBalance) {
 			return nil, ErrInsufficientTokenBalance
 		}
@@ -69,7 +79,6 @@ func (s *UnifiedService) Invoke(ctx context.Context, req *InvokeRequest) (*Invok
 	if chosen.InteractionMode == model.ModeSync || chosen.InteractionMode == model.ModeStream {
 		// Async: 不阻塞 HTTP 请求,后台跑同步执行,前端轮询取终态(用于 playground 慢上游体验)
 		if req.Async {
-			taskSvc.UpdateTaskStatus(task.ID, model.TaskStatusProcessing, "")
 			// HTTP ctx 会在响应返回后取消,后台须用独立 ctx;600s 上限兜底防 goroutine 永久挂起
 			// (stream 模式内部另有 endpoint.Timeout 派生的 deadline,此处仅是外层保险)。
 			go func(ep model.Endpoint, ch model.Channel, acc model.ChannelAccount) {
@@ -90,7 +99,7 @@ func (s *UnifiedService) Invoke(ctx context.Context, req *InvokeRequest) (*Invok
 						zap.Uint("task_id", task.ID), zap.Error(err))
 				}
 			}(*chosen, channel, *account)
-			return &InvokeResponse{TaskID: task.TaskNo, Status: string(model.TaskStatusProcessing)}, nil
+			return &InvokeResponse{TaskID: task.TaskNo, Status: string(model.TaskStatusProcessing), CallID: req.CallID}, nil
 		}
 		return s.executeSyncWithFallback(ctx, task, req, endpoints, chosen, &channel, account)
 	}
@@ -108,14 +117,114 @@ func (s *UnifiedService) Invoke(ctx context.Context, req *InvokeRequest) (*Invok
 	return &InvokeResponse{
 		TaskID: task.TaskNo,
 		Status: string(task.Status),
+		CallID: req.CallID,
 	}, nil
+}
+
+func ensureInvokeIdentity(req *InvokeRequest) {
+	if req == nil {
+		return
+	}
+	if strings.TrimSpace(req.CallID) == "" {
+		req.CallID = GenerateAPICallID()
+	}
+	if strings.TrimSpace(req.RequestID) == "" {
+		req.RequestID = GenerateRequestID()
+	}
+}
+
+func capabilityStartCallRequest(req *InvokeRequest, resourceID string, background bool) *StartCallRequest {
+	callModel := strings.TrimSpace(req.Model)
+	if callModel == "" {
+		callModel = strings.TrimSpace(req.Capability)
+	}
+	endpoint := strings.TrimSpace(req.Endpoint)
+	if endpoint == "" {
+		endpoint = "/v1/capabilities/" + strings.TrimSpace(req.Capability)
+	}
+	operation := strings.TrimSpace(req.Operation)
+	if operation == "" {
+		operation = "capability.invoke"
+	}
+	start := &StartCallRequest{
+		ID:         req.CallID,
+		RequestID:  req.RequestID,
+		UserID:     req.UserID,
+		TokenID:    req.TokenID,
+		Endpoint:   endpoint,
+		Operation:  operation,
+		Model:      callModel,
+		Background: background,
+	}
+	if resourceID != "" {
+		start.ResourceType = "task"
+		start.ResourceID = resourceID
+	}
+	return start
+}
+
+func capabilityPricingSnapshot(req *InvokeRequest, endpoint *model.Endpoint, cost decimal.Decimal) datatypes.JSON {
+	if endpoint == nil {
+		return nil
+	}
+	value, err := json.Marshal(map[string]any{
+		"capability":       strings.TrimSpace(req.Capability),
+		"model":            strings.TrimSpace(req.Model),
+		"endpoint_id":      endpoint.ID,
+		"model_code":       endpoint.ModelCode,
+		"vendor_model":     endpoint.VendorModel,
+		"price_mode":       endpoint.PriceMode,
+		"input_price":      endpoint.InputPrice.String(),
+		"output_price":     endpoint.OutputPrice.String(),
+		"reserved_cost":    cost.String(),
+		"fallback_pricing": "initial_selected_endpoint",
+	})
+	if err != nil {
+		return nil
+	}
+	return datatypes.JSON(value)
+}
+
+func (s *UnifiedService) recordCapabilityCallFailure(req *InvokeRequest, cause error) {
+	if req == nil || cause == nil {
+		return
+	}
+	httpStatus := 500
+	errorType := "capability_error"
+	errorCode := "capability_failed"
+	if errors.Is(cause, ErrInsufficientTokenBalance) || errors.Is(cause, ErrInsufficientUserBalance) {
+		httpStatus = 400
+		errorType = "billing_error"
+		errorCode = "insufficient_quota"
+	} else if errors.Is(cause, errNoAvailableAccount) || strings.Contains(cause.Error(), "no available endpoint") {
+		errorCode = "model_unavailable"
+	}
+
+	err := model.DB().Transaction(func(tx *gorm.DB) error {
+		if _, err := NewAPICallService().StartCallTx(
+			tx,
+			capabilityStartCallRequest(req, "", req.Async),
+		); err != nil {
+			return err
+		}
+		return NewAPICallService().FailCallTx(tx, req.CallID, &FailCallRequest{
+			HTTPStatus:   httpStatus,
+			ErrorType:    errorType,
+			ErrorCode:    errorCode,
+			ErrorMessage: cause.Error(),
+		})
+	})
+	if err != nil {
+		logger.Error("record capability call failure failed",
+			zap.String("call_id", req.CallID), zap.Error(err))
+	}
 }
 
 func (s *UnifiedService) reserveInitialCapabilityTask(
 	req *InvokeRequest,
 	endpoints []model.Endpoint,
-	cost decimal.Decimal,
 ) (*model.Task, *model.Endpoint, model.Channel, *model.ChannelAccount, error) {
+	ensureInvokeIdentity(req)
 	taskNo := GenerateTaskNo()
 	var task *model.Task
 	var chosen *model.Endpoint
@@ -123,12 +232,6 @@ func (s *UnifiedService) reserveInitialCapabilityTask(
 	var account *model.ChannelAccount
 
 	err := model.DB().Transaction(func(tx *gorm.DB) error {
-		if err := s.billingService.deductWithKeyTx(
-			tx, req.TokenID, req.UserID, cost, taskNo+":reserve",
-		); err != nil {
-			return err
-		}
-
 		for i := range endpoints {
 			ep := &endpoints[i]
 			var candidateChannel model.Channel
@@ -153,10 +256,28 @@ func (s *UnifiedService) reserveInitialCapabilityTask(
 		if chosen == nil {
 			return errNoAvailableAccount
 		}
+		background := req.Async || chosen.InteractionMode == model.ModePoll || chosen.InteractionMode == model.ModeCallback
+		if _, err := NewAPICallService().StartCallTx(
+			tx,
+			capabilityStartCallRequest(req, taskNo, background),
+		); err != nil {
+			return err
+		}
+		cost := chosen.InputPrice
+		if err := s.billingService.deductWithBillingContextTx(
+			tx, req.TokenID, req.UserID, cost, taskNo+":reserve", BillingContext{
+				CallID:          req.CallID,
+				Phase:           model.BillingPhaseReserve,
+				PricingSnapshot: capabilityPricingSnapshot(req, chosen, cost),
+			},
+		); err != nil {
+			return err
+		}
 
 		var err error
 		task, err = NewTaskService().createTask(tx, &CreateTaskRequest{
 			TaskNo:        taskNo,
+			CallID:        req.CallID,
 			UserID:        req.UserID,
 			TokenID:       req.TokenID,
 			ModelCode:     req.Capability,
@@ -184,6 +305,59 @@ func (s *UnifiedService) reserveInitialCapabilityTask(
 func (s *UnifiedService) executeSyncWithFallback(ctx context.Context, task *model.Task, req *InvokeRequest, endpoints []model.Endpoint, startEP *model.Endpoint, startCh *model.Channel, startAcc *model.ChannelAccount) (*InvokeResponse, error) {
 	taskSvc := NewTaskService()
 	circuitSvc := NewAccountCircuitService()
+	lease, acquired, err := AcquireTaskWorkerLease(ctx, task.ID, TaskWorkerStageSubmit)
+	if err != nil {
+		return nil, fmt.Errorf("acquire synchronous submit lease: %w", err)
+	}
+	if !acquired {
+		return nil, ErrTaskNotExecutable
+	}
+	defer func() {
+		if lease == nil {
+			return
+		}
+		if stopErr := lease.Stop(); stopErr != nil && !errors.Is(stopErr, ErrTaskWorkerLeaseLost) {
+			logger.Error("release synchronous submit lease failed",
+				zap.Uint("task_id", task.ID), zap.Error(stopErr))
+		}
+	}()
+	ctx = lease.Context()
+	currentTask, err := taskSvc.GetTaskByID(task.ID)
+	if err != nil {
+		return nil, fmt.Errorf("reload synchronous capability task: %w", err)
+	}
+	task = currentTask
+	checkpoint, err := DecodeTaskSubmitCheckpoint(task.SubmitCheckpoint)
+	if err != nil {
+		return nil, fmt.Errorf("load synchronous submit checkpoint: %w", err)
+	}
+	if checkpoint != nil {
+		if checkpoint.LeaseOwner != lease.Owner() {
+			if err := taskSvc.SaveTaskSubmitCheckpoint(task.ID, lease.Owner(), checkpoint); err != nil {
+				return nil, fmt.Errorf("adopt synchronous submit checkpoint: %w", err)
+			}
+		}
+		if checkpoint.IsInFlight() {
+			callbackOwned, resolveErr := taskSvc.ResolveInFlightTaskSubmit(task.ID, lease)
+			if callbackOwned {
+				return nil, ErrTaskNotExecutable
+			}
+			if errors.Is(resolveErr, ErrTaskSubmitOutcomeUnknown) {
+				return nil, resolveErr
+			}
+			return nil, recoverSynchronousSubmit(task.ID, &lease,
+				fmt.Errorf("resolve in-flight synchronous submit: %w", resolveErr))
+		}
+		return nil, recoverSynchronousSubmit(task.ID, &lease,
+			fmt.Errorf("synchronous submit already succeeded; queued task recovery"))
+	}
+	if req.Async {
+		if err := taskSvc.UpdateTaskStatus(task.ID, model.TaskStatusProcessing, ""); err != nil {
+			return nil, fmt.Errorf("mark asynchronous capability task processing: %w", err)
+		}
+		task.Status = model.TaskStatusProcessing
+	}
+
 	accountPerEndpoint := 3
 	var lastErr error
 	started := false
@@ -246,24 +420,115 @@ func (s *UnifiedService) executeSyncWithFallback(ctx context.Context, task *mode
 				return nil, fmt.Errorf("validate task execution account: %w", err)
 			}
 
-			result, err := s.doSubmit(ctx, task, ep, &channel, account, mappedParams)
-			if err != nil {
-				lastErr = err
+			result, callAttempt, inFlightCheckpoint, submitErr := s.doSubmit(
+				ctx, lease, task, ep, &channel, account, mappedParams,
+			)
+			if inFlightCheckpoint != nil {
+				if leaseErr := lease.Check(); leaseErr != nil {
+					current, stateErr := taskSvc.GetTaskByID(task.ID)
+					if stateErr != nil {
+						return nil, recoverSynchronousSubmit(task.ID, &lease,
+							fmt.Errorf("reload task after synchronous submit lease loss: %w", errors.Join(leaseErr, stateErr)))
+					}
+					if current.Status == model.TaskStatusFinalizing || current.Status.IsTerminal() {
+						return nil, ErrTaskNotExecutable
+					}
+					return nil, recoverSynchronousSubmit(task.ID, &lease,
+						fmt.Errorf("synchronous submit lease lost: %w", leaseErr))
+				}
+			}
+			if submitErr != nil {
+				if inFlightCheckpoint != nil && !CapabilityRequestReceivedHTTPResponse(result.RequestMetadata, submitErr) {
+					if callAttempt != nil {
+						if finishErr := finishSynchronousCapabilityAttempt(
+							task,
+							&channel,
+							ep,
+							callAttempt,
+							model.APICallStageSubmit,
+							result.RequestMetadata,
+							submitErr,
+						); finishErr != nil {
+							logger.Error("finish ambiguous synchronous submit attempt failed",
+								zap.Uint("task_id", task.ID), zap.String("call_id", task.CallID), zap.Error(finishErr))
+						}
+					}
+					callbackOwned, resolveErr := taskSvc.ResolveInFlightTaskSubmit(task.ID, lease)
+					if callbackOwned {
+						return nil, ErrTaskNotExecutable
+					}
+					if errors.Is(resolveErr, ErrTaskSubmitOutcomeUnknown) {
+						return nil, resolveErr
+					}
+					return nil, recoverSynchronousSubmit(task.ID, &lease,
+						fmt.Errorf("resolve ambiguous synchronous submit: %w", resolveErr))
+				}
+				if inFlightCheckpoint != nil {
+					if clearErr := taskSvc.ClearTaskSubmitCheckpoint(task.ID, lease.Owner()); clearErr != nil {
+						return nil, recoverSynchronousSubmit(task.ID, &lease,
+							fmt.Errorf("clear failed synchronous submit checkpoint: %w", clearErr))
+					}
+					current, stateErr := taskSvc.GetTaskByID(task.ID)
+					if stateErr != nil {
+						return nil, fmt.Errorf("reload task after failed synchronous submit: %w", stateErr)
+					}
+					if current.Status == model.TaskStatusFinalizing || current.Status.IsTerminal() {
+						return nil, ErrTaskNotExecutable
+					}
+				}
+				if callAttempt != nil {
+					if finishErr := finishSynchronousCapabilityAttempt(
+						task,
+						&channel,
+						ep,
+						callAttempt,
+						model.APICallStageSubmit,
+						result.RequestMetadata,
+						submitErr,
+					); finishErr != nil {
+						logger.Error("finish failed synchronous submit attempt",
+							zap.Uint("task_id", task.ID), zap.String("call_id", task.CallID), zap.Error(finishErr))
+					}
+				}
+				lastErr = submitErr
 				if releaseErr := taskSvc.ReleaseAccountSlot(task.ID); releaseErr != nil {
-					return nil, fmt.Errorf("upstream call failed: %v; release account slot: %w", err, releaseErr)
+					return nil, fmt.Errorf("upstream call failed: %v; release account slot: %w", submitErr, releaseErr)
 				}
 				task.AccountSlotReleased = true
-				circuitSvc.MarkUnavailable(account.ID, ep.ModelCode, err)
+				circuitSvc.MarkUnavailable(account.ID, ep.ModelCode, submitErr)
 				excludeAccountIDs = append(excludeAccountIDs, account.ID)
 				logger.Warn("sync attempt failed, trying next account/endpoint",
 					zap.Uint("task_id", task.ID), zap.Uint("endpoint_id", ep.ID),
-					zap.Uint("account_id", account.ID), zap.Error(err))
+					zap.Uint("account_id", account.ID), zap.Error(submitErr))
 				account = nil
 				continue
 			}
 
 			if result.ProviderTaskID == "" && len(result.URLs) == 0 && len(result.B64Data) == 0 {
 				lastErr = fmt.Errorf("upstream returned empty result")
+				if clearErr := taskSvc.ClearTaskSubmitCheckpoint(task.ID, lease.Owner()); clearErr != nil {
+					return nil, recoverSynchronousSubmit(task.ID, &lease,
+						fmt.Errorf("clear empty synchronous submit checkpoint: %w", clearErr))
+				}
+				current, stateErr := taskSvc.GetTaskByID(task.ID)
+				if stateErr != nil {
+					return nil, fmt.Errorf("reload task after empty synchronous submit: %w", stateErr)
+				}
+				if current.Status == model.TaskStatusFinalizing || current.Status.IsTerminal() {
+					return nil, ErrTaskNotExecutable
+				}
+				if finishErr := finishSynchronousCapabilityAttempt(
+					task,
+					&channel,
+					ep,
+					callAttempt,
+					model.APICallStageSubmit,
+					result.RequestMetadata,
+					lastErr,
+				); finishErr != nil {
+					logger.Error("finish empty synchronous submit attempt failed",
+						zap.Uint("task_id", task.ID), zap.String("call_id", task.CallID), zap.Error(finishErr))
+				}
 				if releaseErr := taskSvc.ReleaseAccountSlot(task.ID); releaseErr != nil {
 					return nil, fmt.Errorf("empty upstream result; release account slot: %w", releaseErr)
 				}
@@ -278,16 +543,41 @@ func (s *UnifiedService) executeSyncWithFallback(ctx context.Context, task *mode
 			}
 
 			urls := append([]string{}, result.URLs...)
+			var resultProcessingErr error
 			if len(result.B64Data) > 0 {
 				transferred, err := resolveB64ToURLs(ctx, result.B64Data, ep.ModelCode)
 				if err != nil {
-					lastErr = err
-					if _, failErr := taskSvc.UpdateTaskFail(task.ID, err.Error()); failErr != nil {
-						return nil, fmt.Errorf("transfer result: %v; record task failure: %w", err, failErr)
-					}
-					return nil, err
+					resultProcessingErr = err
+				} else {
+					urls = append(urls, transferred...)
 				}
-				urls = append(urls, transferred...)
+			}
+
+			checkpoint := synchronousSubmitCheckpoint(
+				lease.Owner(), callAttempt, result, urls, ep.InteractionMode, ep.InputPrice, resultProcessingErr,
+			)
+			if err := saveSynchronousSubmitCheckpoint(task.ID, lease.Owner(), checkpoint); err != nil {
+				return nil, recoverSynchronousSubmit(task.ID, &lease,
+					fmt.Errorf("save successful synchronous submit checkpoint: %w", err))
+			}
+			if finishErr := finishSynchronousCapabilityAttempt(
+				task,
+				&channel,
+				ep,
+				callAttempt,
+				model.APICallStageSubmit,
+				result.RequestMetadata,
+				nil,
+			); finishErr != nil {
+				return nil, recoverSynchronousSubmit(task.ID, &lease,
+					fmt.Errorf("finish successful synchronous submit attempt: %w", finishErr))
+			}
+			if resultProcessingErr != nil {
+				if _, failErr := taskSvc.UpdateTaskFail(task.ID, resultProcessingErr.Error()); failErr != nil {
+					return nil, recoverSynchronousSubmit(task.ID, &lease,
+						fmt.Errorf("transfer result: %v; record task failure: %w", resultProcessingErr, failErr))
+				}
+				return nil, resultProcessingErr
 			}
 
 			successResult := map[string]any{"data": result.ProviderTaskID}
@@ -299,9 +589,11 @@ func (s *UnifiedService) executeSyncWithFallback(ctx context.Context, task *mode
 				successResult["revised_prompt"] = result.RevisedPrompt
 			}
 
-			committed, err := taskSvc.UpdateTaskSuccess(task.ID, successResult, task.Cost)
+			// Billing is settled against the endpoint that actually produced the result.
+			committed, err := taskSvc.UpdateTaskSuccess(task.ID, successResult, ep.InputPrice)
 			if err != nil {
-				return nil, fmt.Errorf("complete synchronous task: %w", err)
+				return nil, recoverSynchronousSubmit(task.ID, &lease,
+					fmt.Errorf("complete synchronous task: %w", err))
 			}
 			if !committed {
 				return nil, ErrTaskNotExecutable
@@ -309,6 +601,7 @@ func (s *UnifiedService) executeSyncWithFallback(ctx context.Context, task *mode
 			return &InvokeResponse{
 				TaskID: task.TaskNo,
 				Status: string(model.TaskStatusSuccess),
+				CallID: req.CallID,
 			}, nil
 		}
 		account = nil
@@ -323,22 +616,87 @@ func (s *UnifiedService) executeSyncWithFallback(ctx context.Context, task *mode
 	return nil, lastErr
 }
 
-// doSubmit 纯执行一次上游提交,不改 task 状态、不动账号计数(由调用方控制)
-func (s *UnifiedService) doSubmit(ctx context.Context, task *model.Task, endpoint *model.Endpoint, channel *model.Channel, account *model.ChannelAccount, mappedParams map[string]any) (provider.SubmitResult, error) {
+func synchronousSubmitCheckpoint(
+	leaseOwner string,
+	attempt *model.APICallAttempt,
+	result provider.SubmitResult,
+	urls []string,
+	interactionMode model.InteractionMode,
+	finalCost decimal.Decimal,
+	resultErr error,
+) *TaskSubmitCheckpoint {
+	checkpoint := &TaskSubmitCheckpoint{
+		LeaseOwner:      leaseOwner,
+		State:           TaskSubmitCheckpointStateSucceeded,
+		InteractionMode: interactionMode,
+		ProviderTaskID:  result.ProviderTaskID,
+		URLs:            append([]string(nil), urls...),
+		RevisedPrompt:   result.RevisedPrompt,
+		HTTPStatus:      result.RequestMetadata.StatusCode,
+		DurationMs:      result.RequestMetadata.DurationMs,
+		RequestMethod:   result.RequestMetadata.Method,
+		RequestPath:     SanitizeCapabilityRequestPath(result.RequestMetadata.RequestPath),
+		FinalCost:       finalCost.String(),
+	}
+	if attempt != nil {
+		checkpoint.AttemptID = attempt.ID
+	}
+	if !result.RequestMetadata.RequestAt.IsZero() {
+		requestAt := result.RequestMetadata.RequestAt
+		checkpoint.RequestAt = &requestAt
+	}
+	if resultErr != nil {
+		checkpoint.FailureMessage = SanitizeAPICallErrorMessage(resultErr.Error())
+	}
+	return checkpoint
+}
+
+func recoverSynchronousSubmit(taskID uint, lease **TaskWorkerLease, cause error) error {
+	recoveryErr := cause
+	if lease != nil && *lease != nil {
+		if stopErr := (*lease).Stop(); stopErr != nil && !errors.Is(stopErr, ErrTaskWorkerLeaseLost) {
+			recoveryErr = fmt.Errorf("%v; release synchronous submit lease: %w", recoveryErr, stopErr)
+		}
+		*lease = nil
+	}
+	if err := enqueueCapabilitySubmitRecovery(taskID); err != nil {
+		return fmt.Errorf("%v; enqueue synchronous submit recovery: %w", recoveryErr, err)
+	}
+	return recoveryErr
+}
+
+// doSubmit executes one upstream submit without changing task state or account counters.
+func (s *UnifiedService) doSubmit(ctx context.Context, lease *TaskWorkerLease, task *model.Task, endpoint *model.Endpoint, channel *model.Channel, account *model.ChannelAccount, mappedParams map[string]any) (provider.SubmitResult, *model.APICallAttempt, *TaskSubmitCheckpoint, error) {
 	// multipart 端点：将参数中的文件 URL 下载并转为 @base64:filename:data 格式
 	resolvedParams, err := resolveFileParams(ctx, mappedParams, endpoint)
 	if err != nil {
-		return provider.SubmitResult{}, fmt.Errorf("resolve file params: %w", err)
+		return provider.SubmitResult{}, nil, nil, fmt.Errorf("resolve file params: %w", err)
 	}
 
 	prov, err := provider.NewProvider(channel, account, endpoint)
 	if err != nil {
-		return provider.SubmitResult{}, fmt.Errorf("create provider error: %w", err)
+		return provider.SubmitResult{}, nil, nil, fmt.Errorf("create provider error: %w", err)
 	}
-	return prov.Submit(ctx, provider.SubmitRequest{
+	attempt, err := StartCapabilityAttempt(task, endpoint, model.APICallStageSubmit)
+	if err != nil {
+		return provider.SubmitResult{}, nil, nil, fmt.Errorf("start submit attempt: %w", err)
+	}
+	attemptID := uint(0)
+	if attempt != nil {
+		attemptID = attempt.ID
+	}
+	checkpoint := NewTaskSubmitInFlightCheckpoint(attemptID, endpoint.InputPrice)
+	if err := NewTaskService().SaveTaskSubmitCheckpoint(task.ID, lease.Owner(), checkpoint); err != nil {
+		return provider.SubmitResult{}, attempt, nil, fmt.Errorf("save in-flight submit checkpoint: %w", err)
+	}
+	if err := lease.Check(); err != nil {
+		return provider.SubmitResult{}, attempt, checkpoint, fmt.Errorf("verify submit lease: %w", err)
+	}
+	result, submitErr := prov.Submit(ctx, provider.SubmitRequest{
 		TaskNo: task.TaskNo,
 		Params: resolvedParams,
 	})
+	return result, attempt, checkpoint, submitErr
 }
 
 // GetTask 获取任务状态
@@ -413,6 +771,9 @@ func (s *UnifiedService) HandleCallback(ctx context.Context, authenticatedTask *
 		if err := taskSvc.BindVendorTaskID(task.ID, providerTaskID); err != nil {
 			return err
 		}
+	}
+	if err := AcknowledgeCapabilitySubmitAttempt(task); err != nil {
+		return fmt.Errorf("acknowledge submit attempt from callback: %w", err)
 	}
 
 	switch parsed.Status {

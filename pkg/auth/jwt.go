@@ -8,17 +8,23 @@ import (
 )
 
 type Claims struct {
-	UserID   uint   `json:"user_id"`
-	Username string `json:"username"`
-	Role     string `json:"role"`
+	UserID         uint   `json:"user_id"`
+	Username       string `json:"username"`
+	Role           string `json:"role"`
+	SessionVersion uint64 `json:"session_version"`
 	jwt.RegisteredClaims
 }
 
 func GenerateToken(userID uint, username string, role string) (string, error) {
+	return GenerateTokenWithSessionVersion(userID, username, role, 0)
+}
+
+func GenerateTokenWithSessionVersion(userID uint, username string, role string, sessionVersion uint64) (string, error) {
 	claims := Claims{
-		UserID:   userID,
-		Username: username,
-		Role:     role,
+		UserID:         userID,
+		Username:       username,
+		Role:           role,
+		SessionVersion: sessionVersion,
 		RegisteredClaims: jwt.RegisteredClaims{
 			ExpiresAt: jwt.NewNumericDate(time.Now().Add(24 * time.Hour)),
 			IssuedAt:  jwt.NewNumericDate(time.Now()),

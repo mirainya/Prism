@@ -25,6 +25,8 @@ type V2Result struct {
 	Prepared           transport.PreparedRequest
 	ProviderResponseID string
 	RequestLogID       uint
+	AttemptID          uint
+	execution          *engine.Result
 }
 
 func NewV2Executor(executionEngine *engine.Engine) (*V2Executor, error) {
@@ -74,10 +76,12 @@ func (e *V2Executor) Execute(ctx context.Context, request *protocol.Request, pub
 	}
 	encoded, err := openairesponses.EncodeResponseJSON(*result.Response)
 	if err != nil {
+		_ = result.FailDelivery(err, false)
 		return nil, err
 	}
 	var response protocol.Response
 	if err := json.Unmarshal(encoded, &response); err != nil {
+		_ = result.FailDelivery(err, false)
 		return nil, err
 	}
 	response.ID = publicResponseID
@@ -101,5 +105,7 @@ func (e *V2Executor) Execute(ctx context.Context, request *protocol.Request, pub
 		Prepared:           result.Prepared,
 		ProviderResponseID: providerResponseID,
 		RequestLogID:       result.RequestLogID,
+		AttemptID:          result.AttemptID,
+		execution:          result,
 	}, nil
 }

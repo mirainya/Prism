@@ -45,7 +45,6 @@ func RegisterRoutes(group *gin.RouterGroup) {
 	// 渠道请求日志
 	group.GET("/request-logs", ListRequestLogs)
 	group.GET("/request-logs/:id", GetRequestLog)
-	group.POST("/request-logs/:id/retry", RetryRequest)
 
 	// 聊天网关路由表(gw_*)管理:渠道/key/能力/元数据 + 以 key 为单位拉取导入
 	gw := group.Group("/gw")

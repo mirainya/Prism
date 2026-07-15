@@ -31,5 +31,10 @@ func NewV2Engine() (*engine.Engine, error) {
 		}
 	}
 	registry.Freeze()
-	return engine.New(routing.NewRouter(), registry, service.NewBillingService())
+	return engine.New(
+		routing.NewRouter(),
+		registry,
+		service.NewBillingService(),
+		service.NewAPICallService(),
+	)
 }

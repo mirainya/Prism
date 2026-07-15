@@ -5,19 +5,12 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/mirainya/Prism/internal/api/resp"
+	"github.com/mirainya/Prism/internal/model"
 	"github.com/mirainya/Prism/internal/service"
 	pkgErrors "github.com/mirainya/Prism/pkg/errors"
 )
 
 var accountCircuitService = service.NewAccountCircuitService()
-
-// maskAPIKey 脱敏 API Key，保留最后 4 位
-func maskAPIKey(key string) string {
-	if len(key) <= 4 {
-		return "****"
-	}
-	return "****" + key[len(key)-4:]
-}
 
 // ========== ChannelAccount Handlers ==========
 
@@ -33,22 +26,7 @@ func ListChannelAccounts(c *gin.Context) {
 	result := make([]gin.H, len(accounts))
 	for i, acc := range accounts {
 		states, _ := accountCircuitService.ListByAccount(acc.ID)
-		result[i] = gin.H{
-			"id":               acc.ID,
-			"channel_id":       acc.ChannelID,
-			"name":             acc.Name,
-			"api_key":          acc.APIKey,
-			"masked_key":       maskAPIKey(acc.APIKey),
-			"config":           acc.Config,
-			"weight":           acc.Weight,
-			"status":           acc.Status,
-			"max_tasks":        acc.MaxTasks,
-			"current_tasks":    acc.CurrentTasks,
-			"supported_models": acc.SupportedModels,
-			"circuit_states":   states,
-			"created_at":       acc.CreatedAt,
-			"updated_at":       acc.UpdatedAt,
-		}
+		result[i] = channelAccountResponse(&acc, states)
 	}
 
 	resp.Success(c, result)
@@ -71,12 +49,17 @@ func GetChannelAccount(c *gin.Context) {
 	}
 
 	states, _ := accountCircuitService.ListByAccount(account.ID)
-	resp.Success(c, gin.H{
+	resp.Success(c, channelAccountResponse(account, states))
+}
+
+func channelAccountResponse(account *model.ChannelAccount, states []model.AccountModelState) gin.H {
+	maskedKey := service.MaskCredential(account.APIKey)
+	return gin.H{
 		"id":               account.ID,
 		"channel_id":       account.ChannelID,
 		"name":             account.Name,
-		"api_key":          account.APIKey,
-		"masked_key":       maskAPIKey(account.APIKey),
+		"api_key":          maskedKey,
+		"masked_key":       maskedKey,
 		"config":           account.Config,
 		"weight":           account.Weight,
 		"status":           account.Status,
@@ -86,7 +69,7 @@ func GetChannelAccount(c *gin.Context) {
 		"circuit_states":   states,
 		"created_at":       account.CreatedAt,
 		"updated_at":       account.UpdatedAt,
-	})
+	}
 }
 
 // ListAccountCircuitStates 列出账号当前生效的熔断状态

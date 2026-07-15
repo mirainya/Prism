@@ -3,13 +3,14 @@ package worker
 import "github.com/mirainya/Prism/pkg/queue"
 
 const (
-	TypeTaskSubmit         = queue.TypeTaskSubmit
-	TypeTaskPoll           = queue.TypeTaskPoll
-	TypeTaskUpload         = queue.TypeTaskUpload
-	TypeTaskNotify         = queue.TypeTaskNotify
-	TypeTaskTimeoutCheck   = queue.TypeTaskTimeoutCheck
-	TypeResponseBackground = queue.TypeResponseBackground
-	TypeResponseRecovery   = queue.TypeResponseRecovery
+	TypeTaskSubmit            = queue.TypeTaskSubmit
+	TypeTaskPoll              = queue.TypeTaskPoll
+	TypeTaskUpload            = queue.TypeTaskUpload
+	TypeTaskNotify            = queue.TypeTaskNotify
+	TypeTaskTimeoutCheck      = queue.TypeTaskTimeoutCheck
+	TypeResponseBackground    = queue.TypeResponseBackground
+	TypeResponseRecovery      = queue.TypeResponseRecovery
+	TypeAPICallPayloadCleanup = "api_call:payload_cleanup"
 )
 
 type TaskSubmitPayload = queue.TaskSubmitPayload

@@ -1,314 +1,147 @@
 # Prism 项目地图
 
-> Prism 是一个轻量级 AI Gateway 平台，统一管理多渠道 AI 服务（Midjourney、Runway、Sora 等），提供标准化 API、智能路由、异步任务管理、计费系统和 Web 管理后台。
+Prism 是 Go + React 实现的 AI Gateway。公开接口位于 `/v1`；Gateway V2 是内部执行架构，不是 HTTP 版本号。
 
 ## 技术栈
 
-| 层级 | 技术 |
-|------|------|
-| 后端框架 | Go 1.25 + Gin |
-| ORM | GORM + MySQL |
-| 缓存/队列 | Redis + Asynq |
-| 认证 | JWT (控制台) + API Key (外部接口) |
-| 日志 | Zap |
-| 配置 | Viper (YAML) |
-| 对象存储 | 腾讯云 COS |
-| 前端框架 | React 19 + TypeScript |
-| 构建工具 | Vite |
-| 样式 | Tailwind CSS 4 |
-| 图表 | Recharts |
-| 部署 | 单二进制（前端 embed 到 Go 中） |
+| 层 | 技术 |
+|---|---|
+| HTTP | Gin |
+| 数据库 | MySQL + GORM |
+| 缓存与队列 | Redis + Asynq |
+| 控制台 | React 19 + TypeScript + Vite + Tailwind CSS |
+| 认证 | 控制台 JWT、V1 API Token、回调 HMAC |
+| 可观测性 | Zap、Prometheus、调用账本、访问日志、审计事件 |
 
----
+## 目录
 
-## 目录结构总览
-
-```
+```text
 Prism/
-├── cmd/server/              # 应用入口
-├── internal/                # 核心业务逻辑
-│   ├── api/                 #   路由 & HTTP 处理
-│   │   ├── middleware/      #     中间件
-│   │   └── v1/              #     API 处理器
-│   ├── model/               #   数据库模型
-│   ├── service/             #   业务逻辑层
-│   ├── provider/            #   AI 供应商适配器
-│   │   └── chat/            #     Chat 模型适配器
-│   └── worker/              #   异步任务处理
-├── pkg/                     # 可复用工具包
-│   ├── auth/                #   JWT & 密码
-│   ├── cache/               #   Redis 缓存
-│   ├── config/              #   配置管理
-│   ├── database/            #   数据库连接
-│   ├── errors/              #   错误定义
-│   ├── httputil/            #   HTTP 客户端
-│   ├── logger/              #   日志
-│   ├── metrics/             #   指标采集
-│   ├── queue/               #   任务队列
-│   └── storage/             #   对象存储
-├── console/                 # React 前端
-│   ├── components/          #   公共组件
-│   ├── pages/               #   页面组件
-│   ├── services/            #   API 客户端
-│   └── assets/              #   静态资源
-├── configs/                 # 配置文件
-├── docs/                    # 文档
-└── dist/                    # 构建产物
+├── cmd/server/                  # 依赖初始化、HTTP/Worker/Scheduler 生命周期
+├── configs/                    # YAML 配置模板
+├── console/                    # React 控制台与嵌入式 dist
+├── database/migrations/        # 有序 SQL 迁移和历史回填
+├── internal/
+│   ├── api/                    # Console、Admin、V1、Callback 路由与中间件
+│   ├── gateway/                # 对话协议统一执行架构
+│   ├── model/                  # GORM 模型
+│   ├── provider/               # 图片/视频等能力渠道 Provider
+│   ├── service/                # 计费、任务、账本、管理业务
+│   └── worker/                 # Asynq 后台执行与恢复
+├── pkg/                        # 配置、认证、缓存、数据库、日志、队列等组件
+├── README.md
+└── API_REFERENCE.md
 ```
 
----
+## HTTP 层
 
-## 根目录文件
+| 位置 | 职责 |
+|---|---|
+| `internal/api/router.go` | 全局中间件、路由组、静态控制台 |
+| `internal/api/middleware/auth.go` | V1 API Token 鉴权与缓存 |
+| `internal/api/middleware/jwt_auth.go` | JWT、用户状态、`SessionVersion` 校验 |
+| `internal/api/middleware/request_id.go` | 生成并传播 `X-Request-ID` |
+| `internal/api/middleware/logger.go` | 进程结构化日志，AI 正文不进入普通日志 |
+| `internal/api/middleware/access_log.go` | 持久 API 访问日志与写操作审计 |
+| `internal/api/console` | 用户控制台、Playground、Call 与观测查询 |
+| `internal/api/admin` | 用户、能力渠道和 Gateway V2 管理 |
+| `internal/api/open` | 图片、视频等统一能力接口 |
 
-| 文件 | 说明 |
-|------|------|
-| `go.mod` / `go.sum` | Go 模块定义和依赖锁定 |
-| `build.bat` | 构建脚本：编译前端 → 编译 Go 二进制（Linux AMD64）→ 输出到 dist/ |
-| `README.md` | 项目介绍、功能特性、部署说明 |
-| `.gitignore` | Git 忽略规则 |
+## Gateway V2
 
----
-
-## 后端文件清单
-
-### cmd/ — 应用入口
-
-| 文件 | 说明 |
-|------|------|
-| `cmd/server/main.go` | 主入口：初始化配置、数据库、缓存、队列、Worker、定时器、HTTP 服务，支持优雅关闭 |
-
-### console/ — 前端嵌入
-
-| 文件 | 说明 |
-|------|------|
-| `console/embed.go` | 使用 `//go:embed` 将前端 dist 嵌入 Go 二进制 |
-
-### internal/api/ — HTTP 层
-
-| 文件 | 说明 |
-|------|------|
-| `api/router.go` | Gin 路由注册：auth、public、console、admin、v1、internal、SPA 静态文件 |
-| `api/response.go` | 统一响应工具函数（Success、Error、BadRequest、NotFound 等） |
-
-### internal/api/middleware/ — 中间件
-
-| 文件 | 说明 |
-|------|------|
-| `middleware/jwt_auth.go` | JWT 认证：解析 Bearer Token、校验缓存、提取 UserID/Role |
-| `middleware/auth.go` | API Key 认证：SHA256 哈希匹配、Redis 缓存、Token 失效管理 |
-| `middleware/callback_auth.go` | Webhook 回调签名验证（HMAC-SHA256） |
-| `middleware/cors.go` | CORS 跨域头设置 |
-| `middleware/logger.go` | 请求日志：记录 Method、Path、Status、Latency、Body |
-| `middleware/rate_limit.go` | 固定窗口限流：按 Token ID 或 IP，基于 Redis |
-| `middleware/request_id.go` | 请求 ID 生成与传播 |
-
-### internal/api/v1/ — API 处理器
-
-| 文件 | 说明 |
-|------|------|
-| `v1/auth.go` | 注册、登录、登出、修改密码 |
-| `v1/user.go` | 管理员用户管理：列表、角色/状态变更、充值 |
-| `v1/channel.go` | 管理员渠道 & 账号 CRUD |
-| `v1/capability_admin.go` | 管理员能力 & 渠道能力配置 CRUD |
-| `v1/capability.go` | 列出可用渠道和能力（含渠道支持信息） |
-| `v1/chat.go` | Chat 补全接口 + 公开模型列表 |
-| `v1/chat_admin.go` | 管理员 Chat 模型 & 模型-渠道映射 CRUD |
-| `v1/generation.go` | 图片/视频生成接口：计费、创建任务、调用供应商 |
-| `v1/task.go` | 按任务编号查询任务状态 |
-| `v1/token_manage.go` | Token CRUD：列表、创建、更新、删除、充值、渠道优先级 |
-| `v1/conversation.go` | 对话和消息列表（分页、筛选） |
-| `v1/dashboard.go` | 仪表盘统计：今日/昨日数据、趋势、Top 渠道、错误率 |
-| `v1/pricing.go` | 公开定价信息接口 |
-| `v1/request_log.go` | 管理员请求日志：列表、详情、重试 |
-| `v1/callback.go` | Webhook 回调处理：解析并匹配任务结果 |
-| `v1/response.go` | v1 API 响应辅助函数 |
-
-### internal/model/ — 数据模型
-
-| 文件 | 说明 |
-|------|------|
-| `model/base.go` | 基础模型（ID、时间戳、软删除）、数据库连接管理、AutoMigrate |
-| `model/user.go` | 用户：用户名、密码、角色（admin/user）、余额、状态 |
-| `model/token.go` | API Token：Key（SHA256）、余额、已用额度、限流配置、状态 |
-| `model/channel.go` | 渠道：类型、名称、BaseURL、回调密钥、配置 JSON |
-| `model/channel_account.go` | 渠道账号：API Key、权重、并发上限（max_tasks）、当前任务数 |
-| `model/capability.go` | 能力定义：code、名称、类型（image/video/chat）、标准参数/响应 |
-| `model/channel_capability.go` | 渠道能力实现：定价、请求/轮询/回调配置、认证、参数映射 |
-| `model/chat_model.go` | Chat 模型：code、名称、供应商、描述 |
-| `model/chat_model_channel.go` | 模型-渠道映射：定价（input/output per 1M tokens）、请求配置 |
-| `model/conversation.go` | 对话：用户、Token、标题、模型、系统提示词、消息数 |
-| `model/message.go` | 消息：角色、内容、Token 用量、延迟、费用 |
-| `model/task.go` | 任务：编号、状态、参数、供应商响应、结果、回调 |
-| `model/billing_log.go` | 计费流水：幂等键、扣费/退款、金额、状态 |
-| `model/channel_request_log.go` | 请求日志：submit/poll/callback/chat、请求头/体、响应、耗时 |
-| `model/token_channel_priority.go` | Token 渠道优先级配置 |
-
-### internal/service/ — 业务逻辑
-
-| 文件 | 说明 |
-|------|------|
-| `service/user_service.go` | 注册、登录、登出、改密、角色/状态变更 |
-| `service/channel_service.go` | 渠道 & 账号 CRUD |
-| `service/capability_service.go` | 能力调用：渠道选择、参数映射、响应解析、文件上传 |
-| `service/chat_service.go` | Chat 补全：模型/渠道选择、Provider 路由、Token 计数、计费 |
-| `service/task_service.go` | 任务 CRUD 和状态流转（pending → processing → success/failed） |
-| `service/billing_service.go` | 扣费/退款（带幂等键），事务保证一致性 |
-| `service/strategy_service.go` | 路由策略：加权随机选渠道能力、负载均衡选账号（行锁） |
-| `service/conversation_service.go` | 对话和消息列表（分页、筛选、费用聚合） |
-| `service/request_log_service.go` | 请求日志：异步写入（带重试）、列表、详情、重试 |
-| `service/param_mapper.go` | 参数映射：字段/值映射、类型转换、计算参数 |
-| `service/response_mapper.go` | 响应映射：字段提取、值映射、数组处理、成功条件判断 |
-
-### internal/provider/ — AI 供应商适配
-
-| 文件 | 说明 |
-|------|------|
-| `provider/provider.go` | Provider 接口定义（Submit、GetProgress、ParseCallback）和结果类型 |
-| `provider/base_provider.go` | 基础 HTTP Provider：认证、请求构建、提交/进度/回调解析 |
-| `provider/factory.go` | Provider 工厂：根据渠道/账号/能力配置创建 BaseProvider |
-| `provider/converter.go` | 参数转换：字段映射、值映射、嵌套路径支持 |
-| `provider/parser.go` | 响应解析：用 gjson 提取任务 ID、状态、进度、URL、错误 |
-| `provider/chat/provider.go` | Chat Provider 接口和统一请求/响应结构 |
-| `provider/chat/registry.go` | Chat Provider 注册表和工厂 |
-| `provider/chat/openai.go` | OpenAI API 适配器 |
-| `provider/chat/anthropic.go` | Anthropic (Claude) API 适配器 |
-| `provider/chat/google.go` | Google (Gemini) API 适配器 |
-
-### internal/worker/ — 异步任务
-
-| 文件 | 说明 |
-|------|------|
-| `worker/worker.go` | Worker Handler 注册 |
-| `worker/types.go` | 任务载荷类型（submit、poll、upload、notify） |
-| `worker/submit_worker.go` | 任务提交：调用 Provider、参数映射 |
-| `worker/poll_worker.go` | 轮询任务状态：可配置间隔和最大次数 |
-| `worker/callback_handler.go` | 回调结果处理：路由到上传/失败/进度更新 |
-| `worker/upload_worker.go` | 文件下载并上传到 COS，构建结果 |
-| `worker/notify_worker.go` | 任务完成通知（带重试） |
-| `worker/timeout_checker.go` | 定时检测超时任务（30+ 分钟未完成） |
-
-### pkg/ — 工具包
-
-| 文件 | 说明 |
-|------|------|
-| `pkg/auth/jwt.go` | JWT 生成和解析（HS256） |
-| `pkg/auth/password.go` | bcrypt 密码哈希和校验 |
-| `pkg/cache/cache.go` | Redis 客户端初始化、登录 Token 管理 |
-| `pkg/config/config.go` | YAML 配置加载（server、database、redis、storage、worker、http、rate_limit） |
-| `pkg/database/database.go` | MySQL 连接池配置 |
-| `pkg/errors/errors.go` | 自定义错误类型（code + message） |
-| `pkg/httputil/client.go` | HTTP 客户端工具（文件下载等） |
-| `pkg/logger/logger.go` | Zap 结构化日志 |
-| `pkg/metrics/metrics.go` | 指标采集 |
-| `pkg/queue/queue.go` | Asynq 队列客户端初始化 |
-| `pkg/storage/init.go` | 存储初始化 |
-| `pkg/storage/storage.go` | 存储接口和上传功能 |
-| `pkg/storage/tencent_cos.go` | 腾讯云 COS 实现 |
-
----
-
-## 前端文件清单
-
-### 配置文件
-
-| 文件 | 说明 |
-|------|------|
-| `package.json` | 依赖定义：React 19、React Router、Recharts、Lucide Icons |
-| `tsconfig.json` | TypeScript 配置（ES2022、路径别名） |
-| `vite.config.ts` | Vite 构建配置：React 插件、API 代理到 localhost:23523 |
-| `vite-env.d.ts` | Vite 客户端类型声明 |
-| `metadata.json` | 应用元数据：名称「棱镜」、描述 |
-
-### 核心文件
-
-| 文件 | 说明 |
-|------|------|
-| `index.tsx` | React DOM 入口，挂载 App 到 root |
-| `App.tsx` | 主组件：认证流程、路由、Layout、ErrorBoundary |
-| `types.ts` | 全部 TypeScript 接口定义 |
-| `constants.tsx` | 导航路由、状态颜色/标签映射、UI 常量 |
-
-### 公共组件
-
-| 文件 | 说明 |
-|------|------|
-| `components/Layout.tsx` | 主布局：侧边栏导航、顶栏用户信息/余额、面包屑 |
-| `components/ErrorBoundary.tsx` | 错误边界：捕获渲染错误，显示友好提示和重试按钮 |
-
-### API 服务
-
-| 文件 | 说明 |
-|------|------|
-| `services/api.ts` | 统一 API 客户端：认证、用户、渠道、能力、Token、任务、日志、Chat 模型、对话 |
-
-### 页面 — 管理员
-
-| 文件 | 说明 |
-|------|------|
-| `pages/Channels.tsx` | 渠道管理：渠道/账号 CRUD，JSON 配置编辑，并发数设置 |
-| `pages/Capabilities.tsx` | 能力配置：标准参数、响应映射、渠道能力（sync/poll/callback） |
-| `pages/Users.tsx` | 用户管理：角色分配、搜索、余额充值 |
-| `pages/ChatModels.tsx` | Chat 模型管理：创建/编辑模型，选择供应商 |
-| `pages/ChatModelChannels.tsx` | 模型-渠道映射：定价、优先级配置 |
-| `pages/RequestLogs.tsx` | 渠道请求日志：筛选、重试、请求/响应详情查看 |
-
-### 页面 — 通用
-
-| 文件 | 说明 |
-|------|------|
-| `pages/Dashboard.tsx` | 仪表盘：今日统计、周趋势图、能力分布饼图 |
-| `pages/Tokens.tsx` | Token 管理：创建、充值、渠道优先级、Key 复制 |
-| `pages/Logs.tsx` | 任务日志：按能力/状态筛选、分页、任务详情 |
-| `pages/ChatLogs.tsx` | 对话记录：会话列表、消息详情、Token 用量、费用 |
-| `pages/ApiDocs.tsx` | API 文档：接口定义、请求/响应示例、错误码、认证说明 |
-| `pages/ChangePassword.tsx` | 修改密码表单 |
-
-### 页面 — 公开
-
-| 文件 | 说明 |
-|------|------|
-| `pages/Home.tsx` | 落地页：功能展示、能力列表 |
-| `pages/Pricing.tsx` | 公开定价页：能力和渠道定价详情 |
-
----
-
-## 配置文件
-
-| 文件 | 说明 |
-|------|------|
-| `configs/config.example.yaml` | 配置模板：服务端口(23523)、JWT 密钥、数据库、Redis |
-| `configs/config.yaml` | 实际配置（不提交 Git） |
-| `configs/config.docker.yaml` | Docker 环境配置 |
-| `docs/init.sql` | 数据库初始化 SQL（创建管理员账号） |
-
----
-
-## API 层级
-
-| 路径前缀 | 认证方式 | 用途 |
-|----------|---------|------|
-| `/api/auth/*` | 无 | 注册、登录 |
-| `/api/*` | JWT | 控制台用户接口 |
-| `/api/admin/*` | JWT + Admin 角色 | 管理员接口 |
-| `/v1/*` | API Key | 外部 AI 服务接口 |
-| `/internal/callback/*` | HMAC 签名 | 供应商回调 |
-
-## 核心数据流
-
-```
-用户请求 → Token 认证 → 限流 → 路由策略（选渠道+选账号）
-    → 参数映射 → Provider 调用 → 异步任务
-    → 轮询/回调 → 响应映射 → 文件上传(COS) → 返回结果
-    → 计费扣款
+```text
+HTTP Handler
+  -> Downstream Codec
+  -> Canonical Request
+  -> Engine
+  -> Router
+  -> Upstream Transport
+  -> Upstream API
 ```
 
-## 构建 & 部署
+| 模块 | 职责 |
+|---|---|
+| `gateway/codec` | Chat、Responses、Anthropic Messages 编解码 |
+| `gateway/canonical` | 协议中立消息、多模态、工具、推理、usage 和事件 |
+| `gateway/engine` | 执行计划、重试、计费、Call/Attempt、交付和流终态 |
+| `gateway/routing` | 能力、Transport、Key、并发、权重与熔断选路 |
+| `gateway/transport` | OpenAI Chat/Responses、Anthropic、Google、Volcengine v3 |
+| `gateway/responses` | Responses 存储、续话、幂等、后台执行、租约与恢复 |
+| `gateway/handler` | `/v1/chat/completions`、`/v1/messages`、`/v1/responses`、Files |
+
+Transport 先判断请求是 `exact`、`converted` 还是 `unsupported`。路由优先原生协议，只执行能完整表达当前请求的转换。
+
+## 能力任务
+
+图片、视频等异步能力使用另一条执行链：
+
+```text
+api/open -> service/capability -> Task -> worker submit/poll/upload/notify -> provider
+```
+
+每次 Submit/Poll 都会写入独立 `api_call_attempts`，最终成功端点决定实际结算价格。
+
+## 核心数据
+
+| 表 | 作用 |
+|---|---|
+| `gw_channels` / `gw_channel_keys` | 对话上游与 API Key |
+| `gw_abilities` / `gw_ability_transports` | 公开模型映射与可用 Transport |
+| `gw_route_states` | Key + 模型 + Transport 熔断状态 |
+| `api_calls` | 一次下游模型调用 |
+| `api_call_attempts` | 一次真实上游执行 |
+| `api_call_payloads` | 可选的脱敏、限长、过期、可加密正文 |
+| `channel_request_logs` | 上游 HTTP 路径、状态、耗时和 usage 摘要 |
+| `ai_responses` | Responses 资源与后台执行检查点 |
+| `ai_response_idempotency_cache` | 24 小时短期幂等结果 |
+| `tasks` | 图片、视频等能力任务 |
+| `billing_logs` | 模型调用计费阶段记录 |
+| `balance_entries` | 用户与 Token 的追加式余额流水，历史非零余额以 `opening_balance` 建立迁移基线 |
+| `api_access_logs` | 不含正文和凭据的 API 访问元数据 |
+| `audit_events` | 控制台和资源状态变更审计 |
+| `conversations` / `messages` | Playground 对话记录 |
+
+## 一致性与恢复
+
+- 计费预授权、结算、退款和余额流水在数据库事务内完成。
+- 前台长请求使用 Call 租约与心跳，恢复任务只处理过期租约。
+- 后台 Responses 在上游成功后先保存结果检查点，再完成响应与计费状态。
+- `Idempotency-Key` 并发请求等待首个执行者；哈希冲突返回 400。
+- 密码、角色或状态变更递增 `SessionVersion`，旧 JWT 随即失效。
+- Playground 会话、消息、统计、Call 与请求日志关联在同一事务保存。
+
+## 数据保留
+
+`observability` 配置控制：
+
+- 调用正文默认不保留；启用后默认最多 256 KiB、保留 168 小时，可使用 AES-256-GCM 独立密钥。
+- Call/Attempt 与上游请求日志元数据默认保留 90 天。
+- API 访问日志默认保留 30 天，审计事件默认 180 天，计费和余额流水默认 365 天。
+- 历史 Task、`store: false` Responses 与上游请求日志正文沿用同一正文策略清理。
+
+小时级清理任务使用小批次物理删除，避免单次处理大量历史数据。
+
+## 控制台
+
+| 页面 | 作用 |
+|---|---|
+| Dashboard | 用量与错误统计 |
+| Gateway Channels / Models | 对话上游、Key、Ability、Transport 和模型元数据 |
+| Channels / Capabilities | 图片、视频等能力渠道配置 |
+| Playground | Chat、Responses、Messages、多模态与能力任务测试 |
+| Call Logs | Call、Attempt、usage、计费和正文详情 |
+| Observability | API 访问日志、审计事件、余额流水 |
+| Chat Logs | Playground 对话与消息 |
+| API Docs | 在线协议文档与试用 |
+
+## 启动与构建
 
 ```bash
-# build.bat 执行流程：
-cd console && npm install && npm run build   # 编译前端
-go build -o dist/prism cmd/server/main.go    # 编译后端（前端 embed）
-cp configs/config.example.yaml dist/configs/ # 复制配置模板
-
-# 产物：dist/prism（单二进制，包含前端静态文件）
+cd console
+npm ci
+npm run build
+cd ..
+go build ./cmd/server
 ```
+
+首次启动会运行 GORM AutoMigrate。已有实例升级必须停止全部 HTTP 与 Worker 进程、备份数据库、按文件名顺序执行尚未应用的 `database/migrations/*.sql`，再启动新版本；历史回填不会由 AutoMigrate 完成，也不支持新旧版本滚动混跑。

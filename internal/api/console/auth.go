@@ -1,9 +1,13 @@
 package console
 
 import (
+	"strings"
+
 	"github.com/gin-gonic/gin"
+	"github.com/mirainya/Prism/internal/api/middleware"
 	"github.com/mirainya/Prism/internal/api/resp"
 	"github.com/mirainya/Prism/internal/service"
+	"github.com/mirainya/Prism/pkg/auth"
 	"github.com/mirainya/Prism/pkg/errors"
 	"github.com/mirainya/Prism/pkg/logger"
 )
@@ -27,6 +31,7 @@ func Register(c *gin.Context) {
 		resp.InternalError(c, errors.ErrInternalError)
 		return
 	}
+	c.Set(middleware.ContextKeyUserID, user.ID)
 
 	resp.Success(c, gin.H{
 		"id":       user.ID,
@@ -47,6 +52,8 @@ func Login(c *gin.Context) {
 		resp.BadRequest(c, errors.WithMessage(errors.ErrInvalidParams, err.Error()))
 		return
 	}
+	c.Set(middleware.ContextKeyUserID, loginResp.User.ID)
+	c.Set(middleware.ContextKeyUserRole, string(loginResp.User.Role))
 
 	resp.Success(c, gin.H{
 		"token": loginResp.Token,
@@ -60,13 +67,17 @@ func Login(c *gin.Context) {
 }
 
 func Logout(c *gin.Context) {
-	token := c.GetHeader("Authorization")
-	if token == "" {
+	parts := strings.Fields(c.GetHeader("Authorization"))
+	if len(parts) != 2 || !strings.EqualFold(parts[0], "Bearer") || parts[1] == "" {
 		resp.Success(c, gin.H{"logged_out": true})
 		return
 	}
+	if claims, err := auth.ParseToken(parts[1]); err == nil {
+		c.Set(middleware.ContextKeyUserID, claims.UserID)
+		c.Set(middleware.ContextKeyUserRole, claims.Role)
+	}
 
-	if err := userService.Logout(token); err != nil {
+	if err := userService.Logout(parts[1]); err != nil {
 		logger.Error("logout error: " + err.Error())
 	}
 

@@ -4,6 +4,7 @@ import (
 	"time"
 
 	"github.com/shopspring/decimal"
+	"gorm.io/datatypes"
 )
 
 // RequestType 请求类型
@@ -20,6 +21,8 @@ const (
 // ChannelRequestLog 渠道请求日志
 type ChannelRequestLog struct {
 	BaseModel
+	CallID                string            `gorm:"type:varchar(64);not null;default:'';index" json:"call_id"`
+	AttemptID             uint              `gorm:"not null;default:0;index" json:"attempt_id"`
 	TaskID                uint              `gorm:"index;comment:关联任务ID" json:"task_id"`
 	TaskNo                string            `gorm:"type:varchar(32);index;comment:任务编号" json:"task_no"`
 	ConversationID        uint              `gorm:"index;comment:关联对话ID(Chat)" json:"conversation_id"`
@@ -30,7 +33,7 @@ type ChannelRequestLog struct {
 	IsStream              bool              `gorm:"default:false;comment:是否流式请求" json:"is_stream"`
 	ModelCode             string            `gorm:"type:varchar(50);comment:请求模型" json:"model_code"`
 	VendorModel           string            `gorm:"type:varchar(100);comment:供应商模型" json:"vendor_model"`
-	UpstreamTransport     UpstreamTransport `gorm:"type:varchar(64);default:'';index;comment:实际上游传输协议" json:"upstream_transport"`
+	UpstreamTransport     UpstreamTransport `gorm:"type:varchar(64);not null;default:'';index;comment:实际上游传输协议" json:"upstream_transport"`
 	RequestPath           string            `gorm:"type:varchar(255);comment:实际上游请求路径" json:"request_path"`
 	FinishReason          string            `gorm:"type:varchar(50);comment:完成原因" json:"finish_reason"`
 	ResponsePreview       string            `gorm:"type:text;comment:响应摘要" json:"response_preview"`
@@ -63,13 +66,17 @@ func (ChannelRequestLog) TableName() string {
 // BillingLog 扣费流水表
 type BillingLog struct {
 	BaseModel
-	IdempotentKey string          `gorm:"type:varchar(100);uniqueIndex;not null;comment:幂等键(如task_no)" json:"idempotent_key"`
-	TokenID       uint            `gorm:"index;comment:令牌ID" json:"token_id"`
-	UserID        uint            `gorm:"index;comment:用户ID" json:"user_id"`
-	Amount        decimal.Decimal `gorm:"type:decimal(10,4);not null;comment:金额" json:"amount"`
-	Type          BillingType     `gorm:"type:varchar(10);not null;comment:类型(deduct/refund)" json:"type"`
-	Status        string          `gorm:"type:varchar(10);default:'success';comment:状态" json:"status"`
-	Remark        string          `gorm:"type:varchar(200);comment:备注" json:"remark"`
+	IdempotentKey   string          `gorm:"type:varchar(100);uniqueIndex;not null;comment:幂等键(如task_no)" json:"idempotent_key"`
+	TokenID         uint            `gorm:"index;comment:令牌ID" json:"token_id"`
+	UserID          uint            `gorm:"index;comment:用户ID" json:"user_id"`
+	CallID          string          `gorm:"type:varchar(64);not null;default:'';index" json:"call_id"`
+	AttemptID       uint            `gorm:"not null;default:0;index" json:"attempt_id"`
+	Phase           string          `gorm:"type:varchar(24);not null;default:'';index" json:"phase"`
+	PricingSnapshot datatypes.JSON  `gorm:"type:json" json:"pricing_snapshot,omitempty"`
+	Amount          decimal.Decimal `gorm:"type:decimal(20,8);not null;default:0;comment:金额" json:"amount"`
+	Type            BillingType     `gorm:"type:varchar(10);not null;comment:类型(deduct/refund)" json:"type"`
+	Status          string          `gorm:"type:varchar(10);default:'success';comment:状态" json:"status"`
+	Remark          string          `gorm:"type:varchar(200);comment:备注" json:"remark"`
 }
 
 func (BillingLog) TableName() string {

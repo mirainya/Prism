@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"strconv"
+	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/mirainya/Prism/internal/api/resp"
@@ -15,6 +16,30 @@ import (
 )
 
 var gatewayAdminService = service.NewGatewayAdminService()
+
+type gwChannelKeyResponse struct {
+	ID          uint      `json:"id"`
+	ChannelID   uint      `json:"channel_id"`
+	Name        string    `json:"name"`
+	APIKey      string    `json:"api_key"`
+	MaskedKey   string    `json:"masked_key"`
+	Weight      int       `json:"weight"`
+	Status      int8      `json:"status"`
+	MaxConc     int       `json:"max_conc"`
+	CurrentConc int       `json:"current_conc"`
+	CreatedAt   time.Time `json:"created_at"`
+	UpdatedAt   time.Time `json:"updated_at"`
+}
+
+func newGwChannelKeyResponse(key *model.GwChannelKey) gwChannelKeyResponse {
+	maskedKey := service.MaskCredential(key.APIKey)
+	return gwChannelKeyResponse{
+		ID: key.ID, ChannelID: key.ChannelID, Name: key.Name,
+		APIKey: maskedKey, MaskedKey: maskedKey,
+		Weight: key.Weight, Status: key.Status, MaxConc: key.MaxConc,
+		CurrentConc: key.CurrentConc, CreatedAt: key.CreatedAt, UpdatedAt: key.UpdatedAt,
+	}
+}
 
 // ---------- 渠道 ----------
 
@@ -116,7 +141,11 @@ func ListGwKeys(c *gin.Context) {
 		resp.InternalError(c, pkgErrors.ErrInternalError)
 		return
 	}
-	resp.Success(c, rows)
+	result := make([]gwChannelKeyResponse, len(rows))
+	for i := range rows {
+		result[i] = newGwChannelKeyResponse(&rows[i])
+	}
+	resp.Success(c, result)
 }
 
 // CreateGwKey POST /api/admin/gw/keys
@@ -130,7 +159,7 @@ func CreateGwKey(c *gin.Context) {
 		resp.BadRequest(c, pkgErrors.WithMessage(pkgErrors.ErrInvalidParams, err.Error()))
 		return
 	}
-	resp.Success(c, key)
+	resp.Success(c, newGwChannelKeyResponse(&key))
 }
 
 // UpdateGwKey PUT /api/admin/gw/keys/:id

@@ -3,18 +3,25 @@ package engine
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"net/http"
 	"sort"
+	"strings"
 	"sync"
+	"time"
 
 	"github.com/mirainya/Prism/internal/domain"
 	"github.com/mirainya/Prism/internal/gateway/canonical"
 	"github.com/mirainya/Prism/internal/gateway/routing"
 	"github.com/mirainya/Prism/internal/gateway/transport"
+	"github.com/mirainya/Prism/internal/model"
 	"github.com/mirainya/Prism/internal/service"
+	"github.com/mirainya/Prism/pkg/logger"
+	"go.uber.org/zap"
+	"gorm.io/datatypes"
 )
 
 var (
@@ -32,26 +39,48 @@ type Engine struct {
 	selector   Selector
 	transports *transport.Registry
 	billing    *service.BillingService
+	apiCalls   *service.APICallService
 	circuit    *routing.Circuit
 }
 
-func New(selector Selector, transports *transport.Registry, billing *service.BillingService) (*Engine, error) {
+func New(
+	selector Selector,
+	transports *transport.Registry,
+	billing *service.BillingService,
+	apiCalls ...*service.APICallService,
+) (*Engine, error) {
 	if selector == nil || transports == nil || billing == nil {
 		return nil, errors.New("selector, transport registry, and billing service are required")
 	}
-	return &Engine{selector: selector, transports: transports, billing: billing, circuit: routing.NewCircuit()}, nil
+	var callService *service.APICallService
+	if len(apiCalls) > 0 {
+		callService = apiCalls[0]
+	}
+	return &Engine{
+		selector: selector, transports: transports, billing: billing,
+		apiCalls: callService, circuit: routing.NewCircuit(),
+	}, nil
 }
 
 type RoutePreparer func(context.Context, canonical.Request, *routing.RouteResult) (canonical.Request, error)
 type TransportPreparer func(context.Context, canonical.Request, transport.ID) (canonical.Request, error)
 
 type ExecuteOptions struct {
-	UserID           uint
-	TokenID          uint
-	BillingKey       string
-	MaxAttempts      int
-	PrepareRoute     RoutePreparer
-	PrepareTransport TransportPreparer
+	UserID              uint
+	TokenID             uint
+	CallID              string
+	RequestID           string
+	DownstreamEndpoint  string
+	DownstreamRequest   []byte
+	ResourceType        string
+	ResourceID          string
+	ConversationID      uint
+	KeepCallOpenOnError bool
+	DeferCallCompletion bool
+	BillingKey          string
+	MaxAttempts         int
+	PrepareRoute        RoutePreparer
+	PrepareTransport    TransportPreparer
 }
 
 type Result struct {
@@ -59,37 +88,643 @@ type Result struct {
 	Prepared     transport.PreparedRequest
 	Route        *routing.RouteResult
 	RequestLogID uint
+	CallID       string
+	AttemptID    uint
 	Stream       *StreamResult
+
+	ledger *callLifecycle
+	usage  *canonical.Usage
 }
 
 type StreamResult struct {
-	Prepared transport.PreparedRequest
-	Route    *routing.RouteResult
+	Prepared  transport.PreparedRequest
+	Route     *routing.RouteResult
+	CallID    string
+	AttemptID uint
 
-	stream      transport.EventStream
-	reservation *Reservation
-	requestLog  *RequestLog
-	release     func()
+	stream              transport.EventStream
+	reservation         *Reservation
+	requestLog          *RequestLog
+	ledger              *callLifecycle
+	keepCallOpenOnError bool
+	deferCallCompletion bool
+	release             func()
 
-	nextMu     sync.Mutex
-	prefetched *canonical.Event
-	stateMu    sync.Mutex
-	produced   bool
-	terminal   bool
-	usage      *canonical.Usage
-	done       bool
-	finishErr  error
+	nextMu             sync.Mutex
+	prefetched         *canonical.Event
+	stateMu            sync.Mutex
+	produced           bool
+	terminal           bool
+	usage              *canonical.Usage
+	providerResponseID string
+	done               bool
+	finishErr          error
+	ledgerActive       bool
+	ledgerOutcome      *streamLedgerOutcome
 
-	finishOnce sync.Once
-	closeOnce  sync.Once
-	closeErr   error
+	finishOnce    sync.Once
+	firstByteOnce sync.Once
+	closeOnce     sync.Once
+	closeErr      error
 }
 
-func (e *Engine) Execute(ctx context.Context, request canonical.Request, options ExecuteOptions) (*Result, error) {
+type callLifecycle struct {
+	service         *service.APICallService
+	callID          string
+	leaseOwner      string
+	leaseStop       chan struct{}
+	leaseDone       chan struct{}
+	leaseOnce       sync.Once
+	executionCtx    context.Context
+	cancelExecution context.CancelCauseFunc
+	leaseDuration   time.Duration
+	leaseHeartbeat  time.Duration
+
+	mu                 sync.Mutex
+	finalAttemptID     uint
+	providerResponseID string
+	leaseErr           error
+	finished           bool
+}
+
+const (
+	callLeaseDuration  = 5 * time.Minute
+	callLeaseHeartbeat = time.Minute
+)
+
+type streamLedgerOutcome struct {
+	usage              *canonical.Usage
+	requestErr         error
+	attemptCompleted   bool
+	cancelled          bool
+	clientDisconnected bool
+}
+
+func newCallLifecycle(ctx context.Context, callService *service.APICallService, callID string) (*callLifecycle, error) {
+	return newCallLifecycleWithOptions(ctx, callService, callID, callLeaseDuration, callLeaseHeartbeat)
+}
+
+func newCallLifecycleWithOptions(
+	ctx context.Context,
+	callService *service.APICallService,
+	callID string,
+	duration time.Duration,
+	heartbeat time.Duration,
+) (*callLifecycle, error) {
+	if callService == nil || strings.TrimSpace(callID) == "" {
+		return nil, nil
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if duration <= 0 || heartbeat <= 0 || heartbeat >= duration {
+		return nil, errors.New("invalid API call lease options")
+	}
+	executionCtx, cancelExecution := context.WithCancelCause(ctx)
+	lifecycle := &callLifecycle{
+		service: callService, callID: callID,
+		leaseOwner: service.GenerateRequestID(),
+		leaseStop:  make(chan struct{}), leaseDone: make(chan struct{}),
+		executionCtx: executionCtx, cancelExecution: cancelExecution,
+		leaseDuration: duration, leaseHeartbeat: heartbeat,
+	}
+	if err := callService.AcquireCallLease(callID, lifecycle.leaseOwner, time.Now().Add(duration)); err != nil {
+		cancelExecution(err)
+		return nil, err
+	}
+	go lifecycle.heartbeatLease()
+	return lifecycle, nil
+}
+
+func (l *callLifecycle) Context() context.Context {
+	if l == nil || l.executionCtx == nil {
+		return context.Background()
+	}
+	return l.executionCtx
+}
+
+func (l *callLifecycle) leaseFailure() error {
+	if l == nil {
+		return nil
+	}
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.leaseErr
+}
+
+func (l *callLifecycle) heartbeatLease() {
+	if l == nil || l.service == nil || l.leaseStop == nil || l.leaseDone == nil {
+		return
+	}
+	defer close(l.leaseDone)
+	ticker := time.NewTicker(l.leaseHeartbeat)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ticker.C:
+			if err := l.service.RenewCallLease(l.callID, l.leaseOwner, time.Now().Add(l.leaseDuration)); err != nil {
+				logLedgerError("renew API call execution lease", l.callID, 0, err)
+				l.mu.Lock()
+				if l.leaseErr == nil {
+					l.leaseErr = err
+				}
+				l.mu.Unlock()
+				l.cancelExecution(err)
+				return
+			}
+		case <-l.leaseStop:
+			return
+		case <-l.executionCtx.Done():
+			return
+		}
+	}
+}
+
+func (l *callLifecycle) releaseLease() {
+	if l == nil || l.service == nil {
+		return
+	}
+	l.leaseOnce.Do(func() {
+		if l.leaseStop != nil {
+			close(l.leaseStop)
+		}
+		if l.leaseDone != nil {
+			<-l.leaseDone
+		}
+		if err := l.service.ReleaseCallLease(l.callID, l.leaseOwner); err != nil {
+			logLedgerError("release API call execution lease", l.callID, 0, err)
+		}
+		if l.cancelExecution != nil {
+			l.cancelExecution(context.Canceled)
+		}
+	})
+}
+
+func (e *Engine) beginCall(
+	ctx context.Context,
+	request canonical.Request,
+	operation transport.Operation,
+	options ExecuteOptions,
+) (*callLifecycle, error) {
+	if e.apiCalls == nil {
+		return nil, nil
+	}
+
+	callID := strings.TrimSpace(options.CallID)
+	if callID != "" {
+		err := e.apiCalls.MarkCallRunning(callID)
+		if err == nil {
+			return newCallLifecycle(ctx, e.apiCalls, callID)
+		}
+		if !errors.Is(err, service.ErrAPICallNotFound) {
+			return nil, err
+		}
+	}
+
+	store := request.Store != nil && *request.Store
+	call, err := e.apiCalls.StartCall(&service.StartCallRequest{
+		ID:             callID,
+		RequestID:      options.RequestID,
+		UserID:         options.UserID,
+		TokenID:        options.TokenID,
+		Endpoint:       downstreamEndpoint(options.DownstreamEndpoint, request.Endpoint),
+		Operation:      string(operation),
+		Model:          request.Model,
+		IsStream:       request.Stream,
+		Background:     request.Background,
+		Store:          store,
+		ResourceType:   options.ResourceType,
+		ResourceID:     options.ResourceID,
+		ConversationID: options.ConversationID,
+	})
+	if err != nil {
+		return nil, err
+	}
+	if err := e.apiCalls.MarkCallRunning(call.ID); err != nil {
+		return nil, err
+	}
+	return newCallLifecycle(ctx, e.apiCalls, call.ID)
+}
+
+func downstreamEndpoint(explicit string, endpoint canonical.Endpoint) string {
+	if value := strings.TrimSpace(explicit); value != "" {
+		return value
+	}
+	switch endpoint {
+	case canonical.EndpointOpenAIChat:
+		return "/v1/chat/completions"
+	case canonical.EndpointAnthropic:
+		return "/v1/messages"
+	case canonical.EndpointOpenAIResponses:
+		return "/v1/responses"
+	default:
+		return string(endpoint)
+	}
+}
+
+func (l *callLifecycle) startAttempt(
+	route *routing.RouteResult,
+	prepared transport.PreparedRequest,
+) (*model.APICallAttempt, error) {
+	if l == nil || l.service == nil {
+		return nil, nil
+	}
+	path, _ := logURL(prepared.URL)
+	attempt, err := l.service.StartAttempt(&service.StartAttemptRequest{
+		CallID:      l.callID,
+		AbilityID:   route.AbilityID,
+		ChannelID:   route.ChannelID,
+		KeyID:       route.KeyID,
+		Protocol:    route.Protocol,
+		VendorModel: route.VendorModel,
+		Transport:   route.Transport,
+		RequestPath: path,
+	})
+	if err != nil {
+		return nil, err
+	}
+	l.mu.Lock()
+	l.finalAttemptID = attempt.ID
+	l.mu.Unlock()
+	return attempt, nil
+}
+
+func (l *callLifecycle) markFirstByte(attemptID uint) {
+	if l == nil || l.service == nil || attemptID == 0 {
+		return
+	}
+	if err := l.service.MarkAttemptFirstByte(attemptID); err != nil {
+		logLedgerError("mark API call attempt first byte", l.callID, attemptID, err)
+	}
+}
+
+func (l *callLifecycle) recordPayload(attemptID uint, kind string, data []byte) {
+	if l == nil || l.service == nil || len(data) == 0 {
+		return
+	}
+	err := l.service.RecordPayload(&model.APICallPayload{
+		CallID: l.callID, AttemptID: attemptID, Kind: kind,
+		ContentType: "application/json", Data: append([]byte(nil), data...),
+	})
+	if err != nil {
+		logLedgerError("record API call payload", l.callID, attemptID, err)
+	}
+}
+
+func (l *callLifecycle) completeAttempt(attemptID uint, usage *canonical.Usage, providerResponseID string) {
+	if l == nil || l.service == nil || attemptID == 0 {
+		return
+	}
+	l.mu.Lock()
+	if providerResponseID != "" {
+		l.providerResponseID = providerResponseID
+	}
+	l.mu.Unlock()
+	values := usageValues(usage)
+	err := l.service.CompleteAttempt(attemptID, &service.CompleteAttemptRequest{
+		HTTPStatus:            http.StatusOK,
+		InputTokens:           values.input,
+		OutputTokens:          values.output,
+		TotalTokens:           values.total,
+		CachedInputTokens:     values.cached,
+		ReasoningOutputTokens: values.reasoning,
+		UsageJSON:             values.raw,
+		ProviderResponseID:    providerResponseID,
+	})
+	if err != nil {
+		logLedgerError("complete API call attempt", l.callID, attemptID, err)
+	}
+}
+
+func (l *callLifecycle) failAttempt(attemptID uint, requestErr error, usage *canonical.Usage, providerResponseID string) {
+	if l == nil || l.service == nil || attemptID == 0 {
+		return
+	}
+	detail := ledgerErrorDetail(requestErr)
+	values := usageValues(usage)
+	err := l.service.FailAttempt(attemptID, &service.FailAttemptRequest{
+		HTTPStatus:            detail.status,
+		ErrorType:             detail.errorType,
+		ErrorCode:             detail.code,
+		ErrorMessage:          detail.message,
+		ErrorRetryable:        detail.retryable,
+		InputTokens:           values.input,
+		OutputTokens:          values.output,
+		TotalTokens:           values.total,
+		CachedInputTokens:     values.cached,
+		ReasoningOutputTokens: values.reasoning,
+		UsageJSON:             values.raw,
+		ProviderResponseID:    providerResponseID,
+	})
+	if err != nil {
+		logLedgerError("fail API call attempt", l.callID, attemptID, err)
+	}
+}
+
+func (l *callLifecycle) cancelAttempt(attemptID uint, requestErr error) {
+	if l == nil || l.service == nil || attemptID == 0 {
+		return
+	}
+	detail := ledgerErrorDetail(requestErr)
+	err := l.service.CancelAttempt(attemptID, &service.CancelAttemptRequest{
+		HTTPStatus:     detail.status,
+		ErrorType:      detail.errorType,
+		ErrorCode:      detail.code,
+		ErrorMessage:   detail.message,
+		ErrorRetryable: false,
+	})
+	if err != nil {
+		logLedgerError("cancel API call attempt", l.callID, attemptID, err)
+	}
+}
+
+func (l *callLifecycle) completeCall(attemptID uint, usage *canonical.Usage) error {
+	_, ok := l.beginFinish(attemptID)
+	if !ok {
+		return nil
+	}
+	l.mu.Lock()
+	providerResponseID := l.providerResponseID
+	l.mu.Unlock()
+	values := usageValues(usage)
+	err := l.service.CompleteCall(l.callID, &service.CompleteCallRequest{
+		LeaseOwner:             l.leaseOwner,
+		FinalAttemptID:         attemptID,
+		InputTokens:            values.input,
+		OutputTokens:           values.output,
+		TotalTokens:            values.total,
+		CachedInputTokens:      values.cached,
+		ReasoningOutputTokens:  values.reasoning,
+		UsageJSON:              values.raw,
+		ProviderResponseID:     providerResponseID,
+		HTTPStatus:             http.StatusOK,
+		CompleteStartedAttempt: true,
+	})
+	if err != nil {
+		logLedgerError("complete API call", l.callID, attemptID, err)
+	}
+	l.releaseLease()
+	return err
+}
+
+func (l *callLifecycle) failCall(requestErr error, usage *canonical.Usage, clientDisconnected bool) error {
+	attemptID, ok := l.beginFinish(0)
+	if !ok {
+		return nil
+	}
+	detail := ledgerErrorDetail(requestErr)
+	values := usageValues(usage)
+	err := l.service.FailCall(l.callID, &service.FailCallRequest{
+		LeaseOwner:            l.leaseOwner,
+		FinalAttemptID:        attemptID,
+		HTTPStatus:            detail.status,
+		ErrorType:             detail.errorType,
+		ErrorCode:             detail.code,
+		ErrorMessage:          detail.message,
+		ErrorRetryable:        detail.retryable,
+		InputTokens:           values.input,
+		OutputTokens:          values.output,
+		TotalTokens:           values.total,
+		CachedInputTokens:     values.cached,
+		ReasoningOutputTokens: values.reasoning,
+		UsageJSON:             values.raw,
+		ClientDisconnected:    clientDisconnected,
+		FailStartedAttempt:    true,
+	})
+	if err != nil {
+		logLedgerError("fail API call", l.callID, attemptID, err)
+	}
+	l.releaseLease()
+	return err
+}
+
+func (l *callLifecycle) cancelCall(requestErr error, clientDisconnected bool) error {
+	attemptID, ok := l.beginFinish(0)
+	if !ok {
+		return nil
+	}
+	detail := ledgerErrorDetail(requestErr)
+	err := l.service.CancelCall(l.callID, &service.CancelCallRequest{
+		LeaseOwner:         l.leaseOwner,
+		FinalAttemptID:     attemptID,
+		HTTPStatus:         detail.status,
+		ErrorType:          detail.errorType,
+		ErrorCode:          detail.code,
+		ErrorMessage:       detail.message,
+		ClientDisconnected: clientDisconnected,
+	})
+	if err != nil {
+		logLedgerError("cancel API call", l.callID, 0, err)
+	}
+	l.releaseLease()
+	return err
+}
+
+// CompleteDelivery marks a deferred call successful after its response has
+// been encoded and accepted by the downstream writer.
+func (r *Result) CompleteDelivery() error {
+	if r == nil || r.ledger == nil {
+		return nil
+	}
+	return r.ledger.completeCall(r.AttemptID, r.usage)
+}
+
+// FailDelivery terminates a deferred call when downstream encoding or writing
+// fails. Writer failures should set clientDisconnected so the call is cancelled.
+func (r *Result) FailDelivery(err error, clientDisconnected bool) error {
+	if r == nil || r.ledger == nil {
+		return nil
+	}
+	if err == nil {
+		err = errors.New("downstream response delivery failed")
+	}
+	if clientDisconnected {
+		return r.ledger.cancelCall(err, true)
+	}
+	return r.ledger.failCall(err, r.usage, false)
+}
+
+// CancelDelivery terminates a deferred call without treating an explicit
+// application cancellation as a disconnected downstream client.
+func (r *Result) CancelDelivery(err error, clientDisconnected bool) error {
+	if r == nil || r.ledger == nil {
+		return nil
+	}
+	if err == nil {
+		err = context.Canceled
+	}
+	return r.ledger.cancelCall(err, clientDisconnected)
+}
+
+func (l *callLifecycle) beginFinish(preferredAttemptID uint) (uint, bool) {
+	if l == nil || l.service == nil {
+		return 0, false
+	}
+	l.mu.Lock()
+	if l.finished {
+		attemptID := l.finalAttemptID
+		l.mu.Unlock()
+		return attemptID, false
+	}
+	if preferredAttemptID > 0 {
+		l.finalAttemptID = preferredAttemptID
+	}
+	l.finished = true
+	attemptID := l.finalAttemptID
+	l.mu.Unlock()
+	return attemptID, true
+}
+
+func (l *callLifecycle) isFinished() bool {
+	if l == nil {
+		return true
+	}
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.finished
+}
+
+type canonicalUsageValues struct {
+	input, output, total, cached, reasoning int
+	raw                                     datatypes.JSON
+}
+
+func usageValues(usage *canonical.Usage) canonicalUsageValues {
+	if usage == nil {
+		return canonicalUsageValues{}
+	}
+	raw, _ := json.Marshal(usage)
+	return canonicalUsageValues{
+		input: usage.InputTokens, output: usage.OutputTokens, total: usage.TotalTokens,
+		cached: usage.CachedInputTokens, reasoning: usage.ReasoningOutputTokens,
+		raw: datatypes.JSON(raw),
+	}
+}
+
+type ledgerError struct {
+	status    int
+	errorType string
+	code      string
+	message   string
+	retryable bool
+}
+
+func ledgerErrorDetail(err error) ledgerError {
+	if err == nil {
+		return ledgerError{}
+	}
+	result := ledgerError{message: err.Error(), errorType: "execution_error", code: "execution_failed"}
+	if errors.Is(err, context.Canceled) {
+		result.errorType = "cancelled"
+		result.code = "client_cancelled"
+		return result
+	}
+	if errors.Is(err, context.DeadlineExceeded) {
+		result.status = http.StatusGatewayTimeout
+		result.errorType = "timeout_error"
+		result.code = "deadline_exceeded"
+		result.retryable = true
+		return result
+	}
+	switch {
+	case errors.Is(err, routing.ErrModelNotFound):
+		result.status = http.StatusNotFound
+		result.errorType = "invalid_request_error"
+		result.code = "model_not_found"
+		return result
+	case errors.Is(err, routing.ErrCapabilityUnavailable),
+		errors.Is(err, routing.ErrNoCompatibleTransport),
+		errors.Is(err, ErrNoTransportPlan):
+		result.status = http.StatusBadRequest
+		result.errorType = "invalid_request_error"
+		result.code = "unsupported_model_capability"
+		return result
+	case errors.Is(err, routing.ErrNoRoute):
+		result.status = http.StatusServiceUnavailable
+		result.errorType = "server_error"
+		result.code = "model_unavailable"
+		result.retryable = true
+		return result
+	case errors.Is(err, service.ErrInsufficientTokenBalance),
+		errors.Is(err, service.ErrInsufficientUserBalance):
+		result.status = http.StatusTooManyRequests
+		result.errorType = "insufficient_quota"
+		result.code = "insufficient_quota"
+		return result
+	}
+	if appErr, ok := domain.IsAppError(err); ok {
+		result.status = appErr.HTTPStatus
+		result.code = appErr.Code
+		result.errorType = "api_error"
+		return result
+	}
+	result.status = domain.UpstreamStatusCode(err)
+	if result.status > 0 {
+		result.errorType = "upstream_error"
+		result.code = "upstream_http_error"
+		result.retryable = result.status == http.StatusRequestTimeout ||
+			result.status == http.StatusConflict || result.status == http.StatusTooManyRequests || result.status >= 500
+	}
+	return result
+}
+
+func logLedgerError(action, callID string, attemptID uint, err error) {
+	if err == nil || logger.L == nil {
+		return
+	}
+	logger.Error(action,
+		zap.String("call_id", callID),
+		zap.Uint("attempt_id", attemptID),
+		zap.Error(err),
+	)
+}
+
+func (e *Engine) Execute(
+	ctx context.Context,
+	request canonical.Request,
+	options ExecuteOptions,
+) (result *Result, executeErr error) {
 	operation, err := operationFor(request.Endpoint)
 	if err != nil {
 		return nil, err
 	}
+	requestCtx := ctx
+	ledger, err := e.beginCall(ctx, request, operation, options)
+	if err != nil {
+		return nil, err
+	}
+	if ledger != nil {
+		ctx = ledger.Context()
+		options.CallID = ledger.callID
+		ledger.recordPayload(0, model.APICallPayloadRequest, options.DownstreamRequest)
+	}
+	streamHandedOff := false
+	defer func() {
+		if ledger == nil || streamHandedOff || ledger.isFinished() {
+			return
+		}
+		if options.DeferCallCompletion && executeErr == nil && result != nil {
+			return
+		}
+		if options.KeepCallOpenOnError && executeErr != nil {
+			ledger.releaseLease()
+			return
+		}
+		failure := executeErr
+		if failure == nil {
+			failure = errors.New("Gateway V2 execution ended without a result")
+		}
+		if leaseErr := ledger.leaseFailure(); leaseErr != nil {
+			ledger.failCall(errors.Join(failure, leaseErr), nil, false)
+			return
+		}
+		if errors.Is(failure, context.Canceled) || errors.Is(requestCtx.Err(), context.Canceled) {
+			ledger.cancelCall(failure, true)
+			return
+		}
+		ledger.failCall(failure, nil, false)
+	}()
+
 	requirements := request.RequiredFeatures()
 	plans, err := e.plans(ctx, operation, request, requirements, options.PrepareTransport)
 	if err != nil {
@@ -159,16 +794,30 @@ func (e *Engine) Execute(ctx context.Context, request canonical.Request, options
 			}
 			continue
 		}
-		result, upstreamErr, err := e.executeSelected(ctx, attemptRequest, operation, attemptRequirements, route, attemptBillingOptions(options, attempt))
-		if err == nil && result != nil && result.Stream != nil && maxAttempts > 1 {
-			if _, prefetchErr := result.Stream.prefetch(ctx); prefetchErr != nil {
+		selectedResult, upstreamErr, err := e.executeSelected(
+			ctx,
+			attemptRequest,
+			operation,
+			attemptRequirements,
+			route,
+			attemptBillingOptions(options, attempt),
+			ledger,
+		)
+		if err == nil && selectedResult != nil && selectedResult.Stream != nil && maxAttempts > 1 {
+			if _, prefetchErr := selectedResult.Stream.prefetch(ctx); prefetchErr != nil {
 				upstreamErr, err = true, prefetchErr
 			} else {
-				return result, nil
+				selectedResult.Stream.activateLedger()
+				streamHandedOff = true
+				return selectedResult, nil
 			}
 		}
 		if err == nil {
-			return result, nil
+			if selectedResult != nil && selectedResult.Stream != nil {
+				selectedResult.Stream.activateLedger()
+				streamHandedOff = true
+			}
+			return selectedResult, nil
 		}
 		if !upstreamErr || !retryableUpstreamError(ctx, err) || attempt+1 >= maxAttempts {
 			return nil, errors.Join(append(attemptErrors, err)...)
@@ -233,7 +882,15 @@ func filterHintedPlans(plans []plannedTransport, hints []string) []plannedTransp
 	return filtered
 }
 
-func (e *Engine) executeSelected(ctx context.Context, request canonical.Request, operation transport.Operation, requirements canonical.FeatureSet, route *routing.RouteResult, options ExecuteOptions) (*Result, bool, error) {
+func (e *Engine) executeSelected(
+	ctx context.Context,
+	request canonical.Request,
+	operation transport.Operation,
+	requirements canonical.FeatureSet,
+	route *routing.RouteResult,
+	options ExecuteOptions,
+	ledger *callLifecycle,
+) (*Result, bool, error) {
 	selected, ok := e.transports.Get(route.Transport)
 	if !ok {
 		e.selector.Release(route.KeyID)
@@ -249,14 +906,37 @@ func (e *Engine) executeSelected(ctx context.Context, request canonical.Request,
 		e.selector.Release(route.KeyID)
 		return nil, false, err
 	}
-	reservation, err := Reserve(e.billing, options.TokenID, options.UserID, route, request, options.BillingKey)
+	attempt, err := ledger.startAttempt(route, prepared)
 	if err != nil {
 		e.selector.Release(route.KeyID)
 		return nil, false, err
 	}
-	requestLog, err := StartRequestLog(route, prepared, operation)
+	attemptID := uint(0)
+	if attempt != nil {
+		attemptID = attempt.ID
+	}
+	ledger.recordPayload(attemptID, model.APICallPayloadUpstreamRequest, prepared.Body)
+	billingContext := callBillingContext(options.CallID, attemptID, route)
+	reservation, err := reserveWithBillingContext(
+		e.billing,
+		options.TokenID,
+		options.UserID,
+		route,
+		request,
+		options.BillingKey,
+		billingContext,
+	)
+	if err != nil {
+		ledger.failAttempt(attemptID, err, nil, "")
+		e.selector.Release(route.KeyID)
+		return nil, false, err
+	}
+	requestLog, err := StartRequestLog(route, prepared, operation, RequestLogLink{
+		CallID: options.CallID, AttemptID: attemptID,
+	})
 	if err != nil {
 		cancelErr := reservation.Cancel()
+		ledger.failAttempt(attemptID, errors.Join(err, cancelErr), nil, "")
 		e.selector.Release(route.KeyID)
 		return nil, false, errors.Join(err, cancelErr)
 	}
@@ -267,29 +947,95 @@ func (e *Engine) executeSelected(ctx context.Context, request canonical.Request,
 				streamErr = errors.New("transport returned a nil event stream")
 			}
 			cancelErr := reservation.Cancel()
-			logErr := requestLog.CompleteStream(0, errors.Join(streamErr, cancelErr))
+			combinedErr := errors.Join(streamErr, cancelErr)
+			logErr := requestLog.CompleteStream(0, combinedErr)
+			if errors.Is(streamErr, context.Canceled) || errors.Is(ctx.Err(), context.Canceled) {
+				ledger.cancelAttempt(attemptID, streamErr)
+			} else {
+				ledger.failAttempt(attemptID, combinedErr, nil, "")
+			}
 			e.selector.Release(route.KeyID)
 			return nil, true, errors.Join(streamErr, cancelErr, logErr)
 		}
-		return &Result{Prepared: prepared, Route: route, RequestLogID: requestLog.Record().ID, Stream: &StreamResult{
-			stream: stream, Prepared: prepared, Route: route, reservation: reservation, requestLog: requestLog,
-			release: func() { e.selector.Release(route.KeyID) },
-		}}, false, nil
+		return &Result{
+			Prepared: prepared, Route: route, RequestLogID: requestLog.Record().ID,
+			CallID: options.CallID, AttemptID: attemptID,
+			Stream: &StreamResult{
+				stream: stream, Prepared: prepared, Route: route, CallID: options.CallID, AttemptID: attemptID,
+				reservation: reservation, requestLog: requestLog, ledger: ledger,
+				keepCallOpenOnError: options.KeepCallOpenOnError,
+				deferCallCompletion: options.DeferCallCompletion,
+				release:             func() { e.selector.Release(route.KeyID) },
+			}}, false, nil
 	}
 
 	response, executeErr := selected.ExecutePrepared(ctx, invocation, prepared)
 	e.selector.Release(route.KeyID)
 	if executeErr != nil {
+		leaseErr := ledger.leaseFailure()
+		if leaseErr != nil {
+			executeErr = errors.Join(leaseErr, executeErr)
+		}
 		cancelErr := reservation.Cancel()
-		logErr := requestLog.CompleteResponse(nil, 0, errors.Join(executeErr, cancelErr))
+		combinedErr := errors.Join(executeErr, cancelErr)
+		logErr := requestLog.CompleteResponse(nil, 0, combinedErr)
+		if leaseErr != nil {
+			ledger.failAttempt(attemptID, combinedErr, nil, "")
+		} else if errors.Is(executeErr, context.Canceled) || errors.Is(ctx.Err(), context.Canceled) {
+			ledger.cancelAttempt(attemptID, executeErr)
+		} else {
+			ledger.failAttempt(attemptID, combinedErr, nil, "")
+		}
 		return nil, true, errors.Join(executeErr, cancelErr, logErr)
+	}
+	if leaseErr := ledger.leaseFailure(); leaseErr != nil {
+		cancelErr := reservation.Cancel()
+		combinedErr := errors.Join(leaseErr, cancelErr)
+		logErr := requestLog.CompleteResponse(nil, 0, combinedErr)
+		ledger.failAttempt(attemptID, combinedErr, nil, "")
+		return nil, false, errors.Join(combinedErr, logErr)
+	}
+	ledger.markFirstByte(attemptID)
+	if responseBody, marshalErr := json.Marshal(response); marshalErr == nil {
+		ledger.recordPayload(attemptID, model.APICallPayloadUpstreamResponse, responseBody)
+	}
+	providerResponseID := response.ProviderResponseID
+	if providerResponseID == "" {
+		providerResponseID = response.ID
 	}
 	settleErr := reservation.Settle(response.Usage)
 	logErr := requestLog.CompleteResponse(&response, http.StatusOK, settleErr)
+	ledger.completeAttempt(attemptID, response.Usage, providerResponseID)
 	if settleErr != nil || logErr != nil {
 		return nil, false, errors.Join(settleErr, logErr)
 	}
-	return &Result{Response: &response, Prepared: prepared, Route: route, RequestLogID: requestLog.Record().ID}, false, nil
+	if !options.DeferCallCompletion {
+		if completeErr := ledger.completeCall(attemptID, response.Usage); errors.Is(completeErr, service.ErrAPICallLeaseUnavailable) {
+			return nil, false, completeErr
+		}
+	}
+	return &Result{
+		Response: &response, Prepared: prepared, Route: route, RequestLogID: requestLog.Record().ID,
+		CallID: options.CallID, AttemptID: attemptID, ledger: ledger, usage: cloneUsage(response.Usage),
+	}, false, nil
+}
+
+func callBillingContext(callID string, attemptID uint, route *routing.RouteResult) service.BillingContext {
+	if callID == "" || route == nil {
+		return service.BillingContext{}
+	}
+	snapshot, _ := json.Marshal(map[string]any{
+		"price_mode":   route.PriceMode,
+		"input_price":  route.InputPrice,
+		"output_price": route.OutputPrice,
+		"public_model": route.ModelName,
+		"vendor_model": route.VendorModel,
+		"transport":    route.Transport,
+	})
+	return service.BillingContext{
+		CallID: callID, AttemptID: attemptID,
+		PricingSnapshot: datatypes.JSON(snapshot),
+	}
 }
 
 func attemptBillingOptions(options ExecuteOptions, attempt int) ExecuteOptions {
@@ -355,20 +1101,35 @@ func (s *StreamResult) nextLocked(ctx context.Context) (canonical.Event, error) 
 	event, err := s.stream.Next(ctx)
 	if err != nil {
 		cause := err
+		leaseErr := s.ledger.leaseFailure()
+		if leaseErr != nil {
+			cause = errors.Join(leaseErr, err)
+		}
 		if errors.Is(err, io.EOF) {
 			cause = ErrStreamEndedWithoutTerminal
+			if leaseErr != nil {
+				cause = errors.Join(leaseErr, cause)
+			}
 		}
 		disposition := streamCancel
 		if s.hasProduced() {
 			disposition = streamRetain
 		}
-		return canonical.Event{}, s.finish(disposition, nil, cause, true)
+		cancelled := leaseErr == nil && (errors.Is(err, context.Canceled) || errors.Is(ctx.Err(), context.Canceled))
+		return canonical.Event{}, s.finish(disposition, nil, cause, true, cancelled, cancelled)
 	}
 
 	s.observe(event)
+	if leaseErr := s.ledger.leaseFailure(); leaseErr != nil {
+		disposition := streamCancel
+		if s.hasProduced() {
+			disposition = streamRetain
+		}
+		return canonical.Event{}, s.finish(disposition, nil, leaseErr, true, false, false)
+	}
 	if isTerminalEvent(event.Type) {
 		s.markTerminal()
-		return event, s.finish(streamSettle, s.currentUsage(), terminalEventError(event), false)
+		return event, s.finish(streamSettle, s.currentUsage(), terminalEventError(event), false, false, false)
 	}
 	return event, nil
 }
@@ -384,27 +1145,92 @@ func (s *StreamResult) Close() error {
 		return s.finishedError()
 	}
 	if s.isTerminal() {
-		return s.finish(streamSettle, s.currentUsage(), nil, false)
+		return s.finish(streamSettle, s.currentUsage(), nil, false, false, false)
 	}
 	disposition := streamCancel
 	if s.hasProduced() {
 		disposition = streamRetain
 	}
-	return s.finish(disposition, nil, ErrStreamClosedWithoutTerminal, true)
+	return s.finish(disposition, nil, ErrStreamClosedWithoutTerminal, true, true, true)
+}
+
+// Abort stops a stream with an explicit downstream outcome. It is used when
+// protocol encoding fails or the client writer rejects a frame.
+func (s *StreamResult) Abort(err error, clientDisconnected bool) error {
+	if s == nil {
+		return nil
+	}
+	if err == nil {
+		err = errors.New("downstream stream delivery failed")
+	}
+	s.closeUnderlying()
+	s.nextMu.Lock()
+	defer s.nextMu.Unlock()
+	if s.isDone() {
+		return s.FailDelivery(err, clientDisconnected)
+	}
+	disposition := streamCancel
+	if s.hasProduced() {
+		disposition = streamRetain
+	}
+	return s.finish(disposition, nil, err, true, clientDisconnected, clientDisconnected)
+}
+
+// CompleteDelivery completes a deferred streaming call after its terminal
+// event has been written to the downstream response.
+func (s *StreamResult) CompleteDelivery() error {
+	if s == nil || s.ledger == nil {
+		return nil
+	}
+	return s.ledger.completeCall(s.AttemptID, s.currentUsage())
+}
+
+// FailDelivery records a deferred streaming response that could not be sent.
+func (s *StreamResult) FailDelivery(err error, clientDisconnected bool) error {
+	if s == nil || s.ledger == nil {
+		return nil
+	}
+	if err == nil {
+		err = errors.New("downstream stream delivery failed")
+	}
+	if clientDisconnected {
+		return s.ledger.cancelCall(err, true)
+	}
+	return s.ledger.failCall(err, s.currentUsage(), false)
 }
 
 func (s *StreamResult) observe(event canonical.Event) {
 	s.requestLog.Observe(event)
+	s.firstByteOnce.Do(func() {
+		s.ledger.markFirstByte(s.AttemptID)
+	})
 	s.stateMu.Lock()
 	s.produced = true
 	if usage := usageFromEvent(event); usage != nil {
 		copy := *usage
 		s.usage = &copy
 	}
+	if event.ProviderResponseID != "" {
+		s.providerResponseID = event.ProviderResponseID
+	}
+	if event.Response != nil {
+		if event.Response.ProviderResponseID != "" {
+			s.providerResponseID = event.Response.ProviderResponseID
+		} else if event.Response.ID != "" && s.providerResponseID == "" {
+			s.providerResponseID = event.Response.ID
+		}
+	}
 	s.stateMu.Unlock()
 }
 
-func (s *StreamResult) finish(disposition streamDisposition, usage *canonical.Usage, requestErr error, exposeRequestErr bool) error {
+func (s *StreamResult) finish(
+	disposition streamDisposition,
+	usage *canonical.Usage,
+	requestErr error,
+	exposeRequestErr bool,
+	cancelled bool,
+	clientDisconnected bool,
+) error {
 	s.finishOnce.Do(func() {
 		closeErr := s.closeUnderlying()
 		var billingErr error
@@ -414,9 +1240,10 @@ func (s *StreamResult) finish(disposition streamDisposition, usage *canonical.Us
 		case streamCancel:
 			billingErr = s.reservation.Cancel()
 		case streamRetain:
-			// Partial output without a terminal usage record keeps the reservation.
+			billingErr = s.reservation.Retain()
 		}
 		recordedErr := errors.Join(requestErr, billingErr, closeErr)
+		s.ledger.recordPayload(s.AttemptID, model.APICallPayloadUpstreamResponse, s.requestLog.StreamPayload())
 		logErr := s.requestLog.CompleteStream(0, recordedErr)
 		if s.release != nil {
 			s.release()
@@ -425,12 +1252,102 @@ func (s *StreamResult) finish(disposition streamDisposition, usage *canonical.Us
 		if exposeRequestErr {
 			resultErr = errors.Join(requestErr, resultErr)
 		}
+		ledgerErr := requestErr
+		attemptCompleted := disposition == streamSettle && requestErr == nil
+		if ledgerErr == nil {
+			ledgerErr = errors.Join(billingErr, closeErr, logErr)
+		}
+		outcome := &streamLedgerOutcome{
+			usage: cloneUsage(usage), requestErr: ledgerErr,
+			attemptCompleted: attemptCompleted, cancelled: cancelled,
+			clientDisconnected: clientDisconnected,
+		}
+		s.finalizeLedgerAttempt(outcome)
 		s.stateMu.Lock()
 		s.done = true
 		s.finishErr = resultErr
+		ledgerActive := s.ledgerActive
+		if !ledgerActive {
+			s.ledgerOutcome = outcome
+		}
 		s.stateMu.Unlock()
+		if ledgerActive {
+			s.finalizeLedgerCall(outcome)
+		}
 	})
 	return s.finishedError()
+}
+
+func (s *StreamResult) activateLedger() {
+	if s == nil {
+		return
+	}
+	s.stateMu.Lock()
+	s.ledgerActive = true
+	outcome := s.ledgerOutcome
+	s.ledgerOutcome = nil
+	s.stateMu.Unlock()
+	if outcome != nil {
+		s.finalizeLedgerCall(outcome)
+	}
+}
+
+func (s *StreamResult) finalizeLedgerAttempt(outcome *streamLedgerOutcome) {
+	if s == nil || outcome == nil || s.ledger == nil {
+		return
+	}
+	providerResponseID := s.currentProviderResponseID()
+	if outcome.cancelled {
+		s.ledger.cancelAttempt(s.AttemptID, outcome.requestErr)
+		return
+	}
+	if outcome.attemptCompleted {
+		s.ledger.completeAttempt(s.AttemptID, outcome.usage, providerResponseID)
+		return
+	}
+	s.ledger.failAttempt(s.AttemptID, outcome.requestErr, outcome.usage, providerResponseID)
+}
+
+func (s *StreamResult) finalizeLedgerCall(outcome *streamLedgerOutcome) {
+	if s == nil || outcome == nil || s.ledger == nil {
+		return
+	}
+	if s.keepCallOpenOnError && (outcome.cancelled || outcome.requestErr != nil) {
+		s.ledger.releaseLease()
+		return
+	}
+	if outcome.cancelled {
+		s.ledger.cancelCall(outcome.requestErr, outcome.clientDisconnected)
+		return
+	}
+	if outcome.attemptCompleted && outcome.requestErr == nil {
+		if s.deferCallCompletion {
+			return
+		}
+		s.ledger.completeCall(s.AttemptID, outcome.usage)
+		return
+	}
+	s.ledger.failCall(outcome.requestErr, outcome.usage, outcome.clientDisconnected)
+}
+
+func cloneUsage(usage *canonical.Usage) *canonical.Usage {
+	if usage == nil {
+		return nil
+	}
+	copy := *usage
+	if usage.Extra != nil {
+		copy.Extra = make(map[string]json.RawMessage, len(usage.Extra))
+		for key, value := range usage.Extra {
+			copy.Extra[key] = append(json.RawMessage(nil), value...)
+		}
+	}
+	return &copy
+}
+
+func (s *StreamResult) currentProviderResponseID() string {
+	s.stateMu.Lock()
+	defer s.stateMu.Unlock()
+	return s.providerResponseID
 }
 
 func (s *StreamResult) closeUnderlying() error {

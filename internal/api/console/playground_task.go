@@ -7,7 +7,9 @@ import (
 	"strings"
 
 	"github.com/gin-gonic/gin"
+	"github.com/mirainya/Prism/internal/api/middleware"
 	"github.com/mirainya/Prism/internal/api/resp"
+	"github.com/mirainya/Prism/internal/model"
 	"github.com/mirainya/Prism/internal/service"
 	"github.com/mirainya/Prism/pkg/errors"
 )
@@ -77,34 +79,34 @@ func PlaygroundGetTask(c *gin.Context) {
 		_ = json.Unmarshal(task.RequestParams, &rawParams)
 	}
 
-	var mappedParams any
-	if len(task.MappedParams) > 0 {
-		_ = json.Unmarshal(task.MappedParams, &mappedParams)
-	}
-
-	var vendorResponse any
-	if len(task.VendorResponse) > 0 {
-		_ = json.Unmarshal(task.VendorResponse, &vendorResponse)
-	}
-
 	var result any
 	if len(task.Result) > 0 {
 		_ = json.Unmarshal(task.Result, &result)
 	}
 
 	detail := gin.H{
-		"task_id":         task.TaskNo,
-		"task_no":         task.TaskNo,
-		"status":          task.Status.Public(),
-		"progress":        task.Progress,
-		"result":          result,
-		"error":           task.ErrorMessage,
-		"cost":            task.Cost,
-		"raw_params":      rawParams,
-		"mapped_params":   mappedParams,
-		"vendor_response": vendorResponse,
-		"vendor_task_id":  task.VendorTaskID,
-		"created_at":      task.CreatedAt,
+		"task_id":    task.TaskNo,
+		"task_no":    task.TaskNo,
+		"status":     task.Status.Public(),
+		"progress":   task.Progress,
+		"result":     result,
+		"error":      task.ErrorMessage,
+		"cost":       task.Cost,
+		"raw_params": rawParams,
+		"created_at": task.CreatedAt,
+	}
+	if middleware.GetUserRole(c) == string(model.UserRoleAdmin) {
+		var mappedParams any
+		if len(task.MappedParams) > 0 {
+			_ = json.Unmarshal(task.MappedParams, &mappedParams)
+		}
+		var vendorResponse any
+		if len(task.VendorResponse) > 0 {
+			_ = json.Unmarshal(task.VendorResponse, &vendorResponse)
+		}
+		detail["mapped_params"] = mappedParams
+		detail["vendor_response"] = vendorResponse
+		detail["vendor_task_id"] = task.VendorTaskID
 	}
 
 	if task.StartedAt != nil {

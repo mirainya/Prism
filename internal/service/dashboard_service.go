@@ -1,6 +1,8 @@
 package service
 
 import (
+	"sort"
+	"strconv"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -36,12 +38,15 @@ type StatsResult struct {
 func (s *DashboardService) GetStats(userID uint, isAdmin bool) (*StatsResult, error) {
 	db := model.DB()
 
-	baseQuery := func() *gorm.DB {
+	taskQuery := func() *gorm.DB {
 		q := db.Model(&model.Task{})
 		if !isAdmin {
 			q = q.Where("user_id = ?", userID)
 		}
 		return q
+	}
+	callQuery := func() *gorm.DB {
+		return scopedAPICalls(db.Model(&model.APICall{}), userID, isAdmin)
 	}
 
 	now := time.Now()
@@ -55,26 +60,28 @@ func (s *DashboardService) GetStats(userID uint, isAdmin bool) (*StatsResult, er
 		FailedCount   int64   `json:"failed_count"`
 	}
 
-	baseQuery().
+	if err := callQuery().
 		Where("created_at >= ?", todayStart).
-		Select("COUNT(*) as total_requests, COALESCE(SUM(cost), 0) as total_cost").
-		Scan(&todayStats)
-
-	baseQuery().
-		Where("created_at >= ? AND status = ?", todayStart, model.TaskStatusSuccess).
-		Count(&todayStats.SuccessCount)
-	baseQuery().
-		Where("created_at >= ? AND status = ?", todayStart, model.TaskStatusFailed).
-		Count(&todayStats.FailedCount)
+		Select(
+			"COUNT(*) as total_requests, COALESCE(SUM(final_cost), 0) as total_cost, "+
+				"COALESCE(SUM(CASE WHEN status = ? THEN 1 ELSE 0 END), 0) as success_count, "+
+				"COALESCE(SUM(CASE WHEN status = ? THEN 1 ELSE 0 END), 0) as failed_count",
+			model.APICallStatusCompleted, model.APICallStatusFailed,
+		).
+		Scan(&todayStats).Error; err != nil {
+		return nil, err
+	}
 
 	var yesterdayStats struct {
 		TotalRequests int64   `json:"total_requests"`
 		TotalCost     float64 `json:"total_cost"`
 	}
-	baseQuery().
+	if err := callQuery().
 		Where("created_at >= ? AND created_at < ?", yesterdayStart, todayStart).
-		Select("COUNT(*) as total_requests, COALESCE(SUM(cost), 0) as total_cost").
-		Scan(&yesterdayStats)
+		Select("COUNT(*) as total_requests, COALESCE(SUM(final_cost), 0) as total_cost").
+		Scan(&yesterdayStats).Error; err != nil {
+		return nil, err
+	}
 
 	errorRate := float64(0)
 	if todayStats.TotalRequests > 0 {
@@ -90,50 +97,39 @@ func (s *DashboardService) GetStats(userID uint, isAdmin bool) (*StatsResult, er
 		costTrend = (todayStats.TotalCost - yesterdayStats.TotalCost) / yesterdayStats.TotalCost * 100
 	}
 
-	weekStart := todayStart.AddDate(0, 0, -6)
-
 	type dailyAgg struct {
-		Date     string  `gorm:"column:date"`
 		Requests int64   `gorm:"column:requests"`
 		Cost     float64 `gorm:"column:cost"`
 		Errors   int64   `gorm:"column:errors"`
 	}
-	var rawStats []dailyAgg
-	wq := db.Table("tasks").
-		Select("DATE_FORMAT(created_at, '%m-%d') as date, COUNT(*) as requests, COALESCE(SUM(cost), 0) as cost, SUM(CASE WHEN status = ? THEN 1 ELSE 0 END) as errors", model.TaskStatusFailed).
-		Where("created_at >= ? AND created_at < ?", weekStart, todayStart.AddDate(0, 0, 1)).
-		Group("DATE_FORMAT(created_at, '%m-%d')").
-		Order("date ASC")
-	if !isAdmin {
-		wq = wq.Where("user_id = ?", userID)
-	}
-	wq.Scan(&rawStats)
-
-	statsMap := make(map[string]dailyAgg, len(rawStats))
-	for _, r := range rawStats {
-		statsMap[r.Date] = r
-	}
 	weeklyStats := make([]DailyStats, 0, 7)
 	for i := 6; i >= 0; i-- {
-		d := todayStart.AddDate(0, 0, -i)
-		key := d.Format("01-02")
-		agg := statsMap[key]
+		dayStart := todayStart.AddDate(0, 0, -i)
+		var aggregate dailyAgg
+		if err := callQuery().
+			Where("created_at >= ? AND created_at < ?", dayStart, dayStart.AddDate(0, 0, 1)).
+			Select("COUNT(*) as requests, COALESCE(SUM(final_cost), 0) as cost, COALESCE(SUM(CASE WHEN status = ? THEN 1 ELSE 0 END), 0) as errors", model.APICallStatusFailed).
+			Scan(&aggregate).Error; err != nil {
+			return nil, err
+		}
 		weeklyStats = append(weeklyStats, DailyStats{
-			Date:     key,
-			Requests: agg.Requests,
-			Cost:     agg.Cost,
-			Errors:   agg.Errors,
+			Date:     dayStart.Format("01-02"),
+			Requests: aggregate.Requests,
+			Cost:     aggregate.Cost,
+			Errors:   aggregate.Errors,
 		})
 	}
 
 	var capabilityStats []CapabilityDist
-	baseQuery().
+	if err := taskQuery().
 		Where("created_at >= ?", todayStart.AddDate(0, 0, -7)).
 		Select("model_code as capability, COUNT(*) as count").
 		Group("model_code").
 		Order("count DESC").
 		Limit(5).
-		Scan(&capabilityStats)
+		Scan(&capabilityStats).Error; err != nil {
+		return nil, err
+	}
 
 	return &StatsResult{
 		Today: gin.H{
@@ -148,6 +144,13 @@ func (s *DashboardService) GetStats(userID uint, isAdmin bool) (*StatsResult, er
 		WeeklyTrend:    weeklyStats,
 		CapabilityDist: capabilityStats,
 	}, nil
+}
+
+func scopedAPICalls(query *gorm.DB, userID uint, isAdmin bool) *gorm.DB {
+	if isAdmin {
+		return query
+	}
+	return query.Where("user_id = ?", userID)
 }
 
 type ListTasksRequest struct {
@@ -208,7 +211,7 @@ func (s *DashboardService) ListTasks(req *ListTasksRequest, userID uint, isAdmin
 		}
 	}
 	if req.Capability != "" {
-		db = db.Where("capability_code = ?", req.Capability)
+		db = db.Where("model_code = ?", req.Capability)
 	}
 	if req.StartDate != "" {
 		if t, err := time.Parse("2006-01-02", req.StartDate); err == nil {
@@ -286,11 +289,19 @@ func (s *DashboardService) GetTaskDetail(taskNo string, userID uint, isAdmin boo
 
 // ChannelSuccessRate 渠道成功率
 type ChannelSuccessRate struct {
-	ChannelID   uint    `json:"channel_id"`
-	ChannelType string  `json:"channel_type"`
+	ChannelID   uint    `json:"channel_id,omitempty"`
+	ChannelType string  `json:"channel_type,omitempty"`
+	RouteKind   string  `json:"route_kind"`
 	Total       int64   `json:"total"`
 	Success     int64   `json:"success"`
 	Rate        float64 `json:"rate"`
+}
+
+type channelRateAggregate struct {
+	ChannelID uint   `gorm:"column:channel_id"`
+	RouteKind string `gorm:"column:route_kind"`
+	Total     int64  `gorm:"column:total"`
+	Success   int64  `gorm:"column:success"`
 }
 
 // ModelCallRanking 模型调用排行
@@ -314,31 +325,103 @@ type ChatStatsResult struct {
 	ModelRankings []ModelCallRanking   `json:"model_rankings"`
 }
 
-// GetChatStats 获取 Chat 增强统计（基于 channel_request_logs）
-func (s *DashboardService) GetChatStats(days int) (*ChatStatsResult, error) {
+// GetChatStats returns call-level usage and rankings plus attempt-level channel rates.
+func (s *DashboardService) GetChatStats(days int, userID uint, isAdmin bool) (*ChatStatsResult, error) {
 	db := model.DB()
+	if days <= 0 {
+		days = 7
+	}
 	since := time.Now().AddDate(0, 0, -days)
 
 	var usage TokenUsageSummary
-	db.Table("channel_request_logs").
-		Where("request_type = 'chat' AND request_at >= ?", since).
-		Select("COALESCE(SUM(usage_prompt_tokens),0) as total_prompt_tokens, COALESCE(SUM(usage_completion_tokens),0) as total_completion_tokens, COALESCE(SUM(usage_total_tokens),0) as total_tokens").
-		Scan(&usage)
-
-	type channelAgg struct {
-		ChannelID   uint   `gorm:"column:channel_id"`
-		ChannelType string `gorm:"column:channel_type"`
-		Total       int64  `gorm:"column:total"`
-		Success     int64  `gorm:"column:success"`
+	if err := scopedAPICalls(db.Table("api_calls"), userID, isAdmin).
+		Where("created_at >= ?", since).
+		Select("COALESCE(SUM(input_tokens),0) as total_prompt_tokens, COALESCE(SUM(output_tokens),0) as total_completion_tokens, COALESCE(SUM(total_tokens),0) as total_tokens").
+		Scan(&usage).Error; err != nil {
+		return nil, err
 	}
-	var channelAggs []channelAgg
-	db.Table("channel_request_logs l").
-		Joins("JOIN channels c ON c.id = l.channel_id").
-		Where("l.request_type = 'chat' AND l.request_at >= ?", since).
-		Select("l.channel_id, c.type as channel_type, COUNT(*) as total, SUM(CASE WHEN l.status_code >= 200 AND l.status_code < 400 THEN 1 ELSE 0 END) as success").
-		Group("l.channel_id, c.type").
-		Order("total DESC").
-		Scan(&channelAggs)
+
+	var channelAggs []channelRateAggregate
+	attemptQuery := func() *gorm.DB {
+		query := db.Table("api_call_attempts a").
+			Joins("JOIN api_calls c ON c.id = a.call_id").
+			Where("a.started_at >= ? AND a.status IN ?", since, []model.APICallAttemptStatus{
+				model.APICallAttemptStatusCompleted,
+				model.APICallAttemptStatusFailed,
+				model.APICallAttemptStatusCancelled,
+			})
+		if !isAdmin {
+			query = query.Where("c.user_id = ?", userID)
+		}
+		return query
+	}
+	var gatewayAggs []channelRateAggregate
+	if err := attemptQuery().
+		Where("a.route_kind <> ? AND a.channel_id > 0", model.APICallRouteCapability).
+		Select("a.channel_id, COUNT(*) as total, COALESCE(SUM(CASE WHEN a.status = ? THEN 1 ELSE 0 END), 0) as success", model.APICallAttemptStatusCompleted).
+		Group("a.channel_id").
+		Scan(&gatewayAggs).Error; err != nil {
+		return nil, err
+	}
+	for index := range gatewayAggs {
+		gatewayAggs[index].RouteKind = model.APICallRouteGatewayV2
+	}
+	channelAggs = append(channelAggs, gatewayAggs...)
+
+	var capabilityAggs []channelRateAggregate
+	if err := attemptQuery().
+		Joins("JOIN endpoints e ON e.id = a.endpoint_id").
+		Where("a.route_kind = ? AND e.channel_id > 0", model.APICallRouteCapability).
+		Select("e.channel_id as channel_id, COUNT(*) as total, COALESCE(SUM(CASE WHEN a.status = ? THEN 1 ELSE 0 END), 0) as success", model.APICallAttemptStatusCompleted).
+		Group("e.channel_id").
+		Scan(&capabilityAggs).Error; err != nil {
+		return nil, err
+	}
+	for index := range capabilityAggs {
+		capabilityAggs[index].RouteKind = model.APICallRouteCapability
+	}
+	channelAggs = append(channelAggs, capabilityAggs...)
+	if !isAdmin {
+		channelAggs = aggregateChannelRatesByRoute(channelAggs)
+	}
+	sort.SliceStable(channelAggs, func(left, right int) bool {
+		return channelAggs[left].Total > channelAggs[right].Total
+	})
+
+	gatewayChannelIDs := make([]uint, 0)
+	capabilityChannelIDs := make([]uint, 0)
+	if isAdmin {
+		for _, aggregate := range channelAggs {
+			if aggregate.RouteKind == model.APICallRouteCapability {
+				capabilityChannelIDs = append(capabilityChannelIDs, aggregate.ChannelID)
+			} else {
+				gatewayChannelIDs = append(gatewayChannelIDs, aggregate.ChannelID)
+			}
+		}
+	}
+	channelNames := make(map[string]string, len(channelAggs))
+	if len(gatewayChannelIDs) > 0 {
+		var channels []model.GwChannel
+		if err := db.Select("id", "name").Where("id IN ?", gatewayChannelIDs).Find(&channels).Error; err != nil {
+			return nil, err
+		}
+		for _, channel := range channels {
+			channelNames[channelRateKey(model.APICallRouteGatewayV2, channel.ID)] = channel.Name
+		}
+	}
+	if len(capabilityChannelIDs) > 0 {
+		var channels []model.Channel
+		if err := db.Select("id", "type", "name").Where("id IN ?", capabilityChannelIDs).Find(&channels).Error; err != nil {
+			return nil, err
+		}
+		for _, channel := range channels {
+			name := channel.Type
+			if name == "" {
+				name = channel.Name
+			}
+			channelNames[channelRateKey(model.APICallRouteCapability, channel.ID)] = name
+		}
+	}
 
 	rates := make([]ChannelSuccessRate, 0, len(channelAggs))
 	for _, a := range channelAggs {
@@ -348,7 +431,8 @@ func (s *DashboardService) GetChatStats(days int) (*ChatStatsResult, error) {
 		}
 		rates = append(rates, ChannelSuccessRate{
 			ChannelID:   a.ChannelID,
-			ChannelType: a.ChannelType,
+			ChannelType: channelNames[channelRateKey(a.RouteKind, a.ChannelID)],
+			RouteKind:   a.RouteKind,
 			Total:       a.Total,
 			Success:     a.Success,
 			Rate:        rate,
@@ -356,17 +440,39 @@ func (s *DashboardService) GetChatStats(days int) (*ChatStatsResult, error) {
 	}
 
 	var rankings []ModelCallRanking
-	db.Table("channel_request_logs").
-		Where("request_type = 'chat' AND request_at >= ?", since).
-		Select("model_code, COUNT(*) as calls, COALESCE(SUM(usage_total_tokens),0) as total_tokens").
-		Group("model_code").
+	if err := scopedAPICalls(db.Table("api_calls"), userID, isAdmin).
+		Where("created_at >= ?", since).
+		Select("model as model_code, COUNT(*) as calls, COALESCE(SUM(total_tokens),0) as total_tokens").
+		Group("model").
 		Order("calls DESC").
 		Limit(10).
-		Scan(&rankings)
+		Scan(&rankings).Error; err != nil {
+		return nil, err
+	}
 
 	return &ChatStatsResult{
 		TokenUsage:    &usage,
 		ChannelRates:  rates,
 		ModelRankings: rankings,
 	}, nil
+}
+
+func channelRateKey(routeKind string, channelID uint) string {
+	return routeKind + ":" + strconv.FormatUint(uint64(channelID), 10)
+}
+
+func aggregateChannelRatesByRoute(items []channelRateAggregate) []channelRateAggregate {
+	result := make([]channelRateAggregate, 0, len(items))
+	indices := make(map[string]int, len(items))
+	for _, item := range items {
+		if index, exists := indices[item.RouteKind]; exists {
+			result[index].Total += item.Total
+			result[index].Success += item.Success
+			continue
+		}
+		item.ChannelID = 0
+		indices[item.RouteKind] = len(result)
+		result = append(result, item)
+	}
+	return result
 }

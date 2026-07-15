@@ -45,7 +45,15 @@ func ProxyStream(w Writer, upstreamBody io.Reader) (*AggregationResult, error) {
 	for {
 		line, err := reader.ReadString('\n')
 		if line != "" {
-			_, _ = w.Write([]byte(line))
+			written, writeErr := w.Write([]byte(line))
+			if writeErr != nil {
+				agg.ErrorMessage = writeErr.Error()
+				return agg, writeErr
+			}
+			if written != len(line) {
+				agg.ErrorMessage = io.ErrShortWrite.Error()
+				return agg, io.ErrShortWrite
+			}
 			w.Flush()
 			trimmed := strings.TrimSpace(line)
 			if strings.HasPrefix(trimmed, "data: ") {

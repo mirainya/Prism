@@ -3,8 +3,10 @@ package service
 import (
 	"crypto/rand"
 	"encoding/hex"
+	"fmt"
 
 	"github.com/gin-gonic/gin"
+	"github.com/google/uuid"
 	"github.com/mirainya/Prism/internal/api/middleware"
 	"github.com/mirainya/Prism/internal/model"
 	"github.com/shopspring/decimal"
@@ -61,10 +63,12 @@ func (s *TokenService) ListTokens(userID uint) ([]gin.H, error) {
 
 	result := make([]gin.H, len(tokens))
 	for i, t := range tokens {
+		keyHint := tokenKeyHint(&t)
 		result[i] = gin.H{
 			"id":                 t.ID,
 			"name":               t.Name,
-			"key":                t.PlainKey,
+			"key":                keyHint,
+			"key_hint":           keyHint,
 			"balance":            t.Balance,
 			"total_used":         t.TotalUsed,
 			"rate_limit":         t.RateLimit,
@@ -78,7 +82,13 @@ func (s *TokenService) ListTokens(userID uint) ([]gin.H, error) {
 }
 
 func (s *TokenService) CreateToken(userID uint, req *CreateTokenReq) (gin.H, error) {
-	plainKey := generateAPIKey()
+	if req.Balance.IsNegative() {
+		return nil, ErrInvalidBalanceAmount
+	}
+	plainKey, err := generateAPIKey()
+	if err != nil {
+		return nil, fmt.Errorf("generate API token: %w", err)
+	}
 	keyHash := middleware.HashTokenKey(plainKey)
 	keyHint := middleware.KeyHint(plainKey)
 
@@ -87,15 +97,24 @@ func (s *TokenService) CreateToken(userID uint, req *CreateTokenReq) (gin.H, err
 		Name:      req.Name,
 		Key:       keyHash,
 		KeyHint:   keyHint,
-		PlainKey:  plainKey,
 		Balance:   req.Balance,
 		RateLimit: 60,
 		Status:    1,
 	}
 
-	err := model.DB().Transaction(func(tx *gorm.DB) error {
+	err = model.DB().Transaction(func(tx *gorm.DB) error {
 		if err := tx.Create(token).Error; err != nil {
 			return err
+		}
+		if token.Balance.IsPositive() {
+			if err := recordBalanceEntryTx(tx, balanceEntryRequest{
+				AccountType: model.BalanceAccountToken, AccountID: token.ID,
+				UserID: userID, TokenID: token.ID, Direction: model.BalanceDirectionCredit,
+				Category: BalanceCategoryInitialCredit, Amount: token.Balance,
+				SourceKey: "token_create:" + fmt.Sprint(token.ID), ActorUserID: userID,
+			}); err != nil {
+				return err
+			}
 		}
 		if len(req.ChannelPriorities) > 0 {
 			return saveChannelPriorities(tx, token.ID, req.ChannelPriorities)
@@ -133,10 +152,12 @@ func (s *TokenService) GetToken(userID uint, id uint) (gin.H, error) {
 		}
 	}
 
+	keyHint := tokenKeyHint(&token)
 	return gin.H{
 		"id":                 token.ID,
 		"name":               token.Name,
-		"key":                token.PlainKey,
+		"key":                keyHint,
+		"key_hint":           keyHint,
 		"balance":            token.Balance,
 		"total_used":         token.TotalUsed,
 		"rate_limit":         token.RateLimit,
@@ -184,26 +205,49 @@ func (s *TokenService) DeleteToken(userID uint, id uint) error {
 }
 
 func (s *TokenService) RechargeToken(userID uint, id uint, amount decimal.Decimal) (*model.Token, error) {
-	result := model.DB().Model(&model.Token{}).
-		Where("id = ? AND user_id = ?", id, userID).
-		UpdateColumn("balance", gorm.Expr("balance + ?", amount))
-
-	if result.Error != nil {
-		return nil, result.Error
-	}
-	if result.RowsAffected == 0 {
-		return nil, gorm.ErrRecordNotFound
-	}
-
 	var token model.Token
-	model.DB().First(&token, id)
+	if !amount.IsPositive() {
+		return nil, ErrInvalidBalanceAmount
+	}
+	err := model.DB().Transaction(func(tx *gorm.DB) error {
+		result := tx.Model(&model.Token{}).
+			Where("id = ? AND user_id = ?", id, userID).
+			UpdateColumn("balance", gorm.Expr("balance + ?", amount))
+		if result.Error != nil {
+			return result.Error
+		}
+		if result.RowsAffected == 0 {
+			return gorm.ErrRecordNotFound
+		}
+		if err := recordBalanceEntryTx(tx, balanceEntryRequest{
+			AccountType: model.BalanceAccountToken, AccountID: id,
+			UserID: userID, TokenID: id, Direction: model.BalanceDirectionCredit,
+			Category: BalanceCategoryRecharge, Amount: amount,
+			SourceKey: "token_recharge:" + uuid.NewString(), ActorUserID: userID,
+		}); err != nil {
+			return err
+		}
+		return tx.First(&token, id).Error
+	})
+	if err != nil {
+		return nil, err
+	}
 	return &token, nil
 }
 
-func generateAPIKey() string {
+func generateAPIKey() (string, error) {
 	bytes := make([]byte, 24)
-	rand.Read(bytes)
-	return "sk-prism-" + hex.EncodeToString(bytes)
+	if _, err := rand.Read(bytes); err != nil {
+		return "", err
+	}
+	return "sk-prism-" + hex.EncodeToString(bytes), nil
+}
+
+func tokenKeyHint(token *model.Token) string {
+	if len(token.KeyHint) >= 4 && token.KeyHint[:4] == "****" {
+		return token.KeyHint
+	}
+	return "****"
 }
 
 func saveChannelPriorities(tx *gorm.DB, tokenID uint, items []ChannelPriorityInput) error {

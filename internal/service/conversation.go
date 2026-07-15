@@ -2,10 +2,13 @@ package service
 
 import (
 	"encoding/json"
+	"errors"
+	"fmt"
 	"time"
 
 	"github.com/mirainya/Prism/internal/model"
 	"github.com/mirainya/Prism/internal/provider/chat"
+	"gorm.io/gorm"
 )
 
 // ConversationContext 会话上下文:playground 请求前加载,用于拼历史 + 火山 B 模式。
@@ -94,71 +97,133 @@ func SaveConversationTurn(
 	usage *chat.ChatUsage,
 	finishReason string,
 	providerResponseID string,
+	callID string,
 	reqLogID uint,
 	provenance ...ConversationProvenance,
-) uint {
-	conv := cc.Conv
-	msgs := newMessages
-	if conv == nil {
-		conv = findOrCreatePlaygroundConversation(userID, tokenID, modelCode, newMessages)
-		// 无历史会话:只存最后一条 user 消息(增量),避免把整个 prompt 塞进去
-		msgs = lastUserMessage(newMessages)
-	}
-	if conv == nil {
-		return 0
-	}
-
+) (uint, error) {
 	inputTokens, outputTokens := 0, 0
 	if usage != nil {
 		inputTokens, outputTokens = usage.PromptTokens, usage.CompletionTokens
 	}
 
-	for _, m := range msgs {
-		model.DB().Create(&model.Message{
-			ConversationID: conv.ID,
-			RequestLogID:   reqLogID,
-			Role:           m.Role,
-			Content:        m.ContentText(),
-			Attachments:    m.ContentAttachments(),
-			Model:          modelCode,
-		})
-	}
-	model.DB().Create(&model.Message{
-		ConversationID:   conv.ID,
-		RequestLogID:     reqLogID,
-		Role:             "assistant",
-		Content:          assistant.ContentText(),
-		ReasoningContent: assistant.ReasoningContent,
-		FinishReason:     finishReason,
-		InputTokens:      inputTokens,
-		OutputTokens:     outputTokens,
-		Model:            modelCode,
-	})
+	var conversationID uint
+	err := model.DB().Transaction(func(tx *gorm.DB) error {
+		var conv *model.Conversation
+		msgs := newMessages
+		if cc != nil && cc.Conv != nil {
+			var current model.Conversation
+			if err := tx.First(&current, cc.Conv.ID).Error; err != nil {
+				return err
+			}
+			conv = &current
+		} else {
+			var err error
+			conv, err = findOrCreatePlaygroundConversationTx(tx, userID, tokenID, modelCode, newMessages)
+			if err != nil {
+				return err
+			}
+			msgs = lastUserMessage(newMessages)
+		}
+		if conv == nil {
+			return errors.New("conversation is unavailable")
+		}
+		conversationID = conv.ID
 
-	updates := map[string]any{
-		"total_tokens":  conv.TotalTokens + inputTokens + outputTokens,
-		"message_count": conv.MessageCount + len(msgs) + 1,
-		"model":         modelCode,
-		"last_status":   "completed",
+		records := make([]model.Message, 0, len(msgs)+1)
+		for _, message := range msgs {
+			records = append(records, model.Message{
+				ConversationID: conv.ID, CallID: callID, RequestLogID: reqLogID,
+				Role: message.Role, Content: message.ContentText(), Attachments: message.ContentAttachments(),
+				Model: modelCode,
+			})
+		}
+		records = append(records, model.Message{
+			ConversationID: conv.ID, CallID: callID, RequestLogID: reqLogID,
+			Role: "assistant", Content: assistant.ContentText(), ReasoningContent: assistant.ReasoningContent,
+			FinishReason: finishReason, InputTokens: inputTokens, OutputTokens: outputTokens, Model: modelCode,
+		})
+		if err := tx.Create(&records).Error; err != nil {
+			return err
+		}
+
+		updates := map[string]any{
+			"total_tokens":  gorm.Expr("total_tokens + ?", inputTokens+outputTokens),
+			"message_count": gorm.Expr("message_count + ?", len(records)),
+			"model":         modelCode,
+			"last_status":   "completed",
+		}
+		if reqLogID > 0 {
+			updates["last_request_log_id"] = reqLogID
+		}
+		if callID != "" {
+			updates["call_id"] = callID
+		}
+		if providerResponseID != "" && providerResponseID != conv.ProviderResponseID {
+			updates["provider_response_id"] = providerResponseID
+		}
+		if len(provenance) > 0 && (provenance[0].KeyID != 0 || provenance[0].Transport != "") {
+			updates["provider_key_id"] = provenance[0].KeyID
+			updates["upstream_transport"] = provenance[0].Transport
+		}
+		result := tx.Model(&model.Conversation{}).Where("id = ?", conv.ID).Updates(updates)
+		if result.Error != nil {
+			return result.Error
+		}
+		if result.RowsAffected == 0 {
+			return errors.New("conversation was not updated")
+		}
+		if reqLogID > 0 {
+			if err := linkConversationRequestLog(tx, reqLogID, conv.ID); err != nil {
+				return err
+			}
+		}
+		if callID != "" {
+			if err := linkConversationCall(tx, callID, conv.ID); err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		return 0, err
 	}
-	if reqLogID > 0 {
-		updates["last_request_log_id"] = reqLogID
+	return conversationID, nil
+}
+
+func linkConversationRequestLog(tx *gorm.DB, requestLogID, conversationID uint) error {
+	result := tx.Model(&model.ChannelRequestLog{}).
+		Where("id = ? AND conversation_id = 0", requestLogID).
+		Update("conversation_id", conversationID)
+	if result.Error != nil || result.RowsAffected > 0 {
+		return result.Error
 	}
-	// 有状态对话:回写本轮 response_id 供下一轮 B 模式复用
-	if providerResponseID != "" && providerResponseID != conv.ProviderResponseID {
-		updates["provider_response_id"] = providerResponseID
+	var count int64
+	if err := tx.Model(&model.ChannelRequestLog{}).
+		Where("id = ? AND conversation_id = ?", requestLogID, conversationID).Count(&count).Error; err != nil {
+		return err
 	}
-	if len(provenance) > 0 && (provenance[0].KeyID != 0 || provenance[0].Transport != "") {
-		updates["provider_key_id"] = provenance[0].KeyID
-		updates["upstream_transport"] = provenance[0].Transport
+	if count == 0 {
+		return fmt.Errorf("request log %d was not linked", requestLogID)
 	}
-	model.DB().Model(conv).Updates(updates)
-	if reqLogID > 0 {
-		model.DB().Model(&model.ChannelRequestLog{}).
-			Where("id = ? AND conversation_id = 0", reqLogID).
-			Update("conversation_id", conv.ID)
+	return nil
+}
+
+func linkConversationCall(tx *gorm.DB, callID string, conversationID uint) error {
+	result := tx.Model(&model.APICall{}).
+		Where("id = ? AND conversation_id = 0", callID).
+		Update("conversation_id", conversationID)
+	if result.Error != nil || result.RowsAffected > 0 {
+		return result.Error
 	}
-	return conv.ID
+	var count int64
+	if err := tx.Model(&model.APICall{}).
+		Where("id = ? AND conversation_id = ?", callID, conversationID).Count(&count).Error; err != nil {
+		return err
+	}
+	if count == 0 {
+		return fmt.Errorf("API call %s was not linked", callID)
+	}
+	return nil
 }
 
 type ConversationProvenance struct {
@@ -166,8 +231,9 @@ type ConversationProvenance struct {
 	Transport model.UpstreamTransport
 }
 
-// findOrCreatePlaygroundConversation 复用老逻辑:2 小时内同 token+title 且消息数增长则归并,否则新建。
-func findOrCreatePlaygroundConversation(userID, tokenID uint, modelCode string, messages []chat.ChatMessage) *model.Conversation {
+// findOrCreatePlaygroundConversationTx reuses a recent matching conversation
+// while keeping creation and turn persistence in one transaction.
+func findOrCreatePlaygroundConversationTx(tx *gorm.DB, userID, tokenID uint, modelCode string, messages []chat.ChatMessage) (*model.Conversation, error) {
 	title, systemPrompt := "", ""
 	for _, msg := range messages {
 		if msg.Role == model.RoleSystem {
@@ -179,19 +245,26 @@ func findOrCreatePlaygroundConversation(userID, tokenID uint, modelCode string, 
 	if title != "" {
 		var conv model.Conversation
 		since := time.Now().Add(-2 * time.Hour)
-		err := model.DB().Where("token_id = ? AND title = ? AND status = 1 AND updated_at > ?", tokenID, title, since).
+		err := tx.Where("token_id = ? AND title = ? AND status = 1 AND updated_at > ?", tokenID, title, since).
 			Order("updated_at DESC").First(&conv).Error
 		if err == nil && len(messages) > conv.MessageCount {
-			model.DB().Model(&conv).Update("updated_at", time.Now())
-			return &conv
+			if err := tx.Model(&conv).Update("updated_at", time.Now()).Error; err != nil {
+				return nil, err
+			}
+			return &conv, nil
+		}
+		if err != nil && !errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil, err
 		}
 	}
 	conv := &model.Conversation{
 		UserID: userID, TokenID: tokenID, Title: title, Model: modelCode,
 		SystemPrompt: systemPrompt, LastStatus: "pending", Status: 1,
 	}
-	model.DB().Create(conv)
-	return conv
+	if err := tx.Create(conv).Error; err != nil {
+		return nil, err
+	}
+	return conv, nil
 }
 
 // restoreContent 从 text + attachments 还原为原始 content 结构。

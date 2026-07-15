@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"strconv"
 	"strings"
@@ -40,21 +41,79 @@ func (h *ResponsesHandler) Create(c *gin.Context) {
 		return
 	}
 	token := middleware.GetToken(c)
-	result, err := h.pipe.Create(c.Request.Context(), token.UserID, token.ID, &req, c.GetHeader("Idempotency-Key"))
+	result, err := h.pipe.Create(
+		c.Request.Context(), token.UserID, token.ID, &req,
+		c.GetHeader("Idempotency-Key"), middleware.GetRequestID(c.Request.Context()),
+	)
 	if err != nil {
+		if callID := responsepipeline.CallIDFromError(err); callID != "" {
+			c.Header("X-Prism-Call-ID", callID)
+		}
 		respondResponsesError(c, err)
 		return
 	}
-	if result.Record != nil && result.Record.RequestLogID > 0 {
-		c.Header("X-Prism-Request-Log-ID", strconv.FormatUint(uint64(result.Record.RequestLogID), 10))
-	}
+	setResponsesRecordHeaders(c, result)
 	if result.V2Stream != nil {
-		if err := h.pipe.ProxyV2Stream(c.Request.Context(), c.Writer, result, &req); err != nil && !c.Writer.Written() {
-			respondResponsesError(c, err)
+		if err := h.pipe.ProxyV2Stream(c.Request.Context(), c.Writer, result, &req); err != nil {
+			logDeliveryError("finalize responses stream delivery", result.CallID, err)
+			if !c.Writer.Written() {
+				respondResponsesError(c, err)
+			}
 		}
 		return
 	}
-	c.JSON(http.StatusOK, result.Response)
+	if req.Stream && result.IdempotentReplay {
+		if err := responsepipeline.ProxyIdempotentReplay(c.Writer, result.Response); err != nil {
+			logDeliveryError("fail responses replay delivery", result.CallID, result.FailDelivery(err, true))
+			if !c.Writer.Written() {
+				respondResponsesError(c, err)
+			}
+			return
+		}
+		logDeliveryError("complete responses replay delivery", result.CallID, result.CompleteDelivery())
+		return
+	}
+	encoded, err := json.Marshal(result.Response)
+	finalizeDelivery := !req.Background || result.IdempotentReplay
+	if err != nil {
+		if finalizeDelivery {
+			logDeliveryError("fail responses call delivery", result.CallID, result.FailDelivery(err, false))
+		}
+		respondResponsesError(c, err)
+		return
+	}
+	c.Header("Content-Type", "application/json; charset=utf-8")
+	c.Status(http.StatusOK)
+	written, writeErr := c.Writer.Write(encoded)
+	if writeErr == nil && written != len(encoded) {
+		writeErr = io.ErrShortWrite
+	}
+	if writeErr != nil {
+		if finalizeDelivery {
+			logDeliveryError("fail responses call delivery", result.CallID, result.FailDelivery(writeErr, true))
+		}
+		return
+	}
+	if finalizeDelivery {
+		logDeliveryError("complete responses call delivery", result.CallID, result.CompleteDelivery())
+	}
+}
+
+func setResponsesRecordHeaders(c *gin.Context, result *responsepipeline.Result) {
+	if result == nil || result.Record == nil {
+		return
+	}
+	record := result.Record
+	callID := result.CallID
+	if callID == "" {
+		callID = record.CallID
+	}
+	if record.RequestLogID > 0 && callID == record.CallID {
+		c.Header("X-Prism-Request-Log-ID", strconv.FormatUint(uint64(record.RequestLogID), 10))
+	}
+	if callID != "" {
+		c.Header("X-Prism-Call-ID", callID)
+	}
 }
 
 func (h *ResponsesHandler) Get(c *gin.Context) {

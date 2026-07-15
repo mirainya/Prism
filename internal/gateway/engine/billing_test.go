@@ -17,7 +17,7 @@ func TestReservationSQLiteSettleAndCancel(t *testing.T) {
 	if e != nil {
 		t.Fatal(e)
 	}
-	if e = db.AutoMigrate(&model.User{}, &model.Token{}, &model.BillingLog{}); e != nil {
+	if e = db.AutoMigrate(&model.User{}, &model.Token{}, &model.BillingLog{}, &model.BalanceEntry{}); e != nil {
 		t.Fatal(e)
 	}
 	model.SetDB(db)
@@ -65,5 +65,17 @@ func TestEstimateInputTokensDoesNotChargeBase64BytesAsTokens(t *testing.T) {
 	}
 	if got := estimateTextTokens("abcdefgh中文"); got != 4 {
 		t.Fatalf("text estimate=%d, want 4", got)
+	}
+}
+
+func TestTokenCostKeepsEightDecimalPlaces(t *testing.T) {
+	route := &routing.RouteResult{
+		InputPrice:  decimal.RequireFromString("0.01"),
+		OutputPrice: decimal.Zero,
+	}
+	actual := cost(route, 1, 0).RoundCeil(billingPrecision)
+	expected := decimal.RequireFromString("0.00000001")
+	if !actual.Equal(expected) {
+		t.Fatalf("token cost = %s, want %s", actual, expected)
 	}
 }

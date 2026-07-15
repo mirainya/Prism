@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/glebarez/sqlite"
 	"github.com/mirainya/Prism/internal/gateway/canonical"
@@ -406,7 +407,7 @@ func TestExecuteRetriesAnotherKeyTransportAttempt(t *testing.T) {
 	secondRoute.KeyID = 5
 	secondRoute.Transport = transport.OpenAIResponses
 	selector := &retrySelector{routes: []*routing.RouteResult{firstRoute, secondRoute}}
-	executionEngine, err := New(selector, registry, service.NewBillingService())
+	executionEngine, err := New(selector, registry, service.NewBillingService(), service.NewAPICallService())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -445,7 +446,7 @@ func TestStreamRetriesBeforeFirstEvent(t *testing.T) {
 	secondRoute.KeyID = 5
 	secondRoute.Transport = transport.OpenAIResponses
 	selector := &retrySelector{routes: []*routing.RouteResult{firstRoute, secondRoute}}
-	executionEngine, err := New(selector, registry, service.NewBillingService())
+	executionEngine, err := New(selector, registry, service.NewBillingService(), service.NewAPICallService())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -488,7 +489,7 @@ func TestExecuteRechecksCapabilitiesAfterRoutePreparation(t *testing.T) {
 	second.KeyID = 5
 	second.Capabilities = map[routing.Capability]bool{routing.CapabilityVision: true}
 	selector := &retrySelector{routes: []*routing.RouteResult{first, second}}
-	executionEngine, err := New(selector, registry, service.NewBillingService())
+	executionEngine, err := New(selector, registry, service.NewBillingService(), service.NewAPICallService())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -652,8 +653,8 @@ func TestStreamFailureAfterOutputRetainsReservation(t *testing.T) {
 	assertTokenBalance(t, db, token.ID, token.Balance.Sub(decimal.NewFromInt(7)))
 	var billingLogs int64
 	db.Model(&model.BillingLog{}).Count(&billingLogs)
-	if billingLogs != 1 {
-		t.Fatalf("billing log count=%d", billingLogs)
+	if billingLogs != 2 {
+		t.Fatalf("billing log count=%d, want reserve and retained settlement", billingLogs)
 	}
 	stored := latestRequestLog(t, db)
 	if stored.ErrorMessage == "" {
@@ -707,9 +708,314 @@ func TestCloseBeforeTerminalCancelsAndFinalizesOnce(t *testing.T) {
 	if selector.releaseCount() != 1 || upstream.closeCount() != 1 {
 		t.Fatalf("releases=%d closes=%d", selector.releaseCount(), upstream.closeCount())
 	}
+	var call model.APICall
+	if err := db.First(&call, "id = ?", result.CallID).Error; err != nil {
+		t.Fatal(err)
+	}
+	if call.Status != model.APICallStatusCancelled || !call.ClientDisconnected || call.FinalAttemptID != result.AttemptID {
+		t.Fatalf("cancelled call=%#v", call)
+	}
+	var attempt model.APICallAttempt
+	if err := db.First(&attempt, result.AttemptID).Error; err != nil {
+		t.Fatal(err)
+	}
+	if attempt.Status != model.APICallAttemptStatusCancelled {
+		t.Fatalf("cancelled attempt=%#v", attempt)
+	}
+}
+
+func TestExecuteRecordsUnifiedCallLedgerAcrossRetries(t *testing.T) {
+	db, user, token := executionTestDB(t)
+	initial := token.Balance
+	first := &scriptedTransport{
+		id: transport.OpenAIChat, prepared: testPrepared(false),
+		executeErr: &retryStatusError{status: http.StatusServiceUnavailable},
+	}
+	secondPrepared := testPrepared(false)
+	secondPrepared.URL = "https://second.example/v1/responses"
+	second := &scriptedTransport{
+		id: transport.OpenAIResponses, prepared: secondPrepared,
+		executeResponse: canonical.Response{
+			ID: "provider-ok", Usage: &canonical.Usage{InputTokens: 1, OutputTokens: 2, TotalTokens: 3},
+		},
+	}
+	registry := transport.NewRegistry()
+	if err := registry.Register(first); err != nil {
+		t.Fatal(err)
+	}
+	if err := registry.Register(second); err != nil {
+		t.Fatal(err)
+	}
+	registry.Freeze()
+	firstRoute := requestPriceRoute(7)
+	secondRoute := requestPriceRoute(7)
+	secondRoute.KeyID = 5
+	secondRoute.ChannelID = 3
+	secondRoute.Transport = transport.OpenAIResponses
+	selector := &retrySelector{routes: []*routing.RouteResult{firstRoute, secondRoute}}
+	executionEngine, err := New(
+		selector, registry, service.NewBillingService(), service.NewAPICallService(),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	result, err := executionEngine.Execute(context.Background(), canonical.Request{
+		Endpoint: canonical.EndpointOpenAIResponses, Model: "public",
+	}, ExecuteOptions{
+		UserID: user.ID, TokenID: token.ID, BillingKey: t.Name(), MaxAttempts: 3,
+		RequestID: "request-ledger", ResourceType: "response", ResourceID: "resp_public",
+		ConversationID: 42,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.CallID == "" || result.AttemptID == 0 {
+		t.Fatalf("missing ledger identifiers: %#v", result)
+	}
+
+	var call model.APICall
+	if err := db.First(&call, "id = ?", result.CallID).Error; err != nil {
+		t.Fatal(err)
+	}
+	if call.Status != model.APICallStatusCompleted || call.RequestID != "request-ledger" ||
+		call.AttemptCount != 2 || call.FinalAttemptID != result.AttemptID || call.TotalTokens != 3 ||
+		call.Endpoint != "/v1/responses" || call.ResourceType != "response" ||
+		call.ResourceID != "resp_public" || call.ConversationID != 42 {
+		t.Fatalf("call=%#v", call)
+	}
+	if call.FirstByteAt == nil {
+		t.Fatal("non-streaming call did not record first-byte time")
+	}
+	if !call.ReservedAmount.Equal(decimal.NewFromInt(14)) ||
+		!call.FinalCost.Equal(decimal.NewFromInt(7)) ||
+		!call.RefundedAmount.Equal(decimal.NewFromInt(7)) {
+		t.Fatalf("call amounts reserved=%s final=%s refunded=%s", call.ReservedAmount, call.FinalCost, call.RefundedAmount)
+	}
+	assertTokenBalance(t, db, token.ID, initial.Sub(decimal.NewFromInt(7)))
+
+	var attempts []model.APICallAttempt
+	if err := db.Where("call_id = ?", call.ID).Order("attempt_no ASC").Find(&attempts).Error; err != nil {
+		t.Fatal(err)
+	}
+	if len(attempts) != 2 || attempts[0].Status != model.APICallAttemptStatusFailed ||
+		attempts[1].Status != model.APICallAttemptStatusCompleted || attempts[1].TotalTokens != 3 ||
+		attempts[1].ProviderResponseID != "provider-ok" || attempts[1].FirstByteAt == nil {
+		t.Fatalf("attempts=%#v", attempts)
+	}
+
+	var billingLogs []model.BillingLog
+	if err := db.Where("call_id = ?", call.ID).Order("id ASC").Find(&billingLogs).Error; err != nil {
+		t.Fatal(err)
+	}
+	if len(billingLogs) != 4 {
+		t.Fatalf("billing logs=%#v", billingLogs)
+	}
+	for _, billingLog := range billingLogs {
+		if billingLog.AttemptID == 0 || len(billingLog.PricingSnapshot) == 0 || billingLog.Phase == "" {
+			t.Fatalf("incomplete billing log=%#v", billingLog)
+		}
+	}
+}
+
+func TestKeepCallOpenOnErrorAllowsRetryWithSameCallID(t *testing.T) {
+	db, user, token := executionTestDB(t)
+	callService := service.NewAPICallService()
+	call, err := callService.StartCall(&service.StartCallRequest{
+		ID: "call_background_retry", RequestID: "request-background",
+		UserID: user.ID, TokenID: token.ID, Endpoint: string(canonical.EndpointOpenAIResponses),
+		Operation: string(transport.OperationResponses), Model: "public", Background: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	upstreamErr := &retryStatusError{status: http.StatusServiceUnavailable}
+	item := &scriptedTransport{
+		id: transport.OpenAIResponses, prepared: testPrepared(false), executeErr: upstreamErr,
+	}
+	route := requestPriceRoute(0)
+	route.Transport = transport.OpenAIResponses
+	selector, executionEngine := newExecutionTestEngineWithCallService(t, item, route, callService)
+	options := ExecuteOptions{
+		UserID: user.ID, TokenID: token.ID, CallID: call.ID,
+		BillingKey: t.Name() + ":first", KeepCallOpenOnError: true,
+	}
+	if _, err := executionEngine.Execute(context.Background(), canonical.Request{
+		Endpoint: canonical.EndpointOpenAIResponses, Model: "public",
+	}, options); !errors.Is(err, upstreamErr) {
+		t.Fatalf("first error=%v", err)
+	}
+	var stored model.APICall
+	if err := db.First(&stored, "id = ?", call.ID).Error; err != nil {
+		t.Fatal(err)
+	}
+	if stored.Status != model.APICallStatusInProgress || stored.AttemptCount != 1 {
+		t.Fatalf("call after retryable failure=%#v", stored)
+	}
+
+	item.executeErr = nil
+	item.executeResponse = canonical.Response{ID: "retry-ok", Usage: &canonical.Usage{TotalTokens: 2}}
+	options.BillingKey = t.Name() + ":second"
+	options.KeepCallOpenOnError = false
+	result, err := executionEngine.Execute(context.Background(), canonical.Request{
+		Endpoint: canonical.EndpointOpenAIResponses, Model: "public",
+	}, options)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.CallID != call.ID || selector.releaseCount() != 2 {
+		t.Fatalf("result=%#v releases=%d", result, selector.releaseCount())
+	}
+	if err := db.First(&stored, "id = ?", call.ID).Error; err != nil {
+		t.Fatal(err)
+	}
+	if stored.Status != model.APICallStatusCompleted || stored.AttemptCount != 2 || stored.TotalTokens != 2 {
+		t.Fatalf("completed retried call=%#v", stored)
+	}
+}
+
+func TestDeferCallCompletionLeavesSuccessfulCallInProgress(t *testing.T) {
+	db, user, token := executionTestDB(t)
+	callService := service.NewAPICallService()
+	item := &scriptedTransport{
+		id: transport.OpenAIResponses, prepared: testPrepared(false),
+		executeResponse: canonical.Response{ID: "deferred", Usage: &canonical.Usage{TotalTokens: 3}},
+	}
+	route := requestPriceRoute(0)
+	route.Transport = transport.OpenAIResponses
+	_, executionEngine := newExecutionTestEngineWithCallService(t, item, route, callService)
+	result, err := executionEngine.Execute(context.Background(), canonical.Request{
+		Endpoint: canonical.EndpointOpenAIResponses, Model: "public",
+	}, ExecuteOptions{
+		UserID: user.ID, TokenID: token.ID, BillingKey: t.Name(), DeferCallCompletion: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var call model.APICall
+	if err := db.First(&call, "id = ?", result.CallID).Error; err != nil {
+		t.Fatal(err)
+	}
+	if call.Status != model.APICallStatusInProgress || call.FinalAttemptID != 0 {
+		t.Fatalf("deferred call=%#v", call)
+	}
+	var attempt model.APICallAttempt
+	if err := db.First(&attempt, result.AttemptID).Error; err != nil {
+		t.Fatal(err)
+	}
+	if attempt.Status != model.APICallAttemptStatusCompleted || attempt.TotalTokens != 3 {
+		t.Fatalf("deferred attempt=%#v", attempt)
+	}
+	if err := result.CompleteDelivery(); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.First(&call, "id = ?", result.CallID).Error; err != nil {
+		t.Fatal(err)
+	}
+	if call.Status != model.APICallStatusCompleted || call.FinalAttemptID != result.AttemptID || call.TotalTokens != 3 {
+		t.Fatalf("delivered call=%#v", call)
+	}
+}
+
+func TestAttemptLedgerFailureStopsBeforeUpstream(t *testing.T) {
+	db, user, token := executionTestDB(t)
+	if err := db.Migrator().DropTable(&model.APICallAttempt{}); err != nil {
+		t.Fatal(err)
+	}
+	item := &scriptedTransport{
+		id: transport.OpenAIChat, prepared: testPrepared(false),
+		executeResponse: canonical.Response{ID: "must-not-run"},
+	}
+	_, executionEngine := newExecutionTestEngine(t, item, requestPriceRoute(0))
+	result, err := executionEngine.Execute(context.Background(), canonical.Request{
+		Endpoint: canonical.EndpointOpenAIChat, Model: "public",
+	}, ExecuteOptions{UserID: user.ID, TokenID: token.ID, BillingKey: t.Name()})
+	if err == nil || result != nil {
+		t.Fatalf("result=%#v err=%v", result, err)
+	}
+	if calls := item.callSequence(); len(calls) != 1 || calls[0] != "prepare" {
+		t.Fatalf("upstream was reached after attempt ledger failure: %v", calls)
+	}
+}
+
+func TestCallLeaseLossCancelsExecutionContext(t *testing.T) {
+	db, user, token := executionTestDB(t)
+	calls := service.NewAPICallService()
+	call, err := calls.StartCall(&service.StartCallRequest{
+		UserID: user.ID, TokenID: token.ID, Endpoint: "/v1/chat/completions",
+		Operation: "chat.completions", Model: "public",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := calls.MarkCallRunning(call.ID); err != nil {
+		t.Fatal(err)
+	}
+	lifecycle, err := newCallLifecycleWithOptions(
+		context.Background(), calls, call.ID, 120*time.Millisecond, 20*time.Millisecond,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Model(&model.APICall{}).Where("id = ?", call.ID).Updates(map[string]any{
+		"lease_owner": "replacement-owner", "lease_expires_at": time.Now().Add(time.Minute),
+	}).Error; err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-lifecycle.Context().Done():
+	case <-time.After(time.Second):
+		t.Fatal("execution context was not cancelled after lease loss")
+	}
+	if !errors.Is(lifecycle.leaseFailure(), service.ErrAPICallLeaseUnavailable) {
+		t.Fatalf("lease failure = %v", lifecycle.leaseFailure())
+	}
+	lifecycle.releaseLease()
+	var stored model.APICall
+	if err := db.First(&stored, "id = ?", call.ID).Error; err != nil {
+		t.Fatal(err)
+	}
+	if stored.LeaseOwner != "replacement-owner" {
+		t.Fatalf("replacement lease owner was cleared: %q", stored.LeaseOwner)
+	}
+}
+
+func TestLedgerCompletionFailureDoesNotReplaceSuccessfulResponse(t *testing.T) {
+	db, user, token := executionTestDB(t)
+	item := &scriptedTransport{
+		id:       transport.OpenAIChat,
+		prepared: testPrepared(false),
+		executeResponse: canonical.Response{
+			ID: "upstream-success", Usage: &canonical.Usage{TotalTokens: 1},
+		},
+		onExecute: func() {
+			if err := db.Exec("DELETE FROM api_call_attempts").Error; err != nil {
+				t.Errorf("delete attempts: %v", err)
+			}
+		},
+	}
+	_, executionEngine := newExecutionTestEngine(t, item, requestPriceRoute(0))
+	result, err := executionEngine.Execute(context.Background(), canonical.Request{
+		Endpoint: canonical.EndpointOpenAIChat, Model: "public",
+	}, ExecuteOptions{UserID: user.ID, TokenID: token.ID, BillingKey: t.Name()})
+	if err != nil {
+		t.Fatalf("ledger completion replaced upstream success: %v", err)
+	}
+	if result == nil || result.Response == nil || result.Response.ID != "upstream-success" {
+		t.Fatalf("result=%#v", result)
+	}
 }
 
 func newExecutionTestEngine(t *testing.T, item transport.Transport, route *routing.RouteResult) (*testSelector, *Engine) {
+	return newExecutionTestEngineWithCallService(t, item, route, service.NewAPICallService())
+}
+
+func newExecutionTestEngineWithCallService(
+	t *testing.T,
+	item transport.Transport,
+	route *routing.RouteResult,
+	callService *service.APICallService,
+) (*testSelector, *Engine) {
 	t.Helper()
 	registry := transport.NewRegistry()
 	if err := registry.Register(item); err != nil {
@@ -717,7 +1023,7 @@ func newExecutionTestEngine(t *testing.T, item transport.Transport, route *routi
 	}
 	registry.Freeze()
 	selector := &testSelector{route: route}
-	executionEngine, err := New(selector, registry, service.NewBillingService())
+	executionEngine, err := New(selector, registry, service.NewBillingService(), callService)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -730,7 +1036,15 @@ func executionTestDB(t *testing.T) (*gorm.DB, model.User, model.Token) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := db.AutoMigrate(&model.User{}, &model.Token{}, &model.BillingLog{}, &model.ChannelRequestLog{}); err != nil {
+	if err := db.AutoMigrate(
+		&model.User{},
+		&model.Token{},
+		&model.BillingLog{},
+		&model.ChannelRequestLog{},
+		&model.APICall{},
+		&model.APICallAttempt{},
+		&model.BalanceEntry{},
+	); err != nil {
 		t.Fatal(err)
 	}
 	model.SetDB(db)
