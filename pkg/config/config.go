@@ -13,6 +13,7 @@ const (
 	DefaultAPICallPayloadRetentionHours = 24 * 7
 	DefaultAPICallPayloadMaxBytes       = 256 * 1024
 	DefaultAPICallMetadataRetentionDays = 90
+	DefaultResourceHistoryRetentionDays = 90
 	DefaultAPIAccessLogRetentionDays    = 30
 	DefaultAuditEventRetentionDays      = 180
 	DefaultBillingLedgerRetentionDays   = 365
@@ -97,6 +98,7 @@ type ObservabilityConfig struct {
 	APICallPayloadMaxBytes       int    `mapstructure:"api_call_payload_max_bytes"`
 	APICallPayloadEncryptionKey  string `mapstructure:"api_call_payload_encryption_key"`
 	APICallMetadataRetentionDays int    `mapstructure:"api_call_metadata_retention_days"`
+	ResourceHistoryRetentionDays int    `mapstructure:"resource_history_retention_days"`
 	APIAccessLogRetentionDays    int    `mapstructure:"api_access_log_retention_days"`
 	AuditEventRetentionDays      int    `mapstructure:"audit_event_retention_days"`
 	BillingLedgerRetentionDays   int    `mapstructure:"billing_ledger_retention_days"`
@@ -169,6 +171,9 @@ func applyDefaults(cfg *Config) {
 	}
 	if cfg.Observability.APICallMetadataRetentionDays <= 0 {
 		cfg.Observability.APICallMetadataRetentionDays = DefaultAPICallMetadataRetentionDays
+	}
+	if cfg.Observability.ResourceHistoryRetentionDays <= 0 {
+		cfg.Observability.ResourceHistoryRetentionDays = DefaultResourceHistoryRetentionDays
 	}
 	if cfg.Observability.APIAccessLogRetentionDays <= 0 {
 		cfg.Observability.APIAccessLogRetentionDays = DefaultAPIAccessLogRetentionDays

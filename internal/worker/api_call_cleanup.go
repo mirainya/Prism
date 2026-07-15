@@ -84,12 +84,16 @@ func HandleAPICallPayloadCleanup(ctx context.Context, _ *asynq.Task) error {
 
 func cleanupExpiredMetadata(ctx context.Context, now time.Time) error {
 	metadataDays := config.DefaultAPICallMetadataRetentionDays
+	resourceDays := config.DefaultResourceHistoryRetentionDays
 	accessDays := config.DefaultAPIAccessLogRetentionDays
 	auditDays := config.DefaultAuditEventRetentionDays
 	billingDays := config.DefaultBillingLedgerRetentionDays
 	if cfg := config.Get(); cfg != nil {
 		if cfg.Observability.APICallMetadataRetentionDays > 0 {
 			metadataDays = cfg.Observability.APICallMetadataRetentionDays
+		}
+		if cfg.Observability.ResourceHistoryRetentionDays > 0 {
+			resourceDays = cfg.Observability.ResourceHistoryRetentionDays
 		}
 		if cfg.Observability.APIAccessLogRetentionDays > 0 {
 			accessDays = cfg.Observability.APIAccessLogRetentionDays
@@ -107,6 +111,8 @@ func cleanupExpiredMetadata(ctx context.Context, now time.Time) error {
 		days   int
 		delete func(time.Time, int) (int64, error)
 	}{
+		{name: "task history", days: resourceDays, delete: retention.DeleteExpiredTaskHistory},
+		{name: "conversation history", days: resourceDays, delete: retention.DeleteExpiredConversationHistory},
 		{name: "API call metadata", days: metadataDays, delete: retention.DeleteExpiredCallMetadata},
 		{name: "upstream request log metadata", days: metadataDays, delete: retention.DeleteExpiredRequestLogs},
 		{name: "API access logs", days: accessDays, delete: retention.DeleteExpiredAPIAccessLogs},

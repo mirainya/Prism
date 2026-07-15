@@ -30,6 +30,8 @@ func AutoMigrate() error {
 		&TokenChannelPriority{},
 		&Conversation{},
 		&Message{},
+		&ConversationTurn{},
+		&ConversationItem{},
 		&BillingLog{},
 		&APICall{},
 		&APICallAttempt{},

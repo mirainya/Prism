@@ -332,6 +332,8 @@ curl "$BASE_URL/v1/files" \
 
 调用统一能力接口（图片生成、视频生成等）。
 
+`callback_url` 可省略；提供时必须是主机解析结果全部为公网地址的 HTTP/HTTPS URL。本机、内网、链路本地、多播地址及不安全重定向会被拒绝。
+
 ```json
 // Request
 {
@@ -405,6 +407,8 @@ curl "$BASE_URL/v1/files" \
 
 取消任务。`Response.data` 为 `{"message": "task cancelled"}`。
 
+`tasks` 仅表示图片、视频等异步能力资源。所有协议和能力调用的统一历史、usage、计费与重试事实位于 `api_calls`；创建任务的响应头和控制台任务详情可通过 `call_id` 定位对应调用。
+
 ---
 
 ## 控制台 API (JWT 认证)
@@ -447,15 +451,20 @@ curl "$BASE_URL/v1/files" \
 |--------|------|------|
 | GET | /api/dashboard/stats | 统计概览 (today/weekly_trend/capability_dist) |
 | GET | /api/dashboard/chat-stats | Chat 统计 |
-| GET | /api/tasks | 任务列表 |
-| GET | /api/tasks/:task_no | 任务详情 |
+| GET | /api/tasks | 异步任务列表 |
+| GET | /api/tasks/:task_no | 异步任务详情，包含 `call_id` |
+
+`GET /api/tasks` 支持 `page`、`page_size`、`status`、`capability`、`keyword`、日期和 `snapshot_at`。首次查询返回 `snapshot_at`；后续翻页应原样传回，修改筛选条件或刷新时应丢弃旧快照。列表项和详情均可通过 `call_id` 进入 `/api/calls?call_id=...`。
 
 ### 对话记录
 
 | Method | Path | 说明 |
 |--------|------|------|
 | GET | /api/conversations | 对话列表 |
-| GET | /api/conversations/:id/messages | 对话消息 |
+| GET | /api/conversations/:id/messages | 旧消息兼容投影，独立分页 |
+| GET | /api/conversations/:id/turns | canonical 对话轮次，独立分页 |
+
+这些接口只展示 Playground 保存的对话，不代表全部 API 调用历史。数据按 `conversations -> conversation_turns -> conversation_items` 保存；`conversation_items` 保留有序 canonical 多模态、推理和工具内容。`/turns` 是新记录主查询，`/messages` 保留旧数据兼容，两者各自使用 `page/page_size`。Turn、Item 的 64 位 ID 与轮次序号以十进制字符串返回；`call_id` 可用于定位 `/api/calls`。
 
 ### 查询
 
@@ -470,7 +479,7 @@ curl "$BASE_URL/v1/files" \
 
 | Method | Path | 说明 |
 |--------|------|------|
-| GET | `/api/calls` | 下游调用账本；支持 Call、Request、模型、状态、日期等筛选 |
+| GET | `/api/calls` | 全调用事实源；支持 Call、Request、模型、状态、日期等筛选 |
 | GET | `/api/calls/:id` | Call、上游 Attempt、计费与管理员可见正文详情 |
 | GET | `/api/observability/access-logs` | API 访问元数据，不保存认证头或请求正文 |
 | GET | `/api/observability/audit-events` | 登录、Token、文件、取消及控制台写操作审计 |
@@ -493,10 +502,13 @@ curl "$BASE_URL/v1/files" \
 | POST | /api/playground/:token_id/capabilities/:capability | 能力调用 |
 | GET | /api/playground/:token_id/conversations | 对话列表 |
 | GET | /api/playground/:token_id/conversations/:conversation_id/messages | 对话消息 |
+| GET | /api/playground/:token_id/conversations/:conversation_id/turns | canonical 对话轮次 |
 | GET | /api/playground/:token_id/debug/:request_log_id | 调试信息 |
 | GET | /api/playground/:token_id/tasks | 任务列表 |
 | GET | /api/playground/:token_id/tasks/:task_no | 任务详情 |
 | POST | /api/playground/:token_id/tasks/:task_no/cancel | 取消任务 |
+
+Playground 任务列表与 `/api/tasks` 使用相同的 `snapshot_at` 稳定分页语义。任务详情和对话轮次中的 `call_id` 可直接用于调用记录筛选。
 
 ---
 

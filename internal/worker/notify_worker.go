@@ -11,13 +11,14 @@ import (
 	"github.com/hibiken/asynq"
 	"github.com/mirainya/Prism/internal/model"
 	"github.com/mirainya/Prism/pkg/logger"
+	"github.com/mirainya/Prism/pkg/safeurl"
 	"go.uber.org/zap"
 )
 
 const maxNotifyRetries = 5
 
 // 复用 HTTP Client，避免每次回调都创建新连接
-var notifyClient = &http.Client{Timeout: 10 * time.Second}
+var notifyClient = safeurl.NewClient(10 * time.Second)
 
 type CallbackPayload struct {
 	TaskID   string         `json:"task_id"`
@@ -45,9 +46,15 @@ func HandleTaskNotify(ctx context.Context, t *asynq.Task) error {
 	if err != nil {
 		return fmt.Errorf("get task: %w", err)
 	}
+	if task.CallbackStatus == model.CallbackStatusSuccess {
+		return nil
+	}
 
 	if task.CallbackURL == "" {
 		return nil
+	}
+	if err := safeurl.Validate(ctx, task.CallbackURL); err != nil {
+		return recordCallbackFailure(task, retried, maxRetry, fmt.Errorf("unsafe callback URL: %w", err))
 	}
 
 	// 构造回调内容
@@ -70,43 +77,48 @@ func HandleTaskNotify(ctx context.Context, t *asynq.Task) error {
 
 	attempt := task.CallbackAttempts + 1
 
-	resp, err := notifyClient.Post(task.CallbackURL, "application/json", bytes.NewReader(bodyBytes))
+	request, err := http.NewRequestWithContext(ctx, http.MethodPost, task.CallbackURL, bytes.NewReader(bodyBytes))
+	if err != nil {
+		return recordCallbackFailure(task, retried, maxRetry, fmt.Errorf("build callback request: %w", err))
+	}
+	request.Header.Set("Content-Type", "application/json")
+	resp, err := notifyClient.Do(request)
 	if err != nil {
 		logger.Error("callback failed",
 			zap.Error(err),
 			zap.Int("attempt", retried+1),
 		)
-		taskService.UpdateCallbackStatus(task.ID, model.CallbackStatusFailed, attempt)
-		// 最后一次重试也失败，不再返回 error（避免进入死信队列后无意义重试）
-		if retried >= maxRetry {
-			logger.Error("callback permanently failed, exhausted all retries",
-				zap.Uint("task_id", task.ID),
-				zap.String("callback_url", task.CallbackURL),
-			)
-			return nil
-		}
-		return fmt.Errorf("callback error: %w", err)
+		return recordCallbackFailure(task, retried, maxRetry, fmt.Errorf("callback error: %w", err))
 	}
 	defer resp.Body.Close()
 
-	if resp.StatusCode >= 400 {
+	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
 		logger.Error("callback returned error",
 			zap.Int("status", resp.StatusCode),
 			zap.Int("attempt", retried+1),
 		)
-		taskService.UpdateCallbackStatus(task.ID, model.CallbackStatusFailed, attempt)
-		if retried >= maxRetry {
-			logger.Error("callback permanently failed, exhausted all retries",
-				zap.Uint("task_id", task.ID),
-				zap.Int("last_status", resp.StatusCode),
-			)
-			return nil
-		}
-		return fmt.Errorf("callback returned %d", resp.StatusCode)
+		return recordCallbackFailure(task, retried, maxRetry, fmt.Errorf("callback returned %d", resp.StatusCode))
 	}
 
-	taskService.UpdateCallbackStatus(task.ID, model.CallbackStatusSuccess, attempt)
+	if err := taskService.UpdateCallbackStatus(task.ID, model.CallbackStatusSuccess, attempt); err != nil {
+		return fmt.Errorf("record successful callback delivery: %w", err)
+	}
 	logger.Info("callback sent", zap.Uint("task_id", task.ID))
 
 	return nil
+}
+
+func recordCallbackFailure(task *model.Task, retried, maxRetry int, deliveryErr error) error {
+	attempt := task.CallbackAttempts + 1
+	if err := taskService.UpdateCallbackStatus(task.ID, model.CallbackStatusFailed, attempt); err != nil {
+		return fmt.Errorf("%v; record callback failure: %w", deliveryErr, err)
+	}
+	if retried >= maxRetry {
+		logger.Error("callback permanently failed, exhausted all retries",
+			zap.Uint("task_id", task.ID),
+			zap.Error(deliveryErr),
+		)
+		return nil
+	}
+	return deliveryErr
 }

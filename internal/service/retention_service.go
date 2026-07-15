@@ -5,11 +5,86 @@ import (
 
 	"github.com/mirainya/Prism/internal/model"
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 )
 
 type RetentionService struct{}
 
 func NewRetentionService() *RetentionService { return &RetentionService{} }
+
+func (s *RetentionService) DeleteExpiredTaskHistory(cutoff time.Time, limit int) (int64, error) {
+	if !model.DB().Migrator().HasTable(&model.Task{}) {
+		return 0, nil
+	}
+	limit = normalizeRetentionBatchSize(limit)
+	var ids []uint
+	if err := model.DB().Model(&model.Task{}).
+		Where("status IN ?", []model.TaskStatus{
+			model.TaskStatusSuccess, model.TaskStatusFailed, model.TaskStatusCancelled,
+		}).
+		Where("COALESCE(completed_at, updated_at, created_at) < ?", cutoff).
+		Order("id ASC").Limit(limit).Pluck("id", &ids).Error; err != nil || len(ids) == 0 {
+		return 0, err
+	}
+	result := model.DB().Unscoped().Where("id IN ?", ids).Delete(&model.Task{})
+	if result.Error != nil {
+		return 0, result.Error
+	}
+	return int64(len(ids)), nil
+}
+
+func (s *RetentionService) DeleteExpiredConversationHistory(cutoff time.Time, limit int) (int64, error) {
+	if !model.DB().Migrator().HasTable(&model.Conversation{}) {
+		return 0, nil
+	}
+	limit = normalizeRetentionBatchSize(limit)
+	var ids []uint
+	if err := model.DB().Model(&model.Conversation{}).
+		Where("updated_at < ?", cutoff).
+		Order("id ASC").Limit(limit).Pluck("id", &ids).Error; err != nil || len(ids) == 0 {
+		return 0, err
+	}
+	var deleted int64
+	err := model.DB().Transaction(func(tx *gorm.DB) error {
+		var locked []model.Conversation
+		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).
+			Model(&model.Conversation{}).
+			Select("id").
+			Where("id IN ? AND updated_at < ?", ids, cutoff).
+			Order("id ASC").Find(&locked).Error; err != nil {
+			return err
+		}
+		if len(locked) == 0 {
+			return nil
+		}
+		lockedIDs := make([]uint, len(locked))
+		for i := range locked {
+			lockedIDs[i] = locked[i].ID
+		}
+		if tx.Migrator().HasTable(&model.ConversationItem{}) {
+			if err := tx.Where("conversation_id IN ?", lockedIDs).Delete(&model.ConversationItem{}).Error; err != nil {
+				return err
+			}
+		}
+		if tx.Migrator().HasTable(&model.ConversationTurn{}) {
+			if err := tx.Where("conversation_id IN ?", lockedIDs).Delete(&model.ConversationTurn{}).Error; err != nil {
+				return err
+			}
+		}
+		if tx.Migrator().HasTable(&model.Message{}) {
+			if err := tx.Where("conversation_id IN ?", lockedIDs).Delete(&model.Message{}).Error; err != nil {
+				return err
+			}
+		}
+		result := tx.Unscoped().Where("id IN ?", lockedIDs).Delete(&model.Conversation{})
+		deleted = result.RowsAffected
+		return result.Error
+	})
+	if err != nil {
+		return 0, err
+	}
+	return deleted, nil
+}
 
 func (s *RetentionService) DeleteExpiredCallMetadata(cutoff time.Time, limit int) (int64, error) {
 	if !model.DB().Migrator().HasTable(&model.APICall{}) {

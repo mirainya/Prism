@@ -72,6 +72,15 @@ func HandleTaskSubmit(ctx context.Context, t *asynq.Task) error {
 		if checkpoint != nil && checkpoint.IsSucceeded() && errors.Is(configErr, gorm.ErrRecordNotFound) {
 			return finalizeSucceededSubmitWithoutConfiguration(task, checkpoint)
 		}
+		if checkpoint == nil && errors.Is(configErr, gorm.ErrRecordNotFound) {
+			if _, failErr := taskService.UpdateTaskSubmitFail(
+				task.ID,
+				"task execution configuration was removed before upstream submission",
+			); failErr != nil {
+				return fmt.Errorf("record missing task execution configuration: %w", failErr)
+			}
+			return nil
+		}
 		return configErr
 	}
 
@@ -543,10 +552,5 @@ func NewTaskSubmit(taskID uint) (*asynq.Task, error) {
 }
 
 func EnqueueTaskSubmit(taskID uint) error {
-	task, err := NewTaskSubmit(taskID)
-	if err != nil {
-		return err
-	}
-	_, err = queue.Client.Enqueue(task, asynq.Queue("critical"))
-	return err
+	return queue.EnqueueTaskSubmit(taskID)
 }

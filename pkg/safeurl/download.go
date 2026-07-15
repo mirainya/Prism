@@ -24,42 +24,11 @@ func Download(ctx context.Context, rawURL string, maxBytes int64) (*Result, erro
 	if maxBytes <= 0 {
 		return nil, errors.New("maxBytes must be positive")
 	}
-	transport := http.DefaultTransport.(*http.Transport).Clone()
-	transport.Proxy = nil
-	dialer := &net.Dialer{Timeout: 10 * time.Second}
-	transport.DialContext = func(ctx context.Context, network, address string) (net.Conn, error) {
-		host, port, err := net.SplitHostPort(address)
-		if err != nil {
-			return nil, err
-		}
-		addresses, err := net.DefaultResolver.LookupIPAddr(ctx, host)
-		if err != nil {
-			return nil, err
-		}
-		for _, address := range addresses {
-			if !isPublicIP(address.IP) {
-				return nil, ErrUnsafeURL
-			}
-		}
-		if len(addresses) == 0 {
-			return nil, ErrUnsafeURL
-		}
-		return dialer.DialContext(ctx, network, net.JoinHostPort(addresses[0].IP.String(), port))
-	}
-	client := &http.Client{Transport: transport, Timeout: 45 * time.Second}
-	client.CheckRedirect = func(req *http.Request, via []*http.Request) error {
-		if len(via) >= 5 {
-			return errors.New("too many redirects")
-		}
-		return validateURL(req.URL)
-	}
-	parsed, err := url.Parse(rawURL)
+	parsed, err := parseAndValidate(ctx, rawURL)
 	if err != nil {
 		return nil, err
 	}
-	if err := validateURL(parsed); err != nil {
-		return nil, err
-	}
+	client := NewClient(45 * time.Second)
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, parsed.String(), nil)
 	if err != nil {
 		return nil, err
@@ -89,6 +58,52 @@ func Download(ctx context.Context, rawURL string, maxBytes int64) (*Result, erro
 	return &Result{Data: data, ContentType: contentType, FinalURL: resp.Request.URL.String()}, nil
 }
 
+// Validate resolves the URL host and rejects non-HTTP schemes and any host
+// that resolves to a non-public address.
+func Validate(ctx context.Context, rawURL string) error {
+	_, err := parseAndValidate(ctx, rawURL)
+	return err
+}
+
+// NewClient returns an HTTP client that repeats the public-address check at
+// connect time and for every redirect. Callers should still call Validate for
+// the initial URL so malformed or unsafe input is rejected before execution.
+func NewClient(timeout time.Duration) *http.Client {
+	transport := http.DefaultTransport.(*http.Transport).Clone()
+	transport.Proxy = nil
+	dialer := &net.Dialer{Timeout: 10 * time.Second}
+	transport.DialContext = func(ctx context.Context, network, address string) (net.Conn, error) {
+		host, port, err := net.SplitHostPort(address)
+		if err != nil {
+			return nil, err
+		}
+		addresses, err := resolvePublicAddresses(ctx, host)
+		if err != nil {
+			return nil, err
+		}
+		return dialer.DialContext(ctx, network, net.JoinHostPort(addresses[0].IP.String(), port))
+	}
+	client := &http.Client{Transport: transport, Timeout: timeout}
+	client.CheckRedirect = func(req *http.Request, via []*http.Request) error {
+		if len(via) >= 5 {
+			return errors.New("too many redirects")
+		}
+		return validateResolvedURL(req.Context(), req.URL)
+	}
+	return client
+}
+
+func parseAndValidate(ctx context.Context, rawURL string) (*url.URL, error) {
+	parsed, err := url.Parse(rawURL)
+	if err != nil {
+		return nil, err
+	}
+	if err := validateResolvedURL(ctx, parsed); err != nil {
+		return nil, err
+	}
+	return parsed, nil
+}
+
 func validateURL(value *url.URL) error {
 	if value == nil || (value.Scheme != "http" && value.Scheme != "https") || value.Hostname() == "" {
 		return ErrUnsafeURL
@@ -97,6 +112,39 @@ func validateURL(value *url.URL) error {
 		return ErrUnsafeURL
 	}
 	return nil
+}
+
+func validateResolvedURL(ctx context.Context, value *url.URL) error {
+	if err := validateURL(value); err != nil {
+		return err
+	}
+	_, err := resolvePublicAddresses(ctx, value.Hostname())
+	return err
+}
+
+func resolvePublicAddresses(ctx context.Context, host string) ([]net.IPAddr, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if ip := net.ParseIP(host); ip != nil {
+		if !isPublicIP(ip) {
+			return nil, ErrUnsafeURL
+		}
+		return []net.IPAddr{{IP: ip}}, nil
+	}
+	addresses, err := net.DefaultResolver.LookupIPAddr(ctx, host)
+	if err != nil {
+		return nil, err
+	}
+	if len(addresses) == 0 {
+		return nil, ErrUnsafeURL
+	}
+	for _, address := range addresses {
+		if !isPublicIP(address.IP) {
+			return nil, ErrUnsafeURL
+		}
+	}
+	return addresses, nil
 }
 
 func isPublicIP(ip net.IP) bool {

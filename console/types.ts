@@ -164,13 +164,14 @@ export interface ChannelOption {
 export interface TaskLog {
   id: string;
   task_no: string;
+  call_id?: string;
   capability: string;
   capability_name: string;
   channel: string;
   status: string;
   progress: number;
-  cost: number;
-    refunded: boolean;
+  cost: string | number;
+  refunded: boolean;
   error?: string;
   created_at: string;
   completed_at?: string;
@@ -182,6 +183,8 @@ export interface TaskDetail extends TaskLog {
   result?: Record<string, any>;
   vendor_task_id?: string;
   started_at?: string;
+  callback_status?: string;
+  callback_attempts?: number;
 }
 
 export interface DashboardStats {
@@ -287,16 +290,17 @@ export interface PlaygroundModelInfo {
 
 export interface Conversation {
   id: number;
-  userId: number;
-  tokenId: number;
+  userId?: number;
+  tokenId?: number;
   title: string;
   model: string;
   systemPrompt: string;
+  lastCallId?: string;
   lastRequestLogId?: number;
   lastStatus?: string;
   totalTokens: number;
   messageCount: number;
-  totalCost: number;
+  totalCost: string | number;
   status: number;
   createdAt: string;
   updatedAt: string;
@@ -305,6 +309,8 @@ export interface Conversation {
 export interface ChatMessage {
   id: number;
   conversationId: number;
+  callId?: string;
+  callStatus?: string;
   requestLogId?: number;
   role: 'system' | 'user' | 'assistant';
   content: string;
@@ -317,8 +323,37 @@ export interface ChatMessage {
   channelId?: number;
   accountId?: number;
   latencyMs: number;
-  cost: number;
+  cost: string | number;
   createdAt: string;
+}
+
+export interface ConversationCanonicalItem {
+  id: string;
+  direction: 'input' | 'output';
+  ordinal: number;
+  canonical: Record<string, any>;
+}
+
+export interface ConversationTurnRecord {
+  id: string;
+  conversationId: number;
+  sequence: string;
+  callId: string;
+  requestLogId?: number;
+  model: string;
+  providerResponseId?: string;
+  status: 'completed' | 'failed' | 'aborted';
+  inputTokens: number;
+  outputTokens: number;
+  totalTokens: number;
+  cost: string | number;
+  latencyMs: number;
+  finishReason?: string;
+  errorType?: string;
+  errorCode?: string;
+  errorMessage?: string;
+  createdAt: string;
+  items: ConversationCanonicalItem[];
 }
 
 export interface PlaygroundConversation extends Conversation {}
@@ -357,6 +392,7 @@ export interface PlaygroundDebugDetail {
 export interface PlaygroundTaskListParams {
   page?: number;
   page_size?: number;
+  snapshot_at?: string;
   status?: string;
   capability?: string;
   keyword?: string;
@@ -382,6 +418,7 @@ export interface PlaygroundTaskListResponse {
   total: number;
   page: number;
   page_size: number;
+  snapshot_at?: string;
 }
 
 export interface PlaygroundTaskDetail {

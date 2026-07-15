@@ -75,7 +75,15 @@ func PlaygroundChatCompletions(c *gin.Context) {
 
 	// 会话编排:加载历史 + 火山 B 模式(previous_response_id)
 	newMessages := req.Messages
-	cc := service.LoadConversationContext(req.ConversationID, token.ID, req.Model)
+	cc, loadErr := service.LoadConversationContextStrict(req.ConversationID, token.ID, req.Model)
+	if loadErr != nil {
+		if errors.Is(loadErr, service.ErrConversationNotFound) {
+			resp.ErrorMsg(c, http.StatusNotFound, 404, loadErr.Error())
+			return
+		}
+		resp.ErrorMsg(c, http.StatusInternalServerError, 500, "failed to load conversation history")
+		return
+	}
 	fullMessages := append(append([]chat.ChatMessage{}, cc.History...), newMessages...)
 	callID := "call_" + uuid.NewString()
 	c.Header("X-Prism-Call-ID", callID)
@@ -127,6 +135,7 @@ func PlaygroundChatCompletions(c *gin.Context) {
 func playgroundStream(c *gin.Context, req *service.CompletionRequest, cc *service.ConversationContext, newMessages []chat.ChatMessage) {
 	session, err := chatPipeline.StreamComplete(c.Request.Context(), req)
 	if err != nil {
+		recordPlaygroundFailedTurn(cc, req, newMessages, nil, 0, model.ConversationTurnFailed, err)
 		respondPlaygroundChatError(c, err)
 		return
 	}
@@ -148,11 +157,23 @@ func playgroundStream(c *gin.Context, req *service.CompletionRequest, cc *servic
 	}
 	agg, streamErr := gwstream.ProxyStream(writer, session.UpstreamResp.Body)
 	provRespID := session.FinalizeStream(agg, streamErr)
+	reqLogID := session.RequestLogID()
 	if streamErr != nil {
+		var assistant *chat.ChatMessage
+		if agg != nil {
+			assistant = &chat.ChatMessage{
+				Role: model.RoleAssistant, Content: agg.AssistantContent,
+				ReasoningContent: agg.ReasoningContent,
+			}
+		}
+		status := model.ConversationTurnFailed
+		if c.Request.Context().Err() != nil || errors.Is(streamErr, io.ErrClosedPipe) {
+			status = model.ConversationTurnAborted
+		}
+		recordPlaygroundFailedTurn(cc, req, newMessages, assistant, reqLogID, status, streamErr)
 		return
 	}
 
-	reqLogID := session.RequestLogID()
 	if agg != nil {
 		assistant := chat.ChatMessage{
 			Role:             "assistant",
@@ -180,6 +201,7 @@ func playgroundStream(c *gin.Context, req *service.CompletionRequest, cc *servic
 func playgroundNonStream(c *gin.Context, req *service.CompletionRequest, cc *service.ConversationContext, newMessages []chat.ChatMessage) {
 	chatResp, err := chatPipeline.Complete(c.Request.Context(), req)
 	if err != nil {
+		recordPlaygroundFailedTurn(cc, req, newMessages, nil, 0, model.ConversationTurnFailed, err)
 		respondPlaygroundChatError(c, err)
 		return
 	}
@@ -199,6 +221,34 @@ func playgroundNonStream(c *gin.Context, req *service.CompletionRequest, cc *ser
 	}
 
 	c.JSON(http.StatusOK, chatResp)
+}
+
+func recordPlaygroundFailedTurn(
+	cc *service.ConversationContext,
+	req *service.CompletionRequest,
+	newMessages []chat.ChatMessage,
+	assistant *chat.ChatMessage,
+	requestLogID uint,
+	status model.ConversationTurnStatus,
+	cause error,
+) {
+	if req == nil || req.CallID == "" {
+		return
+	}
+	errorMessage := ""
+	if cause != nil {
+		errorMessage = service.SanitizeAPICallErrorMessage(cause.Error())
+	}
+	_, err := service.RecordConversationTurnFailure(cc, service.ConversationTurnRecord{
+		UserID: req.UserID, TokenID: req.TokenID, Model: req.Model,
+		NewMessages: newMessages, Assistant: assistant, Status: status,
+		CallID: req.CallID, RequestLogID: requestLogID,
+		ErrorType: "playground_error", ErrorCode: "playground_call_failed", ErrorMessage: errorMessage,
+	})
+	if err != nil {
+		logger.Error("save failed playground conversation turn",
+			zap.String("call_id", req.CallID), zap.Error(err))
+	}
 }
 
 func respondPlaygroundChatError(c *gin.Context, err error) {

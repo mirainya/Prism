@@ -124,6 +124,41 @@ func TestListTasksFiltersByModelCodeAndUser(t *testing.T) {
 	}
 }
 
+func TestListTasksKeepsStableSnapshotAcrossPages(t *testing.T) {
+	seed := seedDashboardStats(t)
+	service := NewDashboardService()
+
+	first, err := service.ListTasks(&ListTasksRequest{Page: 1, PageSize: 1}, seed.userOne, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first.SnapshotAt == "" || len(first.Items) != 1 || first.Items[0].TaskNo != "task-user-video" {
+		t.Fatalf("first page=%#v", first)
+	}
+	snapshot, err := time.Parse(time.RFC3339Nano, first.SnapshotAt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	inserted := model.Task{
+		TaskNo: "task-inserted-after-snapshot", UserID: seed.userOne, TokenID: seed.tokenOne,
+		ModelCode: "image-model", Status: model.TaskStatusSuccess,
+		BaseModel: model.BaseModel{CreatedAt: snapshot.Add(time.Second), UpdatedAt: snapshot.Add(time.Second)},
+	}
+	if err := model.DB().Create(&inserted).Error; err != nil {
+		t.Fatal(err)
+	}
+
+	second, err := service.ListTasks(&ListTasksRequest{
+		Page: 2, PageSize: 1, SnapshotAt: first.SnapshotAt,
+	}, seed.userOne, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if second.Total != 2 || len(second.Items) != 1 || second.Items[0].TaskNo != "task-user-image" {
+		t.Fatalf("second page=%#v", second)
+	}
+}
+
 type dashboardSeed struct {
 	userOne  uint
 	tokenOne uint

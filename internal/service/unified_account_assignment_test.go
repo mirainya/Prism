@@ -9,7 +9,6 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
-	"time"
 
 	"github.com/mirainya/Prism/internal/model"
 	"github.com/mirainya/Prism/internal/provider"
@@ -46,6 +45,50 @@ func TestInvokeRecordsFailedCallWhenNoEndpointIsAvailable(t *testing.T) {
 		call.RequestID != request.RequestID || call.Endpoint != request.Endpoint ||
 		call.ResourceType != "" || call.ResourceID != "" {
 		t.Fatalf("failed call = %#v", call)
+	}
+}
+
+func TestInvokeRejectsUnsafeCallbackURLAndRecordsBadRequest(t *testing.T) {
+	db := setupTestDB(t)
+	request := &InvokeRequest{
+		UserID: 18, TokenID: 29, Capability: "image-test",
+		Endpoint: "/v1/capabilities/image-test", Operation: "capability.invoke",
+		CallbackURL: "http://127.0.0.1/internal", Params: map[string]any{"prompt": "test"},
+	}
+
+	_, err := NewUnifiedService().Invoke(context.Background(), request)
+	if !errors.Is(err, ErrInvalidCallbackURL) {
+		t.Fatalf("invoke error = %v, want ErrInvalidCallbackURL", err)
+	}
+	var call model.APICall
+	if err := db.First(&call, "id = ?", request.CallID).Error; err != nil {
+		t.Fatal(err)
+	}
+	if call.Status != model.APICallStatusFailed || call.HTTPStatus != http.StatusBadRequest ||
+		call.ErrorType != "invalid_request_error" || call.ErrorCode != "invalid_callback_url" {
+		t.Fatalf("invalid callback call = %#v", call)
+	}
+}
+
+func TestFindEndpointsDoesNotIgnoreUnknownRequestedChannel(t *testing.T) {
+	db := setupTestDB(t)
+	if err := db.AutoMigrate(&model.Channel{}, &model.Endpoint{}); err != nil {
+		t.Fatal(err)
+	}
+	channel := &model.Channel{Type: "available-channel", Status: 1}
+	if err := db.Create(channel).Error; err != nil {
+		t.Fatal(err)
+	}
+	endpoint := &model.Endpoint{ChannelID: channel.ID, ModelCode: "image-test", Status: 1}
+	if err := db.Create(endpoint).Error; err != nil {
+		t.Fatal(err)
+	}
+
+	_, err := NewUnifiedService().findEndpointsForCapability(&InvokeRequest{
+		Capability: "image-test", Channel: "missing-channel",
+	})
+	if err == nil || !strings.Contains(err.Error(), "no available channel") {
+		t.Fatalf("find endpoints error = %v, want unavailable channel", err)
 	}
 }
 
@@ -407,7 +450,7 @@ func TestSynchronousFallbackSettlesUsingSuccessfulEndpointPrice(t *testing.T) {
 	}
 }
 
-func TestAsyncSynchronousCapabilityAcquiresLeaseBeforeProcessing(t *testing.T) {
+func TestAsyncSynchronousCapabilityUsesDurableQueue(t *testing.T) {
 	db := setupTestDB(t)
 	if err := db.AutoMigrate(&model.Channel{}, &model.Endpoint{}); err != nil {
 		t.Fatalf("migrate capability routes: %v", err)
@@ -416,6 +459,13 @@ func TestAsyncSynchronousCapabilityAcquiresLeaseBeforeProcessing(t *testing.T) {
 	config.C = &config.Config{}
 	provider.InitHTTPClient()
 	t.Cleanup(func() { config.C = previousConfig })
+	previousEnqueue := enqueueCapabilityTask
+	var queuedTaskID uint
+	enqueueCapabilityTask = func(taskID uint) error {
+		queuedTaskID = taskID
+		return nil
+	}
+	t.Cleanup(func() { enqueueCapabilityTask = previousEnqueue })
 
 	var upstreamCalls atomic.Int32
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
@@ -451,27 +501,78 @@ func TestAsyncSynchronousCapabilityAcquiresLeaseBeforeProcessing(t *testing.T) {
 	if err != nil {
 		t.Fatalf("invoke asynchronous synchronous capability: %v", err)
 	}
-	if response.Status != string(model.TaskStatusProcessing) {
+	if response.Status != string(model.TaskStatusPending) {
 		t.Fatalf("initial asynchronous response = %#v", response)
 	}
 
-	deadline := time.Now().Add(3 * time.Second)
 	var task model.Task
-	for time.Now().Before(deadline) {
-		if err := db.Where("task_no = ?", response.TaskID).First(&task).Error; err == nil && task.Status.IsTerminal() {
-			break
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
-	var completed model.Task
-	if err := db.Where("task_no = ?", response.TaskID).First(&completed).Error; err != nil {
+	if err := db.Where("task_no = ?", response.TaskID).First(&task).Error; err != nil {
 		t.Fatal(err)
 	}
-	task = completed
-	if upstreamCalls.Load() != 1 || task.Status != model.TaskStatusSuccess ||
+	if upstreamCalls.Load() != 0 || queuedTaskID != task.ID || task.Status != model.TaskStatusPending ||
 		len(task.SubmitCheckpoint) != 0 || task.WorkerLeaseOwner != "" {
-		t.Fatalf("asynchronous task = calls %d status %s checkpoint %q lease %q",
-			upstreamCalls.Load(), task.Status, task.SubmitCheckpoint, task.WorkerLeaseOwner)
+		t.Fatalf("queued task = queue ID %d calls %d status %s checkpoint %q lease %q",
+			queuedTaskID, upstreamCalls.Load(), task.Status, task.SubmitCheckpoint, task.WorkerLeaseOwner)
+	}
+}
+
+func TestInitialEnqueueFailureKeepsDurableTaskIntent(t *testing.T) {
+	db := setupTestDB(t)
+	if err := db.AutoMigrate(&model.Channel{}, &model.Endpoint{}); err != nil {
+		t.Fatal(err)
+	}
+	user, token := seedBillingAccount(t, decimal.NewFromInt(10), decimal.NewFromInt(10))
+	channel := &model.Channel{Type: "durable-enqueue", Status: 1}
+	if err := db.Create(channel).Error; err != nil {
+		t.Fatal(err)
+	}
+	account := &model.ChannelAccount{ChannelID: channel.ID, Status: 1, Weight: 10}
+	if err := db.Create(account).Error; err != nil {
+		t.Fatal(err)
+	}
+	endpoint := &model.Endpoint{
+		ModelCode: "durable-enqueue-model", ChannelID: channel.ID, AccountID: account.ID,
+		InteractionMode: model.ModePoll, Status: 1, InputPrice: decimal.NewFromInt(2),
+	}
+	if err := db.Create(endpoint).Error; err != nil {
+		t.Fatal(err)
+	}
+	previousEnqueue := enqueueCapabilityTask
+	enqueueCapabilityTask = func(uint) error { return errors.New("redis unavailable") }
+	t.Cleanup(func() { enqueueCapabilityTask = previousEnqueue })
+
+	response, err := NewUnifiedService().Invoke(context.Background(), &InvokeRequest{
+		UserID: user.ID, TokenID: token.ID, Capability: endpoint.ModelCode, Model: endpoint.ModelCode,
+		Params: map[string]any{"prompt": "test"},
+	})
+	if err != nil {
+		t.Fatalf("invoke returned enqueue error: %v", err)
+	}
+	if response.Status != string(model.TaskStatusPending) {
+		t.Fatalf("response status = %q, want pending", response.Status)
+	}
+
+	var task model.Task
+	if err := db.Where("task_no = ?", response.TaskID).First(&task).Error; err != nil {
+		t.Fatal(err)
+	}
+	var call model.APICall
+	if err := db.First(&call, "id = ?", response.CallID).Error; err != nil {
+		t.Fatal(err)
+	}
+	var storedToken model.Token
+	if err := db.First(&storedToken, token.ID).Error; err != nil {
+		t.Fatal(err)
+	}
+	var storedAccount model.ChannelAccount
+	if err := db.First(&storedAccount, account.ID).Error; err != nil {
+		t.Fatal(err)
+	}
+	if task.Status != model.TaskStatusPending || task.Refunded ||
+		call.Status != model.APICallStatusReceived || !call.ReservedAmount.Equal(endpoint.InputPrice) ||
+		!storedToken.Balance.Equal(decimal.NewFromInt(8)) || storedAccount.CurrentTasks != 1 {
+		t.Fatalf("durable intent = task %#v call %#v token balance %s current_tasks %d",
+			task, call, storedToken.Balance, storedAccount.CurrentTasks)
 	}
 }
 

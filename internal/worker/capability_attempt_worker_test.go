@@ -135,6 +135,34 @@ func TestTaskSubmitAttemptFailureEndsAttemptBeforeTask(t *testing.T) {
 	assertCapabilityRequestLog(t, db, task, channel, attempt, metadata, upstreamErr.Error())
 }
 
+func TestTaskSubmitMissingConfigurationFailsAndRefunds(t *testing.T) {
+	db, task, _, _ := setupCapabilityWorkerTest(t, model.TaskStatusPending, model.ModeSync)
+	if err := db.Delete(&model.ChannelAccount{}, task.AccountID).Error; err != nil {
+		t.Fatal(err)
+	}
+
+	job, err := NewTaskSubmit(task.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := HandleTaskSubmit(context.Background(), job); err != nil {
+		t.Fatalf("handle task with removed configuration: %v", err)
+	}
+
+	if attempts := loadCapabilityAttempts(t, db, task.CallID); len(attempts) != 0 {
+		t.Fatalf("attempt count = %d, want 0", len(attempts))
+	}
+	assertTaskAndCallTerminal(t, db, task.ID, task.CallID, model.TaskStatusFailed, model.APICallStatusFailed, 0)
+	assertWorkerBillingAttempt(t, db, task.TaskNo, 0)
+	var deletedAccount model.ChannelAccount
+	if err := db.Unscoped().First(&deletedAccount, task.AccountID).Error; err != nil {
+		t.Fatal(err)
+	}
+	if deletedAccount.CurrentTasks != 0 {
+		t.Fatalf("deleted account current_tasks = %d, want 0", deletedAccount.CurrentTasks)
+	}
+}
+
 func TestTaskSubmitLedgerFinishFailureDoesNotRepeatUpstreamSubmit(t *testing.T) {
 	db, task, channel, endpoint := setupCapabilityWorkerTest(t, model.TaskStatusPending, model.ModeSync)
 	actualCost := decimal.RequireFromString("0.375")
@@ -717,17 +745,41 @@ func TestTaskPollStopsWhenCallbackClaimsFinalization(t *testing.T) {
 	}
 }
 
-func TestTimeoutCheckerFailsLostPendingTaskAndRefundsReservation(t *testing.T) {
+func TestTimeoutCheckerRecoversLostPendingTaskWithoutRefundingReservation(t *testing.T) {
 	db, task, _, _ := setupCapabilityWorkerTest(t, model.TaskStatusPending, model.ModePoll)
 	if err := db.Model(&model.Task{}).Where("id = ?", task.ID).
 		UpdateColumn("updated_at", time.Now().Add(-31*time.Minute)).Error; err != nil {
 		t.Fatal(err)
 	}
+	previousRecover := recoverTaskSubmit
+	var recovered []uint
+	recoverTaskSubmit = func(taskID uint) error {
+		recovered = append(recovered, taskID)
+		return nil
+	}
+	t.Cleanup(func() { recoverTaskSubmit = previousRecover })
+
 	if err := HandleTaskTimeoutCheck(context.Background(), NewTimeoutCheckTask()); err != nil {
 		t.Fatalf("handle timeout check: %v", err)
 	}
-	assertTaskAndCallTerminal(t, db, task.ID, task.CallID, model.TaskStatusFailed, model.APICallStatusFailed, 0)
-	assertWorkerBillingAttempt(t, db, task.TaskNo, 0)
+	if len(recovered) != 1 || recovered[0] != task.ID {
+		t.Fatalf("recovered task IDs = %v, want [%d]", recovered, task.ID)
+	}
+	var current model.Task
+	if err := db.First(&current, task.ID).Error; err != nil {
+		t.Fatal(err)
+	}
+	if current.Status != model.TaskStatusPending || current.CompletedAt != nil {
+		t.Fatalf("recovered task = status %s completed_at %v", current.Status, current.CompletedAt)
+	}
+	assertWorkerBillingAttempt(t, db, task.TaskNo+":reserve", 0)
+	var refundCount int64
+	if err := db.Model(&model.BillingLog{}).Where("idempotent_key = ?", task.TaskNo).Count(&refundCount).Error; err != nil {
+		t.Fatal(err)
+	}
+	if refundCount != 0 {
+		t.Fatalf("refund billing log count = %d, want 0", refundCount)
+	}
 }
 
 const (

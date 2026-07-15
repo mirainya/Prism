@@ -4,6 +4,7 @@ import (
 	"time"
 
 	"github.com/shopspring/decimal"
+	"gorm.io/datatypes"
 )
 
 // Conversation 对话
@@ -22,6 +23,7 @@ type Conversation struct {
 	UpstreamTransport  UpstreamTransport `gorm:"type:varchar(64);not null;default:'';comment:上游状态所属Transport" json:"upstream_transport"`
 	TotalTokens        int               `gorm:"default:0;comment:累计token" json:"total_tokens"`
 	MessageCount       int               `gorm:"default:0;comment:消息数量" json:"message_count"`
+	TurnSequence       uint64            `gorm:"not null;default:0;comment:最后分配的轮次序号" json:"-"`
 	Status             int8              `gorm:"default:1;comment:状态(1启用/0禁用)" json:"status"`
 }
 
@@ -60,3 +62,56 @@ type Message struct {
 func (Message) TableName() string {
 	return "messages"
 }
+
+type ConversationTurnStatus string
+
+const (
+	ConversationTurnCompleted ConversationTurnStatus = "completed"
+	ConversationTurnFailed    ConversationTurnStatus = "failed"
+	ConversationTurnAborted   ConversationTurnStatus = "aborted"
+
+	ConversationItemInput  = "input"
+	ConversationItemOutput = "output"
+)
+
+// ConversationTurn records one downstream request within a conversation.
+// Execution and billing truth remains in APICall; this row is the durable
+// conversation projection used to rebuild ordered session history.
+type ConversationTurn struct {
+	ID                 uint64                 `gorm:"primaryKey" json:"id"`
+	ConversationID     uint                   `gorm:"not null;uniqueIndex:idx_conversation_turn_sequence,priority:1;index:idx_conversation_turn_created,priority:1" json:"conversation_id"`
+	Sequence           uint64                 `gorm:"column:turn_sequence;not null;uniqueIndex:idx_conversation_turn_sequence,priority:2" json:"sequence"`
+	CallID             string                 `gorm:"type:varchar(64);not null;uniqueIndex" json:"call_id"`
+	RequestLogID       uint                   `gorm:"not null;default:0;index" json:"request_log_id"`
+	Model              string                 `gorm:"type:varchar(80);not null;default:'';index" json:"model"`
+	ProviderResponseID string                 `gorm:"type:varchar(128);not null;default:'';index" json:"provider_response_id"`
+	Status             ConversationTurnStatus `gorm:"type:varchar(24);not null;default:'completed';index" json:"status"`
+	InputTokens        int                    `gorm:"not null;default:0" json:"input_tokens"`
+	OutputTokens       int                    `gorm:"not null;default:0" json:"output_tokens"`
+	TotalTokens        int                    `gorm:"not null;default:0" json:"total_tokens"`
+	Cost               decimal.Decimal        `gorm:"type:decimal(20,8);not null;default:0" json:"cost"`
+	LatencyMs          int64                  `gorm:"not null;default:0" json:"latency_ms"`
+	FinishReason       string                 `gorm:"type:varchar(50);not null;default:''" json:"finish_reason"`
+	ErrorType          string                 `gorm:"type:varchar(64);not null;default:''" json:"error_type"`
+	ErrorCode          string                 `gorm:"type:varchar(128);not null;default:'';index" json:"error_code"`
+	ErrorMessage       string                 `gorm:"type:text" json:"error_message"`
+	CreatedAt          time.Time              `gorm:"not null;index:idx_conversation_turn_created,priority:2" json:"created_at"`
+	UpdatedAt          time.Time              `gorm:"not null" json:"updated_at"`
+}
+
+func (ConversationTurn) TableName() string { return "conversation_turns" }
+
+// ConversationItem stores one protocol-neutral canonical item. A turn may
+// contain messages, multimodal blocks, reasoning, tool calls, and tool results.
+type ConversationItem struct {
+	ID             uint64         `gorm:"primaryKey" json:"id"`
+	ConversationID uint           `gorm:"not null;index:idx_conversation_items_order,priority:1" json:"conversation_id"`
+	TurnID         uint64         `gorm:"not null;uniqueIndex:idx_conversation_item_ordinal,priority:1" json:"turn_id"`
+	TurnSequence   uint64         `gorm:"not null;index:idx_conversation_items_order,priority:2" json:"turn_sequence"`
+	Direction      string         `gorm:"type:varchar(16);not null;index" json:"direction"`
+	Ordinal        int            `gorm:"not null;uniqueIndex:idx_conversation_item_ordinal,priority:2;index:idx_conversation_items_order,priority:3" json:"ordinal"`
+	CanonicalJSON  datatypes.JSON `gorm:"column:canonical_json;type:json;not null" json:"canonical"`
+	CreatedAt      time.Time      `gorm:"not null" json:"created_at"`
+}
+
+func (ConversationItem) TableName() string { return "conversation_items" }

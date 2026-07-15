@@ -147,7 +147,7 @@ func enqueueNotify(taskID uint) error {
 	payloadBytes, _ := json.Marshal(payload)
 	task := asynq.NewTask(TypeTaskNotify, payloadBytes)
 	_, err := queue.Client.Enqueue(task,
-		asynq.MaxRetry(5),
+		asynq.MaxRetry(maxNotifyRetries),
 		asynq.Queue("notify"),
 		asynq.TaskID(fmt.Sprintf("task-notify-%d", taskID)),
 	)

@@ -59,6 +59,7 @@ const ChatTab: React.FC<{ tokenId: string }> = ({ tokenId }) => {
   const [error, setError] = useState('');
   const [historyItems, setHistoryItems] = useState<PlaygroundConversation[]>([]);
   const [historyLoading, setHistoryLoading] = useState(false);
+  const [loadingConversationId, setLoadingConversationId] = useState<number | undefined>();
   const [selectedConversationId, setSelectedConversationId] = useState<number | undefined>();
   const [currentConversationMeta, setCurrentConversationMeta] = useState<PlaygroundConversation | null>(null);
   const [debugDetail, setDebugDetail] = useState<PlaygroundDebugDetail | null>(null);
@@ -72,6 +73,11 @@ const ChatTab: React.FC<{ tokenId: string }> = ({ tokenId }) => {
   const lastAutoScrollAtRef = useRef(0);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const attachmentsRef = useRef<Attachment[]>([]);
+  const conversationLoadRef = useRef(0);
+  const historyLoadRef = useRef(0);
+  const modelLoadRef = useRef(0);
+  const activeTokenRef = useRef(tokenId);
+  activeTokenRef.current = tokenId;
 
   const clearChatAttachments = useCallback(() => {
     setAttachments(prev => {
@@ -90,28 +96,48 @@ const ChatTab: React.FC<{ tokenId: string }> = ({ tokenId }) => {
 
   const loadHistory = async () => {
     if (!tokenId) return;
+    const requestNo = ++historyLoadRef.current;
+    const requestedToken = tokenId;
     setHistoryLoading(true);
     try {
-      const result = await playgroundListConversations(tokenId, { page: 1, page_size: 30 });
-      setHistoryItems(result.items || []);
-      setCurrentConversationMeta(prev => prev ? (result.items.find((item: PlaygroundConversation) => item.id === prev.id) || prev) : prev);
+      const pageSize = 100;
+      const result = await playgroundListConversations(requestedToken, { page: 1, page_size: pageSize });
+      const allItems = [...(result.items || [])];
+      const pageCount = Math.ceil(result.total / pageSize);
+      for (let currentPage = 2; currentPage <= pageCount; currentPage += 1) {
+        if (requestNo !== historyLoadRef.current || requestedToken !== activeTokenRef.current) return;
+        const next = await playgroundListConversations(requestedToken, { page: currentPage, page_size: pageSize });
+        allItems.push(...(next.items || []));
+      }
+      if (requestNo !== historyLoadRef.current || requestedToken !== activeTokenRef.current) return;
+      setHistoryItems(allItems);
+      setCurrentConversationMeta(prev => prev ? (allItems.find((item: PlaygroundConversation) => item.id === prev.id) || prev) : prev);
     } catch {
-      setHistoryItems([]);
+      if (requestNo === historyLoadRef.current && requestedToken === activeTokenRef.current) setHistoryItems([]);
     } finally {
-      setHistoryLoading(false);
+      if (requestNo === historyLoadRef.current && requestedToken === activeTokenRef.current) setHistoryLoading(false);
     }
   };
   useEffect(() => {
     if (!tokenId) return;
+    conversationLoadRef.current += 1;
+    historyLoadRef.current += 1;
+    modelLoadRef.current += 1;
+    setLoadingConversationId(undefined);
     clearChatAttachments();
+    const requestNo = modelLoadRef.current;
+    const requestedToken = tokenId;
     playgroundListModels(tokenId)
       .then(m => {
+        if (requestNo !== modelLoadRef.current || requestedToken !== activeTokenRef.current) return;
         setModels(m);
         if (m.length > 0) {
           setSelectedModel(prev => (prev && m.some((item: PlaygroundModelInfo) => item.id === prev) ? prev : m[0].id));
         }
       })
-      .catch(() => setModels([]));
+      .catch(() => {
+        if (requestNo === modelLoadRef.current && requestedToken === activeTokenRef.current) setModels([]);
+      });
     loadHistory();
   }, [tokenId, clearChatAttachments]);
 
@@ -146,35 +172,53 @@ const ChatTab: React.FC<{ tokenId: string }> = ({ tokenId }) => {
   }, []);
 
   const applyConversationMessages = async (conversation: PlaygroundConversation) => {
-    clearChatAttachments();
-    setSelectedConversationId(conversation.id);
-    setConversationId(String(conversation.id));
-    setSelectedModel(conversation.model);
-    setCurrentConversationMeta(conversation);
-    setPendingModel(null);
+    const requestNo = ++conversationLoadRef.current;
+    const requestedToken = tokenId;
+    setLoadingConversationId(conversation.id);
+    setError('');
     setShowHistoryDrawer(false);
     try {
-      const result = await playgroundGetConversationMessages(tokenId, conversation.id);
-      const loadedMessages: ChatMessage[] = result.items.map((msg: PlaygroundMessage) => ({
+      const pageSize = 200;
+      const result = await playgroundGetConversationMessages(requestedToken, conversation.id, 1, pageSize);
+      const allItems = [...result.items];
+      const pageCount = Math.ceil(result.total / pageSize);
+      for (let currentPage = 2; currentPage <= pageCount; currentPage += 1) {
+        if (requestNo !== conversationLoadRef.current || requestedToken !== activeTokenRef.current) return;
+        const next = await playgroundGetConversationMessages(requestedToken, conversation.id, currentPage, pageSize);
+        allItems.push(...next.items);
+      }
+      if (requestNo !== conversationLoadRef.current || requestedToken !== activeTokenRef.current) return;
+      const loadedMessages: ChatMessage[] = allItems.map((msg: PlaygroundMessage) => ({
         role: msg.role, content: msg.content, reasoningContent: msg.reasoningContent,
         requestLogId: msg.requestLogId, finishReason: msg.finishReason, status: 'completed' as const,
       }));
       const fallbackRequestLogId = result.conversation.lastRequestLogId
-        || [...result.items].reverse().find((msg: PlaygroundMessage) => typeof msg.requestLogId === 'number' && msg.requestLogId > 0)?.requestLogId;
-      const debug = fallbackRequestLogId ? await playgroundGetDebug(tokenId, fallbackRequestLogId).catch(() => null) : null;
+        || [...allItems].reverse().find((msg: PlaygroundMessage) => typeof msg.requestLogId === 'number' && msg.requestLogId > 0)?.requestLogId;
+      const debug = fallbackRequestLogId ? await playgroundGetDebug(requestedToken, fallbackRequestLogId).catch(() => null) : null;
+      if (requestNo !== conversationLoadRef.current || requestedToken !== activeTokenRef.current) return;
+      clearChatAttachments();
+      setSelectedConversationId(conversation.id);
+      setConversationId(String(conversation.id));
+      setSelectedModel(conversation.model);
+      setPendingModel(null);
       setChat({ messages: loadedMessages, isStreaming: false, usage: null, latencyMs: null, statusText: '已载入历史会话' });
       setCurrentConversationMeta({ ...result.conversation, lastRequestLogId: fallbackRequestLogId });
       setDebugDetail(debug);
       setError('');
     } catch (err: any) {
+      if (requestNo !== conversationLoadRef.current || requestedToken !== activeTokenRef.current) return;
       setError(err.message || '加载历史会话失败');
+    } finally {
+      if (requestNo === conversationLoadRef.current && requestedToken === activeTokenRef.current) {
+        setLoadingConversationId(undefined);
+      }
     }
   };
   const handleSend = async () => {
     const hasText = input.trim().length > 0;
     const readyAttachments = attachments.filter(a => a.uploaded && a.url);
     const hasAttachments = readyAttachments.length > 0;
-    if ((!hasText && !hasAttachments) || chat.isStreaming || !selectedModel) return;
+    if ((!hasText && !hasAttachments) || chat.isStreaming || loadingConversationId !== undefined || !selectedModel) return;
     if (attachments.some(a => a.uploading)) { setError('请等待文件上传完成'); return; }
     if (attachments.some(a => a.error)) { setError('有文件上传失败，请移除后重试'); return; }
     setError('');
@@ -186,6 +230,9 @@ const ChatTab: React.FC<{ tokenId: string }> = ({ tokenId }) => {
       tools = parseJsonField(toolsText, 'tools');
       toolChoice = parseJsonField(toolChoiceText, 'tool_choice');
     } catch (err: any) { setError(err.message || '高级参数格式错误'); return; }
+
+    conversationLoadRef.current += 1;
+    setLoadingConversationId(undefined);
 
     let userContent: string | ContentPart[];
     if (hasAttachments) {
@@ -397,6 +444,8 @@ const ChatTab: React.FC<{ tokenId: string }> = ({ tokenId }) => {
   const handleStop = () => { abortRef.current?.abort(); };
 
   const resetConversationState = (statusText = '等待发送') => {
+    conversationLoadRef.current += 1;
+    setLoadingConversationId(undefined);
     setChat({ messages: [], isStreaming: false, usage: null, latencyMs: null, statusText });
     setError(''); setDebugDetail(null); setConversationId(''); setSelectedConversationId(undefined);
     setCurrentConversationMeta(null); setPendingModel(null); setInput('');
@@ -418,6 +467,8 @@ const ChatTab: React.FC<{ tokenId: string }> = ({ tokenId }) => {
 
   const handleProtocolChange = (nextProtocol: PlaygroundProtocol) => {
     if (chat.isStreaming || nextProtocol === protocol) return;
+    conversationLoadRef.current += 1;
+    setLoadingConversationId(undefined);
     setProtocol(nextProtocol);
     setConversationId('');
     setSelectedConversationId(undefined);
@@ -528,6 +579,7 @@ const ChatTab: React.FC<{ tokenId: string }> = ({ tokenId }) => {
       {showHistoryDrawer && (
         <div className="absolute inset-y-0 left-0 z-30">
           <HistoryPanel items={historyItems} selectedConversationId={selectedConversationId} currentModel={selectedModel}
+            loadingConversationId={loadingConversationId}
             onSelect={applyConversationMessages} onCreateNew={handleCreateNewConversation} loading={historyLoading} />
         </div>
       )}
@@ -781,12 +833,12 @@ const ChatTab: React.FC<{ tokenId: string }> = ({ tokenId }) => {
                 </div>
               )}
               <div className="flex items-end gap-1.5 p-2">
-                <button onClick={() => fileInputRef.current?.click()} disabled={chat.isStreaming} className="p-2 text-[var(--text-secondary)] hover:text-[var(--primary)] hover:bg-[var(--primary-lighter)] rounded-lg disabled:opacity-40 transition-all flex-shrink-0 mb-0.5" title="添加附件"><Paperclip size={18} /></button>
-				<textarea value={input} onChange={e => setInput(e.target.value)} onKeyDown={handleKeyDown} placeholder="输入消息" rows={2} className="flex-1 px-2 py-2.5 text-sm resize-none focus:outline-none bg-transparent max-h-32" disabled={chat.isStreaming} />
+                <button onClick={() => fileInputRef.current?.click()} disabled={chat.isStreaming || loadingConversationId !== undefined} className="p-2 text-[var(--text-secondary)] hover:text-[var(--primary)] hover:bg-[var(--primary-lighter)] rounded-lg disabled:opacity-40 transition-all flex-shrink-0 mb-0.5" title="添加附件"><Paperclip size={18} /></button>
+				<textarea value={input} onChange={e => setInput(e.target.value)} onKeyDown={handleKeyDown} placeholder={loadingConversationId !== undefined ? '正在加载历史会话' : '输入消息'} rows={2} className="flex-1 px-2 py-2.5 text-sm resize-none focus:outline-none bg-transparent max-h-32" disabled={chat.isStreaming || loadingConversationId !== undefined} />
                 {chat.isStreaming ? (
                   <button onClick={handleStop} className="px-4 py-2.5 bg-red-500 text-white rounded-xl hover:bg-red-600 transition-colors flex-shrink-0"><Square size={18} /></button>
                 ) : (
-                  <button onClick={handleSend} disabled={(!input.trim() && attachments.filter(a => a.uploaded).length === 0) || !selectedModel} className="px-3 md:px-4 py-2.5 bg-[var(--primary)] text-white rounded-xl hover:opacity-90 disabled:opacity-30 disabled:cursor-not-allowed transition-colors flex-shrink-0 flex items-center gap-1.5">
+                  <button onClick={handleSend} disabled={loadingConversationId !== undefined || (!input.trim() && attachments.filter(a => a.uploaded).length === 0) || !selectedModel} className="px-3 md:px-4 py-2.5 bg-[var(--primary)] text-white rounded-xl hover:opacity-90 disabled:opacity-30 disabled:cursor-not-allowed transition-colors flex-shrink-0 flex items-center gap-1.5">
                     <Send size={16} /><span className="text-sm font-medium hidden sm:inline">发送</span>
                   </button>
                 )}

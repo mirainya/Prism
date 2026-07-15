@@ -48,10 +48,11 @@ func ListTasks(c *gin.Context) {
 	}
 
 	resp.Success(c, gin.H{
-		"items":     result.Items,
-		"total":     result.Total,
-		"page":      result.Page,
-		"page_size": result.PageSize,
+		"items":       result.Items,
+		"total":       result.Total,
+		"page":        result.Page,
+		"page_size":   result.PageSize,
+		"snapshot_at": result.SnapshotAt,
 	})
 }
 
@@ -85,16 +86,19 @@ func GetTaskDetail(c *gin.Context) {
 	}
 
 	detail := gin.H{
-		"task_no":    task.TaskNo,
-		"capability": task.ModelCode,
-		"status":     task.Status.Public(),
-		"progress":   task.Progress,
-		"cost":       task.Cost,
-		"refunded":   task.Refunded,
-		"error":      task.ErrorMessage,
-		"result":     resultMap,
-		"raw_params": rawParams,
-		"created_at": task.CreatedAt.Format("2006-01-02 15:04:05"),
+		"task_no":           task.TaskNo,
+		"call_id":           task.CallID,
+		"capability":        task.ModelCode,
+		"status":            task.Status.Public(),
+		"progress":          task.Progress,
+		"cost":              task.Cost,
+		"refunded":          task.Refunded,
+		"callback_status":   task.CallbackStatus,
+		"callback_attempts": task.CallbackAttempts,
+		"error":             task.ErrorMessage,
+		"result":            resultMap,
+		"raw_params":        rawParams,
+		"created_at":        task.CreatedAt.Format("2006-01-02 15:04:05"),
 	}
 
 	if isAdmin {

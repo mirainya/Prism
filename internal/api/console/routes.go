@@ -43,6 +43,7 @@ func RegisterRoutes(group *gin.RouterGroup) {
 	// 对话记录
 	group.GET("/conversations", ListConversations)
 	group.GET("/conversations/:id/messages", GetConversationMessages)
+	group.GET("/conversations/:id/turns", GetConversationTurns)
 
 	// 文档
 	group.GET("/docs/models", DocsListModels)
@@ -52,6 +53,7 @@ func RegisterRoutes(group *gin.RouterGroup) {
 	group.GET("/playground/:token_id/capabilities", PlaygroundListCapabilities)
 	group.GET("/playground/:token_id/conversations", PlaygroundListConversations)
 	group.GET("/playground/:token_id/conversations/:conversation_id/messages", PlaygroundGetConversationMessages)
+	group.GET("/playground/:token_id/conversations/:conversation_id/turns", PlaygroundGetConversationTurns)
 	group.GET("/playground/:token_id/debug/:request_log_id", PlaygroundGetDebug)
 	group.POST("/playground/:token_id/chat/completions", PlaygroundChatCompletions)
 	group.POST("/playground/:token_id/responses", PlaygroundResponses)

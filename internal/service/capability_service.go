@@ -7,12 +7,12 @@ import (
 	"fmt"
 	"regexp"
 	"strings"
-	"time"
 
 	"github.com/mirainya/Prism/internal/model"
 	"github.com/mirainya/Prism/internal/provider"
 	"github.com/mirainya/Prism/pkg/logger"
 	"github.com/mirainya/Prism/pkg/queue"
+	"github.com/mirainya/Prism/pkg/safeurl"
 	"github.com/shopspring/decimal"
 	"go.uber.org/zap"
 	"gorm.io/datatypes"
@@ -33,8 +33,8 @@ type InvokeRequest struct {
 	InteractionMode string
 	CallbackURL     string
 	Params          map[string]any
-	// Async=true 时,sync/stream 模式不阻塞等待出图:立即返回 task_no+processing,
-	// 后台 goroutine 跑 executeSyncWithFallback,由前端轮询取终态。
+	// Async=true 时,sync/stream 模式不阻塞等待出图，而是提交到持久队列，
+	// 立即返回 task_no，由前端轮询取终态。
 	// 仅 playground 置 true;对外 OpenAI 等接口须同步返图,保持 false。
 	Async bool
 }
@@ -48,17 +48,27 @@ type InvokeResponse struct {
 
 var (
 	enqueueCallbackUpload              = queue.EnqueueTaskUpload
+	enqueueCapabilityTask              = queue.EnqueueTaskSubmit
 	enqueueCapabilitySubmitRecovery    = queue.EnqueueTaskSubmit
 	finishSynchronousCapabilityAttempt = FinishCapabilityAttempt
 	saveSynchronousSubmitCheckpoint    = func(taskID uint, leaseOwner string, checkpoint *TaskSubmitCheckpoint) error {
 		return NewTaskService().SaveTaskSubmitCheckpoint(taskID, leaseOwner, checkpoint)
 	}
 	errNoAvailableAccount = errors.New("no available account")
+	ErrInvalidCallbackURL = errors.New("invalid callback URL")
 )
 
 // Invoke 调用能力
 func (s *UnifiedService) Invoke(ctx context.Context, req *InvokeRequest) (*InvokeResponse, error) {
+	if req == nil {
+		return nil, errors.New("invoke request is required")
+	}
 	ensureInvokeIdentity(req)
+	req.CallbackURL = strings.TrimSpace(req.CallbackURL)
+	if err := validateCallbackURL(ctx, req.CallbackURL); err != nil {
+		s.recordCapabilityCallFailure(req, err)
+		return nil, err
+	}
 	// 查找该能力所有可用端点(priority 降序),供跨端点/渠道 fallback
 	endpoints, err := s.findEndpointsForCapability(req)
 	if err != nil {
@@ -73,45 +83,17 @@ func (s *UnifiedService) Invoke(ctx context.Context, req *InvokeRequest) (*Invok
 		}
 		return nil, err
 	}
-	taskSvc := NewTaskService()
-
-	// sync/stream 模式直接执行(含换账号 + 跨端点/渠道 fallback)
-	if chosen.InteractionMode == model.ModeSync || chosen.InteractionMode == model.ModeStream {
-		// Async: 不阻塞 HTTP 请求,后台跑同步执行,前端轮询取终态(用于 playground 慢上游体验)
-		if req.Async {
-			// HTTP ctx 会在响应返回后取消,后台须用独立 ctx;600s 上限兜底防 goroutine 永久挂起
-			// (stream 模式内部另有 endpoint.Timeout 派生的 deadline,此处仅是外层保险)。
-			go func(ep model.Endpoint, ch model.Channel, acc model.ChannelAccount) {
-				defer func() {
-					if r := recover(); r != nil {
-						logger.Error("async capability execution panicked",
-							zap.Uint("task_id", task.ID), zap.Any("panic", r))
-						if _, failErr := taskSvc.UpdateTaskFail(task.ID, fmt.Sprintf("async execution panicked: %v", r)); failErr != nil {
-							logger.Error("record async panic failure failed",
-								zap.Uint("task_id", task.ID), zap.Error(failErr))
-						}
-					}
-				}()
-				bgCtx, cancel := context.WithTimeout(context.Background(), 600*time.Second)
-				defer cancel()
-				if _, err := s.executeSyncWithFallback(bgCtx, task, req, endpoints, &ep, &ch, &acc); err != nil {
-					logger.Warn("async capability execution failed",
-						zap.Uint("task_id", task.ID), zap.Error(err))
-				}
-			}(*chosen, channel, *account)
-			return &InvokeResponse{TaskID: task.TaskNo, Status: string(model.TaskStatusProcessing), CallID: req.CallID}, nil
-		}
+	// 仅前台 sync/stream 请求在当前 HTTP 生命周期内执行。Playground 的
+	// Async 请求与 poll/callback 一样交给 Worker，进程重启后仍可恢复。
+	if (chosen.InteractionMode == model.ModeSync || chosen.InteractionMode == model.ModeStream) && !req.Async {
 		return s.executeSyncWithFallback(ctx, task, req, endpoints, chosen, &channel, account)
 	}
 
 	// 异步模式入队(跨渠道异步 fallback 属 worker 层,本期不做)
-	if err := queue.EnqueueTaskSubmit(task.ID); err != nil {
-		// 入队失败: 任务无法被 worker 处理,直接判失败并退款。
+	if err := enqueueCapabilityTask(task.ID); err != nil {
+		// Task 行是持久投递意图。Redis 暂时不可用时保留预留和非终态，
+		// 启动恢复与定时恢复会使用确定性队列 ID 重新投递。
 		logger.Error("enqueue submit failed", zap.Uint("task_id", task.ID), zap.Error(err))
-		if _, failErr := taskSvc.UpdateTaskFail(task.ID, "enqueue submit failed: "+err.Error()); failErr != nil {
-			return nil, fmt.Errorf("enqueue submit failed: %v; record task failure: %w", err, failErr)
-		}
-		return nil, fmt.Errorf("enqueue submit failed: %w", err)
 	}
 
 	return &InvokeResponse{
@@ -119,6 +101,17 @@ func (s *UnifiedService) Invoke(ctx context.Context, req *InvokeRequest) (*Invok
 		Status: string(task.Status),
 		CallID: req.CallID,
 	}, nil
+}
+
+func validateCallbackURL(ctx context.Context, rawURL string) error {
+	rawURL = strings.TrimSpace(rawURL)
+	if rawURL == "" {
+		return nil
+	}
+	if err := safeurl.Validate(ctx, rawURL); err != nil {
+		return fmt.Errorf("%w: %v", ErrInvalidCallbackURL, err)
+	}
+	return nil
 }
 
 func ensureInvokeIdentity(req *InvokeRequest) {
@@ -192,11 +185,17 @@ func (s *UnifiedService) recordCapabilityCallFailure(req *InvokeRequest, cause e
 	httpStatus := 500
 	errorType := "capability_error"
 	errorCode := "capability_failed"
-	if errors.Is(cause, ErrInsufficientTokenBalance) || errors.Is(cause, ErrInsufficientUserBalance) {
+	if errors.Is(cause, ErrInvalidCallbackURL) {
+		httpStatus = 400
+		errorType = "invalid_request_error"
+		errorCode = "invalid_callback_url"
+	} else if errors.Is(cause, ErrInsufficientTokenBalance) || errors.Is(cause, ErrInsufficientUserBalance) {
 		httpStatus = 400
 		errorType = "billing_error"
 		errorCode = "insufficient_quota"
-	} else if errors.Is(cause, errNoAvailableAccount) || strings.Contains(cause.Error(), "no available endpoint") {
+	} else if errors.Is(cause, errNoAvailableAccount) ||
+		strings.Contains(cause.Error(), "no available endpoint") ||
+		strings.Contains(cause.Error(), "no available channel") {
 		errorCode = "model_unavailable"
 	}
 
@@ -351,13 +350,6 @@ func (s *UnifiedService) executeSyncWithFallback(ctx context.Context, task *mode
 		return nil, recoverSynchronousSubmit(task.ID, &lease,
 			fmt.Errorf("synchronous submit already succeeded; queued task recovery"))
 	}
-	if req.Async {
-		if err := taskSvc.UpdateTaskStatus(task.ID, model.TaskStatusProcessing, ""); err != nil {
-			return nil, fmt.Errorf("mark asynchronous capability task processing: %w", err)
-		}
-		task.Status = model.TaskStatusProcessing
-	}
-
 	accountPerEndpoint := 3
 	var lastErr error
 	started := false
@@ -705,10 +697,22 @@ func (s *UnifiedService) GetTask(ctx context.Context, taskNo string, userID uint
 	return taskSvc.GetTaskByNoAndUser(taskNo, userID)
 }
 
+// GetTaskForToken applies the token ownership boundary used by Playground.
+// Public task APIs intentionally retain their existing user-level semantics.
+func (s *UnifiedService) GetTaskForToken(ctx context.Context, taskNo string, userID, tokenID uint) (*model.Task, error) {
+	taskSvc := NewTaskService()
+	return taskSvc.GetTaskByNoUserAndToken(taskNo, userID, tokenID)
+}
+
 // CancelTask 取消任务
 func (s *UnifiedService) CancelTask(ctx context.Context, taskNo string, userID uint) error {
 	taskSvc := NewTaskService()
 	return taskSvc.CancelTask(taskNo, userID)
+}
+
+func (s *UnifiedService) CancelTaskForToken(ctx context.Context, taskNo string, userID, tokenID uint) error {
+	taskSvc := NewTaskService()
+	return taskSvc.CancelTaskByToken(taskNo, userID, tokenID)
 }
 
 // HandleCallback 处理供应商回调
@@ -821,13 +825,22 @@ func (s *UnifiedService) HandleCallback(ctx context.Context, authenticatedTask *
 
 // findEndpointsForCapability 返回该能力所有可用端点,按 priority 降序(供跨端点/渠道 fallback)
 func (s *UnifiedService) findEndpointsForCapability(req *InvokeRequest) ([]model.Endpoint, error) {
+	var requestedChannelID uint
+	if req.Channel != "" {
+		var channel model.Channel
+		err := model.DB().Where("type = ? AND status = 1", req.Channel).First(&channel).Error
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil, fmt.Errorf("no available channel: %s", req.Channel)
+		}
+		if err != nil {
+			return nil, fmt.Errorf("find requested channel: %w", err)
+		}
+		requestedChannelID = channel.ID
+	}
 	buildQuery := func() *gorm.DB {
 		query := model.DB().Where("status = 1")
-		if req.Channel != "" {
-			var ch model.Channel
-			if err := model.DB().Where("type = ? AND status = 1", req.Channel).First(&ch).Error; err == nil {
-				query = query.Where("channel_id = ?", ch.ID)
-			}
+		if requestedChannelID != 0 {
+			query = query.Where("channel_id = ?", requestedChannelID)
 		}
 		if req.InteractionMode != "" {
 			query = query.Where("interaction_mode = ?", req.InteractionMode)
@@ -843,13 +856,19 @@ func (s *UnifiedService) findEndpointsForCapability(req *InvokeRequest) ([]model
 			Where("(model_code = ? OR vendor_model = ?)", requestedModel, requestedModel).
 			Order("priority DESC, id ASC").
 			Find(&endpoints).Error
-		if err == nil && len(endpoints) > 0 {
+		if err != nil {
+			return nil, fmt.Errorf("find endpoints for requested model: %w", err)
+		}
+		if len(endpoints) > 0 {
 			return endpoints, nil
 		}
 		endpoints = nil
 	}
 
-	if err := buildQuery().Where("model_code = ?", capability).Order("priority DESC, id ASC").Find(&endpoints).Error; err != nil || len(endpoints) == 0 {
+	if err := buildQuery().Where("model_code = ?", capability).Order("priority DESC, id ASC").Find(&endpoints).Error; err != nil {
+		return nil, fmt.Errorf("find endpoints for capability: %w", err)
+	}
+	if len(endpoints) == 0 {
 		if requestedModel != "" {
 			return nil, fmt.Errorf("no available endpoint for model: %s", requestedModel)
 		}

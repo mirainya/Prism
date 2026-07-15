@@ -73,6 +73,10 @@ func InvokeCapability(c *gin.Context) {
 
 	invokeResp, err := capabilityService.Invoke(c.Request.Context(), req)
 	if err != nil {
+		if errors.Is(err, service.ErrInvalidCallbackURL) {
+			resp.BadRequest(c, perrors.WithMessage(perrors.ErrInvalidParams, err.Error()))
+			return
+		}
 		if errors.Is(err, service.ErrInsufficientTokenBalance) || errors.Is(err, service.ErrInsufficientUserBalance) {
 			resp.BadRequest(c, perrors.WithMessage(perrors.ErrInsufficientQuota, err.Error()))
 			return

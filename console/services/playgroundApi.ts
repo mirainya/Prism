@@ -7,6 +7,7 @@ import {
     PlaygroundTaskListParams,
     PlaygroundTaskListResponse,
     PlaygroundTaskDetail,
+    ConversationTurnRecord,
 } from '../types';
 import { request, getAuthHeader, API_BASE } from './request';
 
@@ -151,11 +152,12 @@ export const playgroundListConversations = async (
             title: c.title,
             model: c.model,
             systemPrompt: c.system_prompt,
+            lastCallId: c.last_call_id,
             lastRequestLogId: c.last_request_log_id,
             lastStatus: c.last_status,
             totalTokens: c.total_tokens,
             messageCount: c.message_count,
-            totalCost: Number(c.total_cost) || 0,
+            totalCost: c.total_cost ?? '0',
             status: c.status,
             createdAt: c.created_at,
             updatedAt: c.updated_at,
@@ -183,9 +185,12 @@ export const playgroundGetConversationMessages = async (
         items: (data.items || []).map((m: any) => ({
             id: m.id,
             conversationId: m.conversation_id,
+            callId: m.call_id || undefined,
+            callStatus: m.call_status || undefined,
             requestLogId: m.request_log_id,
             role: m.role,
             content: m.content,
+            attachments: m.attachments,
             reasoningContent: m.reasoning_content,
             finishReason: m.finish_reason,
             inputTokens: m.input_tokens,
@@ -194,7 +199,7 @@ export const playgroundGetConversationMessages = async (
             channelId: m.channel_id,
             accountId: m.account_id,
             latencyMs: m.latency_ms,
-            cost: Number(m.cost) || 0,
+            cost: m.cost ?? '0',
             createdAt: m.created_at,
         })),
         total: data.total,
@@ -207,15 +212,67 @@ export const playgroundGetConversationMessages = async (
             title: data.conversation.title,
             model: data.conversation.model,
             systemPrompt: data.conversation.system_prompt,
+            lastCallId: data.conversation.last_call_id,
             lastRequestLogId: data.conversation.last_request_log_id,
             lastStatus: data.conversation.last_status,
             totalTokens: data.conversation.total_tokens,
             messageCount: data.conversation.message_count,
-            totalCost: Number(data.conversation.total_cost) || 0,
+            totalCost: data.conversation.total_cost ?? '0',
             status: data.conversation.status,
             createdAt: data.conversation.created_at,
             updatedAt: data.conversation.updated_at,
         },
+    };
+};
+
+export interface PlaygroundConversationTurnsResponse {
+    items: ConversationTurnRecord[];
+    total: number;
+    page: number;
+    page_size: number;
+}
+
+export const playgroundGetConversationTurns = async (
+    tokenId: string,
+    conversationId: number,
+    page?: number,
+    pageSize?: number,
+): Promise<PlaygroundConversationTurnsResponse> => {
+    const query = new URLSearchParams();
+    if (page) query.append('page', String(page));
+    if (pageSize) query.append('page_size', String(pageSize));
+    const suffix = query.toString() ? `?${query}` : '';
+    const data = await request<any>(`/playground/${tokenId}/conversations/${conversationId}/turns${suffix}`);
+    return {
+        items: (data.items || []).map((turn: any) => ({
+            id: String(turn.id),
+            conversationId: turn.conversation_id,
+            sequence: String(turn.sequence),
+            callId: turn.call_id,
+            requestLogId: turn.request_log_id || undefined,
+            model: turn.model,
+            providerResponseId: turn.provider_response_id || undefined,
+            status: turn.status,
+            inputTokens: turn.input_tokens || 0,
+            outputTokens: turn.output_tokens || 0,
+            totalTokens: turn.total_tokens || 0,
+            cost: turn.cost ?? '0',
+            latencyMs: turn.latency_ms || 0,
+            finishReason: turn.finish_reason || undefined,
+            errorType: turn.error_type || undefined,
+            errorCode: turn.error_code || undefined,
+            errorMessage: turn.error_message || undefined,
+            createdAt: turn.created_at,
+            items: (turn.items || []).map((item: any) => ({
+                id: String(item.id),
+                direction: item.direction,
+                ordinal: item.ordinal,
+                canonical: item.canonical || {},
+            })),
+        })),
+        total: data.total || 0,
+        page: data.page || 1,
+        page_size: data.page_size || pageSize || 50,
     };
 };
 
@@ -272,6 +329,7 @@ export const playgroundListTasks = async (
     const query = new URLSearchParams();
     if (params?.page) query.append('page', String(params.page));
     if (params?.page_size) query.append('page_size', String(params.page_size));
+    if (params?.snapshot_at) query.append('snapshot_at', params.snapshot_at);
     if (params?.status) query.append('status', params.status);
     if (params?.capability) query.append('capability', params.capability);
     if (params?.keyword) query.append('keyword', params.keyword);
@@ -297,6 +355,7 @@ export const playgroundListTasks = async (
         total: data.total || 0,
         page: data.page || 1,
         page_size: data.page_size || params?.page_size || 20,
+        snapshot_at: data.snapshot_at,
     };
 };
 

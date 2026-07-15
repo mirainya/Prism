@@ -116,6 +116,13 @@ func main() {
 	if recovered > 0 {
 		logger.Info(fmt.Sprintf("requeued %d background responses", recovered))
 	}
+	recoveredTasks, err := worker.RecoverPendingTaskSubmissions(context.Background())
+	if err != nil {
+		log.Fatalf("failed to recover pending task submissions: %v", err)
+	}
+	if recoveredTasks > 0 {
+		logger.Info(fmt.Sprintf("recovered %d pending task submissions", recoveredTasks))
+	}
 	workerSrv := startWorker(v2Engine)
 
 	// 启动 Scheduler

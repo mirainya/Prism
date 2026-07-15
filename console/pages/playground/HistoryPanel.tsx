@@ -7,11 +7,12 @@ import { formatTime } from './utils';
 const HistoryPanel: React.FC<{
   items: PlaygroundConversation[];
   selectedConversationId?: number;
+  loadingConversationId?: number;
   currentModel?: string;
   onSelect: (conversation: PlaygroundConversation) => void;
   onCreateNew: () => void;
   loading: boolean;
-}> = ({ items, selectedConversationId, currentModel, onSelect, onCreateNew, loading }) => {
+}> = ({ items, selectedConversationId, loadingConversationId, currentModel, onSelect, onCreateNew, loading }) => {
   return (
     <div className="w-72 flex-shrink-0 bg-[var(--surface-card)] rounded-xl border border-[var(--border-soft)] overflow-hidden flex flex-col">
       <div className="px-4 py-3 border-b border-[var(--border-soft)] flex items-center justify-between gap-2">
@@ -47,7 +48,9 @@ const HistoryPanel: React.FC<{
                     <span className="text-[11px] text-[var(--text-secondary)]">{item.messageCount} 条消息</span>
                   </div>
                 </div>
-                <StatusBadge status={item.lastStatus || 'pending'} />
+                {loadingConversationId === item.id
+                  ? <Loader2 size={14} className="animate-spin text-[var(--primary)]"/>
+                  : <StatusBadge status={item.lastStatus || 'pending'} />}
               </div>
               <div className="mt-2 text-[11px] text-[var(--text-secondary)] flex items-center justify-between gap-2">
                 <span className="truncate">会话 #{item.id}</span>

@@ -1,4 +1,5 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
+import { useSearchParams } from 'react-router-dom';
 import {
   Activity,
   AlertTriangle,
@@ -145,11 +146,13 @@ const Info: React.FC<{ label: string; children: React.ReactNode; mono?: boolean 
 );
 
 const CallLogs: React.FC = () => {
+  const [searchParams] = useSearchParams();
+  const initialCallID = searchParams.get('call_id')?.trim() || '';
   const [calls, setCalls] = useState<APICall[]>([]);
   const [total, setTotal] = useState(0);
   const [page, setPage] = useState(1);
-  const [draft, setDraft] = useState<FilterDraft>({ ...EMPTY_FILTERS });
-  const [filters, setFilters] = useState<FilterDraft>({ ...EMPTY_FILTERS });
+  const [draft, setDraft] = useState<FilterDraft>({ ...EMPTY_FILTERS, call_id: initialCallID });
+  const [filters, setFilters] = useState<FilterDraft>({ ...EMPTY_FILTERS, call_id: initialCallID });
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
   const [refreshKey, setRefreshKey] = useState(0);

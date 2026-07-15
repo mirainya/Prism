@@ -81,6 +81,10 @@ func createGeneration(c *gin.Context, capabilityCode string) {
 	attachCapabilityCallIdentity(c, invokeReq, "videos.generate")
 	invokeResp, err := capabilityService.Invoke(c.Request.Context(), invokeReq)
 	if err != nil {
+		if errors.Is(err, service.ErrInvalidCallbackURL) {
+			resp.BadRequest(c, perrors.WithMessage(perrors.ErrInvalidParams, err.Error()))
+			return
+		}
 		if errors.Is(err, service.ErrInsufficientTokenBalance) || errors.Is(err, service.ErrInsufficientUserBalance) {
 			resp.BadRequest(c, perrors.WithMessage(perrors.ErrInsufficientQuota, err.Error()))
 			return

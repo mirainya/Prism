@@ -2,6 +2,7 @@ package service
 
 import (
 	"github.com/mirainya/Prism/internal/model"
+	"github.com/shopspring/decimal"
 	"gorm.io/gorm"
 )
 
@@ -26,7 +27,7 @@ type ListConversationsRequest struct {
 // ConversationItem 对话列表项
 type ConversationItem struct {
 	model.Conversation
-	TotalCost float64 `json:"total_cost"`
+	TotalCost decimal.Decimal `json:"total_cost"`
 }
 
 // ListConversationsResponse 查询对话列表响应
@@ -95,23 +96,26 @@ func (s *ConversationService) ListConversations(req *ListConversationsRequest) (
 			items[i] = ConversationItem{Conversation: c}
 		}
 
-		// 只对当前页的 conversation_id 聚合 cost
-		type costRow struct {
-			ConversationID uint    `gorm:"column:conversation_id"`
-			TotalCost      float64 `gorm:"column:total_cost"`
-		}
-		var costs []costRow
-		if err := db.Table("messages").
-			Select("conversation_id, SUM(cost) as total_cost").
-			Where("conversation_id IN ?", ids).
-			Group("conversation_id").
-			Scan(&costs).Error; err != nil {
+		// New conversations use the turn ledger. Legacy rows without turns fall
+		// back to messages so existing API responses remain compatible.
+		costMap, err := aggregateConversationCosts(db, "conversation_turns", ids)
+		if err != nil {
 			return nil, err
 		}
-
-		costMap := make(map[uint]float64, len(costs))
-		for _, c := range costs {
-			costMap[c.ConversationID] = c.TotalCost
+		legacyIDs := make([]uint, 0, len(ids))
+		for _, id := range ids {
+			if _, ok := costMap[id]; !ok {
+				legacyIDs = append(legacyIDs, id)
+			}
+		}
+		if len(legacyIDs) > 0 {
+			legacyCosts, err := aggregateConversationCosts(db, "messages", legacyIDs)
+			if err != nil {
+				return nil, err
+			}
+			for conversationID, cost := range legacyCosts {
+				costMap[conversationID] = cost
+			}
 		}
 		for i := range items {
 			items[i].TotalCost = costMap[items[i].ID]
@@ -124,6 +128,34 @@ func (s *ConversationService) ListConversations(req *ListConversationsRequest) (
 		Page:     req.Page,
 		PageSize: req.PageSize,
 	}, nil
+}
+
+func aggregateConversationCosts(db *gorm.DB, table string, conversationIDs []uint) (map[uint]decimal.Decimal, error) {
+	type costRow struct {
+		ConversationID uint            `gorm:"column:conversation_id"`
+		Cost           decimal.Decimal `gorm:"column:cost"`
+		TotalCost      decimal.Decimal `gorm:"column:total_cost"`
+	}
+	result := make(map[uint]decimal.Decimal, len(conversationIDs))
+	query := db.Table(table).Where("conversation_id IN ?", conversationIDs)
+	if db.Dialector.Name() == "sqlite" {
+		var rows []costRow
+		if err := query.Select("conversation_id, cost").Scan(&rows).Error; err != nil {
+			return nil, err
+		}
+		for _, row := range rows {
+			result[row.ConversationID] = result[row.ConversationID].Add(row.Cost)
+		}
+		return result, nil
+	}
+	var rows []costRow
+	if err := query.Select("conversation_id, SUM(cost) AS total_cost").Group("conversation_id").Scan(&rows).Error; err != nil {
+		return nil, err
+	}
+	for _, row := range rows {
+		result[row.ConversationID] = row.TotalCost
+	}
+	return result, nil
 }
 
 // GetConversation 获取单个对话
@@ -184,7 +216,7 @@ func (s *ConversationService) ListMessages(conversationID uint, page, pageSize i
 	var items []model.Message
 	offset := (page - 1) * pageSize
 	if err := db.Where("conversation_id = ?", conversationID).
-		Order("created_at ASC").
+		Order("created_at ASC, id ASC").
 		Offset(offset).Limit(pageSize).
 		Find(&items).Error; err != nil {
 		return nil, err

@@ -53,10 +53,11 @@ func PlaygroundListTasks(c *gin.Context) {
 	}
 
 	resp.Success(c, gin.H{
-		"items":     result.Items,
-		"total":     result.Total,
-		"page":      result.Page,
-		"page_size": result.PageSize,
+		"items":       result.Items,
+		"total":       result.Total,
+		"page":        result.Page,
+		"page_size":   result.PageSize,
+		"snapshot_at": result.SnapshotAt,
 	})
 }
 
@@ -68,7 +69,7 @@ func PlaygroundGetTask(c *gin.Context) {
 	}
 
 	taskNo := c.Param("task_no")
-	task, err := capabilityService.GetTask(c.Request.Context(), taskNo, token.UserID)
+	task, err := capabilityService.GetTaskForToken(c.Request.Context(), taskNo, token.UserID, token.ID)
 	if err != nil {
 		resp.ErrorMsg(c, http.StatusNotFound, 404, "task not found")
 		return
@@ -127,7 +128,7 @@ func PlaygroundCancelTask(c *gin.Context) {
 	}
 
 	taskNo := c.Param("task_no")
-	if err := capabilityService.CancelTask(c.Request.Context(), taskNo, token.UserID); err != nil {
+	if err := capabilityService.CancelTaskForToken(c.Request.Context(), taskNo, token.UserID, token.ID); err != nil {
 		resp.ErrorMsg(c, http.StatusBadRequest, 400, err.Error())
 		return
 	}
@@ -196,12 +197,8 @@ func PlaygroundGetConversationMessages(c *gin.Context) {
 		return
 	}
 	conversation, err := conversationService.GetConversation(conversationID)
-	if err != nil {
-		resp.NotFound(c, errors.ErrTaskNotFound)
-		return
-	}
-	if conversation.UserID != token.UserID || conversation.TokenID != token.ID {
-		resp.Forbidden(c, errors.ErrNoPermission)
+	if err != nil || conversation.UserID != token.UserID || conversation.TokenID != token.ID {
+		resp.ErrorMsg(c, http.StatusNotFound, 404, "conversation not found")
 		return
 	}
 
@@ -215,15 +212,23 @@ func PlaygroundGetConversationMessages(c *gin.Context) {
 		resp.InternalError(c, errors.ErrInternalError)
 		return
 	}
+	callStatuses, err := conversationCallStatuses(msgResp.Items)
+	if err != nil {
+		resp.InternalError(c, errors.ErrInternalError)
+		return
+	}
 
 	items := make([]gin.H, len(msgResp.Items))
 	for i, msg := range msgResp.Items {
 		items[i] = gin.H{
 			"id":                msg.ID,
 			"conversation_id":   msg.ConversationID,
+			"call_id":           msg.CallID,
+			"call_status":       callStatuses[msg.CallID],
 			"request_log_id":    msg.RequestLogID,
 			"role":              msg.Role,
 			"content":           msg.Content,
+			"attachments":       msg.Attachments,
 			"reasoning_content": msg.ReasoningContent,
 			"finish_reason":     msg.FinishReason,
 			"input_tokens":      msg.InputTokens,
@@ -249,6 +254,7 @@ func PlaygroundGetConversationMessages(c *gin.Context) {
 			"title":               msgResp.Conversation.Title,
 			"model":               msgResp.Conversation.Model,
 			"system_prompt":       msgResp.Conversation.SystemPrompt,
+			"last_call_id":        msgResp.Conversation.CallID,
 			"last_request_log_id": msgResp.Conversation.LastRequestLogID,
 			"last_status":         msgResp.Conversation.LastStatus,
 			"total_tokens":        msgResp.Conversation.TotalTokens,
@@ -257,6 +263,39 @@ func PlaygroundGetConversationMessages(c *gin.Context) {
 			"created_at":          msgResp.Conversation.CreatedAt,
 			"updated_at":          msgResp.Conversation.UpdatedAt,
 		},
+	})
+}
+
+// PlaygroundGetConversationTurns returns the canonical turn history owned by
+// the selected Playground token.
+func PlaygroundGetConversationTurns(c *gin.Context) {
+	token, ok := getPlaygroundToken(c)
+	if !ok {
+		return
+	}
+	var conversationID uint
+	if _, err := fmt.Sscanf(c.Param("conversation_id"), "%d", &conversationID); err != nil {
+		resp.ErrorMsg(c, http.StatusBadRequest, 400, "invalid conversation id")
+		return
+	}
+	conversation, err := conversationService.GetConversation(conversationID)
+	if err != nil || conversation.UserID != token.UserID || conversation.TokenID != token.ID {
+		resp.ErrorMsg(c, http.StatusNotFound, 404, "conversation not found")
+		return
+	}
+	var page, pageSize int
+	fmt.Sscanf(c.DefaultQuery("page", "1"), "%d", &page)
+	fmt.Sscanf(c.DefaultQuery("page_size", "50"), "%d", &pageSize)
+	result, err := conversationService.ListTurns(conversationID, page, pageSize)
+	if err != nil {
+		resp.InternalError(c, errors.ErrInternalError)
+		return
+	}
+	resp.Success(c, gin.H{
+		"items":     conversationTurnResponses(result.Items, true),
+		"total":     result.Total,
+		"page":      result.Page,
+		"page_size": result.PageSize,
 	})
 }
 

@@ -6,6 +6,7 @@ import (
 	responsepipeline "github.com/mirainya/Prism/internal/gateway/responses"
 	"github.com/mirainya/Prism/internal/provider"
 	"github.com/mirainya/Prism/internal/service"
+	"github.com/mirainya/Prism/pkg/queue"
 )
 
 var (
@@ -17,7 +18,7 @@ var (
 	saveTaskSubmitCheckpoint = func(taskID uint, leaseOwner string, checkpoint *service.TaskSubmitCheckpoint) error {
 		return taskService.SaveTaskSubmitCheckpoint(taskID, leaseOwner, checkpoint)
 	}
-	enqueueTaskSubmit = EnqueueTaskSubmit
+	recoverTaskSubmit = queue.RecoverTaskSubmit
 )
 
 func RegisterHandlers(mux *asynq.ServeMux, executionEngine *engine.Engine) {

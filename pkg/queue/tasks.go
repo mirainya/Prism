@@ -17,6 +17,7 @@ const (
 	TypeResponseBackground  = "response:background"
 	TypeResponseRecovery    = "response:recovery"
 	responseBackgroundQueue = "default"
+	taskSubmitQueue         = "critical"
 )
 
 type TaskSubmitPayload struct {
@@ -112,14 +113,78 @@ func responseBackgroundTaskID(responseID string) string {
 }
 
 func EnqueueTaskSubmit(taskID uint) error {
+	if Client == nil {
+		return errors.New("queue client is not initialized")
+	}
 	payload := TaskSubmitPayload{TaskID: taskID}
 	payloadBytes, err := json.Marshal(payload)
 	if err != nil {
 		return err
 	}
 	task := asynq.NewTask(TypeTaskSubmit, payloadBytes)
-	_, err = Client.Enqueue(task, asynq.Queue("critical"))
+	_, err = Client.Enqueue(
+		task,
+		asynq.Queue(taskSubmitQueue),
+		asynq.TaskID(taskSubmitTaskID(taskID)),
+		asynq.MaxRetry(DefaultMaxRetry()),
+	)
+	if errors.Is(err, asynq.ErrTaskIDConflict) {
+		return nil
+	}
 	return err
+}
+
+// RecoverTaskSubmit makes the task row the durable submit intent. A missing or
+// stale Asynq entry is recreated with the same deterministic task ID.
+func RecoverTaskSubmit(taskID uint) error {
+	if Client == nil {
+		return errors.New("queue client is not initialized")
+	}
+	inspector := asynq.NewInspector(redisClientOpt())
+	defer inspector.Close()
+
+	queueTaskID := taskSubmitTaskID(taskID)
+	info, err := inspector.GetTaskInfo(taskSubmitQueue, queueTaskID)
+	if err != nil {
+		if errors.Is(err, asynq.ErrTaskNotFound) || errors.Is(err, asynq.ErrQueueNotFound) {
+			return EnqueueTaskSubmit(taskID)
+		}
+		return fmt.Errorf("inspect task submit %d: %w", taskID, err)
+	}
+	if info.Type != TypeTaskSubmit {
+		return fmt.Errorf("task submit ID %s belongs to type %s", queueTaskID, info.Type)
+	}
+	switch info.State {
+	case asynq.TaskStateActive, asynq.TaskStatePending, asynq.TaskStateScheduled,
+		asynq.TaskStateRetry, asynq.TaskStateAggregating:
+		return nil
+	case asynq.TaskStateArchived, asynq.TaskStateCompleted:
+		if err := inspector.DeleteTask(taskSubmitQueue, queueTaskID); err != nil {
+			return recoverTaskSubmitAfterDeleteRace(inspector, taskID, queueTaskID, err)
+		}
+		return EnqueueTaskSubmit(taskID)
+	default:
+		return fmt.Errorf("task submit %d has unsupported state %s", taskID, info.State)
+	}
+}
+
+func recoverTaskSubmitAfterDeleteRace(inspector *asynq.Inspector, taskID uint, queueTaskID string, deleteErr error) error {
+	info, err := inspector.GetTaskInfo(taskSubmitQueue, queueTaskID)
+	if errors.Is(err, asynq.ErrTaskNotFound) || errors.Is(err, asynq.ErrQueueNotFound) {
+		return EnqueueTaskSubmit(taskID)
+	}
+	if err == nil && info.Type == TypeTaskSubmit {
+		switch info.State {
+		case asynq.TaskStateActive, asynq.TaskStatePending, asynq.TaskStateScheduled,
+			asynq.TaskStateRetry, asynq.TaskStateAggregating:
+			return nil
+		}
+	}
+	return fmt.Errorf("replace stale task submit %d: %w", taskID, deleteErr)
+}
+
+func taskSubmitTaskID(taskID uint) string {
+	return fmt.Sprintf("task-submit-%d", taskID)
 }
 
 // EnqueueTaskUpload 入队上传任务（回调/轮询成功后复用同一上传流水线）

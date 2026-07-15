@@ -8,6 +8,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/mirainya/Prism/internal/model"
+	"github.com/mirainya/Prism/pkg/config"
 	"github.com/mirainya/Prism/pkg/logger"
 	"github.com/shopspring/decimal"
 	"go.uber.org/zap"
@@ -73,20 +74,25 @@ func (s *TaskService) createTask(db *gorm.DB, req *CreateTaskRequest) (*model.Ta
 	if taskNo == "" {
 		taskNo = GenerateTaskNo()
 	}
+	callbackStatus := model.CallbackStatus("")
+	if req.CallbackURL != "" {
+		callbackStatus = model.CallbackStatusPending
+	}
 	task := &model.Task{
-		TaskNo:        taskNo,
-		CallID:        req.CallID,
-		UserID:        req.UserID,
-		TokenID:       req.TokenID,
-		ModelCode:     req.ModelCode,
-		ChannelID:     req.ChannelID,
-		EndpointID:    req.EndpointID,
-		AccountID:     req.AccountID,
-		RequestParams: requestParamsJSON,
-		MappedParams:  mappedParamsJSON,
-		Status:        model.TaskStatusPending,
-		CallbackURL:   req.CallbackURL,
-		Cost:          req.Cost,
+		TaskNo:         taskNo,
+		CallID:         req.CallID,
+		UserID:         req.UserID,
+		TokenID:        req.TokenID,
+		ModelCode:      req.ModelCode,
+		ChannelID:      req.ChannelID,
+		EndpointID:     req.EndpointID,
+		AccountID:      req.AccountID,
+		RequestParams:  requestParamsJSON,
+		MappedParams:   mappedParamsJSON,
+		Status:         model.TaskStatusPending,
+		CallbackURL:    req.CallbackURL,
+		CallbackStatus: callbackStatus,
+		Cost:           req.Cost,
 	}
 
 	if err := db.Create(task).Error; err != nil {
@@ -117,6 +123,21 @@ func (s *TaskService) GetTaskByNo(taskNo string) (*model.Task, error) {
 func (s *TaskService) GetTaskByNoAndUser(taskNo string, userID uint) (*model.Task, error) {
 	var task model.Task
 	err := model.DB().Where("task_no = ? AND user_id = ?", taskNo, userID).First(&task).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return nil, ErrTaskNotFound
+	}
+	if err != nil {
+		return nil, err
+	}
+	return &task, nil
+}
+
+func (s *TaskService) GetTaskByNoUserAndToken(taskNo string, userID, tokenID uint) (*model.Task, error) {
+	var task model.Task
+	err := model.DB().Where(
+		"task_no = ? AND user_id = ? AND token_id = ?",
+		taskNo, userID, tokenID,
+	).First(&task).Error
 	if errors.Is(err, gorm.ErrRecordNotFound) {
 		return nil, ErrTaskNotFound
 	}
@@ -159,7 +180,7 @@ func (s *TaskService) UpdateTaskStatus(taskID uint, status model.TaskStatus, ven
 	}
 	if status == model.TaskStatusProcessing {
 		now := time.Now()
-		updates["started_at"] = now
+		updates["started_at"] = gorm.Expr("COALESCE(started_at, ?)", now)
 	}
 
 	logger.Info("task status changed",
@@ -196,6 +217,7 @@ func (s *TaskService) UpdateTaskStatus(taskID uint, status model.TaskStatus, ven
 }
 
 func (s *TaskService) UpdateTaskProgress(taskID uint, progress int) error {
+	progress = normalizeTaskProgress(progress)
 	logger.Debug("task progress updated",
 		zap.Uint("task_id", taskID),
 		zap.Int("progress", progress))
@@ -203,7 +225,18 @@ func (s *TaskService) UpdateTaskProgress(taskID uint, progress int) error {
 	return model.DB().Model(&model.Task{}).
 		Where("id = ? AND status IN ?", taskID,
 			[]model.TaskStatus{model.TaskStatusPending, model.TaskStatusProcessing}).
+		Where("COALESCE(progress, 0) < ?", progress).
 		Update("progress", progress).Error
+}
+
+func normalizeTaskProgress(progress int) int {
+	if progress < 0 {
+		return 0
+	}
+	if progress > 100 {
+		return 100
+	}
+	return progress
 }
 
 // BeginTaskFinalization atomically reserves a successful upstream result for
@@ -300,21 +333,21 @@ func (s *TaskService) updateTaskSuccess(
 			}
 			return err
 		}
+		updates := map[string]any{
+			"status":                  model.TaskStatusSuccess,
+			"progress":                100,
+			"result":                  resultJSON,
+			"cost":                    cost,
+			"completed_at":            now,
+			"submit_checkpoint":       nil,
+			"worker_lease_owner":      "",
+			"worker_lease_stage":      "",
+			"worker_lease_expires_at": nil,
+		}
+		applyTerminalTaskBodyPolicy(updates)
 		res := tx.Model(&model.Task{}).
 			Where("id = ? AND status IN ?", taskID, allowed).
-			Updates(map[string]any{
-				"status":                  model.TaskStatusSuccess,
-				"progress":                100,
-				"result":                  resultJSON,
-				"cost":                    cost,
-				"completed_at":            now,
-				"request_params":          nil,
-				"mapped_params":           nil,
-				"submit_checkpoint":       nil,
-				"worker_lease_owner":      "",
-				"worker_lease_stage":      "",
-				"worker_lease_expires_at": nil,
-			})
+			Updates(updates)
 		if res.Error != nil {
 			return res.Error
 		}
@@ -403,19 +436,19 @@ func (s *TaskService) updateTaskFail(
 	}
 
 	err = model.DB().Transaction(func(tx *gorm.DB) error {
+		updates := map[string]any{
+			"status":                  model.TaskStatusFailed,
+			"error_message":           errMsg,
+			"completed_at":            now,
+			"submit_checkpoint":       nil,
+			"worker_lease_owner":      "",
+			"worker_lease_stage":      "",
+			"worker_lease_expires_at": nil,
+		}
+		applyTerminalTaskBodyPolicy(updates)
 		result := tx.Model(&model.Task{}).
 			Where("id = ? AND status IN ?", taskID, allowed).
-			Updates(map[string]any{
-				"status":                  model.TaskStatusFailed,
-				"error_message":           errMsg,
-				"completed_at":            now,
-				"request_params":          nil,
-				"mapped_params":           nil,
-				"submit_checkpoint":       nil,
-				"worker_lease_owner":      "",
-				"worker_lease_stage":      "",
-				"worker_lease_expires_at": nil,
-			})
+			Updates(updates)
 		if result.Error != nil {
 			return result.Error
 		}
@@ -514,7 +547,7 @@ func releaseTaskAccountSlot(tx *gorm.DB, taskID, accountID uint) error {
 	if gate.RowsAffected == 0 || accountID == 0 {
 		return nil
 	}
-	return tx.Model(&model.ChannelAccount{}).
+	return tx.Unscoped().Model(&model.ChannelAccount{}).
 		Where("id = ? AND current_tasks > 0", accountID).
 		UpdateColumn("current_tasks", gorm.Expr("current_tasks - 1")).Error
 }
@@ -525,26 +558,41 @@ func (s *TaskService) UpdateVendorResponse(taskID uint, resp json.RawMessage) er
 }
 
 func (s *TaskService) CancelTask(taskNo string, userID uint) error {
+	return s.cancelTask(taskNo, userID, nil)
+}
+
+func (s *TaskService) CancelTaskByToken(taskNo string, userID, tokenID uint) error {
+	return s.cancelTask(taskNo, userID, &tokenID)
+}
+
+func (s *TaskService) cancelTask(taskNo string, userID uint, tokenID *uint) error {
 	return model.DB().Transaction(func(tx *gorm.DB) error {
 		var task model.Task
-		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).
-			Where("task_no = ? AND user_id = ?", taskNo, userID).First(&task).Error; err != nil {
-			return errors.New("task not found or cannot be cancelled")
+		query := tx.Clauses(clause.Locking{Strength: "UPDATE"}).
+			Where("task_no = ? AND user_id = ?", taskNo, userID)
+		if tokenID != nil {
+			query = query.Where("token_id = ?", *tokenID)
+		}
+		if err := query.First(&task).Error; err != nil {
+			if errors.Is(err, gorm.ErrRecordNotFound) {
+				return errors.New("task not found or cannot be cancelled")
+			}
+			return fmt.Errorf("load task for cancellation: %w", err)
 		}
 
+		updates := map[string]any{
+			"status":                  model.TaskStatusCancelled,
+			"completed_at":            time.Now(),
+			"submit_checkpoint":       nil,
+			"worker_lease_owner":      "",
+			"worker_lease_stage":      "",
+			"worker_lease_expires_at": nil,
+		}
+		applyTerminalTaskBodyPolicy(updates)
 		result := tx.Model(&model.Task{}).
 			Where("id = ? AND status IN ?", task.ID,
 				[]model.TaskStatus{model.TaskStatusPending, model.TaskStatusProcessing, model.TaskStatusFinalizing}).
-			Updates(map[string]any{
-				"status":                  model.TaskStatusCancelled,
-				"completed_at":            time.Now(),
-				"request_params":          nil,
-				"mapped_params":           nil,
-				"submit_checkpoint":       nil,
-				"worker_lease_owner":      "",
-				"worker_lease_stage":      "",
-				"worker_lease_expires_at": nil,
-			})
+			Updates(updates)
 		if result.Error != nil {
 			return result.Error
 		}
@@ -573,6 +621,18 @@ func (s *TaskService) CancelTask(taskNo string, userID uint) error {
 		}
 		return releaseTaskAccountSlot(tx, task.ID, task.AccountID)
 	})
+}
+
+func applyTerminalTaskBodyPolicy(updates map[string]any) {
+	if updates == nil {
+		return
+	}
+	cfg := config.Get()
+	if cfg != nil && cfg.Observability.RetainAPICallPayloads {
+		return
+	}
+	updates["request_params"] = nil
+	updates["mapped_params"] = nil
 }
 
 func latestCallAttemptIDTx(tx *gorm.DB, callID string) (uint, error) {

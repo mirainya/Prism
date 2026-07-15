@@ -1,6 +1,7 @@
 package service
 
 import (
+	"fmt"
 	"sort"
 	"strconv"
 	"time"
@@ -156,6 +157,7 @@ func scopedAPICalls(query *gorm.DB, userID uint, isAdmin bool) *gorm.DB {
 type ListTasksRequest struct {
 	Page       int    `form:"page"`
 	PageSize   int    `form:"page_size"`
+	SnapshotAt string `form:"snapshot_at"`
 	Status     string `form:"status"`
 	Capability string `form:"capability"`
 	StartDate  string `form:"start_date"`
@@ -167,6 +169,7 @@ type ListTasksRequest struct {
 type TaskItem struct {
 	ID             string          `json:"id"`
 	TaskNo         string          `json:"task_no"`
+	CallID         string          `json:"call_id"`
 	Capability     string          `json:"capability"`
 	CapabilityName string          `json:"capability_name"`
 	Channel        string          `json:"channel"`
@@ -180,10 +183,11 @@ type TaskItem struct {
 }
 
 type ListTasksResult struct {
-	Items    []TaskItem `json:"items"`
-	Total    int64      `json:"total"`
-	Page     int        `json:"page"`
-	PageSize int        `json:"page_size"`
+	Items      []TaskItem `json:"items"`
+	Total      int64      `json:"total"`
+	Page       int        `json:"page"`
+	PageSize   int        `json:"page_size"`
+	SnapshotAt string     `json:"snapshot_at"`
 }
 
 func (s *DashboardService) ListTasks(req *ListTasksRequest, userID uint, isAdmin bool) (*ListTasksResult, error) {
@@ -194,7 +198,16 @@ func (s *DashboardService) ListTasks(req *ListTasksRequest, userID uint, isAdmin
 		req.PageSize = 20
 	}
 
-	db := model.DB().Model(&model.Task{})
+	snapshot := time.Now().Truncate(time.Millisecond)
+	if req.SnapshotAt != "" {
+		parsed, err := time.Parse(time.RFC3339Nano, req.SnapshotAt)
+		if err != nil {
+			return nil, fmt.Errorf("invalid snapshot_at: %w", err)
+		}
+		snapshot = parsed.In(time.Local).Truncate(time.Millisecond)
+	}
+
+	db := model.DB().Model(&model.Task{}).Where("created_at < ?", snapshot)
 
 	if !isAdmin {
 		db = db.Where("user_id = ?", userID)
@@ -228,24 +241,29 @@ func (s *DashboardService) ListTasks(req *ListTasksRequest, userID uint, isAdmin
 	}
 
 	var total int64
-	db.Count(&total)
+	if err := db.Count(&total).Error; err != nil {
+		return nil, err
+	}
 
 	var tasks []model.Task
 	// 列表页只需展示字段,显式 Select 排除 request_params/mapped_params/vendor_response/result
 	// 这几个 JSON 列可能存有 MB 级的 base64 图片/视频数据,SELECT * 会拉取巨量数据导致接口卡死
-	db.Select("id", "task_no", "model_code", "status", "progress", "cost",
+	if err := db.Select("id", "task_no", "call_id", "model_code", "status", "progress", "cost",
 		"refunded", "error_message", "created_at", "completed_at", "channel_id").
-		Order("created_at DESC").
+		Order("created_at DESC").Order("id DESC").
 		Offset((req.Page - 1) * req.PageSize).
 		Limit(req.PageSize).
 		Preload("Channel").
-		Find(&tasks)
+		Find(&tasks).Error; err != nil {
+		return nil, err
+	}
 
 	items := make([]TaskItem, 0, len(tasks))
 	for _, t := range tasks {
 		item := TaskItem{
 			ID:         t.TaskNo,
 			TaskNo:     t.TaskNo,
+			CallID:     t.CallID,
 			Capability: t.ModelCode,
 			Status:     string(t.Status.Public()),
 			Progress:   t.Progress,
@@ -265,10 +283,11 @@ func (s *DashboardService) ListTasks(req *ListTasksRequest, userID uint, isAdmin
 	}
 
 	return &ListTasksResult{
-		Items:    items,
-		Total:    total,
-		Page:     req.Page,
-		PageSize: req.PageSize,
+		Items:      items,
+		Total:      total,
+		Page:       req.Page,
+		PageSize:   req.PageSize,
+		SnapshotAt: snapshot.Format(time.RFC3339Nano),
 	}, nil
 }
 

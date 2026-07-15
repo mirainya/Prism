@@ -41,6 +41,7 @@ observability:
   api_call_payload_max_bytes: 262144
   api_call_payload_encryption_key: ""
   api_call_metadata_retention_days: 90
+  resource_history_retention_days: 90 # 终态异步任务与闲置 Playground 对话历史
   api_access_log_retention_days: 30
   audit_event_retention_days: 180
   billing_ledger_retention_days: 365
