@@ -184,8 +184,8 @@ func TestReserveInitialCapabilityTaskCommitsBillingAccountAndTaskTogether(t *tes
 	if err := db.First(&failedTask, task.ID).Error; err != nil {
 		t.Fatalf("reload failed task: %v", err)
 	}
-	if len(failedTask.RequestParams) != 0 || len(failedTask.MappedParams) != 0 {
-		t.Fatalf("terminal task retained params: request=%s mapped=%s", failedTask.RequestParams, failedTask.MappedParams)
+	if len(failedTask.RequestParams) == 0 || len(failedTask.MappedParams) == 0 {
+		t.Fatalf("terminal task lost params: request=%s mapped=%s", failedTask.RequestParams, failedTask.MappedParams)
 	}
 	if err := db.First(&gotAccount, account.ID).Error; err != nil {
 		t.Fatalf("reload released account: %v", err)
@@ -259,7 +259,7 @@ func TestCapabilityTaskSuccessSettlesAndCompletesCallOnce(t *testing.T) {
 		t.Fatalf("load completed task: %v", err)
 	}
 	if completedTask.Status != model.TaskStatusSuccess || !completedTask.Cost.Equal(actual) ||
-		len(completedTask.RequestParams) != 0 || len(completedTask.MappedParams) != 0 {
+		len(completedTask.RequestParams) == 0 || len(completedTask.MappedParams) == 0 {
 		t.Fatalf("completed task = %#v", completedTask)
 	}
 }

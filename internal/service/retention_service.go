@@ -134,8 +134,9 @@ func (s *RetentionService) DeleteExpiredAuditEvents(cutoff time.Time, limit int)
 	return deleteUint64ModelBatch(&model.AuditEvent{}, cutoff, limit)
 }
 
-// ClearLegacyBodies applies the payload retention policy to body fields that
-// predate api_call_payloads. New terminal tasks already clear these fields.
+// ClearLegacyBodies applies the payload retention policy to legacy response
+// fields that predate api_call_payloads. Task parameters belong to task history
+// and are removed when the task itself expires.
 func (s *RetentionService) ClearLegacyBodies(
 	now time.Time,
 	retentionHours int,
@@ -154,36 +155,7 @@ func (s *RetentionService) ClearLegacyBodies(
 		cutoff = now.Add(-time.Duration(retentionHours) * time.Hour)
 	}
 
-	taskCount, err := clearLegacyTaskBodies(cutoff, limit)
-	if err != nil {
-		return 0, err
-	}
-	responseCount, err := clearLegacyResponseBodies(cutoff, limit)
-	if err != nil {
-		return taskCount, err
-	}
-	return taskCount + responseCount, nil
-}
-
-func clearLegacyTaskBodies(cutoff time.Time, limit int) (int64, error) {
-	if !model.DB().Migrator().HasTable(&model.Task{}) {
-		return 0, nil
-	}
-	var ids []uint
-	if err := model.DB().Model(&model.Task{}).
-		Where("status IN ?", []model.TaskStatus{
-			model.TaskStatusSuccess, model.TaskStatusFailed, model.TaskStatusCancelled,
-		}).
-		Where("COALESCE(completed_at, updated_at, created_at) <= ?", cutoff).
-		Where("request_params IS NOT NULL OR mapped_params IS NOT NULL").
-		Order("id ASC").Limit(limit).Pluck("id", &ids).Error; err != nil || len(ids) == 0 {
-		return 0, err
-	}
-	result := model.DB().Model(&model.Task{}).Where("id IN ?", ids).Updates(map[string]any{
-		"request_params": nil,
-		"mapped_params":  nil,
-	})
-	return result.RowsAffected, result.Error
+	return clearLegacyResponseBodies(cutoff, limit)
 }
 
 func clearLegacyResponseBodies(cutoff time.Time, limit int) (int64, error) {

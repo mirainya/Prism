@@ -6,7 +6,7 @@ import (
 	"time"
 
 	"github.com/mirainya/Prism/internal/model"
-	"github.com/mirainya/Prism/pkg/config"
+	"gorm.io/datatypes"
 )
 
 func TestTaskTokenOwnershipKeepsPublicUserScope(t *testing.T) {
@@ -117,24 +117,30 @@ func TestProcessingUpdatesPreserveStartedAt(t *testing.T) {
 	}
 }
 
-func TestTerminalTaskBodyPolicyFollowsPayloadRetention(t *testing.T) {
-	previous := config.C
-	t.Cleanup(func() { config.C = previous })
-
-	config.C = &config.Config{Observability: config.ObservabilityConfig{RetainAPICallPayloads: true}}
-	retained := map[string]any{"status": model.TaskStatusSuccess}
-	applyTerminalTaskBodyPolicy(retained)
-	if _, exists := retained["request_params"]; exists {
-		t.Fatal("retained task request was cleared")
+func TestCancelTaskPreservesParams(t *testing.T) {
+	db := setupTestDB(t)
+	params := datatypes.JSON(`{"prompt":"keep for task history"}`)
+	task := &model.Task{
+		TaskNo:        GenerateTaskNo(),
+		UserID:        42,
+		Status:        model.TaskStatusPending,
+		RequestParams: params,
+		MappedParams:  params,
+	}
+	if err := db.Create(task).Error; err != nil {
+		t.Fatal(err)
 	}
 
-	config.C.Observability.RetainAPICallPayloads = false
-	cleared := map[string]any{"status": model.TaskStatusSuccess}
-	applyTerminalTaskBodyPolicy(cleared)
-	if _, exists := cleared["request_params"]; !exists {
-		t.Fatal("non-retained task request was not cleared")
+	if err := NewTaskService().CancelTask(task.TaskNo, task.UserID); err != nil {
+		t.Fatal(err)
 	}
-	if _, exists := cleared["mapped_params"]; !exists {
-		t.Fatal("non-retained mapped params were not cleared")
+	if err := db.First(task, task.ID).Error; err != nil {
+		t.Fatal(err)
+	}
+	if task.Status != model.TaskStatusCancelled {
+		t.Fatalf("status = %s, want cancelled", task.Status)
+	}
+	if len(task.RequestParams) == 0 || len(task.MappedParams) == 0 {
+		t.Fatalf("cancelled task lost params: request=%s mapped=%s", task.RequestParams, task.MappedParams)
 	}
 }

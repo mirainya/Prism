@@ -228,10 +228,10 @@ Responses 资源接口包括：
 - `worker.*`、`http_client.*`
 - `file_storage.max_total_size_mb`
 - `rate_limit.*`
-- `observability.retain_api_call_payloads`：是否保存调用正文，默认 `false`
+- `observability.retain_api_call_payloads`：是否保存 API 与上游调用正文，默认 `false`；不影响任务参数
 - `observability.api_call_payload_retention_hours`、`api_call_payload_max_bytes`、`api_call_payload_encryption_key`：正文默认保留 168 小时、最多 256 KiB，可使用独立 AES-256-GCM 密钥
 - `observability.api_call_metadata_retention_days`：Call、Attempt 与上游请求日志元数据，默认 90 天
-- `observability.resource_history_retention_days`：终态异步任务与闲置 Playground 对话历史，默认 90 天
+- `observability.resource_history_retention_days`：终态异步任务（含任务参数）与闲置 Playground 对话历史，默认 90 天
 - `observability.api_access_log_retention_days`、`audit_event_retention_days`：访问日志默认 30 天，审计事件默认 180 天
 - `observability.billing_ledger_retention_days`：计费日志和余额流水，默认 365 天
 

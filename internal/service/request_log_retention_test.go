@@ -95,7 +95,7 @@ func TestClearExpiredBodiesAppliesLegacyPayloadPolicy(t *testing.T) {
 	}
 	assertRequestLogBody(t, "legacy-old-request-log", false)
 	assertRequestLogBody(t, "legacy-fresh-request-log", true)
-	assertLegacyTaskBody(t, "legacy-old-terminal", false)
+	assertLegacyTaskBody(t, "legacy-old-terminal", true)
 	assertLegacyTaskBody(t, "legacy-fresh-terminal", true)
 	assertLegacyTaskBody(t, "legacy-old-pending", true)
 	assertLegacyResponseBody(t, "resp_legacy_old", false)
@@ -108,7 +108,7 @@ func TestClearExpiredBodiesAppliesLegacyPayloadPolicy(t *testing.T) {
 		t.Fatal(err)
 	}
 	assertRequestLogBody(t, "legacy-fresh-request-log", false)
-	assertLegacyTaskBody(t, "legacy-fresh-terminal", false)
+	assertLegacyTaskBody(t, "legacy-fresh-terminal", true)
 	assertLegacyTaskBody(t, "legacy-old-pending", true)
 	assertLegacyResponseBody(t, "resp_legacy_fresh", false)
 	assertLegacyResponseBody(t, "resp_legacy_stored", true)

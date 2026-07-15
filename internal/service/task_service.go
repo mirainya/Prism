@@ -8,7 +8,6 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/mirainya/Prism/internal/model"
-	"github.com/mirainya/Prism/pkg/config"
 	"github.com/mirainya/Prism/pkg/logger"
 	"github.com/shopspring/decimal"
 	"go.uber.org/zap"
@@ -344,7 +343,6 @@ func (s *TaskService) updateTaskSuccess(
 			"worker_lease_stage":      "",
 			"worker_lease_expires_at": nil,
 		}
-		applyTerminalTaskBodyPolicy(updates)
 		res := tx.Model(&model.Task{}).
 			Where("id = ? AND status IN ?", taskID, allowed).
 			Updates(updates)
@@ -445,7 +443,6 @@ func (s *TaskService) updateTaskFail(
 			"worker_lease_stage":      "",
 			"worker_lease_expires_at": nil,
 		}
-		applyTerminalTaskBodyPolicy(updates)
 		result := tx.Model(&model.Task{}).
 			Where("id = ? AND status IN ?", taskID, allowed).
 			Updates(updates)
@@ -588,7 +585,6 @@ func (s *TaskService) cancelTask(taskNo string, userID uint, tokenID *uint) erro
 			"worker_lease_stage":      "",
 			"worker_lease_expires_at": nil,
 		}
-		applyTerminalTaskBodyPolicy(updates)
 		result := tx.Model(&model.Task{}).
 			Where("id = ? AND status IN ?", task.ID,
 				[]model.TaskStatus{model.TaskStatusPending, model.TaskStatusProcessing, model.TaskStatusFinalizing}).
@@ -621,18 +617,6 @@ func (s *TaskService) cancelTask(taskNo string, userID uint, tokenID *uint) erro
 		}
 		return releaseTaskAccountSlot(tx, task.ID, task.AccountID)
 	})
-}
-
-func applyTerminalTaskBodyPolicy(updates map[string]any) {
-	if updates == nil {
-		return
-	}
-	cfg := config.Get()
-	if cfg != nil && cfg.Observability.RetainAPICallPayloads {
-		return
-	}
-	updates["request_params"] = nil
-	updates["mapped_params"] = nil
 }
 
 func latestCallAttemptIDTx(tx *gorm.DB, callID string) (uint, error) {

@@ -224,8 +224,8 @@ func TestCancelTask_RefundAndDecrementOnce(t *testing.T) {
 	if err := db.First(&storedTask, task.ID).Error; err != nil {
 		t.Fatalf("reload cancelled task: %v", err)
 	}
-	if storedTask.CompletedAt == nil || len(storedTask.RequestParams) != 0 || len(storedTask.MappedParams) != 0 {
-		t.Fatalf("cancelled task retained terminal data: %#v", storedTask)
+	if storedTask.CompletedAt == nil || len(storedTask.RequestParams) == 0 || len(storedTask.MappedParams) == 0 {
+		t.Fatalf("cancelled task lost history data: %#v", storedTask)
 	}
 	assertCapabilityBillingContext(t, task.TaskNo, call.ID, model.BillingPhaseRefund)
 }
