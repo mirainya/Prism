@@ -25,7 +25,7 @@ SELECT
     t.token_id,
     'legacy:capability-task',
     'generation',
-    t.model_code,
+    COALESCE(t.model_code, ''),
     CASE t.status
         WHEN 'success' THEN 'completed'
         WHEN 'failed' THEN 'failed'
@@ -75,7 +75,7 @@ SELECT
     r.token_id,
     '/v1/responses',
     'responses',
-    r.model,
+    COALESCE(r.model, ''),
     CASE r.status
         WHEN 'completed' THEN 'completed'
         WHEN 'incomplete' THEN 'completed'
