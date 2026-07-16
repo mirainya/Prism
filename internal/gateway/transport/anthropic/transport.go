@@ -26,7 +26,7 @@ func (*Transport) Plan(operation transport.Operation, request canonical.Request,
 	if operation != transport.OperationMessages && operation != transport.OperationChat && operation != transport.OperationResponses {
 		return transport.Unsupported(operation, "unsupported Anthropic operation")
 	}
-	if request.Background || request.PreviousResponseID != "" || len(request.Include) > 0 || len(request.Modalities) > 0 || hasVolcengineOptions(request.ProviderOptions.Volcengine) {
+	if request.Background || request.PreviousResponseID != "" || !transport.SupportsLocalResponsesInclude(operation, request.Include) || len(request.Modalities) > 0 || hasVolcengineOptions(request.ProviderOptions.Volcengine) {
 		return transport.Unsupported(operation, "Anthropic Messages cannot express response persistence or provider options")
 	}
 	// Responses storage is owned by Prism; other downstream protocols would be
@@ -40,8 +40,25 @@ func (*Transport) Plan(operation transport.Operation, request canonical.Request,
 	if request.Reasoning != nil && !isNativeThinking(request.Reasoning.Raw) {
 		return transport.Unsupported(operation, "Anthropic thinking requires native type and budget controls")
 	}
+	if operation == transport.OperationChat && request.Reasoning != nil && features.Has(canonical.FeatureTools) {
+		return transport.Unsupported(operation, "OpenAI Chat cannot preserve Anthropic thinking proofs across tool calls")
+	}
 	if request.ResponseFormat != nil || features.Has(canonical.FeatureAudio) || features.Has(canonical.FeatureVideo) {
 		return transport.Unsupported(operation, "Anthropic Messages cannot express this structured or multimodal request")
+	}
+	for index, item := range request.Items {
+		if item.ProviderCallIDOmitted {
+			return transport.Unsupported(operation, fmt.Sprintf("Anthropic Messages cannot preserve provider call-ID state on item %d", index))
+		}
+		if item.Proof != nil && item.Type != "reasoning" {
+			return transport.Unsupported(operation, fmt.Sprintf("Anthropic Messages cannot preserve provider proof on item %d", index))
+		}
+		if item.Type == "reasoning" && !replayableAnthropicReasoning(item) {
+			return transport.Unsupported(operation, fmt.Sprintf("Anthropic Messages requires a native proof on reasoning item %d", index))
+		}
+	}
+	if field := transport.UnsupportedNamespace(request); field != "" {
+		return transport.Unsupported(operation, "Anthropic Messages cannot preserve "+field)
 	}
 	for _, tool := range request.Tools {
 		if tool.Type != "" && tool.Type != "function" {
@@ -76,6 +93,47 @@ func (*Transport) Plan(operation transport.Operation, request canonical.Request,
 func isNativeThinking(raw json.RawMessage) bool {
 	var value map[string]json.RawMessage
 	return json.Unmarshal(raw, &value) == nil && rawString(value["type"]) != ""
+}
+
+func replayableAnthropicReasoning(item canonical.Item) bool {
+	var block map[string]json.RawMessage
+	raw := item.Extra[transport.ExtensionAnthropicRawBlock]
+	if json.Unmarshal(raw, &block) == nil && rawString(block["type"]) == "redacted_thinking" {
+		data := rawString(block["data"])
+		if data == "" {
+			return false
+		}
+		if item.Proof != nil && (item.Proof.Provider != canonical.ProofProviderAnthropic || item.Proof.Subject != canonical.ProofSubjectAnthropicRedacted || item.Proof.Value != data || item.Proof.TargetID != "") {
+			return false
+		}
+		if len(item.Content) == 0 {
+			return true
+		}
+		if len(item.Content) != 1 || !isAnthropicReasoningContent(item.Content[0]) || item.Content[0].Text != "" {
+			return false
+		}
+		contentRaw := item.Content[0].Extra[transport.ExtensionAnthropicRawBlock]
+		return !transport.HasJSONValue(contentRaw) || bytes.Equal(bytes.TrimSpace(raw), bytes.TrimSpace(contentRaw))
+	}
+	if item.Proof != nil && item.Proof.Provider == canonical.ProofProviderAnthropic && item.Proof.Subject == canonical.ProofSubjectAnthropicRedacted {
+		if item.Proof.Value == "" || item.Proof.TargetID != "" || len(item.Content) > 1 {
+			return false
+		}
+		return len(item.Content) == 0 || (isAnthropicReasoningContent(item.Content[0]) && item.Content[0].Text == "")
+	}
+	if _, ok := canonical.NativeProviderProofValue(item.Proof, canonical.ProofProviderAnthropic); !ok || len(item.Content) != 1 || !isAnthropicReasoningContent(item.Content[0]) {
+		return false
+	}
+	if item.Proof.Subject != "" || item.Proof.TargetID != "" {
+		return false
+	}
+	var contentBlock map[string]json.RawMessage
+	contentRaw := item.Content[0].Extra[transport.ExtensionAnthropicRawBlock]
+	return json.Unmarshal(contentRaw, &contentBlock) != nil || rawString(contentBlock["type"]) != "redacted_thinking"
+}
+
+func isAnthropicReasoningContent(content canonical.Content) bool {
+	return content.Type == "reasoning_text" || content.Type == "thinking"
 }
 
 func hasVolcengineOptions(options *canonical.VolcengineOptions) bool {
@@ -269,52 +327,27 @@ func (s *stream) decode(name string, raw []byte) (canonical.Event, bool, error) 
 		return base, true, nil
 	case "content_block_start":
 		index := rawInt(root["index"])
-		var block struct {
-			Type     string          `json:"type"`
-			ID       string          `json:"id"`
-			Name     string          `json:"name"`
-			Input    json.RawMessage `json:"input"`
-			Text     string          `json:"text"`
-			Thinking string          `json:"thinking"`
-		}
-		if err := json.Unmarshal(root["content_block"], &block); err != nil {
+		decoded, err := codecanthropic.DecodeEvent(name, raw)
+		if err != nil {
 			return canonical.Event{}, false, err
 		}
-		item := canonical.Item{ID: block.ID, Status: "in_progress"}
-		switch block.Type {
-		case "tool_use":
-			item.Type, item.CallID, item.Name, item.Arguments = "function_call", block.ID, block.Name, normalizeArguments(block.Input)
-			base.Type = canonical.EventOutputItemAdded
-		case "thinking":
-			item.Type, item.Role = "reasoning", canonical.RoleAssistant
-			item.Content = []canonical.Content{{Type: "reasoning_text", Text: block.Thinking}}
-			base.Type = canonical.EventContentPartAdded
-		default:
-			item.Type, item.Role = "message", canonical.RoleAssistant
-			item.Content = []canonical.Content{{Type: "output_text", Text: block.Text}}
-			base.Type = canonical.EventContentPartAdded
+		if decoded.Item == nil {
+			return canonical.Event{}, false, errors.New("Anthropic content_block_start is missing content_block")
 		}
+		item := canonical.CloneItems([]canonical.Item{*decoded.Item})[0]
 		s.blocks[index] = item
 		delete(s.toolDeltas, index)
-		base.ContentIndex, base.ToolIndex, base.Item = index, index, &item
+		base.Type, base.OutputIndex, base.ContentIndex, base.ToolIndex, base.Item = decoded.Type, index, 0, index, &item
 		return base, true, nil
 	case "content_block_delta":
 		index := rawInt(root["index"])
-		var delta struct {
-			Type        string `json:"type"`
-			Text        string `json:"text"`
-			Thinking    string `json:"thinking"`
-			PartialJSON string `json:"partial_json"`
-		}
-		if err := json.Unmarshal(root["delta"], &delta); err != nil {
+		decoded, err := codecanthropic.DecodeEvent(name, raw)
+		if err != nil {
 			return canonical.Event{}, false, err
 		}
-		base.ContentIndex, base.ToolIndex, base.Delta = index, index, delta.Text
-		switch delta.Type {
-		case "thinking_delta":
-			base.Type, base.Delta = canonical.EventReasoningDelta, delta.Thinking
-		case "input_json_delta":
-			base.Type, base.Delta = canonical.EventToolArgumentsDelta, delta.PartialJSON
+		base.Type, base.ContentIndex, base.ToolIndex, base.Delta = decoded.Type, 0, index, decoded.Delta
+		switch decoded.Type {
+		case canonical.EventToolArgumentsDelta:
 			if s.toolDeltas == nil {
 				s.toolDeltas = make(map[int]bool)
 			}
@@ -322,23 +355,38 @@ func (s *stream) decode(name string, raw []byte) (canonical.Event, bool, error) 
 				if !s.toolDeltas[index] {
 					item.Arguments = nil
 				}
-				item.Arguments = append(item.Arguments, delta.PartialJSON...)
+				item.Arguments = append(item.Arguments, decoded.Delta...)
 				s.blocks[index] = item
 			}
 			s.toolDeltas[index] = true
-		case "text_delta":
-			base.Type = canonical.EventTextDelta
-		default:
-			base.Type = canonical.EventRaw
+		case canonical.EventProviderProof:
+			if decoded.Item != nil && decoded.Item.Proof != nil {
+				item := s.blocks[index]
+				proof := *decoded.Item.Proof
+				if item.Proof != nil && item.Proof.Provider == proof.Provider {
+					proof.Value = item.Proof.Value + proof.Value
+				}
+				item.Proof = &proof
+				if item.Type == "" {
+					item.Type, item.Role, item.Status = "reasoning", canonical.RoleAssistant, "in_progress"
+				}
+				s.blocks[index] = item
+			}
 		}
 		if item, ok := s.blocks[index]; ok {
-			copy := item
+			copy := canonical.CloneItems([]canonical.Item{item})[0]
 			base.Item = &copy
+		} else if decoded.Item != nil {
+			copy := canonical.CloneItems([]canonical.Item{*decoded.Item})[0]
+			base.Item = &copy
+		}
+		if base.Item != nil {
+			base.OutputIndex = index
 		}
 		return base, true, nil
 	case "content_block_stop":
 		index := rawInt(root["index"])
-		base.Type, base.ContentIndex = canonical.EventContentPartDone, index
+		base.Type, base.OutputIndex, base.ContentIndex = canonical.EventContentPartDone, index, 0
 		if item, ok := s.blocks[index]; ok {
 			item.Status = "completed"
 			if item.Type == "function_call" {
@@ -423,14 +471,6 @@ func augmentResponseUsage(response *canonical.Response, raw []byte) {
 	if wire.Usage.CacheCreationInputTokens != 0 {
 		response.Usage.Extra = map[string]json.RawMessage{"cache_creation_input_tokens": mustRaw(wire.Usage.CacheCreationInputTokens)}
 	}
-}
-
-func normalizeArguments(raw json.RawMessage) json.RawMessage {
-	var text string
-	if json.Unmarshal(raw, &text) == nil && json.Valid([]byte(text)) {
-		return json.RawMessage(text)
-	}
-	return append(json.RawMessage(nil), raw...)
 }
 
 func rawString(raw json.RawMessage) string {

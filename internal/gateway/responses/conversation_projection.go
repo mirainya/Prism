@@ -87,6 +87,8 @@ func responseProjectionFromStreamSummary(projection *responseConversationProject
 	response := cloneCanonicalResponse(summary.Response)
 	if response == nil {
 		response = &canonical.Response{}
+	} else {
+		response.Output = openairesponses.RestoreFunctionCallProofCarriers(response.Output)
 	}
 	if response.ProviderResponseID == "" {
 		response.ProviderResponseID = summary.ProviderResponseID

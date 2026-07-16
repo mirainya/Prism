@@ -18,7 +18,7 @@ func TestEventAccumulatorPreservesStructuredStreamOutput(t *testing.T) {
 	})
 	acc.Observe(Event{
 		Type: EventToolArgumentsDelta, ToolIndex: 0, Delta: `{"city":`,
-		Item: &Item{ID: "call_weather", Type: "function_call", CallID: "call_weather", Name: "weather"},
+		Item: &Item{ID: "call_weather", Type: "function_call", CallID: "call_weather", Name: "weather", Namespace: "tools"},
 	})
 	acc.Observe(Event{
 		Type: EventToolArgumentsDelta, ToolIndex: 0, Delta: `"Tokyo"}`,
@@ -49,11 +49,29 @@ func TestEventAccumulatorPreservesStructuredStreamOutput(t *testing.T) {
 	if snapshot.Output[1].Type != "reasoning" || snapshot.Output[1].Content[0].Text != "think" {
 		t.Fatalf("reasoning output missing: %#v", snapshot.Output[1])
 	}
-	if snapshot.Output[2].Name != "weather" || !json.Valid(snapshot.Output[2].Arguments) {
+	if snapshot.Output[2].Name != "weather" || snapshot.Output[2].Namespace != "tools" || !json.Valid(snapshot.Output[2].Arguments) {
 		t.Fatalf("first tool output invalid: %#v", snapshot.Output[2])
 	}
 	if snapshot.Output[3].Name != "time" || string(snapshot.Output[3].Arguments) != `{}` {
 		t.Fatalf("second tool output invalid: %#v", snapshot.Output[3])
+	}
+}
+
+func TestEventAccumulatorMergesProviderProof(t *testing.T) {
+	acc := NewEventAccumulator()
+	acc.Observe(Event{Type: EventReasoningDelta, OutputIndex: 1, Delta: "summary"})
+	acc.Observe(Event{
+		Type: EventProviderProof, OutputIndex: 1,
+		Item: &Item{Type: "reasoning", Proof: &ProviderProof{Provider: ProofProviderAnthropic, Value: "proof"}},
+	})
+
+	output := acc.Snapshot().Output
+	if len(output) != 1 || output[0].Proof == nil || output[0].Proof.Provider != ProofProviderAnthropic || output[0].Proof.Value != "proof" {
+		t.Fatalf("provider proof was not merged: %#v", output)
+	}
+	output[0].Proof.Value = "changed"
+	if got := acc.Snapshot().Output[0].Proof.Value; got != "proof" {
+		t.Fatalf("snapshot shared provider proof: %q", got)
 	}
 }
 
@@ -83,14 +101,14 @@ func TestEventAccumulatorKeepsToolIdentityAcrossSparseDeltas(t *testing.T) {
 	})
 	acc.Observe(Event{
 		Type: EventToolArgumentsDelta, ToolIndex: 1, Delta: `{"city":"Tokyo"}`,
-		Item: &Item{Type: "function_call", Arguments: json.RawMessage(`{"city":"Tokyo"}`)},
+		Item: &Item{Type: "function_call", Arguments: json.RawMessage(`{"city":"Tokyo"}`), ProviderCallIDOmitted: true},
 	})
 
 	output := acc.Snapshot().Output
 	if len(output) != 1 {
 		t.Fatalf("tool output count = %d, want 1: %#v", len(output), output)
 	}
-	if output[0].ID != "call_weather" || output[0].Name != "weather" || string(output[0].Arguments) != `{"city":"Tokyo"}` {
+	if output[0].ID != "call_weather" || output[0].Name != "weather" || string(output[0].Arguments) != `{"city":"Tokyo"}` || !output[0].ProviderCallIDOmitted {
 		t.Fatalf("sparse tool deltas were not merged: %#v", output[0])
 	}
 }

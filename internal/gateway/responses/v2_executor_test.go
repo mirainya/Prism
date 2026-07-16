@@ -3,10 +3,8 @@ package responses
 import (
 	"context"
 	"encoding/json"
-	"fmt"
 	"testing"
 
-	"github.com/glebarez/sqlite"
 	"github.com/mirainya/Prism/internal/gateway/canonical"
 	"github.com/mirainya/Prism/internal/gateway/engine"
 	"github.com/mirainya/Prism/internal/gateway/routing"
@@ -14,7 +12,6 @@ import (
 	"github.com/mirainya/Prism/internal/model"
 	protocol "github.com/mirainya/Prism/internal/provider/responses"
 	"github.com/mirainya/Prism/internal/service"
-	"gorm.io/gorm"
 )
 
 type v2ExecutorSelector struct {
@@ -100,10 +97,7 @@ func TestV2ExecutorRejectsStreaming(t *testing.T) {
 
 func setupV2ExecutorDB(t *testing.T) {
 	t.Helper()
-	database, err := gorm.Open(sqlite.Open(fmt.Sprintf("file:%s?mode=memory&cache=shared", t.Name())), &gorm.Config{})
-	if err != nil {
-		t.Fatal(err)
-	}
+	database := openResponsesTestDB(t)
 	if err := database.AutoMigrate(&model.ChannelRequestLog{}, &model.BillingLog{}); err != nil {
 		t.Fatal(err)
 	}

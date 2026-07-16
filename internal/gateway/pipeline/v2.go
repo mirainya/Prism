@@ -344,6 +344,9 @@ func normalizeV2ChatEvent(event *canonical.Event, publicModel string, upstreamTr
 	if event == nil {
 		return false
 	}
+	if event.Type == canonical.EventProviderProof {
+		return false
+	}
 	if event.Type == canonical.EventRaw {
 		return upstreamTransport == transport.OpenAIChat
 	}

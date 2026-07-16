@@ -57,6 +57,82 @@ func TestOpenAIPlanKindsAndExtensionBoundaries(t *testing.T) {
 	}
 }
 
+func TestOpenAIPlansRejectIncompatibleProviderProofs(t *testing.T) {
+	foreign := canonical.Request{Items: []canonical.Item{{Type: "reasoning", Proof: &canonical.ProviderProof{Provider: canonical.ProofProviderAnthropic, Value: "sig"}}}}
+	if plan := NewResponses(nil).Plan(transport.OperationResponses, foreign, canonical.NewFeatureSet(canonical.FeatureReasoning)); plan.Supported() {
+		t.Fatalf("Responses accepted foreign proof: %#v", plan)
+	}
+	if plan := NewChat(nil).Plan(transport.OperationChat, foreign, canonical.NewFeatureSet(canonical.FeatureReasoning)); plan.Supported() {
+		t.Fatalf("Chat accepted provider proof: %#v", plan)
+	}
+
+	native := canonical.Request{Items: []canonical.Item{{Type: "reasoning", Proof: &canonical.ProviderProof{Provider: canonical.ProofProviderOpenAI, Value: "enc"}}}}
+	if plan := NewResponses(nil).Plan(transport.OperationResponses, native, canonical.NewFeatureSet(canonical.FeatureReasoning)); !plan.Supported() {
+		t.Fatalf("Responses rejected native proof: %#v", plan)
+	}
+	wrongItem := native.Clone()
+	wrongItem.Items[0].Type = "function_call"
+	if plan := NewResponses(nil).Plan(transport.OperationResponses, wrongItem, canonical.NewFeatureSet(canonical.FeatureReasoning, canonical.FeatureTools)); plan.Supported() {
+		t.Fatalf("Responses accepted proof on a non-reasoning item: %#v", plan)
+	}
+
+	namespaced := canonical.Request{Items: []canonical.Item{{Type: "function_call", Namespace: "tools"}}}
+	if plan := NewChat(nil).Plan(transport.OperationChat, namespaced, canonical.FeatureSet{}); plan.Supported() {
+		t.Fatalf("Chat accepted namespace: %#v", plan)
+	}
+	if plan := NewResponses(nil).Plan(transport.OperationResponses, namespaced, canonical.FeatureSet{}); !plan.Supported() {
+		t.Fatalf("Responses rejected namespace: %#v", plan)
+	}
+}
+
+func TestOpenAIResponsesPlanRejectsReasoningToolsForForeignDownstreams(t *testing.T) {
+	request := canonical.Request{
+		Reasoning: &canonical.Reasoning{Effort: "high"},
+		Tools:     []canonical.Tool{{Type: "function", Name: "lookup"}},
+	}
+	features := canonical.NewFeatureSet(canonical.FeatureReasoning, canonical.FeatureTools)
+	item := NewResponses(nil)
+	if plan := item.Plan(transport.OperationResponses, request, features); !plan.Supported() {
+		t.Fatalf("native Responses reasoning tools were rejected: %#v", plan)
+	}
+	for _, operation := range []transport.Operation{transport.OperationChat, transport.OperationMessages} {
+		if plan := item.Plan(operation, request, features); plan.Supported() {
+			t.Fatalf("%s route could lose OpenAI reasoning proof: %#v", operation, plan)
+		}
+	}
+}
+
+func TestOpenAIResponsesReasoningProofRoundTrip(t *testing.T) {
+	item, err := decodeResponseItem(json.RawMessage(`{"id":"rs_1","type":"reasoning","encrypted_content":"enc_1","summary":[{"type":"summary_text","text":"analysis"}]}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if item.Proof == nil || item.Proof.Provider != canonical.ProofProviderOpenAI || item.Proof.Value != "enc_1" || len(item.Content) != 1 || item.Content[0].Text != "analysis" {
+		t.Fatalf("decoded item = %#v", item)
+	}
+	items, err := responseItems([]canonical.Item{item})
+	if err != nil {
+		t.Fatal(err)
+	}
+	encoded, err := json.Marshal(items[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	if text := string(encoded); !strings.Contains(text, `"encrypted_content":"enc_1"`) || !strings.Contains(text, `"summary":[{"text":"analysis","type":"summary_text"}]`) {
+		t.Fatalf("encoded item = %s", text)
+	}
+}
+
+func TestOpenAIResponsesTreatsTaggedLookingNativeProofAsOpaque(t *testing.T) {
+	item, err := decodeResponseItem(json.RawMessage(`{"id":"rs_1","type":"reasoning","encrypted_content":"anthropic#opaque-native","summary":[]}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if item.Proof == nil || item.Proof.Provider != canonical.ProofProviderOpenAI || item.Proof.Value != "anthropic#opaque-native" {
+		t.Fatalf("native OpenAI proof was reclassified: %#v", item.Proof)
+	}
+}
+
 func TestChatPlanDropsResponsesEncryptedReasoningInclude(t *testing.T) {
 	request := canonical.Request{
 		Model:   "m",
@@ -200,6 +276,80 @@ func TestResponsesStreamMapsErrorEvent(t *testing.T) {
 	}
 	if event.Type != canonical.EventError || event.Error == nil || len(event.Error.Raw) == 0 {
 		t.Fatalf("event = %#v", event)
+	}
+}
+
+func TestResponsesStreamDecodesReasoningSummaryLifecycle(t *testing.T) {
+	tests := []struct {
+		name     string
+		payload  string
+		wantType canonical.EventType
+		wantText string
+		wantPart bool
+	}{
+		{
+			name:     "part added",
+			payload:  `{"type":"response.reasoning_summary_part.added","sequence_number":1,"output_index":3,"summary_index":2,"item_id":"rs_1","part":{"type":"summary_text","text":"","future":true}}`,
+			wantType: canonical.EventReasoningPartAdded,
+			wantPart: true,
+		},
+		{
+			name:     "text delta",
+			payload:  `{"type":"response.reasoning_summary_text.delta","sequence_number":2,"output_index":3,"summary_index":2,"item_id":"rs_1","delta":"ana"}`,
+			wantType: canonical.EventReasoningDelta,
+			wantText: "ana",
+		},
+		{
+			name:     "text done",
+			payload:  `{"type":"response.reasoning_summary_text.done","sequence_number":3,"output_index":3,"summary_index":2,"item_id":"rs_1","text":"analysis"}`,
+			wantType: canonical.EventReasoningTextDone,
+			wantText: "analysis",
+			wantPart: true,
+		},
+		{
+			name:     "part done",
+			payload:  `{"type":"response.reasoning_summary_part.done","sequence_number":4,"output_index":3,"summary_index":2,"item_id":"rs_1","part":{"type":"summary_text","text":"analysis","future":true}}`,
+			wantType: canonical.EventReasoningPartDone,
+			wantText: "analysis",
+			wantPart: true,
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			event, err := decodeResponseEvent("", []byte(test.payload), transport.Route{})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if event.Type != test.wantType || event.OutputIndex != 3 || event.ContentIndex != 2 || event.Item == nil || event.Item.ID != "rs_1" || event.Item.Type != "reasoning" || event.Item.Role != canonical.RoleAssistant {
+				t.Fatalf("event = %#v", event)
+			}
+			if event.Delta != test.wantText {
+				t.Fatalf("delta = %q, want %q", event.Delta, test.wantText)
+			}
+			if !test.wantPart {
+				if len(event.Item.Content) != 0 {
+					t.Fatalf("unexpected reasoning content = %#v", event.Item.Content)
+				}
+				return
+			}
+			if len(event.Item.Content) != 1 || event.Item.Content[0].Type != "reasoning_text" || event.Item.Content[0].Text != test.wantText {
+				t.Fatalf("reasoning content = %#v", event.Item.Content)
+			}
+			if strings.Contains(test.payload, `"future"`) && string(event.Item.Content[0].Extra["future"]) != "true" {
+				t.Fatalf("reasoning extras = %#v", event.Item.Content[0].Extra)
+			}
+		})
+	}
+}
+
+func TestDecodeChatPreservesReasoningMessageToolOrder(t *testing.T) {
+	response, err := decodeChat([]byte(`{"id":"chat_1","choices":[{"index":0,"message":{"role":"assistant","reasoning_content":"think","content":"answer","tool_calls":[{"id":"call_1","type":"function","function":{"name":"lookup","arguments":"{}"}}]},"finish_reason":"tool_calls"}]}`), transport.Route{PublicModel: "public"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(response.Output) != 3 || response.Output[0].Type != "reasoning" || response.Output[1].Type != "message" || response.Output[2].Type != "function_call" {
+		t.Fatalf("chat output order = %#v", response.Output)
 	}
 }
 

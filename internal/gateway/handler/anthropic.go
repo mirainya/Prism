@@ -319,7 +319,7 @@ func writeAnthropicExecutionError(c *gin.Context, err error) {
 	}
 	if errors.Is(err, routing.ErrModelNotFound) {
 		status, errorType = http.StatusNotFound, "not_found_error"
-	} else if errors.Is(err, routing.ErrCapabilityUnavailable) || errors.Is(err, routing.ErrNoCompatibleTransport) {
+	} else if errors.Is(err, routing.ErrCapabilityUnavailable) || errors.Is(err, routing.ErrNoCompatibleTransport) || errors.Is(err, engine.ErrNoTransportPlan) {
 		status, errorType = http.StatusBadRequest, "invalid_request_error"
 		message = "The requested model does not support this Anthropic request"
 	} else if errors.Is(err, routing.ErrNoRoute) {

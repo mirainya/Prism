@@ -40,7 +40,8 @@ func (a *EventAccumulator) Observe(event Event) {
 	}
 
 	switch event.Type {
-	case EventOutputItemAdded, EventOutputItemDone, EventContentPartAdded, EventContentPartDone, EventTextDone:
+	case EventOutputItemAdded, EventOutputItemDone, EventContentPartAdded, EventContentPartDone, EventTextDone,
+		EventReasoningPartAdded, EventReasoningTextDone, EventReasoningPartDone:
 		if event.Item != nil {
 			item := CloneItems([]Item{*event.Item})[0]
 			if item.Type == "function_call" && a.toolArgumentDeltas[accumulatorItemKey(event, item)] && isEmptyJSONObject(item.Arguments) {
@@ -57,6 +58,14 @@ func (a *EventAccumulator) Observe(event Event) {
 	case EventReasoningDelta:
 		target := a.ensure(event, "reasoning")
 		appendContentDelta(target, event.ContentIndex, "reasoning_text", event.Delta)
+	case EventProviderProof:
+		if event.Item != nil && event.Item.Proof != nil {
+			item := CloneItems([]Item{*event.Item})[0]
+			itemEvent := event
+			itemEvent.Item = &item
+			target := a.ensure(itemEvent, "reasoning")
+			mergeEventItem(target, item, event.ContentIndex)
+		}
 	case EventToolArgumentsDelta:
 		itemEvent := event
 		item := Item{Type: "function_call"}
@@ -239,8 +248,14 @@ func mergeItem(target *Item, source Item) {
 	if source.Name != "" {
 		target.Name = source.Name
 	}
+	if source.Namespace != "" {
+		target.Namespace = source.Namespace
+	}
 	if source.CallID != "" {
 		target.CallID = source.CallID
+	}
+	if source.ProviderCallIDOmitted {
+		target.ProviderCallIDOmitted = true
 	}
 	if len(source.Arguments) > 0 && (len(target.Arguments) == 0 || json.Valid(source.Arguments)) {
 		target.Arguments = cloneRaw(source.Arguments)
@@ -250,6 +265,9 @@ func mergeItem(target *Item, source Item) {
 	}
 	if source.Status != "" {
 		target.Status = source.Status
+	}
+	if source.Proof != nil {
+		target.Proof = clonePointer(source.Proof)
 	}
 	if source.Extra != nil {
 		if target.Extra == nil {

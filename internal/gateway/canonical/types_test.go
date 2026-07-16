@@ -8,14 +8,58 @@ import (
 
 func TestRequiredFeatures(t *testing.T) {
 	req := &Request{
-		Stream: true,
-		Tools:  []Tool{{Type: "web_search"}},
-		Items:  []Item{{Content: []Content{{Type: "input_image"}, {Type: "input_video"}}}},
+		Stream:    true,
+		Tools:     []Tool{{Type: "web_search"}},
+		Reasoning: &Reasoning{Effort: "high"},
+		Items: []Item{{
+			Type:    "reasoning",
+			Proof:   &ProviderProof{Provider: ProofProviderAnthropic, Value: "proof"},
+			Content: []Content{{Type: "input_image"}, {Type: "input_video"}},
+		}},
 	}
 	required := req.RequiredFeatures()
-	for _, feature := range []Feature{FeatureStream, FeatureTools, FeatureWebSearch, FeatureVision, FeatureVideo} {
+	for _, feature := range []Feature{FeatureStream, FeatureTools, FeatureWebSearch, FeatureVision, FeatureVideo, FeatureReasoning} {
 		if !required.Has(feature) {
 			t.Fatalf("required features missing %q", feature)
+		}
+	}
+}
+
+func TestRequiredFeaturesDistinguishesReasoningFromProofCarriers(t *testing.T) {
+	if !(&Request{Items: []Item{{Type: "reasoning"}}}).RequiredFeatures().Has(FeatureReasoning) {
+		t.Fatal("reasoning history did not require reasoning capability")
+	}
+	partCarrier := &Request{Items: []Item{{
+		Type: "reasoning", Proof: &ProviderProof{
+			Provider: ProofProviderGoogle, Subject: ProofSubjectGooglePart, TargetID: "message_1", Value: "proof",
+		},
+	}}}
+	if partCarrier.RequiredFeatures().Has(FeatureReasoning) {
+		t.Fatal("Google Part proof carrier incorrectly required reasoning capability")
+	}
+	nativeProof := &Request{Items: []Item{{
+		Type: "reasoning", Content: []Content{{Type: "reasoning_text", Text: "history"}},
+		Proof: &ProviderProof{Provider: ProofProviderGoogle, Value: "proof"},
+	}}}
+	if nativeProof.RequiredFeatures().Has(FeatureReasoning) {
+		t.Fatal("provider continuation proof incorrectly required generation capability")
+	}
+	toolHistory := &Request{Items: []Item{{
+		Type: "function_call", Proof: &ProviderProof{Provider: ProofProviderGoogle, Value: "proof"},
+	}}}
+	if toolHistory.RequiredFeatures().Has(FeatureReasoning) {
+		t.Fatal("function-call proof incorrectly required reasoning capability")
+	}
+}
+
+func TestRequiredFeaturesRecognizesOutputMediaHistory(t *testing.T) {
+	request := &Request{Items: []Item{{Type: "message", Content: []Content{
+		{Type: "output_image"}, {Type: "output_file"}, {Type: "output_audio"}, {Type: "output_video"},
+	}}}}
+	required := request.RequiredFeatures()
+	for _, feature := range []Feature{FeatureVision, FeatureFiles, FeatureAudio, FeatureVideo} {
+		if !required.Has(feature) {
+			t.Fatalf("output media history missing feature %q", feature)
 		}
 	}
 }

@@ -239,11 +239,122 @@ func TestConsumeV2StreamBuildsConvertedToolLifecycle(t *testing.T) {
 	}
 }
 
+func TestConsumeV2StreamBuildsProofOnlyLifecycle(t *testing.T) {
+	proofValue := canonical.EncodeResponsesEncryptedContent(&canonical.ProviderProof{Provider: canonical.ProofProviderGoogle, Value: "signature"})
+	reasoning := canonical.Item{
+		ID: "reasoning_provider", Type: "reasoning", Role: canonical.RoleAssistant,
+		Proof: &canonical.ProviderProof{Provider: canonical.ProofProviderGoogle, Value: "signature"},
+	}
+	events := &v2StreamEvents{events: []canonical.Event{
+		{Type: canonical.EventProviderProof, OutputIndex: 0, Item: &reasoning},
+		{Type: canonical.EventCompleted, ProviderResponseID: "provider_resp"},
+	}}
+	var output bytes.Buffer
+	summary, err := consumeV2Stream(context.Background(), &output, events, V2StreamPublicOptions{ResponseID: "resp_public", Model: "public"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{
+		"response.created",
+		"response.output_item.added",
+		"response.output_item.done",
+		"response.completed",
+	}
+	if got := v2SSEEventNames(output.String()); !equalV2Strings(got, want) {
+		t.Fatalf("proof lifecycle = %#v, want %#v\n%s", got, want, output.String())
+	}
+	if count := strings.Count(output.String(), `"encrypted_content":"`+proofValue+`"`); count != 3 {
+		t.Fatalf("proof wire count = %d: %s", count, output.String())
+	}
+	if summary == nil || summary.Response == nil || len(summary.Response.Output) != 1 || summary.Response.Output[0].Proof == nil {
+		t.Fatalf("aggregated proof output = %#v", summary)
+	}
+}
+
+func TestConsumeV2StreamBuildsFunctionCallProofCarrier(t *testing.T) {
+	tool := canonical.Item{
+		ID: "fc_provider", Type: "function_call", CallID: "call_provider", Name: "lookup",
+		Arguments:             json.RawMessage(`{}`),
+		Proof:                 &canonical.ProviderProof{Provider: canonical.ProofProviderGoogle, Value: "tool-signature"},
+		ProviderCallIDOmitted: true,
+	}
+	events := &v2StreamEvents{events: []canonical.Event{
+		{Type: canonical.EventToolArgumentsDelta, ToolIndex: 0, Item: &tool, Delta: `{"query":"hi"}`},
+		{Type: canonical.EventCompleted, ProviderResponseID: "provider_resp"},
+	}}
+	var output bytes.Buffer
+	summary, err := consumeV2Stream(context.Background(), &output, events, V2StreamPublicOptions{ResponseID: "resp_public", Model: "public"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{
+		"response.created",
+		"response.output_item.added",
+		"response.output_item.done",
+		"response.output_item.added",
+		"response.function_call_arguments.delta",
+		"response.function_call_arguments.done",
+		"response.output_item.done",
+		"response.completed",
+	}
+	if got := v2SSEEventNames(output.String()); !equalV2Strings(got, want) {
+		t.Fatalf("function proof lifecycle = %#v, want %#v\n%s", got, want, output.String())
+	}
+	wire := output.String()
+	if !strings.Contains(wire, `"output_index":0`) || !strings.Contains(wire, `"output_index":1`) || !strings.Contains(wire, `"encrypted_content":"`+"prism-proof-v1#") {
+		t.Fatalf("function proof carrier was not emitted before the call: %s", wire)
+	}
+	if summary == nil || summary.Response == nil || len(summary.Response.Output) != 2 {
+		t.Fatalf("aggregated function proof output = %#v", summary)
+	}
+	restored := openairesponses.RestoreFunctionCallProofCarriers(summary.Response.Output)
+	if len(restored) != 1 || restored[0].Proof == nil || restored[0].Proof.Provider != canonical.ProofProviderGoogle || restored[0].Proof.Value != "tool-signature" || !restored[0].ProviderCallIDOmitted {
+		t.Fatalf("restored function proof = %#v", restored)
+	}
+	projection := responseProjectionFromStreamSummary(&responseConversationProjection{}, summary)
+	if projection.response == nil || len(projection.response.Output) != 1 || projection.response.Output[0].Proof == nil || projection.response.Output[0].Proof.Value != "tool-signature" || !projection.response.Output[0].ProviderCallIDOmitted {
+		t.Fatalf("conversation projection lost function proof: %#v", projection.response)
+	}
+}
+
+func TestConsumeV2StreamRestoresLateFunctionCallProofCarrier(t *testing.T) {
+	tool := canonical.Item{ID: "fc_provider", Type: "function_call", CallID: "call_provider", Name: "lookup", ProviderCallIDOmitted: true}
+	toolWithProof := tool
+	toolWithProof.Proof = &canonical.ProviderProof{Provider: canonical.ProofProviderGoogle, Value: "late-signature"}
+	message := canonical.Item{ID: "msg_between", Type: "message", Role: canonical.RoleAssistant, Content: []canonical.Content{{Type: "output_text"}}}
+	events := &v2StreamEvents{events: []canonical.Event{
+		{Type: canonical.EventOutputItemAdded, ToolIndex: 0, Item: &tool},
+		{Type: canonical.EventTextDelta, OutputIndex: 1, ContentIndex: 0, Item: &message, Delta: "between"},
+		{Type: canonical.EventProviderProof, ToolIndex: 0, Item: &toolWithProof},
+		{Type: canonical.EventCompleted, ProviderResponseID: "provider_resp"},
+	}}
+	var output bytes.Buffer
+	summary, err := consumeV2Stream(context.Background(), &output, events, V2StreamPublicOptions{ResponseID: "resp_public", Model: "public"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if summary == nil || summary.Response == nil || len(summary.Response.Output) != 4 ||
+		summary.Response.Output[0].Type != "reasoning" || summary.Response.Output[1].Type != "function_call" ||
+		summary.Response.Output[2].Type != "message" || summary.Response.Output[3].Type != "reasoning" {
+		t.Fatalf("late proof output = %#v", summary)
+	}
+	restored := openairesponses.RestoreFunctionCallProofCarriers(summary.Response.Output)
+	if len(restored) != 2 || restored[0].Proof == nil || restored[0].Proof.Value != "late-signature" || !restored[0].ProviderCallIDOmitted || restored[1].Type != "message" {
+		t.Fatalf("late proof was not restored: %#v\n%s", restored, output.String())
+	}
+	projection := responseProjectionFromStreamSummary(&responseConversationProjection{}, summary)
+	if projection.response == nil || len(projection.response.Output) != 2 || projection.response.Output[0].Proof == nil || projection.response.Output[0].Proof.Value != "late-signature" || !projection.response.Output[0].ProviderCallIDOmitted || projection.response.Output[1].Type != "message" {
+		t.Fatalf("late proof projection = %#v", projection.response)
+	}
+}
+
 func TestConsumeV2StreamPreservesAnthropicReasoningTextAndParallelTools(t *testing.T) {
 	reasoning := canonical.Item{
 		ID: "thinking_0", Type: "reasoning", Role: canonical.RoleAssistant,
 		Content: []canonical.Content{{Type: "reasoning_text"}},
 	}
+	reasoningProof := reasoning
+	reasoningProof.Proof = &canonical.ProviderProof{Provider: canonical.ProofProviderAnthropic, Value: "sig_1"}
 	message := canonical.Item{
 		ID: "message_0", Type: "message", Role: canonical.RoleAssistant,
 		Content: []canonical.Content{{Type: "output_text"}},
@@ -266,6 +377,7 @@ func TestConsumeV2StreamPreservesAnthropicReasoningTextAndParallelTools(t *testi
 	events := &v2StreamEvents{events: []canonical.Event{
 		{Type: canonical.EventContentPartAdded, OutputIndex: 0, ContentIndex: 0, Item: &reasoning},
 		{Type: canonical.EventReasoningDelta, OutputIndex: 0, ContentIndex: 0, Item: &reasoning, Delta: "think"},
+		{Type: canonical.EventProviderProof, OutputIndex: 0, ContentIndex: 0, Item: &reasoningProof},
 		{Type: canonical.EventContentPartDone, OutputIndex: 0, ContentIndex: 0, Item: &reasoning},
 		{Type: canonical.EventOutputItemAdded, OutputIndex: 0, ToolIndex: 1, Item: &firstTool},
 		{Type: canonical.EventToolArgumentsDelta, OutputIndex: 0, ToolIndex: 1, Item: &firstTool, Delta: `{"query":"alpha"}`},
@@ -287,9 +399,23 @@ func TestConsumeV2StreamPreservesAnthropicReasoningTextAndParallelTools(t *testi
 	}
 	assertAnthropicCompositeOutput(t, summary.Response.Output)
 	wire := output.String()
+	proofValue := canonical.EncodeResponsesEncryptedContent(&canonical.ProviderProof{Provider: canonical.ProofProviderAnthropic, Value: "sig_1"})
+	if !strings.Contains(wire, `"encrypted_content":"`+proofValue+`"`) || summary.Response.Output[0].Proof == nil {
+		t.Fatalf("converted stream lost reasoning proof: %s %#v", wire, summary.Response.Output)
+	}
 	for _, index := range []string{`"output_index":0`, `"output_index":1`, `"output_index":2`, `"output_index":3`} {
 		if !strings.Contains(wire, index) {
 			t.Fatalf("converted stream is missing %s: %s", index, wire)
+		}
+	}
+	for _, eventName := range []string{"response.reasoning_summary_part.added", "response.reasoning_summary_text.delta", "response.reasoning_summary_text.done", "response.reasoning_summary_part.done"} {
+		if !strings.Contains(wire, "event: "+eventName+"\n") {
+			t.Fatalf("missing reasoning lifecycle %s: %s", eventName, wire)
+		}
+	}
+	for _, frame := range strings.Split(wire, "\n\n") {
+		if strings.Contains(frame, "reasoning_summary_part") && strings.Contains(frame, "annotations") {
+			t.Fatalf("reasoning summary part leaked message annotations: %s", frame)
 		}
 	}
 	if strings.Contains(wire, `"content_index":2`) {
@@ -307,6 +433,91 @@ func TestConsumeV2StreamPreservesAnthropicReasoningTextAndParallelTools(t *testi
 		t.Fatal(err)
 	}
 	assertAnthropicCompositeOutput(t, persisted)
+	if persisted[0].Proof == nil || persisted[0].Proof.Provider != canonical.ProofProviderAnthropic || persisted[0].Proof.Value != "sig_1" {
+		t.Fatalf("persisted proof = %#v", persisted[0].Proof)
+	}
+}
+
+func TestConsumeV2StreamKeepsReasoningProofsSeparate(t *testing.T) {
+	first := canonical.Item{
+		Type: "reasoning", Role: canonical.RoleAssistant,
+		Content: []canonical.Content{{Type: "reasoning_text"}},
+	}
+	firstProof := first
+	firstProof.Proof = &canonical.ProviderProof{Provider: canonical.ProofProviderAnthropic, Value: "sig-first"}
+	second := first
+	secondProof := second
+	secondProof.Proof = &canonical.ProviderProof{Provider: canonical.ProofProviderAnthropic, Value: "sig-second"}
+	events := &v2StreamEvents{events: []canonical.Event{
+		{Type: canonical.EventContentPartAdded, OutputIndex: 0, ContentIndex: 0, Item: &first},
+		{Type: canonical.EventReasoningDelta, OutputIndex: 0, ContentIndex: 0, Item: &first, Delta: "first"},
+		{Type: canonical.EventProviderProof, OutputIndex: 0, ContentIndex: 0, Item: &firstProof},
+		{Type: canonical.EventContentPartDone, OutputIndex: 0, ContentIndex: 0, Item: &first},
+		{Type: canonical.EventContentPartAdded, OutputIndex: 1, ContentIndex: 1, Item: &second},
+		{Type: canonical.EventReasoningDelta, OutputIndex: 1, ContentIndex: 1, Item: &second, Delta: "second"},
+		{Type: canonical.EventProviderProof, OutputIndex: 1, ContentIndex: 1, Item: &secondProof},
+		{Type: canonical.EventContentPartDone, OutputIndex: 1, ContentIndex: 1, Item: &second},
+		{Type: canonical.EventCompleted, ProviderResponseID: "provider_resp"},
+	}}
+	var output bytes.Buffer
+	summary, err := consumeV2Stream(context.Background(), &output, events, V2StreamPublicOptions{ResponseID: "resp_public", Model: "public"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if summary == nil || summary.Response == nil || len(summary.Response.Output) != 2 {
+		t.Fatalf("reasoning outputs = %#v\n%s", summary, output.String())
+	}
+	for index, expected := range []string{"sig-first", "sig-second"} {
+		item := summary.Response.Output[index]
+		if item.Type != "reasoning" || item.Proof == nil || item.Proof.Value != expected || len(item.Content) != 1 {
+			t.Fatalf("reasoning output %d = %#v", index, item)
+		}
+		proof := canonical.EncodeResponsesEncryptedContent(item.Proof)
+		if !strings.Contains(output.String(), `"encrypted_content":"`+proof+`"`) {
+			t.Fatalf("missing proof %q in stream: %s", expected, output.String())
+		}
+	}
+}
+
+func TestConsumeV2StreamPreservesTextToolTextOrder(t *testing.T) {
+	before := canonical.Item{Type: "message", Role: canonical.RoleAssistant}
+	tool := canonical.Item{ID: "call_1", Type: "function_call", CallID: "call_1", Name: "lookup"}
+	after := canonical.Item{Type: "message", Role: canonical.RoleAssistant}
+	events := &v2StreamEvents{events: []canonical.Event{
+		{Type: canonical.EventTextDelta, OutputIndex: 0, ContentIndex: 0, Item: &before, Delta: "before"},
+		{Type: canonical.EventOutputItemAdded, OutputIndex: 1, ToolIndex: 0, Item: &tool},
+		{Type: canonical.EventToolArgumentsDelta, OutputIndex: 1, ToolIndex: 0, Item: &tool, Delta: `{}`},
+		{Type: canonical.EventTextDelta, OutputIndex: 2, ContentIndex: 0, Item: &after, Delta: "after"},
+		{Type: canonical.EventCompleted, ProviderResponseID: "provider_resp"},
+	}}
+	var output bytes.Buffer
+	summary, err := consumeV2Stream(context.Background(), &output, events, V2StreamPublicOptions{ResponseID: "resp_public", Model: "public"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	items := summary.Response.Output
+	if len(items) != 3 || items[0].Type != "message" || items[0].Content[0].Text != "before" || items[1].Type != "function_call" || items[2].Type != "message" || items[2].Content[0].Text != "after" {
+		t.Fatalf("text/tool/text order = %#v\n%s", items, output.String())
+	}
+}
+
+func TestConsumeV2StreamMergesSparseToolContinuation(t *testing.T) {
+	start := canonical.Item{ID: "fc_1", Type: "function_call", CallID: "call_1", Name: "lookup"}
+	continuation := canonical.Item{Type: "function_call"}
+	events := &v2StreamEvents{events: []canonical.Event{
+		{Type: canonical.EventToolArgumentsDelta, OutputIndex: 0, ToolIndex: 0, Item: &start, Delta: `{"a":`},
+		{Type: canonical.EventToolArgumentsDelta, OutputIndex: 0, ToolIndex: 0, Item: &continuation, Delta: `1}`},
+		{Type: canonical.EventCompleted, ProviderResponseID: "provider_resp"},
+	}}
+	var output bytes.Buffer
+	summary, err := consumeV2Stream(context.Background(), &output, events, V2StreamPublicOptions{ResponseID: "resp_public", Model: "public"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	items := summary.Response.Output
+	if len(items) != 1 || items[0].CallID != "call_1" || items[0].Name != "lookup" || string(items[0].Arguments) != `{"a":1}` {
+		t.Fatalf("sparse tool continuation = %#v\n%s", items, output.String())
+	}
 }
 
 func TestConsumeV2StreamPreservesNormalizedPartialAnthropicOutput(t *testing.T) {

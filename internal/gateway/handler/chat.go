@@ -18,6 +18,7 @@ import (
 	"github.com/mirainya/Prism/internal/api/openaierror"
 	"github.com/mirainya/Prism/internal/domain"
 	"github.com/mirainya/Prism/internal/gateway/canonical"
+	"github.com/mirainya/Prism/internal/gateway/engine"
 	"github.com/mirainya/Prism/internal/gateway/pipeline"
 	"github.com/mirainya/Prism/internal/gateway/routing"
 	"github.com/mirainya/Prism/internal/gateway/stream"
@@ -676,7 +677,7 @@ func respondChatPipelineError(c *gin.Context, err error) {
 		openaierror.Write(c, http.StatusNotFound, "The requested model does not exist", "invalid_request_error", &param, "model_not_found")
 		return
 	}
-	if errors.Is(err, routing.ErrCapabilityUnavailable) || errors.Is(err, routing.ErrNoCompatibleTransport) {
+	if errors.Is(err, routing.ErrCapabilityUnavailable) || errors.Is(err, routing.ErrNoCompatibleTransport) || errors.Is(err, engine.ErrNoTransportPlan) {
 		openaierror.InvalidRequest(c, "The requested model does not support all features used by this request", nil, "unsupported_model_capability")
 		return
 	}

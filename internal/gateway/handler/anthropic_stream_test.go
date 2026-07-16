@@ -9,6 +9,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/mirainya/Prism/internal/gateway/canonical"
+	"github.com/mirainya/Prism/internal/gateway/engine"
 	"github.com/mirainya/Prism/internal/gateway/routing"
 	"github.com/mirainya/Prism/internal/gateway/transport"
 	volcenginetransport "github.com/mirainya/Prism/internal/gateway/transport/volcengine"
@@ -60,6 +61,19 @@ func TestWriteAnthropicExecutionErrorClassifiesIncompatibleTransport(t *testing.
 	if recorder.Code != http.StatusBadRequest ||
 		!strings.Contains(body, `"type":"invalid_request_error"`) ||
 		!strings.Contains(body, `"message":"The requested model does not support this Anthropic request"`) {
+		t.Fatalf("unexpected response: status=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+}
+
+func TestWriteAnthropicExecutionErrorClassifiesMissingTransportPlan(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	recorder := httptest.NewRecorder()
+	context, _ := gin.CreateTestContext(recorder)
+	context.Request = httptest.NewRequest(http.MethodPost, "/v1/messages", nil)
+
+	writeAnthropicExecutionError(context, engine.ErrNoTransportPlan)
+
+	if recorder.Code != http.StatusBadRequest || !strings.Contains(recorder.Body.String(), `"type":"invalid_request_error"`) {
 		t.Fatalf("unexpected response: status=%d body=%s", recorder.Code, recorder.Body.String())
 	}
 }

@@ -14,6 +14,7 @@ import (
 	"github.com/mirainya/Prism/internal/api/middleware"
 	"github.com/mirainya/Prism/internal/api/openaierror"
 	"github.com/mirainya/Prism/internal/domain"
+	"github.com/mirainya/Prism/internal/gateway/engine"
 	responsepipeline "github.com/mirainya/Prism/internal/gateway/responses"
 	"github.com/mirainya/Prism/internal/gateway/routing"
 	gatewaytransport "github.com/mirainya/Prism/internal/gateway/transport"
@@ -378,7 +379,7 @@ func respondResponsesError(c *gin.Context, err error) {
 		openaierror.Write(c, http.StatusNotFound, "Response or model not found", "invalid_request_error", nil, "not_found")
 		return
 	}
-	if errors.Is(err, routing.ErrCapabilityUnavailable) || errors.Is(err, routing.ErrNoCompatibleTransport) {
+	if errors.Is(err, routing.ErrCapabilityUnavailable) || errors.Is(err, routing.ErrNoCompatibleTransport) || errors.Is(err, engine.ErrNoTransportPlan) {
 		openaierror.InvalidRequest(c, "The requested model does not support this Responses request", nil, "unsupported_model_capability")
 		return
 	}

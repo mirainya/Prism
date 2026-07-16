@@ -162,6 +162,7 @@ type v2ConvertedStream struct {
 type v2ConvertedOutput struct {
 	index       int
 	item        canonical.Item
+	sourceID    string
 	added       bool
 	done        bool
 	parts       map[int]*v2ConvertedPart
@@ -208,6 +209,7 @@ func (s *v2ConvertedStream) events(event canonical.Event) []canonical.Event {
 	switch event.Type {
 	case canonical.EventOutputItemAdded:
 		output := s.outputFor(event, itemType(event.Item, "message"))
+		events = append(events, s.ensureFunctionCallProofCarrier(output)...)
 		events = append(events, s.ensureOutputAdded(output)...)
 		if event.Item != nil {
 			for index, content := range event.Item.Content {
@@ -244,6 +246,7 @@ func (s *v2ConvertedStream) events(event canonical.Event) []canonical.Event {
 		if content.Type == "" || content.Type == "output_text" {
 			content.Type = "reasoning_text"
 		}
+		content.Extra = nil
 		contentIndex := s.contentIndex(output, event.ContentIndex)
 		events = append(events, s.ensureContentAdded(output, contentIndex, content)...)
 		part := output.parts[contentIndex]
@@ -253,8 +256,19 @@ func (s *v2ConvertedStream) events(event canonical.Event) []canonical.Event {
 		delta.ContentIndex = contentIndex
 		delta.Item = eventItemReference(output.item)
 		events = append(events, delta)
+	case canonical.EventProviderProof:
+		output := s.outputFor(event, itemType(event.Item, "reasoning"))
+		if event.Item != nil {
+			s.mergeOutputIdentity(output, *event.Item)
+		}
+		events = append(events, s.ensureFunctionCallProofCarrier(output)...)
+		events = append(events, s.ensureOutputAdded(output)...)
+		if output.item.Proof != nil && output.item.Proof.Subject == canonical.ProofSubjectGooglePart {
+			events = append(events, s.finishOutput(output)...)
+		}
 	case canonical.EventToolArgumentsDelta:
 		output := s.outputFor(event, "function_call")
+		events = append(events, s.ensureFunctionCallProofCarrier(output)...)
 		events = append(events, s.ensureOutputAdded(output)...)
 		if event.Delta != "" {
 			output.item.Arguments = append(output.item.Arguments, event.Delta...)
@@ -285,6 +299,7 @@ func (s *v2ConvertedStream) events(event canonical.Event) []canonical.Event {
 		events = append(events, s.finishTextPart(output, contentIndex, true)...)
 	case canonical.EventOutputItemDone:
 		output := s.outputFor(event, itemType(event.Item, "message"))
+		events = append(events, s.ensureFunctionCallProofCarrier(output)...)
 		events = append(events, s.ensureOutputAdded(output)...)
 		if event.Item != nil {
 			if len(output.item.Arguments) == 0 && len(event.Item.Arguments) > 0 {
@@ -340,10 +355,25 @@ func (s *v2ConvertedStream) outputFor(event canonical.Event, fallbackType string
 			return output
 		}
 	}
-	key := convertedOutputKey(event, fallbackType)
-	if output := s.outputs[key]; output != nil {
+	identityKey, sourceID := convertedOutputIdentity(event, fallbackType)
+	if identityKey != "" {
+		if output := s.outputs[identityKey]; output != nil {
+			if event.Item != nil {
+				s.mergeOutputIdentity(output, *event.Item)
+			}
+			return output
+		}
+	}
+	structuralKey := convertedOutputKey(event, fallbackType)
+	if output := s.outputs[structuralKey]; output != nil && (sourceID == "" || output.sourceID == "" || output.sourceID == sourceID) {
 		if event.Item != nil {
 			s.mergeOutputIdentity(output, *event.Item)
+		}
+		if output.sourceID == "" {
+			output.sourceID = sourceID
+		}
+		if identityKey != "" {
+			s.outputs[identityKey] = output
 		}
 		return output
 	}
@@ -366,10 +396,15 @@ func (s *v2ConvertedStream) outputFor(event canonical.Event, fallbackType string
 		item.CallID = "call_" + compactID()
 	}
 	output := &v2ConvertedOutput{
-		index: index, item: item,
+		index: index, item: item, sourceID: sourceID,
 		parts: make(map[int]*v2ConvertedPart), sourceParts: make(map[int]int),
 	}
-	s.outputs[key] = output
+	if s.outputs[structuralKey] == nil {
+		s.outputs[structuralKey] = output
+	}
+	if identityKey != "" {
+		s.outputs[identityKey] = output
+	}
 	s.byID[item.ID] = output
 	if event.Item != nil && event.Item.ID != "" {
 		s.byID[event.Item.ID] = output
@@ -426,8 +461,18 @@ func (s *v2ConvertedStream) mergeItemIdentity(target *canonical.Item, source can
 	if source.Name != "" {
 		target.Name = source.Name
 	}
+	if source.Namespace != "" {
+		target.Namespace = source.Namespace
+	}
 	if source.CallID != "" {
 		target.CallID = source.CallID
+	}
+	if source.ProviderCallIDOmitted {
+		target.ProviderCallIDOmitted = true
+	}
+	if source.Proof != nil {
+		proof := *source.Proof
+		target.Proof = &proof
 	}
 	if source.Extra != nil {
 		target.Extra = cloneV2RawMap(source.Extra)
@@ -439,6 +484,14 @@ func (s *v2ConvertedStream) ensureOutputAdded(output *v2ConvertedOutput) []canon
 		return nil
 	}
 	output.added = true
+	if output.item.Type == "reasoning" {
+		if output.item.Extra == nil {
+			output.item.Extra = map[string]json.RawMessage{}
+		}
+		if _, ok := output.item.Extra["summary"]; !ok {
+			output.item.Extra["summary"] = json.RawMessage("[]")
+		}
+	}
 	item := cloneV2Item(output.item)
 	item.Status = "in_progress"
 	item.Content = nil
@@ -455,9 +508,35 @@ func (s *v2ConvertedStream) ensureOutputAdded(output *v2ConvertedOutput) []canon
 	return []canonical.Event{{Type: canonical.EventOutputItemAdded, OutputIndex: output.index, Item: &item}}
 }
 
+func (s *v2ConvertedStream) ensureFunctionCallProofCarrier(output *v2ConvertedOutput) []canonical.Event {
+	carrier, ok := openairesponses.FunctionCallProofCarrier(output.item)
+	if !ok {
+		return nil
+	}
+	output.item.Proof = nil
+	carrierOutput := s.byID[carrier.ID]
+	if carrierOutput == nil {
+		carrierOutput = &v2ConvertedOutput{
+			index: s.nextOutputIndex(-1), item: carrier,
+			parts: make(map[int]*v2ConvertedPart), sourceParts: make(map[int]int),
+		}
+		if !output.added && carrierOutput.index > output.index {
+			carrierOutput.index, output.index = output.index, carrierOutput.index
+		}
+		s.outputs["proof:"+carrier.ID] = carrierOutput
+		s.byID[carrier.ID] = carrierOutput
+	}
+	events := s.ensureOutputAdded(carrierOutput)
+	events = append(events, s.finishOutput(carrierOutput)...)
+	return events
+}
+
 func (s *v2ConvertedStream) ensureContentAdded(output *v2ConvertedOutput, index int, content canonical.Content) []canonical.Event {
 	part := output.parts[index]
 	if part == nil {
+		if output.item.Type == "reasoning" {
+			content.Extra = nil
+		}
 		if content.Type == "" {
 			content.Type = "output_text"
 		}
@@ -479,7 +558,11 @@ func (s *v2ConvertedStream) ensureContentAdded(output *v2ConvertedOutput, index 
 	part.added = true
 	item := eventItemReference(output.item)
 	item.Content = []canonical.Content{cloneV2Content(part.content)}
-	return []canonical.Event{{Type: canonical.EventContentPartAdded, OutputIndex: output.index, ContentIndex: index, Item: item}}
+	eventType := canonical.EventContentPartAdded
+	if output.item.Type == "reasoning" {
+		eventType = canonical.EventReasoningPartAdded
+	}
+	return []canonical.Event{{Type: eventType, OutputIndex: output.index, ContentIndex: index, Item: item}}
 }
 
 func (s *v2ConvertedStream) finishTextPart(output *v2ConvertedOutput, index int, includeContentDone bool) []canonical.Event {
@@ -490,6 +573,14 @@ func (s *v2ConvertedStream) finishTextPart(output *v2ConvertedOutput, index int,
 	events := make([]canonical.Event, 0, 2)
 	item := eventItemReference(output.item)
 	item.Content = []canonical.Content{cloneV2Content(part.content)}
+	if output.item.Type == "reasoning" {
+		events = append(events,
+			canonical.Event{Type: canonical.EventReasoningTextDone, OutputIndex: output.index, ContentIndex: index, Item: eventItemReference(output.item), Delta: part.content.Text},
+			canonical.Event{Type: canonical.EventReasoningPartDone, OutputIndex: output.index, ContentIndex: index, Item: item},
+		)
+		part.done = true
+		return events
+	}
 	if part.content.Type == "output_text" {
 		events = append(events, canonical.Event{Type: canonical.EventTextDone, OutputIndex: output.index, ContentIndex: index, Item: eventItemReference(output.item), Delta: part.content.Text})
 	}
@@ -604,7 +695,24 @@ func convertedOutputKey(event canonical.Event, fallbackType string) string {
 	if fallbackType == "function_call" {
 		return fmt.Sprintf("tool:%d:%d", event.ChoiceIndex, event.ToolIndex)
 	}
-	return fmt.Sprintf("%s:%d", fallbackType, event.ChoiceIndex)
+	if fallbackType == "reasoning" {
+		return fmt.Sprintf("reasoning:%d:%d", event.ChoiceIndex, event.OutputIndex)
+	}
+	return fmt.Sprintf("%s:%d:%d", fallbackType, event.ChoiceIndex, event.OutputIndex)
+}
+
+func convertedOutputIdentity(event canonical.Event, fallbackType string) (string, string) {
+	if event.Item == nil {
+		return "", ""
+	}
+	identity := event.Item.ID
+	if identity == "" && fallbackType == "function_call" {
+		identity = event.Item.CallID
+	}
+	if identity == "" {
+		return "", ""
+	}
+	return fmt.Sprintf("%s:%d:id:%s", fallbackType, event.ChoiceIndex, identity), identity
 }
 
 func convertedItemID(itemType string) string {
@@ -638,7 +746,7 @@ func eventContent(event canonical.Event, index int) canonical.Content {
 }
 
 func eventItemReference(item canonical.Item) *canonical.Item {
-	return &canonical.Item{ID: item.ID, Type: item.Type, Role: item.Role, Name: item.Name, CallID: item.CallID}
+	return &canonical.Item{ID: item.ID, Type: item.Type, Role: item.Role, Name: item.Name, Namespace: item.Namespace, CallID: item.CallID}
 }
 
 func sortedPartIndexes(parts map[int]*v2ConvertedPart) []int {
@@ -1243,11 +1351,21 @@ func mergeV2Item(target *canonical.Item, source canonical.Item) {
 	if source.Name != "" {
 		target.Name = source.Name
 	}
+	if source.Namespace != "" {
+		target.Namespace = source.Namespace
+	}
 	if source.CallID != "" {
 		target.CallID = source.CallID
 	}
+	if source.ProviderCallIDOmitted {
+		target.ProviderCallIDOmitted = true
+	}
 	if source.Status != "" {
 		target.Status = source.Status
+	}
+	if source.Proof != nil {
+		proof := *source.Proof
+		target.Proof = &proof
 	}
 	if len(source.Content) > 0 {
 		target.Content = cloneV2Item(source).Content
@@ -1265,6 +1383,10 @@ func mergeV2Item(target *canonical.Item, source canonical.Item) {
 
 func cloneV2Item(source canonical.Item) canonical.Item {
 	result := source
+	if source.Proof != nil {
+		proof := *source.Proof
+		result.Proof = &proof
+	}
 	result.Content = append([]canonical.Content(nil), source.Content...)
 	for index := range result.Content {
 		result.Content[index].Extra = cloneV2RawMap(source.Content[index].Extra)

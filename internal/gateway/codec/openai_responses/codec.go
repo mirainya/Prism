@@ -3,6 +3,8 @@ package openai_responses
 
 import (
 	"bytes"
+	"crypto/sha256"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -15,7 +17,18 @@ import (
 const (
 	extraRequest           = "openai_responses.request_extras"
 	extraInputAudioOptions = "openai_responses.input_audio_options"
+	functionProofPrefix    = "prism-proof-v1#"
+	functionProofSubject   = "function_call"
 )
+
+type functionProofEnvelope struct {
+	Version    int                     `json:"v"`
+	Provider   canonical.ProofProvider `json:"provider"`
+	Subject    string                  `json:"subject"`
+	CallID     string                  `json:"call_id"`
+	Value      string                  `json:"value"`
+	OmitCallID bool                    `json:"omit_call_id,omitempty"`
+}
 
 // DecodeRequest maps a parsed OpenAI Responses request into the Gateway V2
 // contract. Unknown request fields remain available to native transports.
@@ -65,7 +78,7 @@ func DecodeItems(raw json.RawMessage) ([]canonical.Item, error) {
 // EncodeResponseJSON renders a canonical response as an OpenAI Responses JSON
 // object. Provider extensions and usage extensions are preserved verbatim.
 func EncodeResponseJSON(source canonical.Response) ([]byte, error) {
-	output, err := encodeItems(source.Output)
+	output, err := encodeItems(normalizeResponseOutputIDs(source))
 	if err != nil {
 		return nil, err
 	}
@@ -95,6 +108,37 @@ func EncodeResponseJSON(source canonical.Response) ([]byte, error) {
 		return nil, err
 	}
 	return mergeResponseExtensions(encoded, source.ProviderExtensions)
+}
+
+func normalizeResponseOutputIDs(source canonical.Response) []canonical.Item {
+	items := canonical.CloneItems(source.Output)
+	responseID := source.ID
+	if responseID == "" {
+		responseID = source.ProviderResponseID
+	}
+	for index := range items {
+		item := &items[index]
+		if item.ID == "" {
+			prefix := ""
+			switch item.Type {
+			case "message":
+				prefix = "msg_prism_"
+			case "reasoning":
+				prefix = "rs_prism_"
+			case "function_call":
+				prefix = "fc_prism_"
+			}
+			if prefix != "" {
+				seed := fmt.Sprintf("%s\x00%s\x00%d\x00%d\x00%s", responseID, source.Model, source.CreatedAt, index, item.Type)
+				digest := sha256.Sum256([]byte(seed))
+				item.ID = fmt.Sprintf("%s%x", prefix, digest[:8])
+			}
+		}
+		if item.Type == "function_call" && item.CallID == "" {
+			item.CallID = item.ID
+		}
+	}
+	return items
 }
 
 // EncodeSSEFrame renders one OpenAI Responses SSE frame. Raw extension events
@@ -128,7 +172,7 @@ func decodeInput(raw json.RawMessage) ([]canonical.Item, error) {
 		}
 		items = append(items, item)
 	}
-	return items, nil
+	return RestoreFunctionCallProofCarriers(items), nil
 }
 
 func decodeItem(raw json.RawMessage) (canonical.Item, error) {
@@ -143,8 +187,8 @@ func decodeItem(raw json.RawMessage) (canonical.Item, error) {
 	}
 	item := canonical.Item{
 		ID: rawString(value["id"]), Type: typeName, Role: role, Name: rawString(value["name"]),
-		CallID: firstString(value, "call_id", "tool_call_id"), Status: rawString(value["status"]),
-		Extra: extraExcept(value, "id", "type", "role", "name", "call_id", "tool_call_id", "status", "content", "arguments", "output"),
+		Namespace: rawString(value["namespace"]), CallID: firstString(value, "call_id", "tool_call_id"), Status: rawString(value["status"]),
+		Extra: extraExcept(value, "id", "type", "role", "name", "namespace", "call_id", "tool_call_id", "status", "content", "summary", "arguments", "output"),
 	}
 	if item.Type == "message" && item.Role == "" {
 		item.Role = canonical.RoleUser
@@ -155,6 +199,17 @@ func decodeItem(raw json.RawMessage) (canonical.Item, error) {
 			return canonical.Item{}, err
 		}
 		item.Content = parts
+	}
+	if item.Type == "reasoning" {
+		parts, err := decodeReasoningSummary(value["summary"])
+		if err != nil {
+			return canonical.Item{}, err
+		}
+		item.Content = parts
+		if proof, ok := canonical.ParseTaggedProviderProof(rawString(value["encrypted_content"])); ok {
+			item.Proof = proof
+			delete(item.Extra, "encrypted_content")
+		}
 	}
 	item.Arguments = decodeJSONString(value["arguments"])
 	item.Output = cloneRaw(value["output"])
@@ -192,7 +247,7 @@ func decodeContent(raw json.RawMessage) ([]canonical.Content, error) {
 			Transcript: rawString(object["transcript"]),
 			Extra:      extraExcept(object, "type", "text", "image_url", "video_url", "audio_url", "file_url", "file_data", "file_id", "filename", "content_type", "format", "detail", "transcript", "input_audio"),
 		}
-		if kind == "input_audio" {
+		if kind == "input_audio" || kind == "output_audio" {
 			var audio map[string]json.RawMessage
 			if err := json.Unmarshal(object["input_audio"], &audio); err == nil {
 				if part.Data == "" {
@@ -224,7 +279,7 @@ func decodeTools(raw json.RawMessage) ([]canonical.Tool, error) {
 	}
 	tools := make([]canonical.Tool, 0, len(values))
 	for _, value := range values {
-		tool := canonical.Tool{Type: rawString(value["type"]), Name: rawString(value["name"]), Description: rawString(value["description"]), InputSchema: cloneRaw(value["parameters"]), Strict: rawBool(value["strict"]), Options: mustJSON(extraExcept(value, "type", "name", "description", "parameters", "strict"))}
+		tool := canonical.Tool{Type: rawString(value["type"]), Name: rawString(value["name"]), Namespace: rawString(value["namespace"]), Description: rawString(value["description"]), InputSchema: cloneRaw(value["parameters"]), Strict: rawBool(value["strict"]), Options: mustJSON(extraExcept(value, "type", "name", "namespace", "description", "parameters", "strict"))}
 		tools = append(tools, tool)
 	}
 	return tools, nil
@@ -277,7 +332,22 @@ func decodeReasoning(raw json.RawMessage) *canonical.Reasoning {
 
 func encodeItems(source []canonical.Item) ([]map[string]any, error) {
 	items := make([]map[string]any, 0, len(source))
-	for _, item := range source {
+	for index, item := range source {
+		if item.Type == "function_call" && (item.Proof != nil || item.ProviderCallIDOmitted) {
+			carrier, ok := FunctionCallProofCarrier(item)
+			if !ok {
+				return nil, fmt.Errorf("Responses cannot preserve provider proof on function call %q", functionCallIdentity(item))
+			}
+			if index == 0 || !isMatchingFunctionCallProofCarrier(source[index-1], item) {
+				value, err := encodeItem(carrier)
+				if err != nil {
+					return nil, err
+				}
+				items = append(items, value)
+			}
+			item.Proof = nil
+			item.ProviderCallIDOmitted = false
+		}
 		value, err := encodeItem(item)
 		if err != nil {
 			return nil, err
@@ -288,7 +358,10 @@ func encodeItems(source []canonical.Item) ([]map[string]any, error) {
 }
 
 func encodeItem(source canonical.Item) (map[string]any, error) {
-	value, err := rawMap(source.Extra)
+	if source.Proof != nil && source.Type != "reasoning" {
+		return nil, fmt.Errorf("Responses cannot encode provider proof on %q", source.Type)
+	}
+	value, err := rawMap(responsesWireExtras(source.Extra))
 	if err != nil {
 		return nil, err
 	}
@@ -296,11 +369,14 @@ func encodeItem(source canonical.Item) (map[string]any, error) {
 	if source.ID != "" {
 		value["id"] = source.ID
 	}
-	if source.Role != "" {
+	if source.Role != "" && (source.Type == "message" || source.Type == "") {
 		value["role"] = source.Role
 	}
 	if source.Name != "" {
 		value["name"] = source.Name
+	}
+	if source.Namespace != "" {
+		value["namespace"] = source.Namespace
 	}
 	if source.CallID != "" {
 		value["call_id"] = source.CallID
@@ -310,7 +386,20 @@ func encodeItem(source canonical.Item) (map[string]any, error) {
 	if source.Status != "" {
 		value["status"] = source.Status
 	}
-	if len(source.Content) > 0 {
+	if source.Type == "reasoning" {
+		if summary, err := encodeReasoningSummary(source.Content); err != nil {
+			return nil, err
+		} else {
+			value["summary"] = summary
+		}
+		if source.Proof != nil {
+			proof := canonical.EncodeResponsesEncryptedContent(source.Proof)
+			if proof == "" {
+				return nil, fmt.Errorf("Responses cannot encode provider proof on reasoning item %q", source.ID)
+			}
+			value["encrypted_content"] = proof
+		}
+	} else if len(source.Content) > 0 {
 		content, err := encodeContent(source.Content)
 		if err != nil {
 			return nil, err
@@ -326,32 +415,246 @@ func encodeItem(source canonical.Item) (map[string]any, error) {
 	return value, nil
 }
 
+// FunctionCallProofCarrier creates a standard Responses reasoning item that
+// transports a Gemini function-call proof without placing extension fields on
+// the function_call item itself.
+func FunctionCallProofCarrier(source canonical.Item) (canonical.Item, bool) {
+	if source.Type != "function_call" {
+		return canonical.Item{}, false
+	}
+	proofValue := ""
+	if source.Proof != nil {
+		if source.Proof.Provider != canonical.ProofProviderGoogle || source.Proof.Value == "" || source.Proof.Subject != "" || source.Proof.TargetID != "" {
+			return canonical.Item{}, false
+		}
+		proofValue = source.Proof.Value
+	}
+	if proofValue == "" && !source.ProviderCallIDOmitted {
+		return canonical.Item{}, false
+	}
+	callID := functionCallIdentity(source)
+	if callID == "" {
+		return canonical.Item{}, false
+	}
+	envelope := functionProofEnvelope{
+		Version: 1, Provider: canonical.ProofProviderGoogle,
+		Subject: functionProofSubject, CallID: callID, Value: proofValue, OmitCallID: source.ProviderCallIDOmitted,
+	}
+	if envelope.OmitCallID {
+		envelope.Version = 2
+	}
+	payload, err := json.Marshal(envelope)
+	if err != nil {
+		return canonical.Item{}, false
+	}
+	wire := functionProofPrefix + base64.RawURLEncoding.EncodeToString(payload)
+	wireJSON, err := json.Marshal(wire)
+	if err != nil {
+		return canonical.Item{}, false
+	}
+	digest := sha256.Sum256([]byte(wire))
+	return canonical.Item{
+		ID:     fmt.Sprintf("rs_prism_%x", digest[:8]),
+		Type:   "reasoning",
+		Status: source.Status,
+		Extra: map[string]json.RawMessage{
+			"summary":           json.RawMessage("[]"),
+			"encrypted_content": wireJSON,
+		},
+	}, true
+}
+
+// RestoreFunctionCallProofCarriers folds Prism reasoning carriers back into
+// their uniquely identified Gemini function calls. Unmatched items are kept.
+func RestoreFunctionCallProofCarriers(source []canonical.Item) []canonical.Item {
+	items := canonical.CloneItems(source)
+	if len(items) < 2 {
+		return items
+	}
+	calls := make(map[string][]int)
+	for index, item := range items {
+		if item.Type == "function_call" {
+			identity := functionCallIdentity(item)
+			if identity != "" {
+				calls[identity] = append(calls[identity], index)
+			}
+		}
+	}
+	remove := make([]bool, len(items))
+	for index, item := range items {
+		envelope, ok := decodeFunctionCallProofCarrier(item)
+		if !ok || len(calls[envelope.CallID]) != 1 {
+			continue
+		}
+		if attachFunctionCallProof(&items[calls[envelope.CallID][0]], envelope) {
+			remove[index] = true
+		}
+	}
+	result := make([]canonical.Item, 0, len(items))
+	for index, item := range items {
+		if !remove[index] {
+			result = append(result, item)
+		}
+	}
+	return result
+}
+
+func attachFunctionCallProof(target *canonical.Item, envelope functionProofEnvelope) bool {
+	if target == nil || target.Type != "function_call" || functionCallIdentity(*target) != envelope.CallID {
+		return false
+	}
+	if envelope.Value == "" {
+		if target.Proof != nil {
+			return false
+		}
+	} else {
+		if target.Proof != nil && (target.Proof.Provider != envelope.Provider || target.Proof.Value != envelope.Value || target.Proof.Subject != "" || target.Proof.TargetID != "") {
+			return false
+		}
+		target.Proof = &canonical.ProviderProof{Provider: envelope.Provider, Value: envelope.Value}
+	}
+	if target.ProviderCallIDOmitted && !envelope.OmitCallID {
+		return false
+	}
+	target.ProviderCallIDOmitted = envelope.OmitCallID
+	return true
+}
+
+func isMatchingFunctionCallProofCarrier(carrier, functionCall canonical.Item) bool {
+	envelope, ok := decodeFunctionCallProofCarrier(carrier)
+	if !ok || envelope.CallID != functionCallIdentity(functionCall) || envelope.OmitCallID != functionCall.ProviderCallIDOmitted {
+		return false
+	}
+	if envelope.Value == "" {
+		return functionCall.Proof == nil
+	}
+	return functionCall.Proof != nil && envelope.Provider == functionCall.Proof.Provider && envelope.Value == functionCall.Proof.Value &&
+		functionCall.Proof.Subject == "" && functionCall.Proof.TargetID == ""
+}
+
+func decodeFunctionCallProofCarrier(item canonical.Item) (functionProofEnvelope, bool) {
+	if item.Type != "reasoning" || item.Role != "" || item.Name != "" || item.Namespace != "" || item.CallID != "" ||
+		len(item.Content) != 0 || len(item.Arguments) != 0 || len(item.Output) != 0 || item.Proof != nil {
+		return functionProofEnvelope{}, false
+	}
+	for key, raw := range item.Extra {
+		switch key {
+		case "encrypted_content":
+		case "summary":
+			if !bytes.Equal(bytes.TrimSpace(raw), []byte("[]")) {
+				return functionProofEnvelope{}, false
+			}
+		default:
+			return functionProofEnvelope{}, false
+		}
+	}
+	var wire string
+	if json.Unmarshal(item.Extra["encrypted_content"], &wire) != nil || !strings.HasPrefix(wire, functionProofPrefix) {
+		return functionProofEnvelope{}, false
+	}
+	payload, err := base64.RawURLEncoding.DecodeString(strings.TrimPrefix(wire, functionProofPrefix))
+	if err != nil {
+		return functionProofEnvelope{}, false
+	}
+	var fields map[string]json.RawMessage
+	if json.Unmarshal(payload, &fields) != nil {
+		return functionProofEnvelope{}, false
+	}
+	for _, field := range []string{"v", "provider", "subject", "call_id", "value"} {
+		if _, ok := fields[field]; !ok {
+			return functionProofEnvelope{}, false
+		}
+	}
+	var envelope functionProofEnvelope
+	if json.Unmarshal(payload, &envelope) != nil || envelope.Provider != canonical.ProofProviderGoogle ||
+		envelope.Subject != functionProofSubject || envelope.CallID == "" {
+		return functionProofEnvelope{}, false
+	}
+	switch envelope.Version {
+	case 1:
+		if len(fields) != 5 || envelope.OmitCallID || envelope.Value == "" {
+			return functionProofEnvelope{}, false
+		}
+	case 2:
+		if len(fields) != 6 || !envelope.OmitCallID {
+			return functionProofEnvelope{}, false
+		}
+	default:
+		return functionProofEnvelope{}, false
+	}
+	return envelope, true
+}
+
+func functionCallIdentity(item canonical.Item) string {
+	if item.CallID != "" {
+		return item.CallID
+	}
+	return item.ID
+}
+
+func decodeReasoningSummary(raw json.RawMessage) ([]canonical.Content, error) {
+	if len(bytes.TrimSpace(raw)) == 0 || bytes.Equal(bytes.TrimSpace(raw), []byte("null")) {
+		return nil, nil
+	}
+	var values []map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &values); err != nil {
+		return nil, err
+	}
+	result := make([]canonical.Content, 0, len(values))
+	for _, value := range values {
+		kind := rawString(value["type"])
+		if kind == "summary_text" {
+			kind = "reasoning_text"
+		}
+		result = append(result, canonical.Content{Type: kind, Text: rawString(value["text"]), Extra: extraExcept(value, "type", "text")})
+	}
+	return result, nil
+}
+
+func encodeReasoningSummary(source []canonical.Content) ([]map[string]any, error) {
+	result := make([]map[string]any, 0, len(source))
+	for _, content := range source {
+		value, err := rawMap(responsesWireExtras(content.Extra))
+		if err != nil {
+			return nil, err
+		}
+		kind := content.Type
+		if kind == "" || kind == "reasoning_text" || kind == "output_text" {
+			kind = "summary_text"
+		}
+		value["type"] = kind
+		value["text"] = content.Text
+		result = append(result, value)
+	}
+	return result, nil
+}
+
 func encodeContent(source []canonical.Content) ([]map[string]any, error) {
 	parts := make([]map[string]any, 0, len(source))
 	for _, part := range source {
-		value, err := rawMap(part.Extra)
+		value, err := rawMap(responsesWireExtras(part.Extra))
 		if err != nil {
 			return nil, err
 		}
 		value["type"] = part.Type
 		delete(value, extraInputAudioOptions)
-		if part.Text != "" {
+		if part.Text != "" || part.Type == "input_text" || part.Type == "output_text" || part.Type == "text" || part.Type == "refusal" {
 			value["text"] = part.Text
 		}
 		switch part.Type {
-		case "input_image":
+		case "input_image", "output_image":
 			if part.URL != "" {
 				value["image_url"] = part.URL
 			} else if part.Data != "" {
 				value["image_url"] = dataURL(part.MediaType, part.Data)
 			}
-		case "input_video":
+		case "input_video", "output_video":
 			if part.URL != "" {
 				value["video_url"] = part.URL
 			} else if part.Data != "" {
 				value["video_url"] = dataURL(part.MediaType, part.Data)
 			}
-		case "input_audio":
+		case "input_audio", "output_audio":
 			if part.URL != "" {
 				value["audio_url"] = part.URL
 			}
@@ -367,7 +670,7 @@ func encodeContent(source []canonical.Content) ([]map[string]any, error) {
 				}
 				value["input_audio"] = audio
 			}
-		case "input_file":
+		case "input_file", "output_file":
 			if part.URL != "" {
 				value["file_url"] = part.URL
 			}
@@ -375,7 +678,7 @@ func encodeContent(source []canonical.Content) ([]map[string]any, error) {
 		if part.FileID != "" {
 			value["file_id"] = part.FileID
 		}
-		if part.Data != "" && (part.Type == "input_file" || part.Type == "file") {
+		if part.Data != "" && (part.Type == "input_file" || part.Type == "output_file" || part.Type == "file") {
 			value["file_data"] = part.Data
 		}
 		if part.Filename != "" {
@@ -480,6 +783,18 @@ func encodeEvent(event canonical.Event) ([]byte, string, error) {
 			return nil, "", err
 		}
 		body["part"] = part
+	case canonical.EventReasoningPartAdded, canonical.EventReasoningPartDone:
+		body["output_index"] = event.OutputIndex
+		body["summary_index"] = event.ContentIndex
+		setEventItemID(body, event.Item)
+		if event.Item == nil || len(event.Item.Content) == 0 {
+			return nil, "", fmt.Errorf("%s requires reasoning content", name)
+		}
+		parts, err := encodeReasoningSummary(event.Item.Content[:1])
+		if err != nil {
+			return nil, "", err
+		}
+		body["part"] = parts[0]
 	case canonical.EventTextDelta:
 		body["output_index"] = event.OutputIndex
 		body["content_index"] = event.ContentIndex
@@ -495,6 +810,11 @@ func encodeEvent(event canonical.Event) ([]byte, string, error) {
 		body["summary_index"] = event.ContentIndex
 		setEventItemID(body, event.Item)
 		body["delta"] = event.Delta
+	case canonical.EventReasoningTextDone:
+		body["output_index"] = event.OutputIndex
+		body["summary_index"] = event.ContentIndex
+		setEventItemID(body, event.Item)
+		body["text"] = event.Delta
 	case canonical.EventToolArgumentsDelta:
 		body["output_index"] = event.OutputIndex
 		setEventItemID(body, event.Item)
@@ -685,6 +1005,17 @@ func rawMap(source map[string]json.RawMessage) (map[string]any, error) {
 		result[key] = value
 	}
 	return result, nil
+}
+
+func responsesWireExtras(source map[string]json.RawMessage) map[string]json.RawMessage {
+	result := make(map[string]json.RawMessage, len(source))
+	for key, raw := range source {
+		if strings.Contains(key, ".") {
+			continue
+		}
+		result[key] = cloneRaw(raw)
+	}
+	return result
 }
 func extraExcept(source map[string]json.RawMessage, names ...string) map[string]json.RawMessage {
 	result := cloneRawMap(source)

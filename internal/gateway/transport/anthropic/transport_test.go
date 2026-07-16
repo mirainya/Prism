@@ -34,6 +34,77 @@ func TestPlanRejectsExtensions(t *testing.T) {
 	}
 }
 
+func TestPlanAcceptsOnlyAnthropicProviderProof(t *testing.T) {
+	item := New(nil)
+	native := canonical.Request{Items: []canonical.Item{{
+		Type:    "reasoning",
+		Content: []canonical.Content{{Type: "reasoning_text", Text: "analysis"}},
+		Proof:   &canonical.ProviderProof{Provider: canonical.ProofProviderAnthropic, Value: "sig"},
+	}}}
+	if plan := item.Plan(transport.OperationMessages, native, canonical.NewFeatureSet(canonical.FeatureReasoning)); !plan.Supported() {
+		t.Fatalf("native proof was rejected: %#v", plan)
+	}
+	proofOnly := native.Clone()
+	proofOnly.Items[0].Content = nil
+	if plan := item.Plan(transport.OperationMessages, proofOnly, canonical.NewFeatureSet(canonical.FeatureReasoning)); plan.Supported() {
+		t.Fatalf("proof without its thinking block was accepted: %#v", plan)
+	}
+	multipart := native.Clone()
+	multipart.Items[0].Content = append(multipart.Items[0].Content, canonical.Content{Type: "reasoning_text", Text: "second"})
+	if plan := item.Plan(transport.OperationMessages, multipart, canonical.NewFeatureSet(canonical.FeatureReasoning)); plan.Supported() {
+		t.Fatalf("one proof was accepted for multiple thinking blocks: %#v", plan)
+	}
+	wrongContent := native.Clone()
+	wrongContent.Items[0].Content[0].Type = "output_text"
+	if plan := item.Plan(transport.OperationMessages, wrongContent, canonical.NewFeatureSet(canonical.FeatureReasoning)); plan.Supported() {
+		t.Fatalf("proof on non-reasoning content was accepted: %#v", plan)
+	}
+	foreign := native.Clone()
+	foreign.Items[0].Proof.Provider = canonical.ProofProviderGoogle
+	if plan := item.Plan(transport.OperationMessages, foreign, canonical.NewFeatureSet(canonical.FeatureReasoning)); plan.Supported() {
+		t.Fatalf("foreign proof was accepted: %#v", plan)
+	}
+	wrongItem := native.Clone()
+	wrongItem.Items[0].Type = "function_call"
+	if plan := item.Plan(transport.OperationMessages, wrongItem, canonical.NewFeatureSet(canonical.FeatureReasoning, canonical.FeatureTools)); plan.Supported() {
+		t.Fatalf("proof on a non-reasoning item was accepted: %#v", plan)
+	}
+	unsigned := canonical.Request{Items: []canonical.Item{{Type: "reasoning", Content: []canonical.Content{{Type: "reasoning_text", Text: "unsigned"}}}}}
+	if plan := item.Plan(transport.OperationMessages, unsigned, canonical.NewFeatureSet(canonical.FeatureReasoning)); plan.Supported() {
+		t.Fatalf("unsigned thinking was accepted: %#v", plan)
+	}
+	redacted := canonical.Request{Items: []canonical.Item{{
+		Type:  "reasoning",
+		Extra: map[string]json.RawMessage{transport.ExtensionAnthropicRawBlock: json.RawMessage(`{"type":"redacted_thinking","data":"opaque"}`)},
+	}}}
+	if plan := item.Plan(transport.OperationMessages, redacted, canonical.NewFeatureSet(canonical.FeatureReasoning)); !plan.Supported() {
+		t.Fatalf("native redacted thinking was rejected: %#v", plan)
+	}
+	redactedWithProof := redacted.Clone()
+	redactedWithProof.Items[0].Proof = &canonical.ProviderProof{Provider: canonical.ProofProviderAnthropic, Value: "invalid"}
+	if plan := item.Plan(transport.OperationMessages, redactedWithProof, canonical.NewFeatureSet(canonical.FeatureReasoning)); plan.Supported() {
+		t.Fatalf("redacted thinking with a signature was accepted: %#v", plan)
+	}
+	redactedOverride := redacted.Clone()
+	redactedOverride.Items[0].Content = []canonical.Content{{
+		Type: "reasoning_text",
+		Extra: map[string]json.RawMessage{
+			transport.ExtensionAnthropicRawBlock: json.RawMessage(`{"type":"thinking","thinking":""}`),
+		},
+	}}
+	if plan := item.Plan(transport.OperationMessages, redactedOverride, canonical.NewFeatureSet(canonical.FeatureReasoning)); plan.Supported() {
+		t.Fatalf("redacted thinking with a conflicting content block was accepted: %#v", plan)
+	}
+	redacted.Items[0].Proof = &canonical.ProviderProof{Provider: canonical.ProofProviderGoogle, Value: "foreign"}
+	if plan := item.Plan(transport.OperationMessages, redacted, canonical.NewFeatureSet(canonical.FeatureReasoning)); plan.Supported() {
+		t.Fatalf("redacted thinking hid a foreign proof: %#v", plan)
+	}
+	namespaced := canonical.Request{Items: []canonical.Item{{Type: "function_call", Namespace: "tools"}}}
+	if plan := item.Plan(transport.OperationMessages, namespaced, canonical.FeatureSet{}); plan.Supported() {
+		t.Fatalf("namespace was accepted: %#v", plan)
+	}
+}
+
 func TestPlanKindsAndNativeExtensionBoundary(t *testing.T) {
 	item := New(nil)
 	for _, test := range []struct {
@@ -66,6 +137,21 @@ func TestPlanKindsAndNativeExtensionBoundary(t *testing.T) {
 	}
 }
 
+func TestPlanRejectsChatToolsWithAnthropicThinking(t *testing.T) {
+	request := canonical.Request{
+		Reasoning: &canonical.Reasoning{Raw: json.RawMessage(`{"type":"enabled","budget_tokens":4096}`)},
+		Tools:     []canonical.Tool{{Type: "function", Name: "lookup"}},
+	}
+	features := canonical.NewFeatureSet(canonical.FeatureReasoning, canonical.FeatureTools)
+	item := New(nil)
+	if plan := item.Plan(transport.OperationChat, request, features); plan.Supported() {
+		t.Fatalf("Chat tool route could lose Anthropic thinking proof: %#v", plan)
+	}
+	if plan := item.Plan(transport.OperationResponses, request, features); !plan.Supported() {
+		t.Fatalf("Responses can preserve Anthropic thinking proof: %#v", plan)
+	}
+}
+
 func TestResponsesStoreIsLocalForAnthropicPlan(t *testing.T) {
 	store, noStore := true, false
 	item := New(nil)
@@ -77,6 +163,13 @@ func TestResponsesStoreIsLocalForAnthropicPlan(t *testing.T) {
 	}
 	if plan := item.Plan(transport.OperationChat, canonical.Request{Store: &noStore}, canonical.FeatureSet{}); !plan.Supported() {
 		t.Fatalf("store=false should be safe for a stateless upstream: %#v", plan)
+	}
+	include := canonical.Request{Include: []string{transport.ResponsesReasoningProofInclude}}
+	if plan := item.Plan(transport.OperationResponses, include, canonical.FeatureSet{}); !plan.Supported() {
+		t.Fatalf("Prism-owned Responses include was rejected: %#v", plan)
+	}
+	if plan := item.Plan(transport.OperationChat, include, canonical.FeatureSet{}); plan.Supported() {
+		t.Fatalf("foreign include was accepted: %#v", plan)
 	}
 }
 
@@ -144,6 +237,78 @@ func TestStreamMapsToolUseUsageAndTerminal(t *testing.T) {
 	terminal := events[len(events)-1]
 	if terminal.ProviderResponseID != "msg_1" || terminal.Usage == nil || terminal.Usage.TotalTokens != 5 {
 		t.Fatalf("terminal = %#v", terminal)
+	}
+}
+
+func TestStreamPreservesThinkingSignature(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
+		writer.Header().Set("Content-Type", "text/event-stream")
+		frames := "event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"id\":\"msg_thinking\",\"model\":\"claude\",\"usage\":{\"input_tokens\":2}}}\n\n" +
+			"event: content_block_start\ndata: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"thinking\",\"thinking\":\"\"}}\n\n" +
+			"event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"thinking_delta\",\"thinking\":\"consider\"}}\n\n" +
+			"event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"signature_delta\",\"signature\":\"sig-\"}}\n\n" +
+			"event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"signature_delta\",\"signature\":\"native\"}}\n\n" +
+			"event: content_block_stop\ndata: {\"type\":\"content_block_stop\",\"index\":0}\n\n" +
+			"event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n"
+		_, _ = io.WriteString(writer, frames)
+	}))
+	defer server.Close()
+	stream, _, err := transport.Stream(context.Background(), New(server.Client()), transport.Invocation{
+		Route: transport.Route{BaseURL: server.URL, PublicModel: "public"}, Operation: transport.OperationResponses,
+		Request: canonical.Request{Model: "public", Stream: true, Items: []canonical.Item{{Type: "message", Role: canonical.RoleUser, Content: []canonical.Content{{Type: "input_text", Text: "hi"}}}}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer stream.Close()
+	want := []canonical.EventType{
+		canonical.EventResponseCreated, canonical.EventContentPartAdded, canonical.EventReasoningDelta,
+		canonical.EventProviderProof, canonical.EventProviderProof, canonical.EventContentPartDone, canonical.EventCompleted,
+	}
+	accumulator := canonical.NewEventAccumulator()
+	for index, eventType := range want {
+		event, nextErr := stream.Next(context.Background())
+		if nextErr != nil {
+			t.Fatal(nextErr)
+		}
+		if event.Type != eventType {
+			t.Fatalf("event %d type = %q, want %q", index, event.Type, eventType)
+		}
+		if event.Type == canonical.EventProviderProof && (event.Item == nil || event.Item.Proof == nil) {
+			t.Fatalf("signature event = %#v", event)
+		}
+		if index == 3 && event.Item.Proof.Value != "sig-" {
+			t.Fatalf("first signature fragment = %#v", event.Item.Proof)
+		}
+		if index == 4 && event.Item.Proof.Value != "sig-native" {
+			t.Fatalf("accumulated signature = %#v", event.Item.Proof)
+		}
+		accumulator.Observe(event)
+	}
+	output := accumulator.Snapshot().Output
+	if len(output) != 1 || len(output[0].Content) != 1 || output[0].Content[0].Text != "consider" || output[0].Proof == nil || output[0].Proof.Provider != canonical.ProofProviderAnthropic || output[0].Proof.Value != "sig-native" {
+		t.Fatalf("thinking output = %#v", output)
+	}
+}
+
+func TestStreamPreservesRedactedThinkingBlock(t *testing.T) {
+	decoder := &stream{blocks: map[int]canonical.Item{}, toolDeltas: map[int]bool{}}
+	event, emit, err := decoder.decode("content_block_start", []byte(`{"type":"content_block_start","index":2,"content_block":{"type":"redacted_thinking","data":"opaque"}}`))
+	if err != nil || !emit {
+		t.Fatalf("decode redacted thinking: emit=%v err=%v", emit, err)
+	}
+	if event.Type != canonical.EventContentPartAdded || event.OutputIndex != 2 || event.Item == nil || event.Item.Type != "reasoning" || !strings.Contains(string(event.Item.Extra[transport.ExtensionAnthropicRawBlock]), `"data":"opaque"`) {
+		t.Fatalf("redacted event = %#v", event)
+	}
+	accumulator := canonical.NewEventAccumulator()
+	accumulator.Observe(event)
+	output := accumulator.Snapshot().Output
+	if event.ContentIndex != 0 || len(output) != 1 || len(output[0].Content) != 1 || output[0].Content[0].Type != "reasoning_text" {
+		t.Fatalf("redacted content indexes = event %#v output %#v", event, output)
+	}
+	request := canonical.Request{Items: []canonical.Item{*event.Item}}
+	if plan := New(nil).Plan(transport.OperationMessages, request, canonical.NewFeatureSet(canonical.FeatureReasoning)); !plan.Supported() {
+		t.Fatalf("redacted stream block was not replayable: %#v", plan)
 	}
 }
 

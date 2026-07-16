@@ -48,6 +48,15 @@ func chatPlan(operation transport.Operation, request canonical.Request, features
 	if features.Has(canonical.FeatureVideo) {
 		return transport.Unsupported(operation, "OpenAI Chat does not support video input")
 	}
+	if index, proof := incompatibleProof(request, ""); proof != nil {
+		return transport.Unsupported(operation, fmt.Sprintf("OpenAI Chat cannot preserve provider proof on item %d", index))
+	}
+	if field := transport.UnsupportedNamespace(request); field != "" {
+		return transport.Unsupported(operation, "OpenAI Chat cannot preserve "+field)
+	}
+	if field := transport.UnsupportedProviderCallIDState(request); field != "" {
+		return transport.Unsupported(operation, "OpenAI Chat cannot preserve "+field)
+	}
 	for _, tool := range request.Tools {
 		if tool.Type != "" && tool.Type != "function" {
 			return transport.Unsupported(operation, "OpenAI Chat only supports function tools")
@@ -103,6 +112,20 @@ func responsesPlan(operation transport.Operation, request canonical.Request, fea
 	if len(request.Stop) > 0 {
 		return transport.Unsupported(operation, "OpenAI Responses cannot preserve stop sequences")
 	}
+	if operation != transport.OperationResponses && features.Has(canonical.FeatureReasoning) && features.Has(canonical.FeatureTools) {
+		return transport.Unsupported(operation, "this downstream protocol cannot preserve OpenAI reasoning proofs across tool calls")
+	}
+	if index, proof := incompatibleProof(request, canonical.ProofProviderOpenAI); proof != nil {
+		return transport.Unsupported(operation, fmt.Sprintf("OpenAI Responses cannot replay %s proof on item %d", proof.Provider, index))
+	}
+	for index, item := range request.Items {
+		if item.Proof != nil && item.Type != "reasoning" {
+			return transport.Unsupported(operation, fmt.Sprintf("OpenAI Responses cannot preserve provider proof on item %d", index))
+		}
+	}
+	if field := transport.UnsupportedProviderCallIDState(request); field != "" {
+		return transport.Unsupported(operation, "OpenAI Responses cannot preserve "+field)
+	}
 	clientExtensions := map[string]bool{}
 	if operation == transport.OperationResponses {
 		clientExtensions[responsesRequestExtras] = true
@@ -133,6 +156,20 @@ func responsesPlan(operation transport.Operation, request canonical.Request, fea
 
 func hasVolcengineOptions(options *canonical.VolcengineOptions) bool {
 	return options != nil && (len(options.Thinking) > 0 || len(options.Caching) > 0 || len(options.Session) > 0 || len(options.ContextManagement) > 0 || options.ExpireAt != nil || len(options.Unknown) > 0)
+}
+
+func incompatibleProof(request canonical.Request, allowed canonical.ProofProvider) (int, *canonical.ProviderProof) {
+	for index := range request.Items {
+		item := request.Items[index]
+		proof := item.Proof
+		if proof == nil {
+			continue
+		}
+		if item.Type != "reasoning" || proof.Value == "" || allowed == "" || proof.Provider != allowed {
+			return index, proof
+		}
+	}
+	return -1, nil
 }
 
 func encode(invocation transport.Invocation, responses bool) ([]byte, error) {
@@ -391,6 +428,9 @@ func responseItems(items []canonical.Item) ([]any, error) {
 		if item.Name != "" {
 			value["name"] = item.Name
 		}
+		if item.Namespace != "" {
+			value["namespace"] = item.Namespace
+		}
 		if item.CallID != "" {
 			value["call_id"] = item.CallID
 		}
@@ -416,6 +456,13 @@ func responseItems(items []canonical.Item) ([]any, error) {
 			}
 			value["call_id"] = callID
 			value["output"] = responseOutput(item.Output)
+		case "reasoning":
+			if proof, ok := canonical.NativeProviderProofValue(item.Proof, canonical.ProofProviderOpenAI); ok {
+				value["encrypted_content"] = proof
+			}
+			if summary := responseReasoningSummary(item.Content); len(summary) > 0 {
+				value["summary"] = summary
+			}
 		default:
 			if item.Role != "" {
 				value["role"] = item.Role
@@ -594,6 +641,21 @@ func responseContent(content []canonical.Content) ([]any, error) {
 	return result, nil
 }
 
+func responseReasoningSummary(content []canonical.Content) []any {
+	result := make([]any, 0, len(content))
+	for _, part := range content {
+		value := nativeExtras(part.Extra)
+		typeName := part.Type
+		if typeName == "" || typeName == "reasoning_text" || typeName == "output_text" {
+			typeName = "summary_text"
+		}
+		value["type"] = typeName
+		value["text"] = part.Text
+		result = append(result, value)
+	}
+	return result
+}
+
 func chatTools(tools []canonical.Tool) ([]any, error) {
 	result := make([]any, 0, len(tools))
 	for _, tool := range tools {
@@ -631,6 +693,9 @@ func responseTools(tools []canonical.Tool) ([]any, error) {
 		value["type"] = typeName
 		if tool.Name != "" {
 			value["name"] = tool.Name
+		}
+		if tool.Namespace != "" {
+			value["namespace"] = tool.Namespace
 		}
 		if tool.Description != "" {
 			value["description"] = tool.Description
@@ -806,15 +871,15 @@ func decodeChat(raw []byte, route transport.Route) (canonical.Response, error) {
 		if choice.Message.Audio != nil {
 			content = append(content, canonical.Content{Type: "output_audio", Data: choice.Message.Audio.Data, Transcript: choice.Message.Audio.Transcript, Extra: map[string]json.RawMessage{"id": must(choice.Message.Audio.ID), "expires_at": must(choice.Message.Audio.ExpiresAt)}})
 		}
+		if choice.Message.ReasoningContent != "" {
+			response.Output = append(response.Output, canonical.Item{Type: "reasoning", Role: canonical.RoleAssistant, Status: "completed", Content: []canonical.Content{{Type: "reasoning_text", Text: choice.Message.ReasoningContent}}, Extra: map[string]json.RawMessage{chatChoiceIndex: must(choice.Index)}})
+		}
 		if len(content) > 0 || len(choice.Message.ToolCalls) == 0 {
 			role := canonical.Role(choice.Message.Role)
 			if role == "" {
 				role = canonical.RoleAssistant
 			}
 			response.Output = append(response.Output, canonical.Item{Type: "message", Role: role, Status: "completed", Content: content, Extra: extra})
-		}
-		if choice.Message.ReasoningContent != "" {
-			response.Output = append(response.Output, canonical.Item{Type: "reasoning", Role: canonical.RoleAssistant, Status: "completed", Content: []canonical.Content{{Type: "reasoning_text", Text: choice.Message.ReasoningContent}}, Extra: map[string]json.RawMessage{chatChoiceIndex: must(choice.Index)}})
 		}
 		for _, call := range choice.Message.ToolCalls {
 			response.Output = append(response.Output, canonical.Item{Type: "function_call", Role: canonical.RoleAssistant, Status: "completed", ID: call.ID, CallID: call.ID, Name: call.Function.Name, Arguments: normalizeArguments([]byte(call.Function.Arguments)), Extra: map[string]json.RawMessage{chatChoiceIndex: must(choice.Index)}})
@@ -888,7 +953,7 @@ func decodeResponseItem(raw json.RawMessage) (canonical.Item, error) {
 	if err := json.Unmarshal(raw, &fields); err != nil {
 		return canonical.Item{}, err
 	}
-	item := canonical.Item{ID: rawString(fields["id"]), Type: rawString(fields["type"]), Role: canonical.Role(rawString(fields["role"])), Name: rawString(fields["name"]), CallID: rawString(fields["call_id"]), Status: rawString(fields["status"]), Extra: exceptRaw(fields, "id", "type", "role", "name", "call_id", "status", "arguments", "output", "content")}
+	item := canonical.Item{ID: rawString(fields["id"]), Type: rawString(fields["type"]), Role: canonical.Role(rawString(fields["role"])), Name: rawString(fields["name"]), Namespace: rawString(fields["namespace"]), CallID: rawString(fields["call_id"]), Status: rawString(fields["status"]), Extra: exceptRaw(fields, "id", "type", "role", "name", "namespace", "call_id", "status", "arguments", "output", "content", "summary", "encrypted_content")}
 	if item.Type == "" && item.Role != "" {
 		item.Type = "message"
 	}
@@ -902,6 +967,16 @@ func decodeResponseItem(raw json.RawMessage) (canonical.Item, error) {
 			return canonical.Item{}, err
 		}
 		item.Content = content
+	}
+	if item.Type == "reasoning" {
+		content, err := decodeResponseReasoningSummary(fields["summary"])
+		if err != nil {
+			return canonical.Item{}, err
+		}
+		item.Content = content
+		if proof := rawString(fields["encrypted_content"]); proof != "" {
+			item.Proof = &canonical.ProviderProof{Provider: canonical.ProofProviderOpenAI, Value: proof}
+		}
 	}
 	return item, nil
 }
@@ -929,6 +1004,38 @@ func decodeResponseContent(raw json.RawMessage) ([]canonical.Content, error) {
 		result = append(result, part)
 	}
 	return result, nil
+}
+
+func decodeResponseReasoningSummary(raw json.RawMessage) ([]canonical.Content, error) {
+	trimmed := bytes.TrimSpace(raw)
+	if len(trimmed) == 0 || bytes.Equal(trimmed, []byte("null")) {
+		return nil, nil
+	}
+	var values []map[string]json.RawMessage
+	if err := json.Unmarshal(trimmed, &values); err != nil {
+		return nil, err
+	}
+	result := make([]canonical.Content, 0, len(values))
+	for _, fields := range values {
+		result = append(result, responseReasoningContent(fields))
+	}
+	return result, nil
+}
+
+func decodeResponseReasoningPart(raw json.RawMessage) (canonical.Content, error) {
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &fields); err != nil {
+		return canonical.Content{}, err
+	}
+	return responseReasoningContent(fields), nil
+}
+
+func responseReasoningContent(fields map[string]json.RawMessage) canonical.Content {
+	typeName := rawString(fields["type"])
+	if typeName == "summary_text" {
+		typeName = "reasoning_text"
+	}
+	return canonical.Content{Type: typeName, Text: rawString(fields["text"]), Extra: exceptRaw(fields, "type", "text")}
 }
 
 func decodeChatContent(raw json.RawMessage) ([]canonical.Content, error) {
@@ -1074,7 +1181,11 @@ func decodeResponseEvents(name string, raw []byte, route transport.Route) ([]can
 		name = rawString(fields["type"])
 	}
 	eventType := responseEventType(name)
-	event := canonical.Event{Type: eventType, RawType: name, Raw: append(json.RawMessage(nil), raw...), SequenceNumber: rawInt64(fields["sequence_number"]), OutputIndex: rawInt(fields["output_index"]), ContentIndex: rawInt(fields["content_index"]), ToolIndex: rawInt(fields["tool_index"]), Delta: firstRawString(fields, "delta", "text", "arguments"), ProviderResponseID: firstRawString(fields, "response_id")}
+	contentIndex := rawInt(fields["content_index"])
+	if summaryIndex, ok := fields["summary_index"]; ok {
+		contentIndex = rawInt(summaryIndex)
+	}
+	event := canonical.Event{Type: eventType, RawType: name, Raw: append(json.RawMessage(nil), raw...), SequenceNumber: rawInt64(fields["sequence_number"]), OutputIndex: rawInt(fields["output_index"]), ContentIndex: contentIndex, ToolIndex: rawInt(fields["tool_index"]), Delta: firstRawString(fields, "delta", "text", "arguments"), ProviderResponseID: firstRawString(fields, "response_id")}
 	if responseRaw := fields["response"]; len(responseRaw) > 0 {
 		response, err := decodeResponses(responseRaw, route)
 		if err != nil {
@@ -1104,6 +1215,27 @@ func decodeResponseEvents(name string, raw []byte, route transport.Route) ([]can
 			}
 		}
 	}
+	if isReasoningSummaryEvent(eventType) {
+		if event.Item == nil {
+			event.Item = &canonical.Item{ID: rawString(fields["item_id"])}
+		}
+		event.Item.Type = "reasoning"
+		if event.Item.Role == "" {
+			event.Item.Role = canonical.RoleAssistant
+		}
+		if partRaw := fields["part"]; len(partRaw) > 0 {
+			part, err := decodeResponseReasoningPart(partRaw)
+			if err != nil {
+				return nil, err
+			}
+			event.Item.Content = []canonical.Content{part}
+			if event.Delta == "" {
+				event.Delta = part.Text
+			}
+		} else if eventType == canonical.EventReasoningTextDone {
+			event.Item.Content = []canonical.Content{{Type: "reasoning_text", Text: event.Delta}}
+		}
+	}
 	if usageRaw := fields["usage"]; len(usageRaw) > 0 {
 		var usage responsesUsage
 		if err := json.Unmarshal(usageRaw, &usage); err != nil {
@@ -1131,12 +1263,23 @@ func decodeResponseEvent(name string, raw []byte, route transport.Route) (canoni
 
 func responseEventType(name string) canonical.EventType {
 	switch name {
-	case string(canonical.EventResponseCreated), string(canonical.EventResponseQueued), string(canonical.EventResponseInProgress), string(canonical.EventOutputItemAdded), string(canonical.EventOutputItemDone), string(canonical.EventContentPartAdded), string(canonical.EventContentPartDone), string(canonical.EventTextDelta), string(canonical.EventTextDone), string(canonical.EventToolArgumentsDelta), string(canonical.EventUsage), string(canonical.EventCompleted), string(canonical.EventIncomplete), string(canonical.EventFailed), string(canonical.EventError):
+	case string(canonical.EventResponseCreated), string(canonical.EventResponseQueued), string(canonical.EventResponseInProgress), string(canonical.EventOutputItemAdded), string(canonical.EventOutputItemDone), string(canonical.EventContentPartAdded), string(canonical.EventContentPartDone), string(canonical.EventTextDelta), string(canonical.EventTextDone), string(canonical.EventReasoningPartAdded), string(canonical.EventReasoningTextDone), string(canonical.EventReasoningPartDone), string(canonical.EventToolArgumentsDelta), string(canonical.EventUsage), string(canonical.EventCompleted), string(canonical.EventIncomplete), string(canonical.EventFailed), string(canonical.EventError):
 		return canonical.EventType(name)
 	case "response.reasoning.delta", "response.reasoning_text.delta", "response.reasoning_summary_text.delta":
 		return canonical.EventReasoningDelta
+	case "response.reasoning_text.done":
+		return canonical.EventReasoningTextDone
 	default:
 		return canonical.EventRaw
+	}
+}
+
+func isReasoningSummaryEvent(eventType canonical.EventType) bool {
+	switch eventType {
+	case canonical.EventReasoningDelta, canonical.EventReasoningPartAdded, canonical.EventReasoningTextDone, canonical.EventReasoningPartDone:
+		return true
+	default:
+		return false
 	}
 }
 

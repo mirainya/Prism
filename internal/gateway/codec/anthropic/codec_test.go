@@ -62,6 +62,122 @@ func TestDecodeRequestMapsToolHistoryMediaAndExtensions(t *testing.T) {
 	}
 }
 
+func TestAnthropicReasoningProofRequestRoundTrip(t *testing.T) {
+	request, err := DecodeRequestJSON([]byte(`{
+		"model":"claude","max_tokens":64,"messages":[
+			{"role":"assistant","content":[
+				{"type":"thinking","thinking":"first","signature":"sig-thinking"},
+				{"type":"redacted_thinking","data":"opaque"}
+			]},
+			{"role":"user","content":[{"type":"text","text":"continue"}]}
+		]
+	}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(request.Items) != 3 {
+		t.Fatalf("items = %#v", request.Items)
+	}
+	proof := request.Items[0].Proof
+	if proof == nil || proof.Provider != canonical.ProofProviderAnthropic || proof.Value != "sig-thinking" {
+		t.Fatalf("thinking proof = %#v", proof)
+	}
+	redactedProof := request.Items[1].Proof
+	if redactedProof == nil || redactedProof.Provider != canonical.ProofProviderAnthropic || redactedProof.Subject != canonical.ProofSubjectAnthropicRedacted || redactedProof.Value != "opaque" {
+		t.Fatalf("redacted thinking proof = %#v", redactedProof)
+	}
+
+	body, err := EncodeRequest(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	encoded, err := json.Marshal(body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(encoded)
+	for _, expected := range []string{
+		`"thinking":"first"`, `"signature":"sig-thinking"`,
+		`"type":"redacted_thinking"`, `"data":"opaque"`,
+	} {
+		if !strings.Contains(text, expected) {
+			t.Fatalf("missing %s in %s", expected, text)
+		}
+	}
+	if strings.Count(text, `"signature"`) != 1 {
+		t.Fatalf("unexpected redacted signature in %s", text)
+	}
+}
+
+func TestAnthropicEncoderRejectsForeignReasoningProof(t *testing.T) {
+	rawBlock := map[string]json.RawMessage{extraRawBlock: json.RawMessage(`{"type":"thinking","thinking":"stale","signature":"must-not-leak"}`)}
+	reasoning := canonical.Item{
+		Type: "reasoning", Role: canonical.RoleAssistant,
+		Content: []canonical.Content{{Type: "reasoning_text", Text: "safe", Extra: rawBlock}},
+		Proof:   &canonical.ProviderProof{Provider: canonical.ProofProviderGoogle, Value: "foreign-proof"},
+		Extra:   rawBlock,
+	}
+	requestBody, err := EncodeRequest(canonical.Request{
+		Model: "claude", Items: []canonical.Item{
+			reasoning,
+			{Type: "message", Role: canonical.RoleUser, Content: []canonical.Content{{Type: "input_text", Text: "continue"}}},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	requestJSON, _ := json.Marshal(requestBody)
+	if strings.Contains(string(requestJSON), "signature") || strings.Contains(string(requestJSON), "foreign-proof") {
+		t.Fatalf("foreign proof leaked into request: %s", requestJSON)
+	}
+
+	responseJSON, err := EncodeResponseJSON(canonical.Response{Model: "claude", Output: []canonical.Item{reasoning}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(responseJSON), "signature") || strings.Contains(string(responseJSON), "foreign-proof") {
+		t.Fatalf("foreign proof leaked into response: %s", responseJSON)
+	}
+}
+
+func TestEncodeRequestPreservesProofOnlyReasoning(t *testing.T) {
+	request := canonical.Request{Model: "claude", Items: []canonical.Item{{
+		Type: "reasoning", Role: canonical.RoleAssistant,
+		Proof: &canonical.ProviderProof{Provider: canonical.ProofProviderAnthropic, Value: "sig-only"},
+	}}}
+	body, err := EncodeRequest(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	encoded, err := json.Marshal(body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(encoded), `"type":"thinking"`) || !strings.Contains(string(encoded), `"thinking":""`) || !strings.Contains(string(encoded), `"signature":"sig-only"`) {
+		t.Fatalf("proof-only reasoning was lost: %s", encoded)
+	}
+}
+
+func TestEncodeRequestPreservesRedactedReasoningWithoutContent(t *testing.T) {
+	request := canonical.Request{Model: "claude", Items: []canonical.Item{{
+		Type: "reasoning",
+		Extra: map[string]json.RawMessage{
+			extraRawBlock: json.RawMessage(`{"type":"redacted_thinking","data":"opaque"}`),
+		},
+	}}}
+	body, err := EncodeRequest(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	encoded, err := json.Marshal(body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(encoded), `"type":"redacted_thinking"`) || !strings.Contains(string(encoded), `"data":"opaque"`) {
+		t.Fatalf("redacted reasoning was lost: %s", encoded)
+	}
+}
+
 func TestDecodePublicRequestAndEncodeResponse(t *testing.T) {
 	request, err := DecodeRequestJSON([]byte(`{"model":"claude","max_tokens":32,"messages":[{"role":"user","content":[{"type":"text","text":"hello"}]}]}`))
 	if err != nil {
@@ -119,6 +235,13 @@ func TestDecodeResponseMapsErrorAndExtendedUsage(t *testing.T) {
 	if response.Status != "incomplete" || response.Usage == nil || response.Usage.CachedInputTokens != 2 || len(response.Usage.Extra["cache_creation_input_tokens"]) == 0 || len(response.Output) != 2 {
 		t.Fatalf("response = %#v", response)
 	}
+	if proof := response.Output[0].Proof; proof == nil || proof.Provider != canonical.ProofProviderAnthropic || proof.Value != "sig" {
+		t.Fatalf("thinking proof = %#v", proof)
+	}
+	encoded, err := EncodeResponseJSON(response)
+	if err != nil || !strings.Contains(string(encoded), `"signature":"sig"`) {
+		t.Fatalf("encoded response = %s err=%v", encoded, err)
+	}
 	errorResponse, err := DecodeResponse([]byte(`{"type":"error","error":{"type":"overloaded_error","message":"busy"}}`), "public")
 	if err != nil || errorResponse.Error == nil || errorResponse.Error.Type != "overloaded_error" || !errorResponse.Error.Retryable {
 		t.Fatalf("error response = %#v err=%v", errorResponse, err)
@@ -155,6 +278,99 @@ func TestDecodeEventUsesTaggedDeltaFields(t *testing.T) {
 	}
 	if event.Type != canonical.EventToolArgumentsDelta || event.ToolIndex != 3 || event.Delta != `{"q":` {
 		t.Fatalf("event = %#v", event)
+	}
+}
+
+func TestEncodeSSEFrameUsesProviderProofFragment(t *testing.T) {
+	event := canonical.Event{
+		Type: canonical.EventProviderProof, ContentIndex: 0, Delta: "native",
+		Item: &canonical.Item{Type: "reasoning", Proof: &canonical.ProviderProof{Provider: canonical.ProofProviderAnthropic, Value: "sig-native"}},
+	}
+	frame, err := EncodeSSEFrame(event)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(frame), `"signature":"native"`) || strings.Contains(string(frame), `"signature":"sig-native"`) {
+		t.Fatalf("signature fragment frame = %s", frame)
+	}
+}
+
+func TestAnthropicSignatureDeltaRoundTrip(t *testing.T) {
+	start, err := DecodeEvent("content_block_start", []byte(`{"type":"content_block_start","index":3,"content_block":{"type":"thinking","thinking":""}}`))
+	if err != nil || start.Item == nil || start.Item.Type != "reasoning" {
+		t.Fatalf("start = %#v err=%v", start, err)
+	}
+	reasoningDelta, err := DecodeEvent("content_block_delta", []byte(`{"type":"content_block_delta","index":3,"delta":{"type":"thinking_delta","thinking":"considering"}}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	event, err := DecodeEvent("content_block_delta", []byte(`{"type":"content_block_delta","index":3,"delta":{"type":"signature_delta","signature":"sig-stream"}}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if event.Type != canonical.EventProviderProof || event.ContentIndex != 3 || event.Item == nil || event.Item.Type != "reasoning" {
+		t.Fatalf("event = %#v", event)
+	}
+	proof := event.Item.Proof
+	if proof == nil || proof.Provider != canonical.ProofProviderAnthropic || proof.Value != "sig-stream" {
+		t.Fatalf("proof = %#v", proof)
+	}
+	accumulator := canonical.NewEventAccumulator()
+	accumulator.Observe(start)
+	accumulator.Observe(reasoningDelta)
+	accumulator.Observe(event)
+	output := accumulator.Snapshot().Output
+	if len(output) != 1 || output[0].Type != "reasoning" || output[0].Proof == nil || output[0].Proof.Value != "sig-stream" {
+		t.Fatalf("accumulated output = %#v", output)
+	}
+	var reasoningText string
+	for _, part := range output[0].Content {
+		reasoningText += part.Text
+	}
+	if reasoningText != "considering" {
+		t.Fatalf("reasoning text = %q; output=%#v", reasoningText, output)
+	}
+	frame, err := EncodeSSEFrame(event)
+	if err != nil || !strings.Contains(string(frame), `"index":3`) || !strings.Contains(string(frame), `"signature":"sig-stream","type":"signature_delta"`) {
+		t.Fatalf("frame = %s err=%v", frame, err)
+	}
+
+	foreign := event
+	foreign.Item = &canonical.Item{Type: "reasoning", Proof: &canonical.ProviderProof{Provider: canonical.ProofProviderOpenAI, Value: "foreign"}}
+	frame, err = EncodeSSEFrame(foreign)
+	if err != nil || len(frame) != 0 {
+		t.Fatalf("foreign proof frame = %s err=%v", frame, err)
+	}
+	encoded := encodeSSEEvents(t, NewSSEEncoder("public-model"), []canonical.Event{foreign})
+	if encoded != "" {
+		t.Fatalf("foreign proof opened an Anthropic stream block: %s", encoded)
+	}
+}
+
+func TestSSEEncoderPreservesRedactedThinkingStart(t *testing.T) {
+	event, err := DecodeEvent("content_block_start", []byte(`{"type":"content_block_start","index":2,"content_block":{"type":"redacted_thinking","data":"opaque"}}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	encoded := encodeSSEEvents(t, NewSSEEncoder("public-model"), []canonical.Event{event})
+	if !strings.Contains(encoded, `"type":"redacted_thinking"`) || !strings.Contains(encoded, `"data":"opaque"`) {
+		t.Fatalf("redacted thinking start was not preserved: %s", encoded)
+	}
+	if strings.Contains(encoded, `"type":"thinking","thinking":""`) {
+		t.Fatalf("redacted thinking was rewritten as ordinary thinking: %s", encoded)
+	}
+}
+
+func TestSSEEncoderRebuildsRedactedThinkingFromProof(t *testing.T) {
+	item := canonical.Item{Type: "reasoning", Role: canonical.RoleAssistant, Proof: &canonical.ProviderProof{
+		Provider: canonical.ProofProviderAnthropic, Subject: canonical.ProofSubjectAnthropicRedacted, Value: "opaque-proof",
+	}}
+	encoded := encodeSSEEvents(t, NewSSEEncoder("public-model"), []canonical.Event{
+		{Type: canonical.EventProviderProof, Item: &item},
+		{Type: canonical.EventCompleted},
+	})
+	if !strings.Contains(encoded, `"type":"redacted_thinking"`) || !strings.Contains(encoded, `"data":"opaque-proof"`) || strings.Contains(encoded, `"signature":"opaque-proof"`) {
+		t.Fatalf("redacted proof stream = %s", encoded)
 	}
 }
 

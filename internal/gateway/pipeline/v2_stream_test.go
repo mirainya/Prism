@@ -9,6 +9,11 @@ import (
 )
 
 func TestNormalizeV2ChatEventKeepsOnlyNativeRaw(t *testing.T) {
+	proof := canonical.Event{Type: canonical.EventProviderProof, Item: &canonical.Item{Type: "reasoning", Proof: &canonical.ProviderProof{Provider: canonical.ProofProviderGoogle, Value: "proof"}}}
+	if normalizeV2ChatEvent(&proof, "public-model", transport.GoogleGenerateContent) {
+		t.Fatal("provider proof was exposed as an empty Chat chunk")
+	}
+
 	foreign := canonical.Event{Type: canonical.EventRaw, RawType: "response.vendor.trace", Raw: json.RawMessage(`{"type":"response.vendor.trace"}`)}
 	if normalizeV2ChatEvent(&foreign, "public-model", transport.OpenAIResponses) {
 		t.Fatal("foreign Responses raw event was forwarded to Chat")

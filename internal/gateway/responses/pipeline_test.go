@@ -6,10 +6,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/glebarez/sqlite"
 	"github.com/mirainya/Prism/internal/model"
 	protocol "github.com/mirainya/Prism/internal/provider/responses"
-	"gorm.io/gorm"
 )
 
 type failingReadCloser struct {
@@ -26,10 +24,7 @@ func (reader *failingReadCloser) Read(buffer []byte) (int, error) {
 func (*failingReadCloser) Close() error { return nil }
 
 func TestResolveInputFilesChecksOwnership(t *testing.T) {
-	db, err := gorm.Open(sqlite.Open("file:responses_files?mode=memory&cache=shared"), &gorm.Config{})
-	if err != nil {
-		t.Fatal(err)
-	}
+	db := openResponsesTestDB(t)
 	if err := db.AutoMigrate(&model.AIFile{}); err != nil {
 		t.Fatal(err)
 	}
@@ -52,10 +47,7 @@ func TestResolveInputFilesChecksOwnership(t *testing.T) {
 }
 
 func TestResolveInputFilesUsesModalitySpecificDataURLs(t *testing.T) {
-	db, err := gorm.Open(sqlite.Open("file:responses_modality_files?mode=memory&cache=shared"), &gorm.Config{})
-	if err != nil {
-		t.Fatal(err)
-	}
+	db := openResponsesTestDB(t)
 	if err := db.AutoMigrate(&model.AIFile{}); err != nil {
 		t.Fatal(err)
 	}

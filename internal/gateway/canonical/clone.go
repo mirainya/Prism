@@ -66,6 +66,7 @@ func CloneItems(items []Item) []Item {
 		clone[i] = item
 		clone[i].Arguments = cloneRaw(item.Arguments)
 		clone[i].Output = cloneRaw(item.Output)
+		clone[i].Proof = clonePointer(item.Proof)
 		clone[i].Extra = cloneRawMap(item.Extra)
 		if item.Content != nil {
 			clone[i].Content = make([]Content, len(item.Content))

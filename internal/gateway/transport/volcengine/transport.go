@@ -39,6 +39,17 @@ func (*Transport) Plan(operation gatewaytransport.Operation, request canonical.R
 	if request.User != "" {
 		return gatewaytransport.Unsupported(operation, "Volcengine Responses v3 does not support user")
 	}
+	for index, item := range request.Items {
+		if item.Proof != nil {
+			return gatewaytransport.Unsupported(operation, fmt.Sprintf("Volcengine Responses v3 cannot replay provider proof on item %d", index))
+		}
+	}
+	if field := gatewaytransport.UnsupportedNamespace(request); field != "" {
+		return gatewaytransport.Unsupported(operation, "Volcengine Responses v3 cannot preserve "+field)
+	}
+	if field := gatewaytransport.UnsupportedProviderCallIDState(request); field != "" {
+		return gatewaytransport.Unsupported(operation, "Volcengine Responses v3 cannot preserve "+field)
+	}
 	for _, tool := range request.Tools {
 		if tool.Type == "file_search" {
 			return gatewaytransport.Unsupported(operation, "Volcengine Responses v3 does not support file_search")
@@ -694,8 +705,14 @@ func decodeEvent(raw []byte, eventName, publicModel string) (canonical.Event, er
 	eventType := canonical.EventType(typeName)
 	if typeName == "response.reasoning_text.delta" || typeName == "response.reasoning_summary_text.delta" {
 		eventType = canonical.EventReasoningDelta
+	} else if typeName == "response.reasoning_text.done" {
+		eventType = canonical.EventReasoningTextDone
 	}
-	event := canonical.Event{Type: eventType, RawType: eventName, Raw: append(json.RawMessage(nil), raw...), SequenceNumber: rawInt64(root["sequence_number"]), OutputIndex: rawInt(root["output_index"]), ContentIndex: rawInt(root["content_index"]), ToolIndex: rawInt(root["tool_index"]), Delta: first(root, "delta", "text", "arguments"), ProviderResponseID: rawString(root["response_id"])}
+	contentIndex := rawInt(root["content_index"])
+	if summaryIndex, ok := root["summary_index"]; ok {
+		contentIndex = rawInt(summaryIndex)
+	}
+	event := canonical.Event{Type: eventType, RawType: eventName, Raw: append(json.RawMessage(nil), raw...), SequenceNumber: rawInt64(root["sequence_number"]), OutputIndex: rawInt(root["output_index"]), ContentIndex: contentIndex, ToolIndex: rawInt(root["tool_index"]), Delta: first(root, "delta", "text", "arguments"), ProviderResponseID: rawString(root["response_id"])}
 	if typeName == "error" {
 		event.Error = decodeError(root)
 		return event, nil
@@ -726,6 +743,24 @@ func decodeEvent(raw []byte, eventName, publicModel string) (canonical.Event, er
 			if event.Type == canonical.EventToolArgumentsDelta {
 				event.Item.Type = "function_call"
 			}
+		}
+	}
+	if isReasoningSummaryEvent(eventType) {
+		if event.Item == nil {
+			event.Item = &canonical.Item{ID: rawString(root["item_id"])}
+		}
+		event.Item.Type = "reasoning"
+		if event.Item.Role == "" {
+			event.Item.Role = canonical.RoleAssistant
+		}
+		if partRaw := root["part"]; len(partRaw) > 0 {
+			part, err := decodeReasoningPart(partRaw)
+			if err != nil {
+				return canonical.Event{}, err
+			}
+			event.Item.Content = []canonical.Content{part}
+		} else if eventType == canonical.EventReasoningTextDone {
+			event.Item.Content = []canonical.Content{{Type: "reasoning_text", Text: event.Delta}}
 		}
 	}
 	if value := root["usage"]; len(value) > 0 {
@@ -775,7 +810,7 @@ func decodeItem(raw []byte) (canonical.Item, error) {
 	if err := json.Unmarshal(raw, &value); err != nil {
 		return canonical.Item{}, err
 	}
-	item := canonical.Item{ID: rawString(value["id"]), Type: rawString(value["type"]), Role: canonical.Role(rawString(value["role"])), Name: rawString(value["name"]), CallID: rawString(value["call_id"]), Arguments: normalizeArguments(value["arguments"]), Output: append(json.RawMessage(nil), value["output"]...), Status: rawString(value["status"]), Extra: except(value, "id", "type", "role", "name", "call_id", "arguments", "output", "status", "content")}
+	item := canonical.Item{ID: rawString(value["id"]), Type: rawString(value["type"]), Role: canonical.Role(rawString(value["role"])), Name: rawString(value["name"]), CallID: rawString(value["call_id"]), Arguments: normalizeArguments(value["arguments"]), Output: append(json.RawMessage(nil), value["output"]...), Status: rawString(value["status"]), Extra: except(value, "id", "type", "role", "name", "call_id", "arguments", "output", "status", "content", "summary")}
 	if rawContent := value["content"]; len(rawContent) > 0 {
 		var parts []map[string]json.RawMessage
 		if err := json.Unmarshal(rawContent, &parts); err != nil {
@@ -785,8 +820,56 @@ func decodeItem(raw []byte) (canonical.Item, error) {
 			item.Content = append(item.Content, canonical.Content{Type: rawString(part["type"]), Text: rawString(part["text"]), URL: first(part, "image_url", "video_url", "audio_url", "file_url"), FileID: rawString(part["file_id"]), Filename: rawString(part["filename"]), Data: rawString(part["file_data"]), MediaType: rawString(part["content_type"]), Format: rawString(part["format"]), Detail: rawString(part["detail"]), Transcript: rawString(part["transcript"]), Extra: except(part, "type", "text", "image_url", "video_url", "audio_url", "file_url", "file_id", "filename", "file_data", "content_type", "format", "detail", "transcript")})
 		}
 	}
+	if item.Type == "reasoning" {
+		parts, err := decodeReasoningSummary(value["summary"])
+		if err != nil {
+			return canonical.Item{}, err
+		}
+		item.Content = parts
+	}
 	return item, nil
 }
+
+func isReasoningSummaryEvent(eventType canonical.EventType) bool {
+	switch eventType {
+	case canonical.EventReasoningDelta, canonical.EventReasoningPartAdded, canonical.EventReasoningTextDone, canonical.EventReasoningPartDone:
+		return true
+	default:
+		return false
+	}
+}
+
+func decodeReasoningSummary(raw json.RawMessage) ([]canonical.Content, error) {
+	if len(bytes.TrimSpace(raw)) == 0 || bytes.Equal(bytes.TrimSpace(raw), []byte("null")) {
+		return nil, nil
+	}
+	var values []map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &values); err != nil {
+		return nil, err
+	}
+	result := make([]canonical.Content, 0, len(values))
+	for _, value := range values {
+		result = append(result, reasoningContent(value))
+	}
+	return result, nil
+}
+
+func decodeReasoningPart(raw json.RawMessage) (canonical.Content, error) {
+	var value map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &value); err != nil {
+		return canonical.Content{}, err
+	}
+	return reasoningContent(value), nil
+}
+
+func reasoningContent(value map[string]json.RawMessage) canonical.Content {
+	typeName := rawString(value["type"])
+	if typeName == "summary_text" {
+		typeName = "reasoning_text"
+	}
+	return canonical.Content{Type: typeName, Text: rawString(value["text"]), Extra: except(value, "type", "text")}
+}
+
 func decodeUsage(raw []byte) *canonical.Usage {
 	var usage protocol.Usage
 	if json.Unmarshal(raw, &usage) != nil {

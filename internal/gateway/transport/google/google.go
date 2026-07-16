@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -31,7 +32,10 @@ func (*Transport) Plan(operation transport.Operation, request canonical.Request,
 	if operation != transport.OperationChat && operation != transport.OperationResponses && operation != transport.OperationMessages {
 		return transport.Unsupported(operation, "unsupported Gemini operation")
 	}
-	if request.Background || request.PreviousResponseID != "" || len(request.Include) > 0 {
+	if operation != transport.OperationResponses {
+		return transport.Unsupported(operation, "Gemini GenerateContent requires a Responses downstream to preserve provider proofs")
+	}
+	if request.Background || request.PreviousResponseID != "" || !transport.SupportsLocalResponsesInclude(operation, request.Include) {
 		return transport.Unsupported(operation, "Gemini GenerateContent does not support response persistence, background execution, or previous_response_id")
 	}
 	// Responses storage is owned by Prism; other downstream protocols would be
@@ -45,8 +49,48 @@ func (*Transport) Plan(operation transport.Operation, request canonical.Request,
 	if hasVolcengineOptions(request.ProviderOptions.Volcengine) {
 		return transport.Unsupported(operation, "Gemini GenerateContent cannot preserve Volcengine provider options")
 	}
-	if request.Reasoning != nil || request.ParallelToolCalls != nil {
-		return transport.Unsupported(operation, "Gemini GenerateContent transport does not support reasoning or parallel tool controls")
+	if googleRequestExtrasConflict(request.ClientExtensions["google.generate_content.request_extras"]) != "" {
+		return transport.Unsupported(operation, "Gemini GenerateContent request extras cannot override canonical fields")
+	}
+	if operation != transport.OperationResponses && (features.Has(canonical.FeatureTools) || hasFunctionCallHistory(request.Items)) {
+		return transport.Unsupported(operation, "this downstream protocol cannot preserve Gemini function-call proofs")
+	}
+	googlePartTargets := make(map[string]bool)
+	if !validGoogleFunctionCallGroups(request.Items) {
+		return transport.Unsupported(operation, "Gemini GenerateContent requires the original first-call proof for function-call history")
+	}
+	for index, item := range request.Items {
+		if item.ProviderCallIDOmitted && item.Type != "function_call" {
+			return transport.Unsupported(operation, "Gemini GenerateContent cannot preserve provider call-ID state on "+item.Type)
+		}
+		if item.Proof == nil {
+			continue
+		}
+		if _, ok := canonical.NativeProviderProofValue(item.Proof, canonical.ProofProviderGoogle); !ok {
+			return transport.Unsupported(operation, "Gemini GenerateContent cannot preserve a non-Google or empty provider proof")
+		}
+		if item.Proof.Subject == canonical.ProofSubjectGooglePart {
+			if googlePartTargets[item.Proof.TargetID] || operation != transport.OperationResponses || !validGooglePartProofCarrier(request.Items, index) {
+				return transport.Unsupported(operation, "Gemini GenerateContent cannot replay this Google text proof carrier")
+			}
+			googlePartTargets[item.Proof.TargetID] = true
+			continue
+		}
+		if item.Proof.Subject != "" || item.Proof.TargetID != "" {
+			return transport.Unsupported(operation, "Gemini GenerateContent cannot preserve this provider proof shape")
+		}
+		if item.Type != "reasoning" && item.Type != "function_call" {
+			return transport.Unsupported(operation, "Gemini GenerateContent cannot preserve a provider proof on "+item.Type)
+		}
+	}
+	if field := transport.UnsupportedNamespace(request); field != "" {
+		return transport.Unsupported(operation, "Gemini GenerateContent cannot preserve "+field)
+	}
+	if request.Reasoning != nil {
+		return transport.Unsupported(operation, "Gemini GenerateContent transport does not support reasoning controls")
+	}
+	if request.ParallelToolCalls != nil && !*request.ParallelToolCalls && googleMayCallTools(request) {
+		return transport.Unsupported(operation, "Gemini GenerateContent cannot guarantee disabled parallel tool calls")
 	}
 	if format := request.ResponseFormat; format != nil {
 		if (format.Type != "json_object" && format.Type != "json_schema") || format.Name != "" || format.Description != "" || format.Strict != nil {
@@ -93,6 +137,110 @@ func (*Transport) Plan(operation transport.Operation, request canonical.Request,
 	default:
 		return transport.Unsupported(operation, "unsupported Gemini operation")
 	}
+}
+
+func googleMayCallTools(request canonical.Request) bool {
+	if len(request.Tools) == 0 {
+		return false
+	}
+	if request.ToolChoice == nil {
+		return true
+	}
+	mode := strings.ToUpper(strings.TrimSpace(request.ToolChoice.Mode))
+	if mode == "" {
+		mode = strings.ToUpper(strings.TrimSpace(request.ToolChoice.Type))
+	}
+	return mode != "NONE"
+}
+
+func validGoogleFunctionCallGroups(items []canonical.Item) bool {
+	currentRole := ""
+	seenFunctionCall := false
+	for _, item := range items {
+		if item.Proof != nil && item.Proof.Subject == canonical.ProofSubjectGooglePart {
+			continue
+		}
+		role, emitted := googleItemRole(item)
+		if !emitted {
+			continue
+		}
+		if role != currentRole {
+			currentRole = role
+			seenFunctionCall = false
+		}
+		if item.Type != "function_call" {
+			continue
+		}
+		proof := item.Proof
+		if !seenFunctionCall && proof == nil {
+			return false
+		}
+		if proof != nil && (proof.Provider != canonical.ProofProviderGoogle || proof.Value == "" || proof.Subject != "" || proof.TargetID != "") {
+			return false
+		}
+		seenFunctionCall = true
+	}
+	return true
+}
+
+func googleItemRole(item canonical.Item) (string, bool) {
+	switch item.Type {
+	case "reasoning", "function_call":
+		return "model", true
+	case "function_call_output":
+		return "user", true
+	}
+	switch item.Role {
+	case canonical.RoleSystem, canonical.RoleDeveloper:
+		return "", false
+	case canonical.RoleAssistant:
+		return "model", true
+	default:
+		return "user", true
+	}
+}
+
+func validGooglePartProofCarrier(items []canonical.Item, index int) bool {
+	if index < 0 || index >= len(items) {
+		return false
+	}
+	carrier := items[index]
+	if carrier.Proof == nil || strings.TrimSpace(carrier.Proof.TargetID) == "" {
+		return false
+	}
+	if carrier.Type != "reasoning" || (carrier.Role != "" && carrier.Role != canonical.RoleAssistant) || carrier.Name != "" || carrier.CallID != "" || carrier.ProviderCallIDOmitted ||
+		len(carrier.Content) != 0 || len(carrier.Arguments) != 0 || len(carrier.Output) != 0 || len(carrier.Extra) != 0 {
+		return false
+	}
+	targetIndex := -1
+	for candidate := range items {
+		if items[candidate].ID != carrier.Proof.TargetID {
+			continue
+		}
+		if targetIndex >= 0 {
+			return false
+		}
+		targetIndex = candidate
+	}
+	if targetIndex < 0 || targetIndex == index {
+		return false
+	}
+	target := items[targetIndex]
+	if target.Type != "message" || target.Role != canonical.RoleAssistant || target.ID == "" ||
+		carrier.Proof.TargetID != target.ID || len(target.Content) != 1 || target.Proof != nil {
+		return false
+	}
+	parts, err := encodeContent(target.Content)
+	return err == nil && len(parts) == 1
+}
+
+func hasFunctionCallHistory(items []canonical.Item) bool {
+	for _, item := range items {
+		if item.Type == "function_call" || item.Type == "function_call_output" {
+			return true
+		}
+	}
+	return false
 }
 
 func hasVolcengineOptions(options *canonical.VolcengineOptions) bool {
@@ -229,23 +377,101 @@ func encode(invocation transport.Invocation) ([]byte, error) {
 			return nil, fmt.Errorf("google.generate_content.request_extras: %w", err)
 		}
 		for key, value := range extras {
+			if googleReservedRequestField(key) {
+				return nil, fmt.Errorf("google.generate_content.request_extras cannot override %q", key)
+			}
 			body[key] = value
 		}
 	}
 	return json.Marshal(body)
 }
 
+func googleRequestExtrasConflict(raw json.RawMessage) string {
+	if !transport.HasJSONValue(raw) {
+		return ""
+	}
+	var extras map[string]json.RawMessage
+	if json.Unmarshal(raw, &extras) != nil {
+		return "invalid"
+	}
+	for key := range extras {
+		if googleReservedRequestField(key) {
+			return key
+		}
+	}
+	return ""
+}
+
+func googleReservedRequestField(key string) bool {
+	switch key {
+	case "contents", "systemInstruction", "generationConfig", "tools", "toolConfig":
+		return true
+	default:
+		return false
+	}
+}
+
 func encodeItems(items []canonical.Item) ([]any, []string, error) {
 	contents := make([]any, 0, len(items))
 	system := make([]string, 0)
-	callNames := make(map[string]string)
-	for _, item := range items {
+	type callReplay struct {
+		name   string
+		omitID bool
+	}
+	callNames := make(map[string]callReplay)
+	if !validGoogleFunctionCallGroups(items) {
+		return nil, nil, errors.New("Gemini function-call history is missing its first-call Google proof")
+	}
+	partProofs := make(map[string]*canonical.ProviderProof)
+	partCarriers := make(map[int]bool)
+	for index, item := range items {
+		if item.Proof == nil || item.Proof.Subject != canonical.ProofSubjectGooglePart {
+			continue
+		}
+		if !validGooglePartProofCarrier(items, index) || partProofs[item.Proof.TargetID] != nil {
+			return nil, nil, errors.New("Gemini Google part proof carrier has no unique target message")
+		}
+		proof := *item.Proof
+		partProofs[item.Proof.TargetID] = &proof
+		partCarriers[index] = true
+	}
+	appendContent := func(role string, parts []any) {
+		if len(contents) > 0 {
+			if previous, ok := contents[len(contents)-1].(map[string]any); ok && previous["role"] == role {
+				previousParts, _ := previous["parts"].([]any)
+				previous["parts"] = append(previousParts, parts...)
+				return
+			}
+		}
+		contents = append(contents, map[string]any{"role": role, "parts": parts})
+	}
+	for index := 0; index < len(items); index++ {
+		item := items[index]
+		if partCarriers[index] {
+			continue
+		}
+		if proof := partProofs[item.ID]; proof != nil {
+			parts, err := encodeContent(item.Content)
+			if err != nil {
+				return nil, nil, err
+			}
+			if err := attachGooglePartProof(parts, proof.Value); err != nil {
+				return nil, nil, err
+			}
+			appendContent("model", parts)
+			continue
+		}
 		if item.Type == "reasoning" {
-			return nil, nil, fmt.Errorf("Gemini GenerateContent does not accept reasoning input")
+			parts, err := encodeReasoningItem(item)
+			if err != nil {
+				return nil, nil, err
+			}
+			appendContent("model", parts)
+			continue
 		}
 		if item.Type == "function_call_output" {
-			name := callNames[item.CallID]
-			if name == "" {
+			call, ok := callNames[item.CallID]
+			if !ok || call.name == "" {
 				return nil, nil, fmt.Errorf("function_call_output %q has no preceding function call", item.CallID)
 			}
 			response := any(map[string]any{})
@@ -255,25 +481,36 @@ func encodeItems(items []canonical.Item) ([]any, []string, error) {
 			if _, ok := response.(map[string]any); !ok {
 				response = map[string]any{"result": response}
 			}
-			functionResponse := map[string]any{"name": name, "response": response}
-			if item.CallID != "" {
+			functionResponse := map[string]any{"name": call.name, "response": response}
+			if item.CallID != "" && !call.omitID {
 				functionResponse["id"] = item.CallID
 			}
-			contents = append(contents, map[string]any{"role": "user", "parts": []any{map[string]any{"functionResponse": functionResponse}}})
+			appendContent("user", []any{map[string]any{"functionResponse": functionResponse}})
 			continue
 		}
 		if item.Type == "function_call" {
+			thoughtSignature, err := googleProofValue(item)
+			if err != nil {
+				return nil, nil, err
+			}
 			args := any(map[string]any{})
 			if len(item.Arguments) > 0 && json.Unmarshal(item.Arguments, &args) != nil {
 				return nil, nil, fmt.Errorf("function_call %q arguments: invalid JSON", item.Name)
 			}
-			callNames[item.CallID] = item.Name
+			callNames[item.CallID] = callReplay{name: item.Name, omitID: item.ProviderCallIDOmitted}
 			functionCall := map[string]any{"name": item.Name, "args": args}
-			if item.CallID != "" {
+			if item.CallID != "" && !item.ProviderCallIDOmitted {
 				functionCall["id"] = item.CallID
 			}
-			contents = append(contents, map[string]any{"role": "model", "parts": []any{map[string]any{"functionCall": functionCall}}})
+			part := map[string]any{"functionCall": functionCall}
+			if thoughtSignature != "" {
+				part["thoughtSignature"] = thoughtSignature
+			}
+			appendContent("model", []any{part})
 			continue
+		}
+		if item.Proof != nil {
+			return nil, nil, fmt.Errorf("Gemini GenerateContent cannot preserve a provider proof on %q", item.Type)
 		}
 		parts, err := encodeContent(item.Content)
 		if err != nil {
@@ -287,12 +524,67 @@ func encodeItems(items []canonical.Item) ([]any, []string, error) {
 				}
 			}
 		case canonical.RoleAssistant:
-			contents = append(contents, map[string]any{"role": "model", "parts": parts})
+			appendContent("model", parts)
 		default:
-			contents = append(contents, map[string]any{"role": "user", "parts": parts})
+			appendContent("user", parts)
 		}
 	}
 	return contents, system, nil
+}
+
+func attachGooglePartProof(parts []any, proof string) error {
+	if proof == "" {
+		return errors.New("Gemini Google text proof is empty")
+	}
+	if len(parts) != 1 {
+		return errors.New("Gemini Google part proof target must contain exactly one part")
+	}
+	part, ok := parts[0].(map[string]any)
+	if !ok {
+		return errors.New("Gemini Google part proof target is invalid")
+	}
+	part["thoughtSignature"] = proof
+	return nil
+}
+
+func encodeReasoningItem(item canonical.Item) ([]any, error) {
+	thoughtSignature, err := googleProofValue(item)
+	if err != nil {
+		return nil, err
+	}
+	parts := make([]any, 0, len(item.Content))
+	for _, block := range item.Content {
+		switch block.Type {
+		case "", "reasoning_text", "output_text", "text":
+			parts = append(parts, map[string]any{"text": block.Text, "thought": true})
+		default:
+			return nil, fmt.Errorf("Gemini reasoning does not support content type %q", block.Type)
+		}
+	}
+	if len(parts) == 0 {
+		if thoughtSignature == "" {
+			return nil, fmt.Errorf("Gemini reasoning input requires text or a Google provider proof")
+		}
+		parts = append(parts, map[string]any{"text": "", "thought": true})
+	}
+	if thoughtSignature != "" {
+		parts[len(parts)-1].(map[string]any)["thoughtSignature"] = thoughtSignature
+	}
+	return parts, nil
+}
+
+func googleProofValue(item canonical.Item) (string, error) {
+	if item.Proof == nil {
+		return "", nil
+	}
+	value, ok := canonical.NativeProviderProofValue(item.Proof, canonical.ProofProviderGoogle)
+	if !ok {
+		return "", fmt.Errorf("Gemini GenerateContent cannot preserve provider proof %q", item.Proof.Provider)
+	}
+	if item.Proof.Subject != "" || item.Proof.TargetID != "" {
+		return "", errors.New("Gemini GenerateContent cannot preserve this provider proof shape")
+	}
+	return value, nil
 }
 
 func encodeContent(content []canonical.Content) ([]any, error) {
@@ -301,7 +593,7 @@ func encodeContent(content []canonical.Content) ([]any, error) {
 		switch block.Type {
 		case "", "input_text", "output_text", "text":
 			parts = append(parts, map[string]any{"text": block.Text})
-		case "input_image", "image", "input_file", "file", "document", "input_audio", "audio", "input_video", "video":
+		case "input_image", "output_image", "image", "input_file", "output_file", "file", "document", "input_audio", "output_audio", "audio", "input_video", "output_video", "video":
 			part, err := encodeBlob(block)
 			if err != nil {
 				return nil, err
@@ -445,6 +737,7 @@ type geminiResponse struct {
 	ResponseID   string `json:"responseId"`
 	ModelVersion string `json:"modelVersion"`
 	Candidates   []struct {
+		Index   *int `json:"index"`
 		Content struct {
 			Role  string       `json:"role"`
 			Parts []geminiPart `json:"parts"`
@@ -495,6 +788,9 @@ func decodeResponse(raw []byte, route transport.Route) (canonical.Response, erro
 	if err := json.Unmarshal(raw, &upstream); err != nil {
 		return canonical.Response{}, err
 	}
+	if len(upstream.Candidates) > 1 {
+		return canonical.Response{}, errors.New("Gemini returned multiple candidates, which Responses cannot represent losslessly")
+	}
 	model := route.PublicModel
 	if model == "" {
 		model = route.VendorModel
@@ -511,32 +807,67 @@ func decodeResponse(raw []byte, route transport.Route) (canonical.Response, erro
 		response.Error = &canonical.Error{Type: "invalid_request_error", Code: upstream.PromptFeedback.BlockReason, Message: upstream.PromptFeedback.BlockReasonMessage, Raw: append(json.RawMessage(nil), raw...)}
 	}
 	for candidateIndex, candidate := range upstream.Candidates {
+		choiceIndex := geminiCandidateIndex(candidateIndex, candidate.Index)
 		message := canonical.Item{Type: "message", Role: canonical.RoleAssistant, Status: "completed"}
+		activeReasoning := -1
+		flushMessage := func() {
+			if len(message.Content) == 0 {
+				return
+			}
+			response.Output = append(response.Output, message)
+			message = canonical.Item{Type: "message", Role: canonical.RoleAssistant, Status: "completed"}
+		}
 		for partIndex, part := range candidate.Content.Parts {
+			proof := googleProof(part.ThoughtSignature)
+			if proof != nil && !part.Thought && part.FunctionCall == nil {
+				if part.Text == "" && part.InlineData == nil && part.FileData == nil && activeReasoning >= 0 {
+					response.Output[activeReasoning].Proof = proof
+					continue
+				}
+				activeReasoning = -1
+				content, _ := googlePartContent(part, true)
+				flushMessage()
+				messageID := fmt.Sprintf("message_%d_%d", choiceIndex, partIndex)
+				proof.Subject, proof.TargetID = canonical.ProofSubjectGooglePart, messageID
+				response.Output = append(response.Output,
+					canonical.Item{ID: fmt.Sprintf("proof_%d_%d", choiceIndex, partIndex), Type: "reasoning", Role: canonical.RoleAssistant, Status: "completed", Proof: proof},
+					canonical.Item{ID: messageID, Type: "message", Role: canonical.RoleAssistant, Status: "completed", Content: []canonical.Content{content}},
+				)
+				continue
+			}
 			if part.Text != "" {
 				if part.Thought {
-					response.Output = append(response.Output, canonical.Item{ID: fmt.Sprintf("reasoning_%d_%d", candidateIndex, partIndex), Type: "reasoning", Status: "completed", Content: []canonical.Content{{Type: "output_text", Text: part.Text}}})
+					flushMessage()
+					response.Output = append(response.Output, canonical.Item{ID: fmt.Sprintf("reasoning_%d_%d", choiceIndex, partIndex), Type: "reasoning", Role: canonical.RoleAssistant, Status: "completed", Content: []canonical.Content{{Type: "reasoning_text", Text: part.Text}}, Proof: proof})
+					activeReasoning = len(response.Output) - 1
 				} else {
+					activeReasoning = -1
 					message.Content = append(message.Content, canonical.Content{Type: "output_text", Text: part.Text})
 				}
 			}
 			if part.FunctionCall != nil {
+				activeReasoning = -1
+				flushMessage()
 				callID := part.FunctionCall.ID
 				if callID == "" {
-					callID = fmt.Sprintf("call_%d_%d", candidateIndex, partIndex)
+					callID = fmt.Sprintf("call_%d_%d", choiceIndex, partIndex)
 				}
-				response.Output = append(response.Output, canonical.Item{ID: callID, Type: "function_call", Status: "completed", CallID: callID, Name: part.FunctionCall.Name, Arguments: append(json.RawMessage(nil), part.FunctionCall.Args...)})
+				response.Output = append(response.Output, canonical.Item{ID: callID, Type: "function_call", Status: "completed", CallID: callID, Name: part.FunctionCall.Name, Arguments: append(json.RawMessage(nil), part.FunctionCall.Args...), Proof: proof, ProviderCallIDOmitted: part.FunctionCall.ID == ""})
+			} else if part.Thought && part.Text == "" && proof != nil {
+				flushMessage()
+				response.Output = append(response.Output, canonical.Item{ID: fmt.Sprintf("reasoning_%d_%d", choiceIndex, partIndex), Type: "reasoning", Role: canonical.RoleAssistant, Status: "completed", Proof: proof})
+				activeReasoning = len(response.Output) - 1
 			}
 			if part.InlineData != nil {
+				activeReasoning = -1
 				message.Content = append(message.Content, contentFromBlob(part.InlineData.MIMEType, part.InlineData.Data, ""))
 			}
 			if part.FileData != nil {
+				activeReasoning = -1
 				message.Content = append(message.Content, contentFromBlob(part.FileData.MIMEType, "", part.FileData.FileURI))
 			}
 		}
-		if len(message.Content) > 0 {
-			response.Output = append(response.Output, message)
-		}
+		flushMessage()
 		if candidate.FinishReason != "" {
 			response.FinishReason = candidate.FinishReason
 			switch finishEventType(candidate.FinishReason) {
@@ -550,6 +881,29 @@ func decodeResponse(raw []byte, route transport.Route) (canonical.Response, erro
 	}
 	response.Usage = usageFromGemini(upstream.UsageMetadata)
 	return response, nil
+}
+
+func googleProof(value string) *canonical.ProviderProof {
+	if value == "" {
+		return nil
+	}
+	return &canonical.ProviderProof{Provider: canonical.ProofProviderGoogle, Value: value}
+}
+
+func googlePartContent(part geminiPart, allowEmptyText bool) (canonical.Content, bool) {
+	if part.Text != "" {
+		return canonical.Content{Type: "output_text", Text: part.Text}, true
+	}
+	if part.InlineData != nil {
+		return contentFromBlob(part.InlineData.MIMEType, part.InlineData.Data, ""), true
+	}
+	if part.FileData != nil {
+		return contentFromBlob(part.FileData.MIMEType, "", part.FileData.FileURI), true
+	}
+	if allowEmptyText {
+		return canonical.Content{Type: "output_text"}, true
+	}
+	return canonical.Content{}, false
 }
 
 func usageFromGemini(usage *geminiUsage) *canonical.Usage {
@@ -596,11 +950,34 @@ func newHTTPError(status int, body []byte) error {
 }
 
 type sse struct {
-	body     io.ReadCloser
-	reader   *transport.SSEReader
-	route    transport.Route
-	sequence int64
-	pending  []canonical.Event
+	body            io.ReadCloser
+	reader          *transport.SSEReader
+	route           transport.Route
+	sequence        int64
+	pending         []canonical.Event
+	nextOutputIndex int
+	nextToolIndex   int
+	activeMessages  map[int]googleStreamMessage
+	activeReasoning map[int]googleStreamReasoning
+	toolOutputs     map[string]googleStreamTool
+	candidateChoice int
+	hasCandidate    bool
+}
+
+type googleStreamMessage struct {
+	id    string
+	index int
+}
+
+type googleStreamReasoning struct {
+	id        string
+	index     int
+	partIndex int
+}
+
+type googleStreamTool struct {
+	outputIndex int
+	toolIndex   int
 }
 
 func (s *sse) Close() error { return s.body.Close() }
@@ -634,8 +1011,208 @@ func (s *sse) Next(ctx context.Context) (canonical.Event, error) {
 		if err != nil {
 			return canonical.Event{}, err
 		}
+		if err := s.validateCandidate(events); err != nil {
+			return canonical.Event{}, err
+		}
+		events = s.normalizeEvents(events)
 		s.pending = append(s.pending, events...)
 	}
+}
+
+func (s *sse) validateCandidate(events []canonical.Event) error {
+	for _, event := range events {
+		if !isGoogleCandidateEvent(event.Type) {
+			continue
+		}
+		if !s.hasCandidate {
+			s.candidateChoice = event.ChoiceIndex
+			s.hasCandidate = true
+			continue
+		}
+		if event.ChoiceIndex != s.candidateChoice {
+			return errors.New("Gemini returned multiple candidates, which Responses cannot represent losslessly")
+		}
+	}
+	return nil
+}
+
+func isGoogleCandidateEvent(eventType canonical.EventType) bool {
+	switch eventType {
+	case canonical.EventTextDelta, canonical.EventReasoningDelta, canonical.EventProviderProof,
+		canonical.EventOutputItemAdded, canonical.EventToolArgumentsDelta,
+		canonical.EventCompleted, canonical.EventIncomplete, canonical.EventFailed:
+		return true
+	default:
+		return false
+	}
+}
+
+func (s *sse) normalizeEvents(events []canonical.Event) []canonical.Event {
+	if s.activeMessages == nil {
+		s.activeMessages = make(map[int]googleStreamMessage)
+		s.activeReasoning = make(map[int]googleStreamReasoning)
+		s.toolOutputs = make(map[string]googleStreamTool)
+	}
+	signedTargets := make(map[string]bool)
+	for _, event := range events {
+		if event.Type == canonical.EventProviderProof && event.Item != nil && event.Item.Proof != nil && event.Item.Proof.Subject == canonical.ProofSubjectGooglePart {
+			signedTargets[event.Item.Proof.TargetID] = true
+		}
+	}
+	reasoningProofTargets := make(map[string]googleStreamReasoning)
+	emptyTextTargets := make(map[string]bool)
+	for _, event := range events {
+		if event.Type == canonical.EventTextDelta && event.Delta == "" && event.Item != nil && event.Item.ID != "" {
+			emptyTextTargets[googleStreamTargetKey(event.ChoiceIndex, event.Item.ID)] = true
+		}
+	}
+	signatureOnlyTargets := make(map[string]bool)
+	for _, event := range events {
+		if event.Type != canonical.EventProviderProof || event.Item == nil || event.Item.Proof == nil || event.Item.Proof.Subject != canonical.ProofSubjectGooglePart {
+			continue
+		}
+		key := googleStreamTargetKey(event.ChoiceIndex, event.Item.Proof.TargetID)
+		if emptyTextTargets[key] {
+			signatureOnlyTargets[key] = true
+		}
+	}
+	targets := make(map[string]googleStreamMessage)
+	partMessages := make(map[string]googleStreamMessage)
+	textPartCounts := make(map[int]int)
+	result := make([]canonical.Event, 0, len(events))
+	for index := range events {
+		event := &events[index]
+		choice := event.ChoiceIndex
+		if event.Type == canonical.EventTextDelta && event.Delta == "" && event.Item != nil {
+			key := googleStreamTargetKey(choice, event.Item.ID)
+			if signatureOnlyTargets[key] {
+				if reasoning, active := s.activeReasoning[choice]; active {
+					reasoningProofTargets[key] = reasoning
+					continue
+				}
+			}
+		}
+		switch event.Type {
+		case canonical.EventReasoningDelta, canonical.EventProviderProof:
+			if event.Item != nil && event.Item.Proof != nil && event.Item.Proof.Subject == canonical.ProofSubjectGooglePart {
+				key := googleStreamTargetKey(choice, event.Item.Proof.TargetID)
+				if reasoning, ok := reasoningProofTargets[key]; ok {
+					proof := *event.Item.Proof
+					proof.Subject, proof.TargetID = "", ""
+					event.Item = &canonical.Item{ID: reasoning.id, Type: "reasoning", Role: canonical.RoleAssistant, Proof: &proof}
+					event.OutputIndex = reasoning.index
+					event.ContentIndex = 0
+					break
+				}
+				delete(s.activeReasoning, choice)
+				if target, ok := targets[event.Item.Proof.TargetID]; ok {
+					event.Item.Proof.TargetID = target.id
+				}
+				event.OutputIndex = s.allocateOutput()
+				event.ContentIndex = 0
+				break
+			}
+			delete(s.activeMessages, choice)
+			sourcePartIndex := event.ContentIndex
+			state, ok := s.activeReasoning[choice]
+			if !ok || state.partIndex != sourcePartIndex {
+				outputIndex := s.allocateOutput()
+				state = googleStreamReasoning{
+					id:        fmt.Sprintf("reasoning_%d_%d", choice, outputIndex),
+					index:     outputIndex,
+					partIndex: sourcePartIndex,
+				}
+				s.activeReasoning[choice] = state
+			}
+			if event.Item == nil {
+				event.Item = &canonical.Item{Type: "reasoning", Role: canonical.RoleAssistant}
+			}
+			event.Item.ID = state.id
+			event.OutputIndex = state.index
+			event.ContentIndex = 0
+		case canonical.EventTextDelta:
+			delete(s.activeReasoning, choice)
+			partIndex := event.ContentIndex
+			originalID := ""
+			if event.Item != nil {
+				originalID = event.Item.ID
+			}
+			partKey := fmt.Sprintf("%d:%d", choice, partIndex)
+			message, assigned := partMessages[partKey]
+			reused := false
+			if !assigned {
+				if textPartCounts[choice] == 0 {
+					message, reused = s.activeMessages[choice]
+				}
+				if !reused {
+					outputIndex := s.allocateOutput()
+					messageID := originalID
+					if messageID == "" {
+						messageID = fmt.Sprintf("message_%d_%d", choice, outputIndex)
+					}
+					message = googleStreamMessage{id: messageID, index: outputIndex}
+				}
+				partMessages[partKey] = message
+				s.activeMessages[choice] = message
+				textPartCounts[choice]++
+			}
+			if originalID != "" && signedTargets[originalID] {
+				targets[originalID] = message
+				event.Item.ID = message.id
+				event.OutputIndex = message.index
+				event.ContentIndex = 0
+				if event.Delta == "" && reused {
+					continue
+				}
+				break
+			}
+			if event.Item == nil {
+				event.Item = &canonical.Item{Type: "message", Role: canonical.RoleAssistant}
+			}
+			event.Item.ID = message.id
+			event.OutputIndex = message.index
+			event.ContentIndex = 0
+		case canonical.EventOutputItemAdded, canonical.EventToolArgumentsDelta:
+			if event.Item != nil && event.Item.Type == "function_call" {
+				delete(s.activeMessages, choice)
+				delete(s.activeReasoning, choice)
+				identity := event.Item.CallID
+				if identity == "" {
+					identity = event.Item.ID
+				}
+				key := fmt.Sprintf("%d:%s", choice, identity)
+				tool, ok := s.toolOutputs[key]
+				if !ok {
+					tool = googleStreamTool{outputIndex: s.allocateOutput(), toolIndex: s.nextToolIndex}
+					s.nextToolIndex++
+					s.toolOutputs[key] = tool
+				}
+				event.OutputIndex, event.ToolIndex = tool.outputIndex, tool.toolIndex
+				break
+			}
+			delete(s.activeMessages, choice)
+			delete(s.activeReasoning, choice)
+			event.OutputIndex = s.allocateOutput()
+			if event.Item != nil && signedTargets[event.Item.ID] {
+				targets[event.Item.ID] = googleStreamMessage{id: event.Item.ID, index: event.OutputIndex}
+			}
+		case canonical.EventCompleted, canonical.EventIncomplete, canonical.EventFailed:
+			delete(s.activeMessages, choice)
+			delete(s.activeReasoning, choice)
+		}
+		result = append(result, *event)
+	}
+	return result
+}
+
+func (s *sse) allocateOutput() int {
+	index := s.nextOutputIndex
+	s.nextOutputIndex++
+	return index
+}
+
+func googleStreamTargetKey(choice int, target string) string {
+	return fmt.Sprintf("%d:%s", choice, target)
 }
 
 func decodeStreamEvents(raw []byte, sequence int64) ([]canonical.Event, error) {
@@ -658,6 +1235,9 @@ func decodeStreamEvents(raw []byte, sequence int64) ([]canonical.Event, error) {
 	if err := json.Unmarshal(raw, &response); err != nil {
 		return nil, err
 	}
+	if len(response.Candidates) > 1 {
+		return nil, errors.New("Gemini returned multiple candidates, which Responses cannot represent losslessly")
+	}
 	events := make([]canonical.Event, 0)
 	terminalType := canonical.EventType("")
 	terminalChoice := 0
@@ -667,37 +1247,69 @@ func decodeStreamEvents(raw []byte, sequence int64) ([]canonical.Event, error) {
 		terminalError = &canonical.Error{Type: "invalid_request_error", Code: response.PromptFeedback.BlockReason, Message: response.PromptFeedback.BlockReasonMessage, Raw: append(json.RawMessage(nil), raw...)}
 	}
 	for candidateIndex, candidate := range response.Candidates {
+		choiceIndex := geminiCandidateIndex(candidateIndex, candidate.Index)
 		for partIndex, part := range candidate.Content.Parts {
+			proof := googleProof(part.ThoughtSignature)
+			emitted := false
+			if proof != nil && !part.Thought && part.FunctionCall == nil {
+				content, _ := googlePartContent(part, true)
+				messageID := fmt.Sprintf("message_%d_%d_%d", choiceIndex, sequence, partIndex)
+				proof.Subject, proof.TargetID = canonical.ProofSubjectGooglePart, messageID
+				carrier := canonical.Item{ID: fmt.Sprintf("proof_%d_%d_%d", choiceIndex, sequence, partIndex), Type: "reasoning", Role: canonical.RoleAssistant, Proof: proof}
+				message := canonical.Item{ID: messageID, Type: "message", Role: canonical.RoleAssistant, Content: []canonical.Content{content}}
+				if content.Type == "output_text" {
+					message.Content = nil
+					events = append(events, canonical.Event{Type: canonical.EventTextDelta, SequenceNumber: sequence, ChoiceIndex: choiceIndex, ContentIndex: partIndex, Delta: content.Text, Item: &message, Raw: append(json.RawMessage(nil), raw...)})
+				} else {
+					events = append(events, canonical.Event{Type: canonical.EventOutputItemAdded, SequenceNumber: sequence, ChoiceIndex: choiceIndex, ContentIndex: partIndex, Item: &message, Raw: append(json.RawMessage(nil), raw...)})
+				}
+				events = append(events, canonical.Event{Type: canonical.EventProviderProof, SequenceNumber: sequence, ChoiceIndex: choiceIndex, ContentIndex: partIndex, Item: &carrier, Raw: append(json.RawMessage(nil), raw...)})
+				continue
+			}
 			if part.Text != "" {
 				typeName := canonical.EventTextDelta
+				var item *canonical.Item
 				if part.Thought {
 					typeName = canonical.EventReasoningDelta
+					item = &canonical.Item{ID: fmt.Sprintf("reasoning_%d_%d", choiceIndex, partIndex), Type: "reasoning", Role: canonical.RoleAssistant, Proof: proof}
 				}
-				events = append(events, canonical.Event{Type: typeName, SequenceNumber: sequence, ChoiceIndex: candidateIndex, ContentIndex: partIndex, Delta: part.Text, Raw: append(json.RawMessage(nil), raw...)})
+				event := canonical.Event{Type: typeName, SequenceNumber: sequence, ChoiceIndex: choiceIndex, ContentIndex: partIndex, Delta: part.Text, Item: item, Raw: append(json.RawMessage(nil), raw...)}
+				if typeName == canonical.EventReasoningDelta {
+					event.OutputIndex = partIndex
+				}
+				events = append(events, event)
+				emitted = true
 			}
 			if part.FunctionCall != nil {
 				callID := part.FunctionCall.ID
 				if callID == "" {
-					callID = fmt.Sprintf("call_%d_%d", candidateIndex, partIndex)
+					callID = fmt.Sprintf("call_%d_%d_%d", choiceIndex, sequence, partIndex)
 				}
-				item := &canonical.Item{ID: callID, Type: "function_call", CallID: callID, Name: part.FunctionCall.Name}
+				item := &canonical.Item{ID: callID, Type: "function_call", CallID: callID, Name: part.FunctionCall.Name, Proof: proof, ProviderCallIDOmitted: part.FunctionCall.ID == ""}
 				events = append(events,
-					canonical.Event{Type: canonical.EventOutputItemAdded, SequenceNumber: sequence, ChoiceIndex: candidateIndex, ToolIndex: partIndex, Item: item, Raw: append(json.RawMessage(nil), raw...)},
-					canonical.Event{Type: canonical.EventToolArgumentsDelta, SequenceNumber: sequence, ChoiceIndex: candidateIndex, ToolIndex: partIndex, Delta: string(part.FunctionCall.Args), Item: item, Raw: append(json.RawMessage(nil), raw...)},
+					canonical.Event{Type: canonical.EventOutputItemAdded, SequenceNumber: sequence, ChoiceIndex: choiceIndex, ToolIndex: partIndex, Item: item, Raw: append(json.RawMessage(nil), raw...)},
+					canonical.Event{Type: canonical.EventToolArgumentsDelta, SequenceNumber: sequence, ChoiceIndex: choiceIndex, ToolIndex: partIndex, Delta: string(part.FunctionCall.Args), Item: item, Raw: append(json.RawMessage(nil), raw...)},
 				)
+				emitted = true
 			}
 			if part.InlineData != nil {
 				item := canonical.Item{Type: "message", Role: canonical.RoleAssistant, Content: []canonical.Content{contentFromBlob(part.InlineData.MIMEType, part.InlineData.Data, "")}}
-				events = append(events, canonical.Event{Type: canonical.EventOutputItemAdded, SequenceNumber: sequence, ChoiceIndex: candidateIndex, ContentIndex: partIndex, Item: &item, Raw: append(json.RawMessage(nil), raw...)})
+				events = append(events, canonical.Event{Type: canonical.EventOutputItemAdded, SequenceNumber: sequence, ChoiceIndex: choiceIndex, ContentIndex: partIndex, Item: &item, Raw: append(json.RawMessage(nil), raw...)})
+				emitted = true
 			}
 			if part.FileData != nil {
 				item := canonical.Item{Type: "message", Role: canonical.RoleAssistant, Content: []canonical.Content{contentFromBlob(part.FileData.MIMEType, "", part.FileData.FileURI)}}
-				events = append(events, canonical.Event{Type: canonical.EventOutputItemAdded, SequenceNumber: sequence, ChoiceIndex: candidateIndex, ContentIndex: partIndex, Item: &item, Raw: append(json.RawMessage(nil), raw...)})
+				events = append(events, canonical.Event{Type: canonical.EventOutputItemAdded, SequenceNumber: sequence, ChoiceIndex: choiceIndex, ContentIndex: partIndex, Item: &item, Raw: append(json.RawMessage(nil), raw...)})
+				emitted = true
+			}
+			if !emitted && proof != nil {
+				item := canonical.Item{ID: fmt.Sprintf("reasoning_%d_%d", choiceIndex, partIndex), Type: "reasoning", Role: canonical.RoleAssistant, Proof: proof}
+				events = append(events, canonical.Event{Type: canonical.EventProviderProof, SequenceNumber: sequence, ChoiceIndex: choiceIndex, OutputIndex: partIndex, ContentIndex: partIndex, Item: &item, Raw: append(json.RawMessage(nil), raw...)})
 			}
 		}
 		if candidate.FinishReason != "" {
 			terminalType = finishEventType(candidate.FinishReason)
-			terminalChoice = candidateIndex
+			terminalChoice = choiceIndex
 			if terminalType == canonical.EventFailed {
 				terminalError = &canonical.Error{Type: "server_error", Code: candidate.FinishReason, Message: candidate.FinishMessage, Raw: append(json.RawMessage(nil), raw...)}
 			}
@@ -716,15 +1328,35 @@ func decodeStreamEvents(raw []byte, sequence int64) ([]canonical.Event, error) {
 
 func contentFromBlob(mediaType, data, url string) canonical.Content {
 	typeName := "output_file"
+	format := ""
 	switch {
 	case strings.HasPrefix(mediaType, "image/"):
 		typeName = "output_image"
 	case strings.HasPrefix(mediaType, "audio/"):
 		typeName = "output_audio"
+		format = audioFormat(mediaType)
 	case strings.HasPrefix(mediaType, "video/"):
 		typeName = "output_video"
 	}
-	return canonical.Content{Type: typeName, Data: data, URL: url, MediaType: mediaType}
+	return canonical.Content{Type: typeName, Data: data, URL: url, MediaType: mediaType, Format: format}
+}
+
+func geminiCandidateIndex(fallback int, index *int) int {
+	if index != nil && *index >= 0 {
+		return *index
+	}
+	return fallback
+}
+
+func audioFormat(mediaType string) string {
+	mediaType = strings.ToLower(strings.TrimSpace(strings.SplitN(mediaType, ";", 2)[0]))
+	switch mediaType {
+	case "audio/mpeg", "audio/mp3":
+		return "mp3"
+	case "audio/x-wav":
+		return "wav"
+	}
+	return strings.TrimPrefix(mediaType, "audio/")
 }
 
 func finishEventType(reason string) canonical.EventType {

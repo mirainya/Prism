@@ -47,6 +47,34 @@ func TestUnsupportedRequestExtensionChecksAnthropicRawBlocks(t *testing.T) {
 	}
 }
 
+func TestUnsupportedNamespaceFindsTypedFields(t *testing.T) {
+	request := canonical.Request{Items: []canonical.Item{{Type: "function_call", Namespace: "runtime"}}}
+	if field := UnsupportedNamespace(request); field != "item 0 namespace" {
+		t.Fatalf("item namespace = %q", field)
+	}
+	request.Items[0].Namespace = ""
+	request.Tools = []canonical.Tool{{Type: "function", Namespace: "runtime"}}
+	if field := UnsupportedNamespace(request); field != "tool 0 namespace" {
+		t.Fatalf("tool namespace = %q", field)
+	}
+}
+
+func TestUnsupportedProviderCallIDStateFindsTypedField(t *testing.T) {
+	request := canonical.Request{Items: []canonical.Item{{Type: "function_call", ProviderCallIDOmitted: true}}}
+	if field := UnsupportedProviderCallIDState(request); field != "item 0 provider call-ID state" {
+		t.Fatalf("provider call-ID field = %q", field)
+	}
+}
+
+func TestSupportsLocalResponsesInclude(t *testing.T) {
+	if !SupportsLocalResponsesInclude(OperationResponses, []string{ResponsesReasoningProofInclude}) {
+		t.Fatal("Responses reasoning proof include was rejected")
+	}
+	if SupportsLocalResponsesInclude(OperationChat, []string{ResponsesReasoningProofInclude}) || SupportsLocalResponsesInclude(OperationResponses, []string{"future.field"}) {
+		t.Fatal("unsupported include was accepted")
+	}
+}
+
 func TestToolChoiceRawHasExtensionsByDownstreamOperation(t *testing.T) {
 	tests := []struct {
 		name      string

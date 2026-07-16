@@ -13,7 +13,7 @@ HTTP <- downstream codec <- canonical response/event <- engine <- transport <- u
 ## Modules
 
 - `internal/gateway/canonical`: protocol-neutral request, response, event, usage, errors,
-  semantic features, and provider options.
+  semantic features, provider options, tool namespaces, and opaque provider-issued continuation proofs.
 - `internal/gateway/codec`: OpenAI Chat, OpenAI Responses, and Anthropic Messages wire codecs.
 - `internal/gateway/transport`: OpenAI Chat, OpenAI Responses, Anthropic Messages, Google
   GenerateContent, and Volcengine Responses v3 upstream transports.
@@ -52,6 +52,17 @@ Calls become successful only after the downstream codec and server-side response
 3. The router selects an enabled ability/transport that supports every required feature.
 4. Exact paths rank above converted paths. Lossy conversion is never allowed.
 5. Provider state is reused only when key and transport both match.
+6. Provider proofs retain their issuing provider. A transport may replay only its own proof;
+   Prism does not synthesize signatures for another provider.
+7. Provider state crosses the Responses boundary in standard reasoning items with versioned
+   `encrypted_content` envelopes. A Gemini function-call carrier is restored by a globally unique
+   `call_id`; carrier position and adjacency are not identity signals.
+8. A Google Part carrier uses a unique `TargetID` to restore a proof to its original single-Part
+   message. The same envelope family preserves opaque Anthropic `redacted_thinking` data. Each
+   proof is validated and replayed only to its issuing provider; bypass signatures are never injected.
+9. The Google transport currently requires a Responses downstream for every request because Chat
+   and Messages have no portable field for signatures attached to reasoning, function calls, text,
+   or media Parts. Responses reasoning controls are not mapped to Google generation controls.
 
 ## Migration
 

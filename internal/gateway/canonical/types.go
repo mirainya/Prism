@@ -89,21 +89,27 @@ type Content struct {
 // Item represents a message, tool call/result, reasoning item, or another
 // Responses-style input/output item.
 type Item struct {
-	ID        string                     `json:"id,omitempty"`
-	Type      string                     `json:"type"`
-	Role      Role                       `json:"role,omitempty"`
-	Name      string                     `json:"name,omitempty"`
-	CallID    string                     `json:"call_id,omitempty"`
-	Content   []Content                  `json:"content,omitempty"`
-	Arguments json.RawMessage            `json:"arguments,omitempty"`
-	Output    json.RawMessage            `json:"output,omitempty"`
-	Status    string                     `json:"status,omitempty"`
-	Extra     map[string]json.RawMessage `json:"extra,omitempty"`
+	ID        string `json:"id,omitempty"`
+	Type      string `json:"type"`
+	Role      Role   `json:"role,omitempty"`
+	Name      string `json:"name,omitempty"`
+	Namespace string `json:"namespace,omitempty"`
+	CallID    string `json:"call_id,omitempty"`
+	// ProviderCallIDOmitted records that the signed provider part did not
+	// contain an ID even though Prism assigned a public call_id.
+	ProviderCallIDOmitted bool                       `json:"provider_call_id_omitted,omitempty"`
+	Content               []Content                  `json:"content,omitempty"`
+	Arguments             json.RawMessage            `json:"arguments,omitempty"`
+	Output                json.RawMessage            `json:"output,omitempty"`
+	Status                string                     `json:"status,omitempty"`
+	Proof                 *ProviderProof             `json:"proof,omitempty"`
+	Extra                 map[string]json.RawMessage `json:"extra,omitempty"`
 }
 
 type Tool struct {
 	Type        string          `json:"type"`
 	Name        string          `json:"name,omitempty"`
+	Namespace   string          `json:"namespace,omitempty"`
 	Description string          `json:"description,omitempty"`
 	InputSchema json.RawMessage `json:"input_schema,omitempty"`
 	Strict      *bool           `json:"strict,omitempty"`
@@ -203,15 +209,18 @@ func (r *Request) RequiredFeatures() FeatureSet {
 		}
 	}
 	for _, item := range r.Items {
+		if item.Type == "reasoning" && item.Proof == nil {
+			required.Add(FeatureReasoning)
+		}
 		for _, content := range item.Content {
 			switch content.Type {
-			case "input_image", "image", "image_url":
+			case "input_image", "output_image", "image", "image_url":
 				required.Add(FeatureVision)
-			case "input_file", "file", "document":
+			case "input_file", "output_file", "file", "document":
 				required.Add(FeatureFiles)
-			case "input_audio", "audio":
+			case "input_audio", "output_audio", "audio":
 				required.Add(FeatureAudio)
-			case "input_video", "video":
+			case "input_video", "output_video", "video":
 				required.Add(FeatureVideo)
 			}
 		}

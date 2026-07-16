@@ -19,6 +19,7 @@ const (
 	ExtensionChatRawContent        = "openai_chat.raw"
 	ExtensionChatToolCalls         = "openai_chat.tool_calls"
 	ExtensionResponsesAudioOptions = "openai_responses.input_audio_options"
+	ResponsesReasoningProofInclude = "reasoning.encrypted_content"
 )
 
 // ExtensionPolicy describes which protocol-specific request data a transport
@@ -74,6 +75,50 @@ func UnsupportedRequestExtension(request canonical.Request, policy ExtensionPoli
 		}
 	}
 	return ""
+}
+
+// UnsupportedNamespace returns the first typed namespace field that a wire
+// protocol must explicitly encode or reject.
+func UnsupportedNamespace(request canonical.Request) string {
+	for index, item := range request.Items {
+		if strings.TrimSpace(item.Namespace) != "" {
+			return fmt.Sprintf("item %d namespace", index)
+		}
+	}
+	for index, tool := range request.Tools {
+		if strings.TrimSpace(tool.Namespace) != "" {
+			return fmt.Sprintf("tool %d namespace", index)
+		}
+	}
+	return ""
+}
+
+// UnsupportedProviderCallIDState returns the first provider-native omitted-ID
+// marker that a non-Google transport must reject instead of silently dropping.
+func UnsupportedProviderCallIDState(request canonical.Request) string {
+	for index, item := range request.Items {
+		if item.ProviderCallIDOmitted {
+			return fmt.Sprintf("item %d provider call-ID state", index)
+		}
+	}
+	return ""
+}
+
+// SupportsLocalResponsesInclude reports whether include can be fulfilled by
+// Prism while converting a Responses request to another upstream protocol.
+func SupportsLocalResponsesInclude(operation Operation, include []string) bool {
+	if len(include) == 0 {
+		return true
+	}
+	if operation != OperationResponses {
+		return false
+	}
+	for _, value := range include {
+		if value != ResponsesReasoningProofInclude {
+			return false
+		}
+	}
+	return true
 }
 
 // ToolChoiceRawHasExtensions reports whether a downstream native tool_choice

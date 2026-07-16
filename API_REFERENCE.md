@@ -149,6 +149,12 @@ Anthropic Messages 兼容接口。支持文本、图片、文档、工具调用�
 | `google_generate_content` | Gemini GenerateContent | 无损范围内转换 |
 | `volcengine_responses_v3` | `/api/v3/responses` | 火山方舟原生 Responses v3 |
 
+> Google/Gemini Transport 当前仅接受 `/v1/responses` 下游，包括纯文本请求。Gemini 3 的 `thoughtSignature` 可附着于推理、函数调用、普通文本或媒体 Part；Chat 与 Messages 没有可移植的 proof 字段。Google Transport 当前不映射 Responses `reasoning` 控制项，传入该字段会返回 HTTP 400。
+
+> Prism 使用 Responses `reasoning.encrypted_content` 中的版本信封承载非 OpenAI proof。Gemini 函数调用 carrier 按全局唯一 `call_id` 恢复，Google 普通 Part carrier 按唯一 `TargetID` 恢复到原消息 Part，均不依赖相邻位置。Anthropic `redacted_thinking` 的 opaque data 也通过版本信封保存，并且只会回放给原签发 Provider。
+
+> 为避免无状态客户端在续轮时丢失 Provider proof，Prism 的转换响应会固定返回所需 `encrypted_content` carrier；`include:["reasoning.encrypted_content"]` 可传但不是必需条件。
+
 > Prism 会管理公开的 `resp_` ID、存储和后台任务。无法无损转换的字段会返回 HTTP 400，不会静默丢弃。`file_search` 暂不支持。
 
 Header：

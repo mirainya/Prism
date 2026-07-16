@@ -224,6 +224,12 @@ func TestAnthropicMessagesConvertsAcrossUpstreamTransports(t *testing.T) {
 			response := httptest.NewRecorder()
 			router.ServeHTTP(response, request)
 
+			if test.transportID == gatewaytransport.GoogleGenerateContent {
+				if response.Code != http.StatusBadRequest || upstreamCalls.Load() != 0 {
+					t.Fatalf("Google Messages proof boundary: status=%d calls=%d body=%s", response.Code, upstreamCalls.Load(), response.Body.String())
+				}
+				return
+			}
 			if response.Code != http.StatusOK {
 				t.Fatalf("status = %d, want 200; body=%s", response.Code, response.Body.String())
 			}

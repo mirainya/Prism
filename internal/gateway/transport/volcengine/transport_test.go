@@ -74,6 +74,14 @@ func TestPlanKindsAndExtensionBoundaries(t *testing.T) {
 	if plan := item.Plan(gatewaytransport.OperationResponses, fileSearch, canonical.NewFeatureSet(canonical.FeatureTools, canonical.FeatureFileSearch)); plan.Supported() {
 		t.Fatalf("documented unsupported file_search was accepted: %#v", plan)
 	}
+	proof := canonical.Request{Items: []canonical.Item{{Type: "reasoning", Proof: &canonical.ProviderProof{Provider: canonical.ProofProviderAnthropic, Value: "sig"}}}}
+	if plan := item.Plan(gatewaytransport.OperationResponses, proof, canonical.NewFeatureSet(canonical.FeatureReasoning)); plan.Supported() {
+		t.Fatalf("provider proof was accepted without a Volcengine replay contract: %#v", plan)
+	}
+	namespaced := canonical.Request{Tools: []canonical.Tool{{Type: "function", Namespace: "tools"}}}
+	if plan := item.Plan(gatewaytransport.OperationResponses, namespaced, canonical.FeatureSet{}); plan.Supported() {
+		t.Fatalf("namespace was accepted without a Volcengine encoding contract: %#v", plan)
+	}
 }
 
 func TestPrepareAddsOnlyDocumentedBetaHeaders(t *testing.T) {

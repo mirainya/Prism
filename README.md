@@ -63,6 +63,8 @@ Chat、Responses 和 Messages 并不与某个模型固定绑定。一个公开�
 
 火山方舟的 `thinking`、`caching`、`session`、`context_management` 等扩展只会交给原生 v3 Transport。Responses 转 Chat 时允许忽略 `include: ["reasoning.encrypted_content"]`，但不会伪造加密推理内容。
 
+Google Transport 当前仅接受 `/v1/responses` 下游，且不映射 Responses `reasoning` 控制项；Provider proof 仅回放给原签发 Provider。
+
 ## 路由模型
 
 | 数据表 | 作用 |
@@ -254,3 +256,5 @@ npm run build
 ## License
 
 MIT
+
+第三方项目声明见 [`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md)。

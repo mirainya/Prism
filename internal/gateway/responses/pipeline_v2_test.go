@@ -11,7 +11,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/glebarez/sqlite"
 	"github.com/mirainya/Prism/internal/gateway/canonical"
 	"github.com/mirainya/Prism/internal/gateway/engine"
 	"github.com/mirainya/Prism/internal/gateway/routing"
@@ -21,7 +20,6 @@ import (
 	"github.com/mirainya/Prism/internal/service"
 	"github.com/shopspring/decimal"
 	"gorm.io/datatypes"
-	"gorm.io/gorm"
 )
 
 type pipelineV2Selector struct{ route *routing.RouteResult }
@@ -774,10 +772,7 @@ func TestReconcileV2BackgroundReservationsRefundsInterruptedAndLegacyAttempts(t 
 
 func setupPipelineV2Test(t *testing.T, transportID transport.ID, keyID uint) (*Pipeline, *pipelineV2Transport, model.Token) {
 	t.Helper()
-	db, err := gorm.Open(sqlite.Open("file:"+t.Name()+"?mode=memory&cache=shared"), &gorm.Config{})
-	if err != nil {
-		t.Fatal(err)
-	}
+	db := openResponsesTestDB(t)
 	if err := db.AutoMigrate(
 		&model.User{}, &model.Token{}, &model.BillingLog{}, &model.ChannelRequestLog{}, &model.AIResponse{},
 		&model.AIResponseIdempotencyCache{},

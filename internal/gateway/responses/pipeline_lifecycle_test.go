@@ -7,7 +7,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/glebarez/sqlite"
 	"github.com/mirainya/Prism/internal/domain"
 	"github.com/mirainya/Prism/internal/gateway/canonical"
 	"github.com/mirainya/Prism/internal/gateway/routing"
@@ -231,11 +230,7 @@ func TestDeleteResponseDeletesPayloadButRetainsCall(t *testing.T) {
 
 func setupResponsesLifecycleDB(t *testing.T, tables ...any) *gorm.DB {
 	t.Helper()
-	name := strings.NewReplacer("/", "_", " ", "_").Replace(t.Name())
-	db, err := gorm.Open(sqlite.Open("file:"+name+"?mode=memory&cache=shared"), &gorm.Config{})
-	if err != nil {
-		t.Fatal(err)
-	}
+	db := openResponsesTestDB(t)
 	if err := db.AutoMigrate(tables...); err != nil {
 		t.Fatal(err)
 	}

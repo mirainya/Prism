@@ -9,6 +9,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/mirainya/Prism/internal/api/openaierror"
+	"github.com/mirainya/Prism/internal/gateway/engine"
 	"github.com/mirainya/Prism/internal/gateway/routing"
 )
 
@@ -91,6 +92,7 @@ func TestRespondChatPipelineErrorClassifiesRoutingErrors(t *testing.T) {
 		{routing.ErrModelNotFound, http.StatusNotFound, "model_not_found"},
 		{routing.ErrCapabilityUnavailable, http.StatusBadRequest, "unsupported_model_capability"},
 		{routing.ErrNoCompatibleTransport, http.StatusBadRequest, "unsupported_model_capability"},
+		{engine.ErrNoTransportPlan, http.StatusBadRequest, "unsupported_model_capability"},
 		{routing.ErrNoRoute, http.StatusServiceUnavailable, "model_unavailable"},
 	}
 	for _, tt := range tests {

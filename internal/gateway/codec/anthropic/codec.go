@@ -164,7 +164,8 @@ func decodeMessages(messages []messageWire) ([]canonical.Item, error) {
 				text := rawString(block["thinking"])
 				result = append(result, canonical.Item{
 					Type: "reasoning", Role: canonical.RoleAssistant,
-					Content: []canonical.Content{{Type: "reasoning_text", Text: text, Extra: rawBlockExtra(raw)}}, Extra: rawBlockExtra(raw),
+					Content: []canonical.Content{{Type: "reasoning_text", Text: text, Extra: rawBlockExtra(raw)}},
+					Proof:   anthropicProof(block), Extra: rawBlockExtra(raw),
 				})
 			default:
 				part, err := decodeContentBlock(raw, false)
@@ -345,8 +346,8 @@ func EncodeRequest(request canonical.Request) (map[string]any, error) {
 			}
 			appendBlock("user", block)
 		case "reasoning":
-			for _, part := range item.Content {
-				block, err := encodeAnthropicContent(part)
+			for _, part := range anthropicReasoningContent(item) {
+				block, err := encodeAnthropicReasoning(item, part)
 				if err != nil {
 					return nil, err
 				}
@@ -444,7 +445,12 @@ func encodeAnthropicContent(content canonical.Content) (map[string]any, error) {
 	case "input_text", "output_text", "text":
 		value["type"], value["text"] = "text", content.Text
 	case "thinking", "reasoning_text":
-		value["type"], value["thinking"] = "thinking", content.Text
+		delete(value, "signature")
+		if value["type"] == "redacted_thinking" {
+			delete(value, "thinking")
+		} else {
+			value["type"], value["thinking"] = "thinking", content.Text
+		}
 	case "input_image", "image", "image_url":
 		value["type"] = "image"
 		if _, exists := value["source"]; !exists {
@@ -464,6 +470,54 @@ func encodeAnthropicContent(content canonical.Content) (map[string]any, error) {
 		}
 	}
 	return value, nil
+}
+
+func encodeAnthropicReasoning(item canonical.Item, content canonical.Content) (map[string]any, error) {
+	if !presentJSON(content.Extra[extraRawBlock]) && presentJSON(item.Extra[extraRawBlock]) {
+		content.Extra = map[string]json.RawMessage{extraRawBlock: cloneRaw(item.Extra[extraRawBlock])}
+	}
+	block, err := encodeAnthropicContent(content)
+	if err != nil {
+		return nil, err
+	}
+	delete(block, "signature")
+	if signature, ok := canonical.NativeProviderProofValue(item.Proof, canonical.ProofProviderAnthropic); ok {
+		switch item.Proof.Subject {
+		case canonical.ProofSubjectAnthropicRedacted:
+			block["type"] = "redacted_thinking"
+			block["data"] = signature
+			delete(block, "thinking")
+		case "":
+			block["signature"] = signature
+		}
+	}
+	return block, nil
+}
+
+func anthropicReasoningContent(item canonical.Item) []canonical.Content {
+	if len(item.Content) > 0 {
+		return item.Content
+	}
+	if item.Proof != nil || presentJSON(item.Extra[extraRawBlock]) {
+		return []canonical.Content{{Type: "reasoning_text"}}
+	}
+	return nil
+}
+
+func anthropicProof(block map[string]json.RawMessage) *canonical.ProviderProof {
+	switch rawString(block["type"]) {
+	case "thinking":
+		signature := rawString(block["signature"])
+		if signature != "" {
+			return &canonical.ProviderProof{Provider: canonical.ProofProviderAnthropic, Value: signature}
+		}
+	case "redacted_thinking":
+		data := rawString(block["data"])
+		if data != "" {
+			return &canonical.ProviderProof{Provider: canonical.ProofProviderAnthropic, Value: data, Subject: canonical.ProofSubjectAnthropicRedacted}
+		}
+	}
+	return nil
 }
 
 func encodeSource(content canonical.Content) map[string]any {
@@ -635,7 +689,8 @@ func decodeResponseContent(blocks []json.RawMessage) ([]canonical.Item, error) {
 			flushMessage()
 			result = append(result, canonical.Item{
 				Type: "reasoning", Role: canonical.RoleAssistant, Status: "completed",
-				Content: []canonical.Content{{Type: "reasoning_text", Text: rawString(block["thinking"]), Extra: rawBlockExtra(raw)}}, Extra: rawBlockExtra(raw),
+				Content: []canonical.Content{{Type: "reasoning_text", Text: rawString(block["thinking"]), Extra: rawBlockExtra(raw)}},
+				Proof:   anthropicProof(block), Extra: rawBlockExtra(raw),
 			})
 		case "tool_use", "server_tool_use":
 			flushMessage()
@@ -694,7 +749,14 @@ func DecodeEvent(name string, raw []byte) (canonical.Event, error) {
 				return canonical.Event{}, err
 			}
 			event.Type = canonical.EventContentPartAdded
-			event.Item = &canonical.Item{Type: "message", Role: canonical.RoleAssistant, Content: []canonical.Content{part}, Status: "in_progress"}
+			itemType := "message"
+			if kind == "thinking" || kind == "redacted_thinking" {
+				itemType = "reasoning"
+			}
+			event.Item = &canonical.Item{
+				Type: itemType, Role: canonical.RoleAssistant, Content: []canonical.Content{part},
+				Status: "in_progress", Proof: anthropicProof(block), Extra: rawBlockExtra(root["content_block"]),
+			}
 		}
 	case "content_block_delta":
 		index := rawInt(root["index"])
@@ -702,6 +764,7 @@ func DecodeEvent(name string, raw []byte) (canonical.Event, error) {
 			Type        string `json:"type"`
 			Text        string `json:"text"`
 			Thinking    string `json:"thinking"`
+			Signature   string `json:"signature"`
 			PartialJSON string `json:"partial_json"`
 		}
 		if err := json.Unmarshal(root["delta"], &delta); err != nil {
@@ -713,6 +776,13 @@ func DecodeEvent(name string, raw []byte) (canonical.Event, error) {
 			event.Type, event.Delta = canonical.EventTextDelta, delta.Text
 		case "thinking_delta":
 			event.Type, event.Delta = canonical.EventReasoningDelta, delta.Thinking
+		case "signature_delta":
+			event.Type, event.Delta = canonical.EventProviderProof, delta.Signature
+			event.Item = &canonical.Item{
+				Type: "reasoning", Role: canonical.RoleAssistant, Status: "in_progress",
+				Content: []canonical.Content{{Type: "reasoning_text"}},
+				Proof:   &canonical.ProviderProof{Provider: canonical.ProofProviderAnthropic, Value: delta.Signature},
+			}
 		case "input_json_delta":
 			event.Type, event.Delta = canonical.EventToolArgumentsDelta, delta.PartialJSON
 		default:
@@ -758,6 +828,14 @@ func EncodeResponseJSON(response canonical.Response) ([]byte, error) {
 				return nil, err
 			}
 			content = append(content, block)
+		case "reasoning":
+			for _, part := range anthropicReasoningContent(item) {
+				block, err := encodeAnthropicReasoning(item, part)
+				if err != nil {
+					return nil, err
+				}
+				content = append(content, block)
+			}
 		default:
 			for _, part := range item.Content {
 				block, err := encodeAnthropicContent(part)
@@ -814,6 +892,18 @@ func EncodeSSEFrame(event canonical.Event) ([]byte, error) {
 		return sseJSON("content_block_delta", map[string]any{"type": "content_block_delta", "index": blockIndex(event), "delta": map[string]any{"type": "text_delta", "text": event.Delta}})
 	case canonical.EventReasoningDelta:
 		return sseJSON("content_block_delta", map[string]any{"type": "content_block_delta", "index": blockIndex(event), "delta": map[string]any{"type": "thinking_delta", "thinking": event.Delta}})
+	case canonical.EventProviderProof:
+		if event.Item == nil {
+			return nil, nil
+		}
+		signature, ok := canonical.NativeProviderProofValue(event.Item.Proof, canonical.ProofProviderAnthropic)
+		if !ok || event.Item.Proof.Subject != "" {
+			return nil, nil
+		}
+		if event.Delta != "" {
+			signature = event.Delta
+		}
+		return sseJSON("content_block_delta", map[string]any{"type": "content_block_delta", "index": blockIndex(event), "delta": map[string]any{"type": "signature_delta", "signature": signature}})
 	case canonical.EventToolArgumentsDelta:
 		return sseJSON("content_block_delta", map[string]any{"type": "content_block_delta", "index": blockIndex(event), "delta": map[string]any{"type": "input_json_delta", "partial_json": event.Delta}})
 	case canonical.EventOutputItemDone, canonical.EventContentPartDone, canonical.EventTextDone:
@@ -928,6 +1018,25 @@ func (e *SSEEncoder) Encode(event canonical.Event) ([]byte, error) {
 		deltaEvent := event
 		setBlockIndex(&deltaEvent, block.index)
 		if err := appendEncoded(EncodeSSEFrame(deltaEvent)); err != nil {
+			return nil, err
+		}
+	case canonical.EventProviderProof:
+		if event.Item == nil {
+			return encoded, nil
+		}
+		if _, ok := canonical.NativeProviderProofValue(event.Item.Proof, canonical.ProofProviderAnthropic); !ok {
+			return encoded, nil
+		}
+		if err := appendEncoded(e.ensureMessageStart(event)); err != nil {
+			return nil, err
+		}
+		block, frame, err := e.ensureBlock(event, streamBlockReasoning)
+		if err := appendEncoded(frame, err); err != nil {
+			return nil, err
+		}
+		proofEvent := event
+		setBlockIndex(&proofEvent, block.index)
+		if err := appendEncoded(EncodeSSEFrame(proofEvent)); err != nil {
 			return nil, err
 		}
 	case canonical.EventTextDone, canonical.EventContentPartDone, canonical.EventOutputItemDone:
@@ -1086,7 +1195,7 @@ func addedBlockKind(event canonical.Event) (string, bool) {
 		case "function_call":
 			return streamBlockTool, true
 		case "reasoning":
-			if len(event.Item.Content) > 0 {
+			if len(event.Item.Content) > 0 || (event.Item.Proof != nil && event.Item.Proof.Subject == canonical.ProofSubjectAnthropicRedacted) {
 				return streamBlockReasoning, true
 			}
 			return "", false
@@ -1179,7 +1288,13 @@ func blockStartItem(source *canonical.Item, kind string, index int) canonical.It
 		}
 	case streamBlockReasoning:
 		item.Type, item.Role = "reasoning", canonical.RoleAssistant
-		item.Content = []canonical.Content{{Type: "reasoning_text"}}
+		content := canonical.Content{Type: "reasoning_text"}
+		if len(item.Content) > 0 {
+			content = item.Content[0]
+			content.Type = "reasoning_text"
+			content.Text = ""
+		}
+		item.Content = []canonical.Content{content}
 	default:
 		item.Type, item.Role = "message", canonical.RoleAssistant
 		item.Content = []canonical.Content{{Type: "output_text"}}
@@ -1404,7 +1519,13 @@ func contentBlockStart(item *canonical.Item) (map[string]any, error) {
 	if len(item.Content) == 0 {
 		return nil, errors.New("Anthropic content block start requires content")
 	}
-	block, err := encodeAnthropicContent(item.Content[0])
+	var block map[string]any
+	var err error
+	if item.Type == "reasoning" {
+		block, err = encodeAnthropicReasoning(*item, item.Content[0])
+	} else {
+		block, err = encodeAnthropicContent(item.Content[0])
+	}
 	if err != nil {
 		return nil, err
 	}
