@@ -357,7 +357,6 @@ func upstreamContentExtras(source map[string]json.RawMessage) map[string]json.Ra
 }
 
 func encodeItems(items []canonical.Item) ([]map[string]any, error) {
-	items = normalizeLegacyToolHistory(items)
 	result := make([]map[string]any, 0, len(items))
 	for _, item := range items {
 		value, err := rawObject(upstreamItemExtras(item.Extra))
@@ -374,19 +373,20 @@ func encodeItems(items []canonical.Item) ([]map[string]any, error) {
 		value["type"] = typeName
 		switch typeName {
 		case "message":
+			if len(item.Content) == 0 {
+				continue
+			}
 			if item.Role != "" {
 				value["role"] = item.Role
 			}
-			if len(item.Content) > 0 {
-				content, err := encodeContent(item.Content)
-				if err != nil {
-					return nil, err
-				}
-				if len(content) == 0 {
-					continue
-				}
-				value["content"] = content
+			content, err := encodeContent(item.Content)
+			if err != nil {
+				return nil, err
 			}
+			if len(content) == 0 {
+				continue
+			}
+			value["content"] = content
 		case "function_call":
 			callID := item.CallID
 			if callID == "" {
@@ -443,53 +443,6 @@ func encodeItems(items []canonical.Item) ([]map[string]any, error) {
 		result = append(result, value)
 	}
 	return result, nil
-}
-
-// normalizeLegacyToolHistory repairs histories produced before tool-stream
-// identity frames were normalized. Those histories contain one named call,
-// followed by argument fragments under a second call ID and repeated outputs.
-func normalizeLegacyToolHistory(source []canonical.Item) []canonical.Item {
-	result := make([]canonical.Item, 0, len(source))
-	aliases := make(map[string]string)
-	for _, sourceItem := range source {
-		item := sourceItem
-		switch item.Type {
-		case "function_call":
-			if item.CallID != "" {
-				if primary, ok := aliases[item.CallID]; ok {
-					item.CallID = primary
-				}
-			}
-			if len(result) > 0 {
-				previous := &result[len(result)-1]
-				if previous.Type == "function_call" && item.Name == "" {
-					if item.CallID != "" && item.CallID != previous.CallID {
-						aliases[item.CallID] = previous.CallID
-						item.CallID = previous.CallID
-					}
-					if item.CallID == previous.CallID {
-						previous.Arguments = append(previous.Arguments, item.Arguments...)
-						continue
-					}
-				}
-			}
-		case "function_call_output":
-			if primary, ok := aliases[item.CallID]; ok {
-				item.CallID = primary
-			}
-			if len(result) > 0 {
-				previous := &result[len(result)-1]
-				if previous.Type == "function_call_output" && previous.CallID == item.CallID {
-					if len(item.Output) > 0 {
-						previous.Output = append(json.RawMessage(nil), item.Output...)
-					}
-					continue
-				}
-			}
-		}
-		result = append(result, item)
-	}
-	return result
 }
 
 func isArkInputItem(typeName string) bool {

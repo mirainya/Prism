@@ -312,30 +312,15 @@ func TestPrepareUsesArkInputUnionShapes(t *testing.T) {
 	}
 }
 
-func TestPrepareRepairsLegacyToolHistory(t *testing.T) {
+func TestPrepareSkipsEmptyMessages(t *testing.T) {
 	request := canonical.Request{Model: "public", Items: []canonical.Item{
+		{Type: "message", Role: canonical.RoleAssistant},
 		{Type: "message", Role: canonical.RoleAssistant, Content: []canonical.Content{{Type: "input_text", Text: ""}}},
-		{Type: "function_call", CallID: "call_primary", Name: "lookup"},
-		{Type: "function_call", CallID: "call_fragment", Arguments: json.RawMessage(`{"q":`)},
-		{Type: "function_call", CallID: "call_fragment", Arguments: json.RawMessage(`"x"}`)},
-		{Type: "function_call_output", CallID: "call_fragment", Output: json.RawMessage(`"first"`)},
-		{Type: "function_call_output", CallID: "call_fragment", Output: json.RawMessage(`"last"`)},
 		{Type: "message", Role: canonical.RoleUser, Content: []canonical.Content{{Type: "input_text", Text: "continue"}}},
 	}}
 	input := prepareInput(t, request, gatewaytransport.OperationResponses)
-	if len(input) != 3 {
-		t.Fatalf("input count = %d, want 3", len(input))
-	}
-	requireExactKeys(t, input[0], "type", "call_id", "name", "arguments")
-	if input[0]["call_id"] != "call_primary" || input[0]["arguments"] != `{"q":"x"}` {
-		t.Fatalf("merged function call = %#v", input[0])
-	}
-	requireExactKeys(t, input[1], "type", "call_id", "output")
-	if input[1]["call_id"] != "call_primary" || input[1]["output"] != "last" {
-		t.Fatalf("merged function output = %#v", input[1])
-	}
-	if input[2]["role"] != string(canonical.RoleUser) {
-		t.Fatalf("trailing message = %#v", input[2])
+	if len(input) != 1 || input[0]["role"] != string(canonical.RoleUser) {
+		t.Fatalf("input = %#v, want only the non-empty user message", input)
 	}
 }
 
