@@ -363,36 +363,120 @@ func encodeItems(items []canonical.Item) ([]map[string]any, error) {
 		if err != nil {
 			return nil, err
 		}
-		value["type"] = item.Type
-		if item.Role != "" {
-			value["role"] = item.Role
+		typeName := item.Type
+		if typeName == "" {
+			typeName = "message"
 		}
-		if item.ID != "" {
-			value["id"] = item.ID
+		if isArkInputItem(typeName) {
+			clearCanonicalItemFields(value)
 		}
-		if item.Name != "" {
-			value["name"] = item.Name
-		}
-		if item.CallID != "" {
-			value["call_id"] = item.CallID
-		}
-		if item.Status != "" {
-			value["status"] = item.Status
-		}
-		if len(item.Content) > 0 {
-			content, err := encodeContent(item.Content)
-			if err != nil {
-				return nil, err
+		value["type"] = typeName
+		switch typeName {
+		case "message":
+			if item.Role != "" {
+				value["role"] = item.Role
 			}
-			value["content"] = content
-		}
-		if len(item.Arguments) > 0 {
+			if len(item.Content) > 0 {
+				content, err := encodeContent(item.Content)
+				if err != nil {
+					return nil, err
+				}
+				value["content"] = content
+			}
+		case "function_call":
+			callID := item.CallID
+			if callID == "" {
+				callID = item.ID
+			}
+			value["call_id"] = callID
+			value["name"] = item.Name
 			value["arguments"] = rawText(item.Arguments)
-		}
-		if len(item.Output) > 0 {
-			value["output"] = json.RawMessage(item.Output)
+			if item.Status != "" {
+				value["status"] = item.Status
+			}
+		case "function_call_output":
+			callID := item.CallID
+			if callID == "" {
+				callID = item.ID
+			}
+			value["call_id"] = callID
+			value["output"] = rawText(item.Output)
+			if item.Status != "" {
+				value["status"] = item.Status
+			}
+		case "reasoning":
+			if item.ID != "" {
+				value["id"] = item.ID
+			}
+			if item.Status != "" {
+				value["status"] = item.Status
+			}
+			if len(item.Content) > 0 {
+				summary, err := encodeReasoningSummary(item.Content)
+				if err != nil {
+					return nil, err
+				}
+				value["summary"] = summary
+			}
+		default:
+			if item.Role != "" {
+				value["role"] = item.Role
+			}
+			if item.ID != "" {
+				value["id"] = item.ID
+			}
+			if item.Name != "" {
+				value["name"] = item.Name
+			}
+			if item.CallID != "" {
+				value["call_id"] = item.CallID
+			}
+			if item.Status != "" {
+				value["status"] = item.Status
+			}
+			if len(item.Content) > 0 {
+				content, err := encodeContent(item.Content)
+				if err != nil {
+					return nil, err
+				}
+				value["content"] = content
+			}
+			if len(item.Arguments) > 0 {
+				value["arguments"] = rawText(item.Arguments)
+			}
+			if len(item.Output) > 0 {
+				value["output"] = json.RawMessage(item.Output)
+			}
 		}
 		result = append(result, value)
+	}
+	return result, nil
+}
+
+func isArkInputItem(typeName string) bool {
+	switch typeName {
+	case "message", "function_call", "function_call_output", "reasoning":
+		return true
+	default:
+		return false
+	}
+}
+
+func clearCanonicalItemFields(value map[string]any) {
+	for _, key := range []string{"id", "role", "name", "call_id", "status", "content", "arguments", "output"} {
+		delete(value, key)
+	}
+}
+
+func encodeReasoningSummary(parts []canonical.Content) ([]map[string]any, error) {
+	result := make([]map[string]any, 0, len(parts))
+	for _, part := range parts {
+		switch part.Type {
+		case "", "reasoning_text", "summary_text", "text", "output_text":
+			result = append(result, map[string]any{"type": "summary_text", "text": part.Text})
+		default:
+			return nil, fmt.Errorf("Volcengine reasoning cannot encode content %q", part.Type)
+		}
 	}
 	return result, nil
 }
@@ -404,52 +488,125 @@ func encodeContent(parts []canonical.Content) ([]map[string]any, error) {
 		if err != nil {
 			return nil, err
 		}
-		value["type"] = part.Type
-		if part.Text != "" {
+		typeName := part.Type
+		if typeName == "output_text" || typeName == "text" {
+			typeName = "input_text"
+		}
+		if isArkInputContent(typeName) {
+			clearCanonicalContentFields(value)
+		}
+		if part.Type == "output_text" {
+			delete(value, "annotations")
+			delete(value, "logprobs")
+		}
+		value["type"] = typeName
+		switch typeName {
+		case "input_text":
 			value["text"] = part.Text
-		}
-		if part.FileID != "" {
-			value["file_id"] = part.FileID
-		}
-		if part.Filename != "" {
-			value["filename"] = part.Filename
-		}
-		if part.Data != "" {
-			value["file_data"] = part.Data
-		}
-		switch part.Type {
 		case "input_image":
-			if part.URL != "" {
-				value["image_url"] = part.URL
+			if part.FileID != "" {
+				value["file_id"] = part.FileID
+			} else if url := arkMediaURL(part.URL, part.Data, part.MediaType); url != "" {
+				value["image_url"] = url
+			}
+			if part.Detail != "" {
+				value["detail"] = part.Detail
 			}
 		case "input_video":
-			if part.URL != "" {
-				value["video_url"] = part.URL
+			if part.FileID != "" {
+				value["file_id"] = part.FileID
+			} else if url := arkMediaURL(part.URL, part.Data, part.MediaType); url != "" {
+				value["video_url"] = url
 			}
 		case "input_audio":
-			if part.URL != "" {
-				value["audio_url"] = part.URL
+			if part.FileID != "" {
+				value["file_id"] = part.FileID
+			} else {
+				mediaType := part.MediaType
+				if mediaType == "" && part.Format != "" {
+					mediaType = "audio/" + strings.TrimPrefix(part.Format, ".")
+				}
+				if url := arkMediaURL(part.URL, part.Data, mediaType); url != "" {
+					value["audio_url"] = url
+				}
 			}
 		case "input_file":
-			if part.URL != "" {
+			switch {
+			case part.FileID != "":
+				value["file_id"] = part.FileID
+			case part.Data != "":
+				value["file_data"] = part.Data
+				filename := part.Filename
+				if filename == "" {
+					filename = "document.pdf"
+				}
+				value["filename"] = filename
+			case part.URL != "":
 				value["file_url"] = part.URL
 			}
-		}
-		if part.MediaType != "" {
-			value["content_type"] = part.MediaType
-		}
-		if part.Format != "" {
-			value["format"] = part.Format
-		}
-		if part.Detail != "" {
-			value["detail"] = part.Detail
-		}
-		if part.Transcript != "" {
-			value["transcript"] = part.Transcript
+			if part.Data == "" && part.Filename != "" {
+				value["filename"] = part.Filename
+			}
+		default:
+			if part.Text != "" {
+				value["text"] = part.Text
+			}
+			if part.FileID != "" {
+				value["file_id"] = part.FileID
+			}
+			if part.Filename != "" {
+				value["filename"] = part.Filename
+			}
+			if part.Data != "" {
+				value["file_data"] = part.Data
+			}
+			if part.MediaType != "" {
+				value["content_type"] = part.MediaType
+			}
+			if part.Format != "" {
+				value["format"] = part.Format
+			}
+			if part.Detail != "" {
+				value["detail"] = part.Detail
+			}
+			if part.Transcript != "" {
+				value["transcript"] = part.Transcript
+			}
 		}
 		result = append(result, value)
 	}
 	return result, nil
+}
+
+func isArkInputContent(typeName string) bool {
+	switch typeName {
+	case "input_text", "input_image", "input_video", "input_audio", "input_file":
+		return true
+	default:
+		return false
+	}
+}
+
+func clearCanonicalContentFields(value map[string]any) {
+	for _, key := range []string{
+		"type", "text", "image_url", "video_url", "audio_url", "file_url", "file_id", "file_data",
+		"filename", "content_type", "format", "detail", "transcript",
+	} {
+		delete(value, key)
+	}
+}
+
+func arkMediaURL(url, data, mediaType string) string {
+	if url != "" {
+		return url
+	}
+	if data == "" || strings.HasPrefix(data, "data:") {
+		return data
+	}
+	if mediaType == "" {
+		mediaType = "application/octet-stream"
+	}
+	return "data:" + mediaType + ";base64," + data
 }
 
 func encodeTools(tools []canonical.Tool) ([]map[string]any, error) {

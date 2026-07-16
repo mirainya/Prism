@@ -11,7 +11,10 @@ import (
 	"testing"
 
 	"github.com/mirainya/Prism/internal/gateway/canonical"
+	anthropiccodec "github.com/mirainya/Prism/internal/gateway/codec/anthropic"
+	openaichatcodec "github.com/mirainya/Prism/internal/gateway/codec/openai_chat"
 	gatewaytransport "github.com/mirainya/Prism/internal/gateway/transport"
+	"github.com/mirainya/Prism/internal/provider/chat"
 )
 
 func TestVolcengineConvertsAnthropicMessages(t *testing.T) {
@@ -199,11 +202,194 @@ func TestPreparePreservesCallIDAndMultimodalMetadata(t *testing.T) {
 		t.Fatal(err)
 	}
 	body := string(prepared.Body)
-	for _, expected := range []string{`"call_id":"call_1"`, `"arguments":"{\"q\":\"x\"}"`, `"filename":"report.pdf"`, `"content_type":"application/pdf"`, `"format":"wav"`} {
+	for _, expected := range []string{`"call_id":"call_1"`, `"arguments":"{\"q\":\"x\"}"`, `"filename":"report.pdf"`, `"file_id":"file_1"`, `"audio_url":"https://example.test/a.wav"`} {
 		if !strings.Contains(body, expected) {
 			t.Fatalf("prepared body missing %s: %s", expected, body)
 		}
 	}
+	for _, forbidden := range []string{`"content_type"`, `"format"`, `"transcript"`} {
+		if strings.Contains(body, forbidden) {
+			t.Fatalf("prepared body contains unsupported Ark field %s: %s", forbidden, body)
+		}
+	}
+}
+
+func TestPrepareUsesArkMultimodalContentShapes(t *testing.T) {
+	request := canonical.Request{Model: "public", Items: []canonical.Item{{
+		Type: "message", Role: canonical.RoleUser, Content: []canonical.Content{
+			{Type: "input_image", Data: "aW1hZ2U=", MediaType: "image/png", Detail: "high"},
+			{Type: "input_video", Data: "dmlkZW8=", MediaType: "video/mp4", Extra: map[string]json.RawMessage{"fps": json.RawMessage(`2`)}},
+			{Type: "input_audio", Data: "YXVkaW8=", Format: "wav"},
+			{Type: "input_file", Data: "JVBERi0=", MediaType: "application/pdf"},
+		},
+	}}}
+	input := prepareInput(t, request, gatewaytransport.OperationResponses)
+	if len(input) != 1 {
+		t.Fatalf("input count = %d, want 1", len(input))
+	}
+	content, ok := input[0]["content"].([]any)
+	if !ok || len(content) != 4 {
+		t.Fatalf("content = %#v", input[0]["content"])
+	}
+	image := content[0].(map[string]any)
+	requireExactKeys(t, image, "type", "image_url", "detail")
+	if image["image_url"] != "data:image/png;base64,aW1hZ2U=" {
+		t.Fatalf("image URL = %#v", image["image_url"])
+	}
+	video := content[1].(map[string]any)
+	requireExactKeys(t, video, "type", "video_url", "fps")
+	if video["video_url"] != "data:video/mp4;base64,dmlkZW8=" || video["fps"] != float64(2) {
+		t.Fatalf("video = %#v", video)
+	}
+	audio := content[2].(map[string]any)
+	requireExactKeys(t, audio, "type", "audio_url")
+	if audio["audio_url"] != "data:audio/wav;base64,YXVkaW8=" {
+		t.Fatalf("audio URL = %#v", audio["audio_url"])
+	}
+	file := content[3].(map[string]any)
+	requireExactKeys(t, file, "type", "file_data", "filename")
+	if file["file_data"] != "JVBERi0=" || file["filename"] != "document.pdf" {
+		t.Fatalf("file = %#v", file)
+	}
+}
+
+func TestPrepareUsesArkInputUnionShapes(t *testing.T) {
+	call := invocation(false, nil)
+	call.Request.Items = []canonical.Item{
+		{ID: "msg_1", Type: "message", Role: canonical.RoleAssistant, Status: "completed", Content: []canonical.Content{{Type: "output_text", Text: "running the tool", Extra: map[string]json.RawMessage{"annotations": json.RawMessage(`[{"type":"url_citation"}]`), "logprobs": json.RawMessage(`[]`)}}}},
+		{Type: "function_call", Role: canonical.RoleAssistant, ID: "provider_item_1", CallID: "fc_1", Name: "lookup", Arguments: json.RawMessage(`{"q":"x"}`), Status: "completed"},
+		{Type: "function_call_output", Role: canonical.RoleTool, CallID: "fc_1", Output: json.RawMessage(`{"ok":true}`), Status: "completed"},
+		{Type: "reasoning", Role: canonical.RoleAssistant, ID: "reasoning_1", Status: "completed", Content: []canonical.Content{{Type: "reasoning_text", Text: "tool result is ready"}}},
+	}
+	prepared, err := New(gatewaytransport.HTTPClient{}).Prepare(context.Background(), call)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var body struct {
+		Input []map[string]any `json:"input"`
+	}
+	if err := json.Unmarshal(prepared.Body, &body); err != nil {
+		t.Fatal(err)
+	}
+	if len(body.Input) != 4 {
+		t.Fatalf("input count = %d, want 4", len(body.Input))
+	}
+	requireExactKeys(t, body.Input[0], "type", "role", "content")
+	if body.Input[0]["role"] != string(canonical.RoleAssistant) {
+		t.Fatalf("message role = %#v, want assistant", body.Input[0]["role"])
+	}
+	messageContent, ok := body.Input[0]["content"].([]any)
+	if !ok || len(messageContent) != 1 {
+		t.Fatalf("assistant history content = %#v", body.Input[0]["content"])
+	}
+	messagePart, ok := messageContent[0].(map[string]any)
+	if !ok {
+		t.Fatalf("assistant history part = %#v", messageContent[0])
+	}
+	requireExactKeys(t, messagePart, "type", "text")
+	if messagePart["type"] != "input_text" || messagePart["text"] != "running the tool" {
+		t.Fatalf("assistant history part = %#v", messagePart)
+	}
+
+	requireExactKeys(t, body.Input[1], "type", "call_id", "name", "arguments", "status")
+	if body.Input[1]["call_id"] != "fc_1" || body.Input[1]["arguments"] != `{"q":"x"}` {
+		t.Fatalf("function call = %#v", body.Input[1])
+	}
+
+	requireExactKeys(t, body.Input[2], "type", "call_id", "output", "status")
+	if body.Input[2]["output"] != `{"ok":true}` {
+		t.Fatalf("function output = %#v, want JSON string", body.Input[2]["output"])
+	}
+
+	requireExactKeys(t, body.Input[3], "type", "id", "summary", "status")
+	summary, ok := body.Input[3]["summary"].([]any)
+	if !ok || len(summary) != 1 {
+		t.Fatalf("reasoning summary = %#v", body.Input[3]["summary"])
+	}
+	summaryPart, ok := summary[0].(map[string]any)
+	if !ok || summaryPart["type"] != "summary_text" || summaryPart["text"] != "tool result is ready" {
+		t.Fatalf("reasoning summary part = %#v", summary[0])
+	}
+}
+
+func requireExactKeys(t *testing.T, value map[string]any, expected ...string) {
+	t.Helper()
+	if len(value) != len(expected) {
+		t.Fatalf("item keys = %#v, want %v", value, expected)
+	}
+	for _, key := range expected {
+		if _, exists := value[key]; !exists {
+			t.Fatalf("item missing key %q: %#v", key, value)
+		}
+	}
+}
+
+func TestPrepareConvertedToolHistoryUsesArkShapes(t *testing.T) {
+	anthropicRequest, err := anthropiccodec.DecodeRequestJSON([]byte(`{
+		"model":"public","max_tokens":64,"messages":[
+			{"role":"assistant","content":[
+				{"type":"thinking","thinking":"checking the tool"},
+				{"type":"tool_use","id":"fc_1","name":"lookup","input":{"q":"x"}}
+			]},
+			{"role":"user","content":[
+				{"type":"tool_result","tool_use_id":"fc_1","content":[{"type":"text","text":"ok"}]}
+			]}
+		]
+	}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	anthropicInput := prepareInput(t, anthropicRequest, gatewaytransport.OperationMessages)
+	if len(anthropicInput) != 3 {
+		t.Fatalf("Anthropic input count = %d, want 3", len(anthropicInput))
+	}
+	requireExactKeys(t, anthropicInput[0], "type", "summary")
+	requireExactKeys(t, anthropicInput[1], "type", "call_id", "name", "arguments")
+	requireExactKeys(t, anthropicInput[2], "type", "call_id", "output")
+	if _, ok := anthropicInput[2]["output"].(string); !ok {
+		t.Fatalf("Anthropic tool output = %#v, want string", anthropicInput[2]["output"])
+	}
+
+	var chatRequest chat.ChatRequest
+	if err := json.Unmarshal([]byte(`{
+		"model":"public","messages":[
+			{"role":"assistant","content":null,"tool_calls":[{"id":"fc_2","type":"function","function":{"name":"lookup","arguments":"{\"q\":\"y\"}"}}]},
+			{"role":"tool","tool_call_id":"fc_2","content":{"ok":true}}
+		]
+	}`), &chatRequest); err != nil {
+		t.Fatal(err)
+	}
+	convertedChat, err := openaichatcodec.DecodeRequest(chatRequest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	chatInput := prepareInput(t, convertedChat, gatewaytransport.OperationChat)
+	if len(chatInput) != 2 {
+		t.Fatalf("Chat input count = %d, want 2", len(chatInput))
+	}
+	requireExactKeys(t, chatInput[0], "type", "call_id", "name", "arguments")
+	requireExactKeys(t, chatInput[1], "type", "call_id", "output")
+	if _, ok := chatInput[1]["output"].(string); !ok {
+		t.Fatalf("Chat tool output = %#v, want string", chatInput[1]["output"])
+	}
+}
+
+func prepareInput(t *testing.T, request canonical.Request, operation gatewaytransport.Operation) []map[string]any {
+	t.Helper()
+	call := invocation(false, nil)
+	call.Operation = operation
+	call.Request = request
+	prepared, err := New(gatewaytransport.HTTPClient{}).Prepare(context.Background(), call)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var body struct {
+		Input []map[string]any `json:"input"`
+	}
+	if err := json.Unmarshal(prepared.Body, &body); err != nil {
+		t.Fatal(err)
+	}
+	return body.Input
 }
 
 func TestDecodeFailedEventCarriesErrorUsageAndPublicModel(t *testing.T) {

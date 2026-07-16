@@ -191,6 +191,22 @@ func TestStreamMapsMaxTokensToIncompleteWithUsage(t *testing.T) {
 	}
 }
 
+func TestStreamFunctionCallStartsBeforeArgumentsDelta(t *testing.T) {
+	events, err := decodeStreamEvents([]byte(`{"candidates":[{"content":{"parts":[{"functionCall":{"id":"call_1","name":"lookup","args":{"q":"x"}}}]}}]}`), 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(events) != 2 || events[0].Type != canonical.EventOutputItemAdded || events[1].Type != canonical.EventToolArgumentsDelta {
+		t.Fatalf("events = %#v", events)
+	}
+	if events[0].Item == nil || events[0].Item.CallID != "call_1" || events[0].Item.Name != "lookup" {
+		t.Fatalf("tool start = %#v", events[0])
+	}
+	if events[1].Item == nil || events[1].Item.CallID != "call_1" || events[1].Delta != `{"q":"x"}` {
+		t.Fatalf("tool delta = %#v", events[1])
+	}
+}
+
 func TestHTTPErrorPreservesNumericCode(t *testing.T) {
 	err := newHTTPError(http.StatusTooManyRequests, []byte(`{"error":{"code":429,"message":"slow","status":"RESOURCE_EXHAUSTED"}}`))
 	var upstream *HTTPError

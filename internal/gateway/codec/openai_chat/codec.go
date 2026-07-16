@@ -171,7 +171,7 @@ func EncodeStreamChunk(event canonical.Event) ([]byte, error) {
 	case canonical.EventReasoningDelta:
 		delta["reasoning_content"] = event.Delta
 	case canonical.EventToolArgumentsDelta:
-		delta["tool_calls"] = []map[string]any{encodeStreamToolCall(event, event.Delta)}
+		delta["tool_calls"] = []map[string]any{encodeStreamToolCall(event, event.Delta, false)}
 	}
 	if event.Item != nil {
 		if event.Item.Role != "" {
@@ -188,7 +188,7 @@ func EncodeStreamChunk(event canonical.Event) ([]byte, error) {
 			delta["tool_calls"] = calls
 		}
 		if event.Type == canonical.EventOutputItemAdded && event.Item.Type == "function_call" {
-			delta["tool_calls"] = []map[string]any{encodeStreamToolCall(event, "")}
+			delta["tool_calls"] = []map[string]any{encodeStreamToolCall(event, "", true)}
 		}
 	}
 	if event.Type == canonical.EventCompleted || event.Type == canonical.EventFailed || event.Type == canonical.EventIncomplete {
@@ -783,10 +783,10 @@ func isChatTerminal(event canonical.Event) bool {
 		return false
 	}
 }
-func encodeStreamToolCall(event canonical.Event, arguments string) map[string]any {
+func encodeStreamToolCall(event canonical.Event, arguments string, includeIdentity bool) map[string]any {
 	function := map[string]any{"arguments": arguments}
 	call := map[string]any{"index": event.ToolIndex, "function": function}
-	if event.Item != nil {
+	if includeIdentity && event.Item != nil {
 		callID := event.Item.CallID
 		if callID == "" {
 			callID = event.Item.ID

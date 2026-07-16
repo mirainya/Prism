@@ -113,16 +113,27 @@ func TestSSEFrameDecodesAndReencodesCanonicalDeltaAndDone(t *testing.T) {
 	}
 }
 
-func TestEncodeSSEToolDeltaAndTerminal(t *testing.T) {
+func TestEncodeSSEToolStartDeltaAndTerminal(t *testing.T) {
+	start, err := EncodeSSEFrame(canonical.Event{
+		Type: canonical.EventOutputItemAdded, ToolIndex: 0,
+		Item: &canonical.Item{ID: "fc_1", CallID: "call_1", Type: "function_call", Name: "lookup"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(start), `"tool_calls"`) || !strings.Contains(string(start), `"id":"call_1"`) || !strings.Contains(string(start), `"name":"lookup"`) || !strings.Contains(string(start), `"type":"function"`) {
+		t.Fatalf("tool start frame = %s", start)
+	}
+
 	frame, err := EncodeSSEFrame(canonical.Event{
 		Type: canonical.EventToolArgumentsDelta, ToolIndex: 0,
-		Item: &canonical.Item{ID: "call_1", Type: "function_call", Name: "lookup"}, Delta: `{"q":`,
+		Item: &canonical.Item{ID: "fc_1", CallID: "call_1", Type: "function_call", Name: "lookup"}, Delta: `{"q":`,
 		Raw: json.RawMessage(`{"type":"content_block_delta","delta":{"text":"wrong protocol"}}`),
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(string(frame), `"tool_calls"`) || !strings.Contains(string(frame), `"id":"call_1"`) || strings.Contains(string(frame), "content_block_delta") {
+	if !strings.Contains(string(frame), `"tool_calls"`) || !strings.Contains(string(frame), `"arguments":"{\"q\":"`) || strings.Contains(string(frame), `"id":"call_1"`) || strings.Contains(string(frame), `"id":"fc_1"`) || strings.Contains(string(frame), `"name":"lookup"`) || strings.Contains(string(frame), `"type":"function"`) || strings.Contains(string(frame), "content_block_delta") {
 		t.Fatalf("tool frame = %s", frame)
 	}
 

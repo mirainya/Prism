@@ -680,7 +680,11 @@ func decodeStreamEvents(raw []byte, sequence int64) ([]canonical.Event, error) {
 				if callID == "" {
 					callID = fmt.Sprintf("call_%d_%d", candidateIndex, partIndex)
 				}
-				events = append(events, canonical.Event{Type: canonical.EventToolArgumentsDelta, SequenceNumber: sequence, ChoiceIndex: candidateIndex, ToolIndex: partIndex, Delta: string(part.FunctionCall.Args), Item: &canonical.Item{ID: callID, Type: "function_call", CallID: callID, Name: part.FunctionCall.Name, Arguments: append(json.RawMessage(nil), part.FunctionCall.Args...)}, Raw: append(json.RawMessage(nil), raw...)})
+				item := &canonical.Item{ID: callID, Type: "function_call", CallID: callID, Name: part.FunctionCall.Name}
+				events = append(events,
+					canonical.Event{Type: canonical.EventOutputItemAdded, SequenceNumber: sequence, ChoiceIndex: candidateIndex, ToolIndex: partIndex, Item: item, Raw: append(json.RawMessage(nil), raw...)},
+					canonical.Event{Type: canonical.EventToolArgumentsDelta, SequenceNumber: sequence, ChoiceIndex: candidateIndex, ToolIndex: partIndex, Delta: string(part.FunctionCall.Args), Item: item, Raw: append(json.RawMessage(nil), raw...)},
+				)
 			}
 			if part.InlineData != nil {
 				item := canonical.Item{Type: "message", Role: canonical.RoleAssistant, Content: []canonical.Content{contentFromBlob(part.InlineData.MIMEType, part.InlineData.Data, "")}}
