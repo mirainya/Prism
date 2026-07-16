@@ -31,6 +31,26 @@ type gwChannelKeyResponse struct {
 	UpdatedAt   time.Time `json:"updated_at"`
 }
 
+type createGwChannelKeyRequest struct {
+	ChannelID uint   `json:"channel_id"`
+	Name      string `json:"name"`
+	APIKey    string `json:"api_key"`
+	Weight    int    `json:"weight"`
+	Status    int8   `json:"status"`
+	MaxConc   int    `json:"max_conc"`
+}
+
+func (request createGwChannelKeyRequest) model() model.GwChannelKey {
+	return model.GwChannelKey{
+		ChannelID: request.ChannelID,
+		Name:      request.Name,
+		APIKey:    request.APIKey,
+		Weight:    request.Weight,
+		Status:    request.Status,
+		MaxConc:   request.MaxConc,
+	}
+}
+
 func newGwChannelKeyResponse(key *model.GwChannelKey) gwChannelKeyResponse {
 	maskedKey := service.MaskCredential(key.APIKey)
 	return gwChannelKeyResponse{
@@ -150,11 +170,12 @@ func ListGwKeys(c *gin.Context) {
 
 // CreateGwKey POST /api/admin/gw/keys
 func CreateGwKey(c *gin.Context) {
-	var key model.GwChannelKey
-	if err := c.ShouldBindJSON(&key); err != nil {
+	var request createGwChannelKeyRequest
+	if err := c.ShouldBindJSON(&request); err != nil {
 		resp.BadRequest(c, pkgErrors.WithMessage(pkgErrors.ErrInvalidParams, err.Error()))
 		return
 	}
+	key := request.model()
 	if err := gatewayAdminService.CreateKey(&key); err != nil {
 		resp.BadRequest(c, pkgErrors.WithMessage(pkgErrors.ErrInvalidParams, err.Error()))
 		return
