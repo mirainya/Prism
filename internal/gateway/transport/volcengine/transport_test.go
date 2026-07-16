@@ -291,17 +291,17 @@ func TestPrepareUsesArkInputUnionShapes(t *testing.T) {
 		t.Fatalf("assistant history part = %#v", messagePart)
 	}
 
-	requireExactKeys(t, body.Input[1], "type", "call_id", "name", "arguments", "status")
+	requireExactKeys(t, body.Input[1], "type", "call_id", "name", "arguments")
 	if body.Input[1]["call_id"] != "fc_1" || body.Input[1]["arguments"] != `{"q":"x"}` {
 		t.Fatalf("function call = %#v", body.Input[1])
 	}
 
-	requireExactKeys(t, body.Input[2], "type", "call_id", "output", "status")
+	requireExactKeys(t, body.Input[2], "type", "call_id", "output")
 	if body.Input[2]["output"] != `{"ok":true}` {
 		t.Fatalf("function output = %#v, want JSON string", body.Input[2]["output"])
 	}
 
-	requireExactKeys(t, body.Input[3], "type", "id", "summary", "status")
+	requireExactKeys(t, body.Input[3], "type", "summary")
 	summary, ok := body.Input[3]["summary"].([]any)
 	if !ok || len(summary) != 1 {
 		t.Fatalf("reasoning summary = %#v", body.Input[3]["summary"])

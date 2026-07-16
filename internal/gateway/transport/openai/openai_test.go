@@ -278,6 +278,27 @@ func TestDecodeResponsesNormalizesToolArguments(t *testing.T) {
 	}
 }
 
+func TestDecodeChatToolChunkStartsBeforeInitialArguments(t *testing.T) {
+	events, err := decodeChatEvents("", []byte(`{"choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"call_1","type":"function","function":{"name":"lookup","arguments":"{\"q\":\"x\"}"}}]}}]}`), transport.Route{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(events) != 2 || events[0].Type != canonical.EventOutputItemAdded || events[1].Type != canonical.EventToolArgumentsDelta {
+		t.Fatalf("initial tool events = %#v", events)
+	}
+	if events[0].Item == nil || events[0].Item.CallID != "call_1" || events[0].Item.Name != "lookup" || events[1].Delta != `{"q":"x"}` {
+		t.Fatalf("initial tool events = %#v", events)
+	}
+
+	continuation, err := decodeChatEvents("", []byte(`{"choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"call_1","type":"function","function":{"arguments":"more"}}]}}]}`), transport.Route{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(continuation) != 1 || continuation[0].Type != canonical.EventToolArgumentsDelta || continuation[0].Delta != "more" {
+		t.Fatalf("continuation events = %#v", continuation)
+	}
+}
+
 func TestChatStreamAttachesTrailingUsageToTerminal(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
 		writer.Header().Set("Content-Type", "text/event-stream")

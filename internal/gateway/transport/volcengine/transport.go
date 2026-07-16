@@ -391,9 +391,6 @@ func encodeItems(items []canonical.Item) ([]map[string]any, error) {
 			value["call_id"] = callID
 			value["name"] = item.Name
 			value["arguments"] = rawText(item.Arguments)
-			if item.Status != "" {
-				value["status"] = item.Status
-			}
 		case "function_call_output":
 			callID := item.CallID
 			if callID == "" {
@@ -401,16 +398,7 @@ func encodeItems(items []canonical.Item) ([]map[string]any, error) {
 			}
 			value["call_id"] = callID
 			value["output"] = rawText(item.Output)
-			if item.Status != "" {
-				value["status"] = item.Status
-			}
 		case "reasoning":
-			if item.ID != "" {
-				value["id"] = item.ID
-			}
-			if item.Status != "" {
-				value["status"] = item.Status
-			}
 			if len(item.Content) > 0 {
 				summary, err := encodeReasoningSummary(item.Content)
 				if err != nil {

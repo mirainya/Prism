@@ -1020,15 +1020,22 @@ func decodeChatEvents(_ string, raw []byte, _ transport.Route) ([]canonical.Even
 			events = append(events, event)
 		}
 		for _, call := range choice.Delta.ToolCalls {
-			event := base
-			event.ToolIndex = call.Index
-			event.Item = &canonical.Item{Type: "function_call", ID: call.ID, CallID: call.ID, Name: call.Function.Name}
-			if call.Function.Arguments != "" {
-				event.Type, event.Delta = canonical.EventToolArgumentsDelta, call.Function.Arguments
-			} else {
+			item := &canonical.Item{Type: "function_call", ID: call.ID, CallID: call.ID, Name: call.Function.Name}
+			if call.Function.Name != "" || (call.ID != "" && call.Function.Arguments == "") {
+				event := base
 				event.Type = canonical.EventOutputItemAdded
+				event.ToolIndex = call.Index
+				event.Item = item
+				events = append(events, event)
 			}
-			events = append(events, event)
+			if call.Function.Arguments != "" {
+				event := base
+				event.Type = canonical.EventToolArgumentsDelta
+				event.ToolIndex = call.Index
+				event.Item = item
+				event.Delta = call.Function.Arguments
+				events = append(events, event)
+			}
 		}
 		if choice.FinishReason != "" {
 			event := base
