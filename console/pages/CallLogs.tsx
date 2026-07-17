@@ -204,6 +204,7 @@ const CallLogs: React.FC = () => {
 
   useEffect(() => {
     let active = true;
+    // 服务端返回的 snapshot_at 在本轮筛选内复用，刷新或重新查询时才重新取快照。
     const params: CallListParams = {
       page, page_size: PAGE_SIZE,
       snapshot_at: snapshotAt.current || undefined,
@@ -241,6 +242,7 @@ const CallLogs: React.FC = () => {
 
   const openDetail = async (id: string) => {
     const requestNo = ++detailRequest.current;
+    // requestNo 代替取消不可中断的请求，防止连续点击时旧详情覆盖新详情。
     setDetail(null);
     setDetailError('');
     setDetailLoading(true);

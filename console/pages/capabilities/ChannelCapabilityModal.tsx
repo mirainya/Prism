@@ -57,6 +57,7 @@ const ChannelCapabilityModal: React.FC<{
     const [loading, setLoading] = useState(false);
 
     useEffect(() => {
+        // 后端保存嵌套映射对象，编辑器使用可增删的行数组；打开时一次拆解全部子配置。
         if (channelCapability) {
             setForm({
                 channel_id: Number(channelCapability.channelId),
@@ -171,6 +172,7 @@ const ChannelCapabilityModal: React.FC<{
         e.preventDefault();
         setLoading(true);
         try {
+            // 提交前把各 Tab 的行状态重新组装成 Provider 执行器使用的映射对象。
             const paramMapping = buildParamMapping(paramFieldMappings, paramValueMappings, paramFixedParams, paramTypeConverts);
             const responseMapping = buildResponseMapping(respFieldMappings, respValueMappings, respTypeConverts, respSuccessCondition);
             const pollResponseMapping = useSeparatePollMapping

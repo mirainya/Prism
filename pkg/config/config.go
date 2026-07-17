@@ -133,6 +133,7 @@ func Load(path string) error {
 	}
 	applyDefaults(newCfg)
 
+	// 完整解析并应用默认值后一次替换指针，读取方不会看到半更新配置。
 	mu.Lock()
 	C = newCfg
 	mu.Unlock()
@@ -147,6 +148,7 @@ func Watch() {
 		}
 		applyDefaults(newCfg)
 
+		// 回调在锁外执行，避免回调再次读取配置或注册监听时发生死锁。
 		mu.Lock()
 		C = newCfg
 		cbs := make([]func(*Config), len(callbacks))

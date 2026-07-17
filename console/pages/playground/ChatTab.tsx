@@ -172,6 +172,7 @@ const ChatTab: React.FC<{ tokenId: string }> = ({ tokenId }) => {
   }, []);
 
   const applyConversationMessages = async (conversation: PlaygroundConversation) => {
+    // token 或选择变化会使旧加载失效；双重检查避免历史响应覆盖另一个会话。
     const requestNo = ++conversationLoadRef.current;
     const requestedToken = tokenId;
     setLoadingConversationId(conversation.id);
@@ -248,6 +249,7 @@ const ChatTab: React.FC<{ tokenId: string }> = ({ tokenId }) => {
     }
 
     const userMsg: ChatMessage = { role: 'user', content: userContent, status: 'completed' };
+    // 目前仅 Chat 暴露 Prism conversation_id 增量续话；Responses/Messages 仍发送完整可见历史。
     const hasConversation = protocol === 'chat' && Boolean(effectiveConversationId);
     const allMessages: ChatMessage[] = [
       ...chat.messages.filter(msg => msg.role !== 'system' && msg.status !== 'failed' && msg.status !== 'aborted'),
@@ -320,6 +322,7 @@ const ChatTab: React.FC<{ tokenId: string }> = ({ tokenId }) => {
         let buffer = '';
         const streamState = createProtocolStreamState();
 
+        // 高频 token 先累计在局部变量，最多每 80ms 更新一次 React 状态，避免逐帧重渲染。
         const flushStreamMessage = () => {
           if (streamFlushTimerRef.current !== null) return;
           streamFlushTimerRef.current = window.setTimeout(() => {
@@ -340,6 +343,7 @@ const ChatTab: React.FC<{ tokenId: string }> = ({ tokenId }) => {
           if (done) break;
           buffer += decoder.decode(value, { stream: true });
           buffer = buffer.replace(/\r\n/g, '\n');
+          // SSE 帧可能跨网络 chunk，末尾不完整片段保留到下一次读取。
           const events = buffer.split('\n\n');
           buffer = events.pop() || '';
           for (const eventBlock of events) {
@@ -444,6 +448,7 @@ const ChatTab: React.FC<{ tokenId: string }> = ({ tokenId }) => {
   const handleStop = () => { abortRef.current?.abort(); };
 
   const resetConversationState = (statusText = '等待发送') => {
+    // 使正在加载的历史失效，并同步清理附件 object URL 与调试状态。
     conversationLoadRef.current += 1;
     setLoadingConversationId(undefined);
     setChat({ messages: [], isStreaming: false, usage: null, latencyMs: null, statusText });

@@ -24,6 +24,7 @@ func HandleTaskSubmit(ctx context.Context, t *asynq.Task) error {
 	if err := json.Unmarshal(t.Payload(), &payload); err != nil {
 		return fmt.Errorf("unmarshal payload: %w", err)
 	}
+	// Redis 任务可能重复投递，数据库租约才是提交阶段的唯一执行权。
 	lease, acquired, err := service.AcquireTaskWorkerLease(ctx, payload.TaskID, service.TaskWorkerStageSubmit)
 	if err != nil {
 		return fmt.Errorf("acquire submit lease: %w", err)
@@ -59,6 +60,7 @@ func HandleTaskSubmit(ctx context.Context, t *asynq.Task) error {
 		checkpoint.LeaseOwner = lease.Owner()
 	}
 	if checkpoint != nil && checkpoint.IsInFlight() {
+		// in_flight 说明请求可能已到达上游；先借助回调或任务状态判定结果，禁止盲目重试。
 		callbackOwned, resolveErr := taskService.ResolveInFlightTaskSubmit(task.ID, lease)
 		if callbackOwned || errors.Is(resolveErr, service.ErrTaskSubmitOutcomeUnknown) {
 			return nil
@@ -145,7 +147,7 @@ func HandleTaskSubmit(ctx context.Context, t *asynq.Task) error {
 		return err
 	}
 
-	// 6. 根据交互模式处理结果
+	// 检查点已持久化上游结果，下面只负责按交互模式推进本地 Task 状态和后续队列。
 	switch endpoint.InteractionMode {
 	case model.ModePoll:
 		if result.ProviderTaskID == "" {
@@ -272,6 +274,7 @@ func submitTaskUpstream(
 	if attempt != nil {
 		attemptID = attempt.ID
 	}
+	// 外部请求前先写 in_flight 检查点，覆盖“上游已接收但进程尚未保存响应”的崩溃窗口。
 	inFlightCheckpoint := service.NewTaskSubmitInFlightCheckpoint(attemptID, endpoint.InputPrice)
 	if err := saveTaskSubmitCheckpoint(task.ID, lease.Owner(), inFlightCheckpoint); err != nil {
 		return provider.SubmitResult{}, attempt, nil, fmt.Errorf("save in-flight submit checkpoint: %w", err)
@@ -301,6 +304,7 @@ func submitTaskUpstream(
 	}
 	if submitErr != nil {
 		if !service.CapabilityRequestReceivedHTTPResponse(result.RequestMetadata, submitErr) {
+			// 未收到 HTTP 响应并不等于上游未受理，交由 ResolveInFlightTaskSubmit 判断归属。
 			if finishErr := finishCapabilityAttempt(
 				task,
 				channel,

@@ -25,6 +25,8 @@ import (
 	"gorm.io/gorm"
 )
 
+// Pipeline 在公开 Responses 资源语义与 Gateway Engine 执行语义之间编排持久化、
+// 幂等、后台任务、会话投影和下游交付。
 type Pipeline struct {
 	billing *service.BillingService
 	calls   *service.APICallService
@@ -235,6 +237,7 @@ func storedResponseTerminal(record *model.AIResponse) bool {
 }
 
 func (p *Pipeline) recordIdempotentReplay(existing *Result, requestID string, requestJSON []byte) (*Result, error) {
+	// Replay 自身也是一次可审计调用，但不产生新的上游 Attempt 或重复计费。
 	if existing == nil || existing.Record == nil {
 		return existing, nil
 	}

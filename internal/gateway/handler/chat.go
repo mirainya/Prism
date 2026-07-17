@@ -85,6 +85,7 @@ func NewChatHandler(pipe *pipeline.Pipeline) *ChatHandler {
 
 // Completions POST /v1/chat/completions
 func (h *ChatHandler) Completions(c *gin.Context) {
+	// Handler 只负责公开协议校验、鉴权和下游交付；选路、上游调用与计费统一交给 Pipeline/Engine。
 	c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, maxPublicConversationRequestBytes)
 	var req struct {
 		Model               string                `json:"model" binding:"required"`
@@ -226,6 +227,7 @@ func (h *ChatHandler) Completions(c *gin.Context) {
 		return
 	}
 	store := req.Store != nil && *req.Store
+	// Call 与会话输入先于上游执行原子写入，保证任何失败终态都有可投影的输入历史。
 	if err := createAPIConversationCall(&service.StartCallRequest{
 		ID: callID, RequestID: requestID, UserID: token.UserID, TokenID: token.ID,
 		Endpoint: "/v1/chat/completions", Operation: string(transport.OperationChat), Model: req.Model,
@@ -261,6 +263,7 @@ func (h *ChatHandler) Completions(c *gin.Context) {
 		projectAPIConversationBestEffort(action, projection)
 	}
 	if req.Stream {
+		// 流一旦写出首帧便不能替换路由；结束后再按实际写入结果确认 Call 的交付终态。
 		session, err := h.pipe.StreamComplete(c.Request.Context(), completionReq)
 		if err != nil {
 			respondChatPipelineError(c, err)
@@ -321,6 +324,7 @@ func (h *ChatHandler) Completions(c *gin.Context) {
 			FinishReason: chatResp.CanonicalResponse.FinishReason,
 		})
 	}
+	// 非流式调用同样推迟 Call 完成，直到完整 JSON 确实写入下游 Writer。
 	encoded, err := json.Marshal(chatResp)
 	if err != nil {
 		deliveryErr := failChatDelivery(chatResp, err, false)

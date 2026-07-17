@@ -51,6 +51,7 @@ export interface ProtocolStreamState extends ParsedProtocolResponse {
 }
 
 export const buildProtocolPayload = (options: BuildPayloadOptions): Record<string, any> => {
+  // UI 使用一套参数模型，这里集中处理三种公开协议的字段名与结构差异。
   const {
     protocol, model, messages, currentMessage, systemPrompt, hasConversation, conversationId,
     temperature, maxTokens, topP, presencePenalty, frequencyPenalty, stop, stream, seed, user,
@@ -166,6 +167,7 @@ export const consumeProtocolStreamEvent = (
   body: any,
   state: ProtocolStreamState,
 ) => {
+  // 原地累积流状态，调用方可在多个 SSE 帧之间保留文本、usage 与工具参数片段。
   if (body?.error) {
     state.error = typeof body.error === 'string' ? body.error : body.error.message;
   }
@@ -346,6 +348,7 @@ const appendChatToolCallDeltas = (calls: PlaygroundToolCall[], deltas: any) => {
 };
 
 const appendToolCallDelta = (calls: PlaygroundToolCall[], id: string | undefined, name: string | undefined, delta: string, index?: number) => {
+  // 首帧可能只有 index，后续才出现 id/name，因此同时支持两种身份查找。
   const target = findToolCall(calls, id, index);
   if (target) {
     if (name) target.name = name;
@@ -356,6 +359,7 @@ const appendToolCallDelta = (calls: PlaygroundToolCall[], id: string | undefined
 };
 
 const upsertToolCall = (calls: PlaygroundToolCall[], id: string | undefined, name: string | undefined, args: any, index?: number) => {
+  // added 与 done 事件可能重复携带完整参数，完整值覆盖而不是再次拼接。
   const target = findToolCall(calls, id, index);
   const argumentsText = stringifyArguments(args);
   if (target) {

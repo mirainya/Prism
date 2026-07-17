@@ -67,6 +67,7 @@ type transportCandidate struct {
 func (r *Router) SelectTransport(modelName string, requirements RouteRequirements, options RouteOptions) (*RouteResult, error) {
 	var chosen *transportCandidate
 	err := model.DB().Transaction(func(tx *gorm.DB) error {
+		// 先区分“模型不存在”和“模型存在但当前不可用”，两者会映射成不同的公开 API 错误。
 		var declarations []struct{ Status int8 }
 		if err := tx.Table("gw_abilities").Select("status").Where("model_name = ?", modelName).Find(&declarations).Error; err != nil {
 			return err
@@ -75,6 +76,7 @@ func (r *Router) SelectTransport(modelName string, requirements RouteRequirement
 			return ErrModelNotFound
 		}
 
+		// 候选行在选取期间加锁，并在同一事务中增加 key 并发数，防止多个实例同时超额选择。
 		q := tx.Table("gw_abilities ab").
 			Select("ab.id AS ability_id, ab.key_id, ab.channel_id, ab.vendor_model, ab.priority, "+
 				"ab.price_mode, ab.input_price, ab.output_price, ck.weight, ck.max_conc, ck.current_conc, ck.api_key, "+
@@ -100,6 +102,7 @@ func (r *Router) SelectTransport(modelName string, requirements RouteRequirement
 			return ErrNoRoute
 		}
 
+		// 熔断状态和本次请求已失败的尝试都以 key + transport 为粒度。
 		var states []model.GwRouteState
 		if err := tx.Where("model_name = ? AND disabled_until > ?", modelName, time.Now()).Find(&states).Error; err != nil {
 			return err
@@ -113,6 +116,7 @@ func (r *Router) SelectTransport(modelName string, requirements RouteRequirement
 			excludedAttempts[routeStateKey{keyID: attempt.KeyID, transport: attempt.Transport}] = true
 		}
 
+		// 分阶段记录匹配结果，便于准确区分能力不支持、协议不兼容和暂时无可用路由。
 		filtered := make([]transportCandidate, 0, len(all))
 		capabilityMatch := false
 		transportMatch := false
@@ -141,6 +145,7 @@ func (r *Router) SelectTransport(modelName string, requirements RouteRequirement
 			return ErrNoRoute
 		}
 
+		// 先按协议偏好和 Ability 优先级分层；权重只在最高层内部生效，不能越级抢占。
 		sort.SliceStable(filtered, func(i, j int) bool {
 			leftRank := transportRank(filtered[i].Transport, options.PreferredTransports)
 			rightRank := transportRank(filtered[j].Transport, options.PreferredTransports)
@@ -167,6 +172,7 @@ func (r *Router) SelectTransport(modelName string, requirements RouteRequirement
 		}
 		selected := weightedTransportCandidate(top)
 		chosen = &selected
+		// 并发占用必须与选择结果一并提交，调用结束后由 Engine 的 Release 对称释放。
 		return tx.Model(&model.GwChannelKey{}).Where("id = ?", selected.KeyID).
 			UpdateColumn("current_conc", gorm.Expr("current_conc + 1")).Error
 	})
@@ -269,6 +275,7 @@ func transportRank(transport model.UpstreamTransport, preferred []model.Upstream
 }
 
 func weightedTransportCandidate(candidates []transportCandidate) transportCandidate {
+	// 非正权重按 1 处理，使配置错误不会让候选永远无法被选中。
 	totalWeight := 0
 	for _, candidate := range candidates {
 		weight := candidate.Weight

@@ -1,3 +1,4 @@
+// Package anthropic implements the Anthropic Messages upstream transport.
 package anthropic
 
 import (
@@ -23,6 +24,7 @@ func New(client *http.Client) transport.Transport { return &Transport{Client: cl
 func (*Transport) ID() transport.ID               { return transport.AnthropicMessages }
 
 func (*Transport) Plan(operation transport.Operation, request canonical.Request, features canonical.FeatureSet) transport.Plan {
+	// 转换必须保留 thinking proof、工具结果和原始 block；任一形态不可重放时拒绝该方案。
 	if operation != transport.OperationMessages && operation != transport.OperationChat && operation != transport.OperationResponses {
 		return transport.Unsupported(operation, "unsupported Anthropic operation")
 	}
@@ -96,6 +98,7 @@ func isNativeThinking(raw json.RawMessage) bool {
 }
 
 func replayableAnthropicReasoning(item canonical.Item) bool {
+	// redacted_thinking 与普通 thinking 的 proof 形态不同，二者都必须验证原始 block 与 canonical 一致。
 	var block map[string]json.RawMessage
 	raw := item.Extra[transport.ExtensionAnthropicRawBlock]
 	if json.Unmarshal(raw, &block) == nil && rawString(block["type"]) == "redacted_thinking" {
@@ -291,6 +294,7 @@ func (s *stream) Next(ctx context.Context) (canonical.Event, error) {
 }
 
 func (s *stream) decode(name string, raw []byte) (canonical.Event, bool, error) {
+	// Anthropic 将一个响应拆成 message 与 content block 事件；blocks 保存索引对应的 Item 身份和累计参数。
 	var root map[string]json.RawMessage
 	if err := json.Unmarshal(raw, &root); err != nil {
 		return canonical.Event{}, false, err

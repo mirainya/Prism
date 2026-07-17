@@ -86,6 +86,7 @@ func UploadFile(c *gin.Context) {
 		mimeType = http.DetectContentType(data)
 	}
 	record := model.AIFile{ID: "file_" + strings.ReplaceAll(uuid.NewString(), "-", ""), UserID: token.UserID, TokenID: token.ID, Filename: filepath.Base(fileHeader.Filename), Purpose: purpose, Bytes: int64(len(data)), MimeType: mimeType, Content: data, Status: "processed", CreatedAt: time.Now()}
+	// 配额检查与文件插入共用 Token 行锁，防止并发上传同时通过旧的 used 值。
 	err = withTokenFileTransaction(token.ID, func(tx *gorm.DB) error {
 		var used int64
 		if err := tx.Model(&model.AIFile{}).
@@ -250,6 +251,7 @@ func tokenFileQuotaBytes() int64 {
 }
 
 func withTokenFileTransaction(tokenID uint, fn func(*gorm.DB) error) error {
+	// 进程内分片锁减少同 Token 的数据库锁竞争；数据库行锁负责多实例一致性。
 	lock := &fileQuotaLocks[tokenID%uint(len(fileQuotaLocks))]
 	lock.Lock()
 	defer lock.Unlock()

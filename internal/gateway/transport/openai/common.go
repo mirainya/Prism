@@ -111,6 +111,8 @@ func (b *base) StreamPrepared(ctx context.Context, in transport.Invocation, prep
 		resp.Body.Close()
 		return nil, httpError(resp.StatusCode, raw)
 	}
+	// Chat 的 finish_reason 可能先于最终 usage 帧，因此 [DONE] 才是可确认的终点；
+	// Responses 本身已有明确 terminal event。
 	return &sse{body: resp.Body, reader: transport.NewSSEReader(resp.Body), route: in.Route, decode: b.event, doneIsTerminal: b.id == transport.OpenAIChat}, nil
 }
 func do(ctx context.Context, c *http.Client, p transport.PreparedRequest) (*http.Response, error) {
@@ -209,6 +211,7 @@ func (s *sse) Next(ctx context.Context) (canonical.Event, error) {
 			return canonical.Event{}, err
 		}
 		for _, event := range events {
+			// 暂存 Chat 终态，等待可能紧随其后的 usage 帧合并后再交给 Engine 结算。
 			if s.doneIsTerminal && isTerminal(event.Type) && event.Type != canonical.EventError && event.Usage == nil {
 				copy := event
 				s.terminal = &copy

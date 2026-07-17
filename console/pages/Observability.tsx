@@ -117,6 +117,7 @@ const Observability: React.FC = () => {
   const [error, setError] = useState('');
   const [refreshKey, setRefreshKey] = useState(0);
   const snapshotIds = useRef<Record<Tab, number | undefined>>(emptySnapshots());
+  // 三张表增长速度不同，各自维护快照；切换标签不会把另一张表的游标带过来。
   const [isAdmin] = useState(() => {
     try {
       return JSON.parse(localStorage.getItem('prism_user') || '{}').role === UserRole.ADMIN;
@@ -219,6 +220,7 @@ const Observability: React.FC = () => {
     setRefreshKey(value => value + 1);
   };
   const search = () => {
+    // 筛选条件变化会改变结果集合，所有标签的旧快照都必须失效。
     snapshotIds.current = emptySnapshots();
     setFilters({ ...draft });
     setPage(1);

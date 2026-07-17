@@ -20,6 +20,7 @@ import (
 )
 
 func (p *Pipeline) completeV2(ctx context.Context, request *service.CompletionRequest) (*service.CompletionResponse, error) {
+	// Chat Handler 的字段先转为 canonical，再由 Engine 选择能原生或转换执行的 Transport。
 	canonicalRequest, err := CanonicalChatRequest(request, request.Messages, request.Model)
 	if err != nil {
 		return nil, err
@@ -69,6 +70,7 @@ func (p *Pipeline) completeV2(ctx context.Context, request *service.CompletionRe
 }
 
 func (p *Pipeline) streamCompleteV2(ctx context.Context, request *service.CompletionRequest) (*StreamSession, error) {
+	// Pipe 将 canonical 事件编码为 OpenAI Chat SSE；StreamSession 继续持有交付与清理责任。
 	canonicalRequest, err := CanonicalChatRequest(request, request.Messages, request.Model)
 	if err != nil {
 		return nil, err
@@ -144,6 +146,7 @@ func (p *Pipeline) v2Options(request *service.CompletionRequest) engine.ExecuteO
 }
 
 func adaptChatExtensions(request *canonical.Request, transportID transport.ID) error {
+	// 只把 Chat 专属扩展注入确实理解它们的上游；其他协议必须通过 canonical 字段表达。
 	if request == nil || len(request.ClientExtensions["openai_chat.request_extras"]) == 0 || transportID == transport.OpenAIChat {
 		return nil
 	}
@@ -303,6 +306,7 @@ func cloneCanonicalResponse(source canonical.Response) canonical.Response {
 }
 
 func (s *StreamSession) proxyV2ChatStream(ctx context.Context, writer *io.PipeWriter, stream *engine.StreamResult, publicModel string) {
+	// 后台 goroutine 的任意退出路径都要关闭 Pipe，调用方才能从 UpstreamResp.Body 观察终态。
 	defer close(s.done)
 	defer stream.Close()
 	defer writer.Close()

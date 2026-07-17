@@ -42,6 +42,7 @@ const CapabilityTab: React.FC<{ tokenId: string }> = ({ tokenId }) => {
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [error, setError] = useState('');
   const pollTimers = useRef<Record<string, ReturnType<typeof setInterval>>>({});
+  // 每个 task_no 最多一个轮询器；token 切换和组件卸载时统一清除。
   const activeTokenRef = useRef(tokenId);
   const capabilityPickerRef = useRef<HTMLDivElement | null>(null);
   const capFileInputRef = useRef<HTMLInputElement>(null);
@@ -89,6 +90,7 @@ const CapabilityTab: React.FC<{ tokenId: string }> = ({ tokenId }) => {
   }, []);
 
   const mergeTask = (prev: TaskResult[], nextTask: TaskResult) => {
+    // 轮询结果按 taskNo 原位替换，避免同一任务在画廊中重复出现。
     const index = prev.findIndex(task => task.taskNo === nextTask.taskNo);
     if (index === -1) return [nextTask, ...prev];
     const merged = [...prev];
@@ -192,6 +194,7 @@ const CapabilityTab: React.FC<{ tokenId: string }> = ({ tokenId }) => {
   };
 
   const startPolling = (taskNo: string) => {
+    // 终态或 token 变化立即停止定时器，防止后台请求继续更新已切换页面。
     if (pollTimers.current[taskNo]) return;
     pollTimers.current[taskNo] = setInterval(async () => {
       try {

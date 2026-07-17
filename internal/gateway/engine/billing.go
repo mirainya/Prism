@@ -17,6 +17,8 @@ const (
 	billingPrecision int32 = 8
 )
 
+// Reservation 先按请求上限预授权，终态再根据 usage 结算差额。
+// Retain 用于已产生部分输出但拿不到最终 usage 的保守结算。
 type Reservation struct {
 	billing         *service.BillingService
 	tokenID, userID uint
@@ -102,6 +104,7 @@ func estimate(route *routing.RouteResult, req canonical.Request) decimal.Decimal
 	if route.PriceMode == "request" {
 		return route.InputPrice
 	}
+	// 未声明输出上限时 4096 仅用于预授权估算，不限制实际模型输出。
 	out := defaultOutput
 	if req.MaxOutputTokens != nil && *req.MaxOutputTokens > 0 {
 		out = int64(*req.MaxOutputTokens)

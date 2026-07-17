@@ -24,6 +24,7 @@ export const SUCCESS_CONDITION_OPERATORS = [
 ];
 
 export const parseParamMapping = (mapping: Record<string, any>) => {
+    // 请求 value_mapping 的方向是标准值 -> Provider 值。
     const fieldMappings: FieldMapping[] = [];
     const valueMappings: ValueMapping[] = [];
     const fixedParams: FixedParam[] = [];
@@ -55,6 +56,7 @@ export const parseParamMapping = (mapping: Record<string, any>) => {
 };
 
 export const parseResponseMapping = (mapping: Record<string, any>) => {
+    // 响应 value_mapping 的方向相反：Provider 值 -> 标准值，编辑行仍统一展示两列语义。
     const fieldMappings: FieldMapping[] = [];
     const valueMappings: ValueMapping[] = [];
     const typeConverts: TypeConvert[] = [];
@@ -104,6 +106,7 @@ export const buildParamMapping = (fieldMappings: FieldMapping[], valueMappings: 
 };
 
 export const buildResponseMapping = (fieldMappings: FieldMapping[], valueMappings: ValueMapping[], typeConverts: TypeConvert[] = [], successCondition: SuccessCondition | null = null) => {
+    // build 与 parse 对称，并在这里完成响应值映射方向的反转。
     const result: Record<string, any> = {};
     const fieldMap: Record<string, string> = {};
     fieldMappings.forEach(m => { if (m.stdField && m.vendorField) fieldMap[m.stdField] = m.vendorField; });
@@ -133,4 +136,3 @@ export const buildResponseMapping = (fieldMappings: FieldMapping[], valueMapping
     }
     return result;
 };
-

@@ -211,6 +211,7 @@ func prepareObservabilityQuery(
 	}
 
 	page, pageSize := normalizeObservabilityPage(filter.Page, filter.PageSize)
+	// 用户作用域在追加业务筛选前固定，避免任意 filter.UserID 扩大可见范围。
 	if scope.IsAdmin {
 		if filter.UserID > 0 {
 			query = query.Where(userColumn+" = ?", filter.UserID)
@@ -308,6 +309,7 @@ func findObservabilityPage(
 	destination any,
 ) (int64, uint64, error) {
 	snapshotID := uint64(0)
+	// 首次查询冻结最大 ID，后续翻页排除新写入记录，避免 OFFSET 分页重复或跳项。
 	if requestedSnapshotID != nil {
 		snapshotID = *requestedSnapshotID
 	} else {

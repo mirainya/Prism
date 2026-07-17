@@ -31,6 +31,7 @@ func NewAnthropicHandler(executionEngine *engine.Engine) *AnthropicHandler {
 }
 
 func (h *AnthropicHandler) Messages(c *gin.Context) {
+	// Anthropic wire 先转为 canonical，再复用与其他对话协议相同的 Engine 生命周期。
 	c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, maxPublicConversationRequestBytes)
 	body, err := io.ReadAll(c.Request.Body)
 	if err != nil {
@@ -176,6 +177,7 @@ func (h *AnthropicHandler) writeStream(
 	requestLogID uint,
 	projectionBase service.ConversationProjectionRequest,
 ) {
+	// SSEEncoder 会为非 Anthropic 上游合成合法 block 生命周期；原生 raw 帧仅允许同协议直通。
 	defer stream.Close()
 	capture := service.NewAPICallService().NewPayloadCaptureBestEffort(
 		stream.CallID, stream.AttemptID, model.APICallPayloadResponse, "text/event-stream",

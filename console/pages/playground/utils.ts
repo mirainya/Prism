@@ -116,6 +116,7 @@ export const inferMediaTypeFromHint = (hint?: string | null): 'image' | 'video' 
 };
 
 export const inferMediaTypeFromContext = (key: string, container?: Record<string, any> | null): 'image' | 'video' | null => {
+  // URL 常没有扩展名，结合字段名、mime/type 和相邻元数据提高推断准确度。
   const keyHint = inferMediaTypeFromHint(key);
   if (keyHint) return keyHint;
   if (!container || typeof container !== 'object') return null;
@@ -153,6 +154,7 @@ export const isBase64Image = (key: string, value: string): string | null => {
 };
 
 export const extractMediaItems = (value: any, path = 'result', results: MediaItem[] = [], context: MediaContext = {}): MediaItem[] => {
+  // 递归遍历 Provider 自定义结果，path 用于生成稳定标签并把父级类型信息传给子项。
   if (!value) return results;
   if (typeof value === 'string') {
     const mediaType = inferMediaType(value);
@@ -262,6 +264,7 @@ export const getCapabilityPromptPreview = (task: TaskResult) => {
 };
 
 export const normalizeCapabilityValue = (schema: CapabilityStandardParamSchema, value: string) => {
+  // 表单统一保存字符串，提交前按 schema 还原 number、boolean、array 或 object。
   if (schema.type === 'number') {
     const trimmed = value.trim();
     if (!trimmed) return undefined;

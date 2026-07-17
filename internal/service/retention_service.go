@@ -8,6 +8,8 @@ import (
 	"gorm.io/gorm/clause"
 )
 
+// RetentionService 分批删除已过保留期的终态数据。
+// 候选查询后还会在事务内重查并加锁，避免删除刚被续话或恢复流程重新引用的记录。
 type RetentionService struct{}
 
 func NewRetentionService() *RetentionService { return &RetentionService{} }
@@ -58,6 +60,7 @@ func deleteExpiredConversationCandidates(
 	ids []uint,
 	hasProjectionOutbox bool,
 ) (int64, error) {
+	// 按外键依赖顺序删除 Item、Turn、旧 Message，最后删除 Conversation 本身。
 	var deleted int64
 	err := database.Transaction(func(tx *gorm.DB) error {
 		lockedQuery := tx.Clauses(clause.Locking{Strength: "UPDATE"}).
@@ -174,6 +177,7 @@ func deleteExpiredCallCandidates(
 	hasProjectionOutbox bool,
 	hasConversations bool,
 ) (int64, error) {
+	// Call 是 Attempt、Payload 与请求日志的关联根，所有依赖在同一事务内按批次清理。
 	var deleted int64
 	err := database.Transaction(func(tx *gorm.DB) error {
 		lockedQuery := tx.Clauses(clause.Locking{Strength: "UPDATE"}).

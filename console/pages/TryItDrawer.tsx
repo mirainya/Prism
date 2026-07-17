@@ -43,6 +43,7 @@ export const TryItDrawer: React.FC<TryItDrawerProps> = ({ open, onClose, method,
   const isPathParameter = (paramName: string) => path.includes(`{${paramName}}`);
 
   const buildRequestURL = (): string => {
+    // 路径参数先替换并编码，剩余 GET 参数再进入 query string。
     const resolvedPath = pathValue.replace(/\{([^}]+)\}/g, (_match, paramName: string) => encodeURIComponent(formValues[paramName] || ''));
     if (method !== 'GET') return `${window.location.origin}${resolvedPath}`;
 
@@ -74,6 +75,7 @@ export const TryItDrawer: React.FC<TryItDrawerProps> = ({ open, onClose, method,
 
   // 切换模式
   const switchMode = (newMode: 'form' | 'json') => {
+    // 两种编辑模式切换时转换当前值，避免用户已输入内容被重置。
     if (newMode === 'json' && mode === 'form') {
       setJsonBody(formToJson());
     } else if (newMode === 'form' && mode === 'json') {

@@ -33,6 +33,7 @@ const backgroundResponseLeaseDuration = 30 * time.Minute
 var newBackgroundResponseLeaseOwner = func() string { return uuid.NewString() }
 
 func acquireBackgroundResponseLease(ctx context.Context, responseID string, attempt int) (*model.AIResponse, bool, error) {
+	// 条件更新同时完成抢占与 queued -> in_progress，只有一个 Worker 能取得同一 Response。
 	now := time.Now()
 	owner := newBackgroundResponseLeaseOwner()
 	expiresAt := now.Add(backgroundResponseLeaseDuration)
@@ -71,6 +72,8 @@ func releaseBackgroundResponseLease(responseID, owner string, requeue bool) erro
 }
 
 func (p *Pipeline) createV2(ctx context.Context, userID, tokenID uint, req *protocol.Request, idempotencyKey, requestID string, conversationID uint) (out *Result, returnErr error) {
+	// 顺序不可交换：先取得幂等所有权，再解析续话和文件，最后创建持久资源并执行。
+	// 这样并发的同 key 请求只会有一个进入上游。
 	idempotencyKey = strings.TrimSpace(idempotencyKey)
 	if len(idempotencyKey) > 128 {
 		return nil, domain.ErrBadRequest("Idempotency-Key must not exceed 128 bytes")
@@ -131,6 +134,7 @@ func (p *Pipeline) createV2(ctx context.Context, userID, tokenID uint, req *prot
 		return nil, err
 	}
 	if req.Background {
+		// 后台请求只提交持久执行意图；实际 Engine 调用由 Worker 在独立生命周期中完成。
 		result, err := p.enqueueBackgroundV2(executionCtx, userID, tokenID, req, originalRequestJSON, idempotencyRequestJSON, requestHash, originalInput, publicPreviousResponseID, idempotencyKey, requestID, conversationID, conversationProjection, idempotencyClaim)
 		if err == nil && idempotencyClaim != nil {
 			idempotencyTransferred = true
@@ -157,6 +161,7 @@ func (p *Pipeline) createV2(ctx context.Context, userID, tokenID uint, req *prot
 	}
 	options := p.v2ExecuteOptions(record, req, previous, requestID, originalRequestJSON)
 	if req.Stream {
+		// 流式结果由 Handler 写出后确认交付，Pipeline 此时只转移 Engine Stream 的所有权。
 		executionRequest := cloneResponseRequest(req)
 		executionRequest.PreviousResponseID = ""
 		executionRequest.Store = boolPointer(record.Store)
@@ -327,6 +332,7 @@ func (p *Pipeline) enqueueBackgroundV2(ctx context.Context, userID, tokenID uint
 }
 
 func (p *Pipeline) executeBackgroundV2(ctx context.Context, responseID string, finalAttempt bool, attempt int) error {
+	// 后台执行分成“取得上游结果”和“发布资源终态”两阶段；检查点允许后者失败后单独重试。
 	record, acquired, err := acquireBackgroundResponseLease(ctx, responseID, attempt)
 	if err != nil {
 		return err
@@ -350,6 +356,7 @@ func (p *Pipeline) executeBackgroundV2(ctx context.Context, responseID string, f
 		return p.failBackgroundV2(record, err, true, finalAttempt)
 	}
 	if record.Status == "result_ready" || record.Status == "finalizing" {
+		// 已有检查点时严禁再次请求上游，否则可能重复扣费并生成两个 Provider 响应。
 		err := p.finalizeCheckpointedBackgroundResponse(record)
 		if err == nil {
 			leaseReleased = true
@@ -453,6 +460,7 @@ func (p *Pipeline) checkpointBackgroundResponse(record *model.AIResponse, leaseO
 		"response_json": responseJSON, "output_items": result.Response.Output,
 		"usage_json": usageJSON, "result_ready_at": &now,
 	}
+	// lease_owner 放入条件可阻止过期 Worker 覆盖后来 Worker 已接管的结果。
 	update := model.DB().Model(&model.AIResponse{}).
 		Where("id = ? AND lease_owner = ? AND status = ?", record.ID, leaseOwner, "in_progress").
 		Updates(updates)
@@ -487,6 +495,7 @@ func (p *Pipeline) finalizeCheckpointedBackgroundResponse(record *model.AIRespon
 		return fmt.Errorf("decode background response checkpoint: %w", err)
 	}
 	stageResponseConversationReadyBestEffort(record, nil)
+	// result_ready -> finalizing 是发布终态的独占权；未抢到的 Worker 只观察当前结果。
 	claimed, err := claimResponseFinalization(record)
 	if err != nil {
 		return err

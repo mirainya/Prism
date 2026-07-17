@@ -185,6 +185,8 @@ func newV2ConvertedStream(options V2StreamPublicOptions) *v2ConvertedStream {
 }
 
 func (s *v2ConvertedStream) events(event canonical.Event) []canonical.Event {
+	// 转换流是一个小型状态机：为粒度较粗的 Provider 事件补齐 Responses 要求的
+	// created -> added -> delta -> done -> terminal 顺序，并保持 output/content 索引稳定。
 	if event.Type == canonical.EventRaw {
 		// Foreign provider frames are not part of the public Responses protocol.
 		return nil
@@ -349,6 +351,7 @@ func (s *v2ConvertedStream) responseCreated(source *canonical.Response, provider
 }
 
 func (s *v2ConvertedStream) outputFor(event canonical.Event, fallbackType string) *v2ConvertedOutput {
+	// 优先用 Provider ID 合并事件；缺少 ID 时退化到 choice/output/tool 的结构位置。
 	if event.Item != nil && event.Item.ID != "" {
 		if output := s.byID[event.Item.ID]; output != nil {
 			s.mergeOutputIdentity(output, *event.Item)
@@ -480,6 +483,7 @@ func (s *v2ConvertedStream) mergeItemIdentity(target *canonical.Item, source can
 }
 
 func (s *v2ConvertedStream) ensureOutputAdded(output *v2ConvertedOutput) []canonical.Event {
+	// ensure* 方法均为幂等操作，允许不同 Provider 从任意粒度的事件开始发送。
 	if output.added {
 		return nil
 	}
@@ -885,6 +889,7 @@ func newV2StreamAggregator() *v2StreamAggregator {
 }
 
 func (a *v2StreamAggregator) add(event canonical.Event) {
+	// 同时保留 canonical transcript 与原生 raw 帧，终态持久化无需重新解析已写出的 SSE。
 	a.eventCount++
 	if event.ProviderResponseID != "" {
 		a.providerResponseID = event.ProviderResponseID
@@ -1007,6 +1012,7 @@ func (a *v2StreamAggregator) setOutput(index int, item canonical.Item) {
 }
 
 func (a *v2StreamAggregator) setOutputDone(index int, item canonical.Item) {
+	// 某些 done 事件只携带身份字段，已累计的 arguments/content 不应被空值覆盖。
 	current, exists := a.output[index]
 	if exists && len(current.Arguments) > 0 && emptyV2Arguments(item.Arguments) && !emptyV2Arguments(current.Arguments) {
 		item.Arguments = append(json.RawMessage(nil), current.Arguments...)

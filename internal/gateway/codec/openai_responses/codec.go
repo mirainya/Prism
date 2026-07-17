@@ -144,6 +144,7 @@ func normalizeResponseOutputIDs(source canonical.Response) []canonical.Item {
 // EncodeSSEFrame renders one OpenAI Responses SSE frame. Raw extension events
 // retain their payload while canonical events receive the standard event name.
 func EncodeSSEFrame(event canonical.Event) ([]byte, error) {
+	// encodeEvent 只从 canonical 字段构造标准帧；Raw 类型才允许保留原生扩展正文。
 	payload, eventName, err := encodeEvent(event)
 	if err != nil {
 		return nil, err
@@ -467,6 +468,7 @@ func FunctionCallProofCarrier(source canonical.Item) (canonical.Item, bool) {
 // RestoreFunctionCallProofCarriers folds Prism reasoning carriers back into
 // their uniquely identified Gemini function calls. Unmatched items are kept.
 func RestoreFunctionCallProofCarriers(source []canonical.Item) []canonical.Item {
+	// carrier 仅是标准 Responses wire 的传输形式，canonical 内仍把 proof 归属到唯一函数调用。
 	items := canonical.CloneItems(source)
 	if len(items) < 2 {
 		return items

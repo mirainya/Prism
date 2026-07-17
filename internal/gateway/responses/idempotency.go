@@ -61,6 +61,7 @@ func acquireResponseIdempotencyWithOptions(
 	if options.duration <= 0 || options.heartbeat <= 0 || options.heartbeat >= options.duration {
 		return nil, nil, errors.New("invalid response idempotency lease options")
 	}
+	// 幂等范围是 token + key；请求哈希用于拒绝同一 key 被不同正文复用。
 	requestHash := hashResponseRequest(requestJSON)
 	owner := uuid.NewString()
 	for {
@@ -74,6 +75,7 @@ func acquireResponseIdempotencyWithOptions(
 			Owner: owner, Status: model.ResponseIdempotencyPending,
 			ExpiresAt: now.Add(options.duration),
 		}
+		// 先尝试无冲突插入，失败后读取现有行，避免依赖数据库特定的锁等待行为。
 		createResult := model.DB().WithContext(ctx).
 			Clauses(clause.OnConflict{DoNothing: true}).
 			Create(entry)
@@ -96,6 +98,7 @@ func acquireResponseIdempotencyWithOptions(
 		}
 
 		if !existing.ExpiresAt.After(now) {
+			// 过期 pending 代表原执行者已失联，可通过带过期条件的更新安全接管。
 			result := model.DB().WithContext(ctx).Model(&model.AIResponseIdempotencyCache{}).
 				Where("token_id = ? AND idempotency_key = ? AND expires_at <= ?", tokenID, key, now).
 				Updates(map[string]any{
@@ -127,6 +130,7 @@ func acquireResponseIdempotencyWithOptions(
 			return nil, nil, fmt.Errorf("unsupported response idempotency state %q", existing.Status)
 		}
 
+		// 相同请求正在执行时短轮询结果；调用方 context 负责限制等待时间。
 		timer := time.NewTimer(responseIdempotencyPollDelay)
 		select {
 		case <-ctx.Done():
@@ -261,6 +265,7 @@ func completeResponseIdempotencyTx(tx *gorm.DB, claim *responseIdempotencyClaim,
 		return nil
 	}
 	now := time.Now()
+	// owner 与未过期条件确保失去租约的旧执行者不能发布缓存结果。
 	result := tx.Model(&model.AIResponseIdempotencyCache{}).
 		Where("token_id = ? AND idempotency_key = ? AND request_hash = ? AND owner = ? AND status = ? AND expires_at > ?",
 			claim.tokenID, claim.key, claim.requestHash, claim.owner, model.ResponseIdempotencyPending, now).

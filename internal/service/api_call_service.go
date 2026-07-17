@@ -31,6 +31,8 @@ var (
 	ErrAPICallLeaseUnavailable  = errors.New("api call execution lease is unavailable")
 )
 
+// APICallService 维护统一调用台账。APICall 表示一次下游请求，
+// APICallAttempt 表示该请求实际访问某个上游的单次尝试。
 type APICallService struct{}
 
 // APICallPayloadCapture buffers a bounded downstream stream payload only when
@@ -54,6 +56,7 @@ func (s *APICallService) NewPayloadCapture(callID string, attemptID uint, kind, 
 		return nil, fmt.Errorf("%w: call id and payload kind are required", ErrAPICallInvalidInput)
 	}
 
+	// 锁住 Call 后递增 AttemptCount，使并发恢复任务不会生成相同的 attempt_no。
 	var call model.APICall
 	if err := model.DB().Select("id", "retain_payload").First(&call, "id = ?", callID).Error; err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
@@ -637,6 +640,7 @@ func (s *APICallService) CompleteCall(callID string, req *CompleteCallRequest) e
 		errors.Is(err, ErrAPICallLeaseUnavailable) || errors.Is(err, ErrAPICallInvalidTransition) || errors.Is(err, ErrAPICallNotFound) {
 		return err
 	}
+	// 上游已成功但终态事务失败时保存完成意图，恢复任务可据此重放，避免成功调用长期停在进行中。
 	if intentErr := persistCallCompletionIntent(callID, req, err); intentErr != nil {
 		return errors.Join(err, fmt.Errorf("persist call completion intent: %w", intentErr))
 	}
@@ -693,6 +697,7 @@ func (s *APICallService) CompleteCallTx(db *gorm.DB, callID string, req *Complet
 	}
 
 	now := time.Now()
+	// 成功路由确定后，其他仍为 started 的尝试都是被重试替代的历史尝试。
 	if err := cancelSupersededStartedCallAttemptsWithDB(db, callID, result.FinalAttemptID, now); err != nil {
 		return err
 	}
@@ -1157,6 +1162,7 @@ func (s *APICallService) RecordPayload(payload *model.APICallPayload) error {
 	if payload.OriginalBytes == 0 {
 		payload.OriginalBytes = int64(originalBytes)
 	}
+	// 正文保留是可选观测能力；写库前统一脱敏和限长，不能依赖各协议调用方自行处理。
 	payload.Data = sanitizeAPICallPayload(payload.Data)
 	maxBytes := apiCallPayloadMaxBytes()
 	if maxBytes > 0 && len(payload.Data) > maxBytes {
@@ -1464,6 +1470,7 @@ func stageTerminalConversationProjectionOutputTx(
 	call *model.APICall,
 	projection *ConversationProjectionOutputRequest,
 ) error {
+	// 会话输出与 Call 终态共用事务，防止进程在两次写入之间退出而留下不完整历史。
 	if call == nil {
 		return fmt.Errorf("%w: API call is nil", ErrAPICallInvalidInput)
 	}

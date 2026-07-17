@@ -25,6 +25,8 @@ var (
 	ErrTaskWorkerLeaseLost = errors.New("task worker lease lost")
 )
 
+// TaskWorkerLease 阻止 Submit/Poll Worker 并发处理同一任务。
+// 续租失败会取消 Context，调用上游后的关键写入仍需通过 Check 再确认所有权。
 type TaskWorkerLease struct {
 	taskID uint
 	owner  string
@@ -83,6 +85,7 @@ func AcquireTaskWorkerLeaseWithOptions(
 	default:
 		return nil, false, fmt.Errorf("unsupported task worker lease stage %q", stage)
 	}
+	// 条件更新直接完成租约竞争，RowsAffected=0 表示任务不可执行或已被其他 Worker 持有。
 	result := query.
 		Where(
 			"worker_lease_owner = '' OR worker_lease_owner IS NULL OR worker_lease_expires_at IS NULL OR worker_lease_expires_at <= ?",

@@ -17,6 +17,7 @@ const payloadCleanupBatchSize = 500
 var timeNow = time.Now
 
 func HandleAPICallPayloadCleanup(ctx context.Context, _ *asynq.Task) error {
+	// 正文、幂等缓存和元数据保留期不同，按独立批次清理以控制单次事务和锁范围。
 	now := timeNow()
 	var idempotencyTotal int64
 	for {
@@ -106,6 +107,7 @@ func cleanupExpiredMetadata(ctx context.Context, now time.Time) error {
 		}
 	}
 	retention := service.NewRetentionService()
+	// 统一驱动各类删除器；每个删除器内部仍负责保护会话投影等引用关系。
 	jobs := []struct {
 		name   string
 		days   int

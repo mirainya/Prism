@@ -27,7 +27,8 @@ import (
 )
 
 func main() {
-	// 获取可执行文件所在目录
+	// 同时支持从源码目录启动和直接运行已安装的二进制，因此配置文件要在
+	// 当前工作目录与可执行文件目录中依次查找。
 	execPath, err := os.Executable()
 	if err != nil {
 		log.Fatalf("failed to get executable path: %v", err)
@@ -94,14 +95,15 @@ func main() {
 		log.Fatalf("failed to init queue client: %v", err)
 	}
 
-	// 初始化 HTTP Client
+	// 基础设施必须先于网关和 Worker 初始化；后两者会立即使用这些全局连接。
 	provider.InitHTTPClient()
 	v2Engine, err := gateway.NewV2Engine()
 	if err != nil {
 		log.Fatalf("failed to initialize Gateway V2: %v", err)
 	}
 
-	// 启动 Worker
+	// 启动 Worker 前先恢复数据库中已提交但未完成的工作。数据库保存任务意图，
+	// Redis 队列只负责投递，因此服务异常退出后可以从数据库重建缺失的队列项。
 	reconciled, err := responsepipeline.ReconcilePendingResponseRefunds(context.Background())
 	if err != nil {
 		log.Fatalf("failed to reconcile response refunds: %v", err)
@@ -143,7 +145,7 @@ func main() {
 		}
 	}()
 
-	// 监听退出信号
+	// 先停止接收 HTTP 请求，再等待后台任务退出，避免关闭共享连接时仍有任务使用它们。
 	quit := make(chan os.Signal, 1)
 	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
 	sig := <-quit
@@ -218,7 +220,7 @@ func startScheduler() *asynq.Scheduler {
 		log.Fatalf("failed to register API call payload cleanup task: %v", err)
 	}
 
-	// 每 6 小时同步一次上游模型
+	// 模型发现是低频维护任务，不应与每分钟执行的状态恢复任务共用频率。
 	_, err = scheduler.Register("0 */6 * * *", worker.NewModelDiscoverySyncTask(), asynq.Queue("low"))
 	if err != nil {
 		log.Fatalf("failed to register model discovery sync task: %v", err)

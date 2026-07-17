@@ -36,6 +36,8 @@ type Selector interface {
 	Release(uint)
 }
 
+// Engine 编排一次网关调用的完整生命周期：能力规划、选路、重试、计费、
+// 调用台账、会话投影以及流式资源释放。具体协议转换仍由 transport 负责。
 type Engine struct {
 	selector   Selector
 	transports *transport.Registry
@@ -66,6 +68,9 @@ func New(
 type RoutePreparer func(context.Context, canonical.Request, *routing.RouteResult) (canonical.Request, error)
 type TransportPreparer func(context.Context, canonical.Request, transport.ID) (canonical.Request, error)
 
+// ExecuteOptions 补充 canonical.Request 中不属于协议正文的执行上下文。
+// KeepCallOpenOnError 用于由外层工作流决定终态的后台调用；
+// DeferCallCompletion 用于等响应确实写给下游后再完成调用台账。
 type ExecuteOptions struct {
 	UserID              uint
 	TokenID             uint
@@ -114,6 +119,7 @@ type StreamResult struct {
 	projectConversation bool
 	release             func()
 
+	// nextMu 保证预读与下游消费不会并发推进同一个上游流；stateMu 保护聚合结果和终态。
 	nextMu                 sync.Mutex
 	prefetched             *canonical.Event
 	stateMu                sync.Mutex
@@ -230,6 +236,7 @@ func (l *callLifecycle) heartbeatLease() {
 	for {
 		select {
 		case <-ticker.C:
+			// 续租失败表示该执行已失去台账所有权，继续请求上游可能造成重复扣费或重复写入。
 			if err := l.service.RenewCallLease(l.callID, l.leaseOwner, time.Now().Add(l.leaseDuration)); err != nil {
 				logLedgerError("renew API call execution lease", l.callID, 0, err)
 				l.mu.Lock()
@@ -279,6 +286,7 @@ func (e *Engine) beginCall(
 	}
 
 	callID := strings.TrimSpace(options.CallID)
+	// 会话投影的输入与调用记录必须原子创建；执行阶段不能凭空补建，否则重试可能丢失输入。
 	if options.ProjectConversation && callID == "" {
 		return nil, fmt.Errorf("%w: projected API calls must be created with their conversation input before execution", service.ErrAPICallInvalidInput)
 	}
@@ -609,6 +617,7 @@ func (l *callLifecycle) beginFinish(preferredAttemptID uint) (uint, bool) {
 		return 0, false
 	}
 	l.mu.Lock()
+	// HTTP 写入、流关闭和租约失败可能同时触发终态，只有第一个调用者可以修改台账。
 	if l.finished {
 		attemptID := l.finalAttemptID
 		l.mu.Unlock()
@@ -801,6 +810,7 @@ func (e *Engine) Execute(
 	}
 	streamHandedOff := false
 	defer func() {
+		// 统一处理所有提前返回，防止已开始的调用永久停留在 running。
 		if ledger == nil || streamHandedOff || ledger.isFinished() {
 			return
 		}
@@ -830,6 +840,7 @@ func (e *Engine) Execute(
 		ledger.failCall(failure, nil, false, projection)
 	}()
 
+	// 先让每个 transport 评估是否能原生或转换执行，再把可行方案交给数据库路由器选具体 key。
 	requirements := request.RequiredFeatures()
 	plans, err := e.plans(ctx, operation, request, requirements, options.PrepareTransport)
 	if err != nil {
@@ -869,6 +880,7 @@ func (e *Engine) Execute(
 			return nil, errors.New("selector returned a nil route")
 		}
 
+		// PrepareRoute 可根据已选渠道补充请求；补充后必须重新校验能力，不能沿用选路前的判断。
 		attemptRequest := request.Clone()
 		if options.PrepareRoute != nil {
 			attemptRequest, err = options.PrepareRoute(ctx, request.Clone(), route)
@@ -909,6 +921,7 @@ func (e *Engine) Execute(
 			ledger,
 		)
 		if err == nil && selectedResult != nil && selectedResult.Stream != nil && maxAttempts > 1 {
+			// 流交给下游后便不能透明重试。先读取首个事件，可在尚未发送任何内容时替换失败路由。
 			if _, prefetchErr := selectedResult.Stream.prefetch(ctx); prefetchErr != nil {
 				upstreamErr, err = true, prefetchErr
 			} else {
@@ -927,6 +940,7 @@ func (e *Engine) Execute(
 		if !upstreamErr || !retryableUpstreamError(ctx, err) || attempt+1 >= maxAttempts {
 			return nil, errors.Join(append(attemptErrors, err)...)
 		}
+		// 熔断粒度是 key + model + transport，同一 key 上的其他协议仍可继续使用。
 		e.circuit.MarkTransportUnavailable(route.KeyID, request.Model, route.Transport, err)
 		attempts = append(attempts, routing.TransportAttempt{KeyID: route.KeyID, Transport: route.Transport})
 		attemptErrors = append(attemptErrors, err)
@@ -996,6 +1010,8 @@ func (e *Engine) executeSelected(
 	options ExecuteOptions,
 	ledger *callLifecycle,
 ) (*Result, bool, error) {
+	// 资源获取顺序固定为并发名额 -> 调用尝试 -> 计费预授权 -> 请求日志 -> 上游请求；
+	// 后续每个错误分支都按相反方向释放已经取得的资源。
 	var terminalProjection *service.ConversationProjectionOutputRequest
 	selected, ok := e.transports.Get(route.Transport)
 	if !ok {
@@ -1047,6 +1063,7 @@ func (e *Engine) executeSelected(
 		return nil, false, errors.Join(err, cancelErr)
 	}
 	if request.Stream {
+		// 流的计费和日志只能在终止事件、读取失败或下游中断时结算，因此所有权转交给 StreamResult。
 		stream, streamErr := selected.StreamPrepared(ctx, invocation, prepared)
 		if streamErr != nil || stream == nil {
 			if streamErr == nil {
@@ -1077,6 +1094,7 @@ func (e *Engine) executeSelected(
 			}}, false, nil
 	}
 
+	// 非流式响应在本函数内拥有完整生命周期，可以立即释放并发名额并完成结算。
 	response, executeErr := selected.ExecutePrepared(ctx, invocation, prepared)
 	e.selector.Release(route.KeyID)
 	if executeErr != nil {
@@ -1225,6 +1243,7 @@ func (s *StreamResult) nextLocked(ctx context.Context) (canonical.Event, error) 
 				cause = errors.Join(leaseErr, cause)
 			}
 		}
+		// 尚未产出内容时可全额取消预授权；已有部分输出但缺少最终 usage 时按预授权金额结算。
 		disposition := streamCancel
 		if s.hasProduced() {
 			disposition = streamRetain
@@ -1365,6 +1384,7 @@ func (s *StreamResult) finish(
 	clientDisconnected bool,
 ) error {
 	s.finishOnce.Do(func() {
+		// finishOnce 把主动关闭、读取错误、终止事件和下游写入失败归并为一次资源结算。
 		closeErr := s.closeUnderlying()
 		var billingErr error
 		switch disposition {
@@ -1406,6 +1426,7 @@ func (s *StreamResult) finish(
 			clientDisconnected:     clientDisconnected,
 			conversationProjection: cloneConversationProjectionOutputRequest(projection),
 		}
+		// Attempt 可以立即记录；Call 要等 Engine 确认不再重试后才允许进入终态。
 		s.finalizeLedgerAttempt(outcome)
 		s.stateMu.Lock()
 		s.done = true
@@ -1427,6 +1448,7 @@ func (s *StreamResult) activateLedger() {
 	if s == nil {
 		return
 	}
+	// 预读期间先暂存调用结果，避免首事件失败时把整个 Call 提前标为失败，阻断 Engine 重试。
 	s.stateMu.Lock()
 	s.ledgerActive = true
 	outcome := s.ledgerOutcome
@@ -1627,6 +1649,7 @@ func (e *Engine) plans(ctx context.Context, operation transport.Operation, reque
 			plans = append(plans, plannedTransport{id: id, plan: plan, requirements: planRequirements})
 		}
 	}
+	// 原生协议优先于转换协议；ID 排序让同类方案的选择在不同进程中保持稳定。
 	sort.SliceStable(plans, func(i, j int) bool {
 		if plans[i].plan.Kind != plans[j].plan.Kind {
 			return plans[i].plan.Kind > plans[j].plan.Kind

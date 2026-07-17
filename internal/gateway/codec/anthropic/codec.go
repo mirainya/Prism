@@ -132,6 +132,7 @@ func decodeMessages(messages []messageWire) ([]canonical.Item, error) {
 			return nil, fmt.Errorf("messages[%d].content: %w", messageIndex, err)
 		}
 		parts := make([]canonical.Content, 0, len(blocks))
+		// canonical 将工具调用和 reasoning 建模为独立 Item，遇到这些 block 时先结束相邻文本消息。
 		flushParts := func() {
 			if len(parts) == 0 {
 				return
@@ -316,6 +317,7 @@ func EncodeRequest(request canonical.Request) (map[string]any, error) {
 	messages := make([]any, 0)
 	currentRole := ""
 	currentContent := make([]any, 0)
+	// Anthropic 要求相邻 block 按 user/assistant 消息分组；canonical Item 边界不等同于消息边界。
 	flush := func() {
 		if currentRole == "" || len(currentContent) == 0 {
 			return
@@ -980,6 +982,7 @@ func (e *SSEEncoder) Encode(event canonical.Event) ([]byte, error) {
 		return EncodeSSEFrame(event)
 	}
 
+	// Provider 的 canonical 事件粒度并不统一，编码器会补 message_start、block_start 和 block_stop。
 	var encoded []byte
 	appendEncoded := func(frame []byte, err error) error {
 		if err != nil {

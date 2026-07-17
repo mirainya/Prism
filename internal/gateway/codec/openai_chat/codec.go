@@ -321,6 +321,7 @@ func DecodeSSEFrame(frame []byte) (canonical.Event, bool, error) {
 }
 
 func decodeMessages(messages []chat.ChatMessage) ([]canonical.Item, error) {
+	// 一条 assistant Chat message 可能同时包含正文和多个 tool_call，canonical 中需拆成有序 Item。
 	items := make([]canonical.Item, 0, len(messages))
 	for _, message := range messages {
 		if message.Role == "tool" {
@@ -367,6 +368,7 @@ func decodeMessages(messages []chat.ChatMessage) ([]canonical.Item, error) {
 }
 
 func decodeContent(value any) ([]canonical.Content, string, error) {
+	// 返回原始形态用于往返编码：相同文本在 Chat 中的 string、array 与 null 语义并不完全等价。
 	switch current := value.(type) {
 	case nil:
 		return nil, "null", nil

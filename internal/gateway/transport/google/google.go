@@ -29,6 +29,7 @@ func NewGenerateContent(client *http.Client) transport.Transport { return New(cl
 func (*Transport) ID() transport.ID { return transport.GoogleGenerateContent }
 
 func (*Transport) Plan(operation transport.Operation, request canonical.Request, features canonical.FeatureSet) transport.Plan {
+	// Gemini function-call proof 必须跨轮原样返回；当前仅 Responses 下游能无损承载该状态。
 	if operation != transport.OperationChat && operation != transport.OperationResponses && operation != transport.OperationMessages {
 		return transport.Unsupported(operation, "unsupported Gemini operation")
 	}
@@ -154,6 +155,7 @@ func googleMayCallTools(request canonical.Request) bool {
 }
 
 func validGoogleFunctionCallGroups(items []canonical.Item) bool {
+	// 同一 model turn 的首个 function_call 必须携带 thoughtSignature，后续调用可复用该上下文。
 	currentRole := ""
 	seenFunctionCall := false
 	for _, item := range items {
@@ -1020,6 +1022,7 @@ func (s *sse) Next(ctx context.Context) (canonical.Event, error) {
 }
 
 func (s *sse) validateCandidate(events []canonical.Event) error {
+	// Responses 的输出索引无法无损表示 Gemini 多候选流，因此跨帧也要固定为同一 candidate。
 	for _, event := range events {
 		if !isGoogleCandidateEvent(event.Type) {
 			continue
@@ -1048,6 +1051,7 @@ func isGoogleCandidateEvent(eventType canonical.EventType) bool {
 }
 
 func (s *sse) normalizeEvents(events []canonical.Event) []canonical.Event {
+	// Gemini 按 part 发送增量且常缺少稳定输出索引；这里为文本、reasoning 和工具调用维护连续身份。
 	if s.activeMessages == nil {
 		s.activeMessages = make(map[int]googleStreamMessage)
 		s.activeReasoning = make(map[int]googleStreamReasoning)

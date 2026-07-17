@@ -129,6 +129,7 @@ const buildLegacyTurns = (messages: ChatMessage[]): ConversationTurn[] => {
 };
 
 const buildTurns = (messages: ChatMessage[], records: ConversationTurnRecord[]): ConversationTurn[] => {
+    // 新 canonical turn 与旧 messages 可能同时存在；按 callId 去重后再合并，兼容迁移前后的历史数据。
     const recordedCallIds = new Set(records.map(turn => turn.callId));
     const legacyTurns = buildLegacyTurns(messages.filter(message => !message.callId || !recordedCallIds.has(message.callId)));
     const recordedTurns = records.map(turn => ({
@@ -177,6 +178,7 @@ const normalizeLinkURL = (value?: string) => {
 };
 
 const canAutoLoadMedia = (value: string) => {
+    // 跨域媒体和 data URL 必须由用户主动加载，避免打开日志详情时自动请求不可信资源。
     if (value.startsWith('blob:')) return true;
     if (value.startsWith('data:')) return false;
     try {
@@ -589,6 +591,7 @@ const ChatLogs: React.FC = () => {
 
     useEffect(() => {
         const requestNo = ++listRequest.current;
+        // 过滤和页码快速变化时旧请求可能后返回，序号确保只有最新请求能更新列表。
         setIsLoading(true);
         setLoadError('');
         const params: ConversationListParams = {
@@ -639,6 +642,7 @@ const ChatLogs: React.FC = () => {
         setLoadingMessages(true);
         setLoadingMore(false);
         try {
+            // 两套历史独立加载，任一接口失败时仍展示另一套可用数据。
             const [messageResult, turnResult] = await Promise.allSettled([
                 fetchConversationMessages(conv.id, 1, DETAIL_PAGE_SIZE),
                 fetchConversationTurns(conv.id, 1, DETAIL_PAGE_SIZE),

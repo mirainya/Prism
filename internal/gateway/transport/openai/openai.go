@@ -1,3 +1,4 @@
+// Package openai implements both Chat Completions and Responses upstream transports.
 package openai
 
 import (
@@ -36,6 +37,7 @@ func NewResponses(client *http.Client) transport.Transport {
 }
 
 func chatPlan(operation transport.Operation, request canonical.Request, features canonical.FeatureSet) transport.Plan {
+	// 只有每个请求字段都能无损表达时才允许转换，避免静默丢弃 Provider proof 或扩展字段。
 	if operation != transport.OperationChat && operation != transport.OperationResponses && operation != transport.OperationMessages {
 		return transport.Unsupported(operation, "unsupported OpenAI Chat operation")
 	}
@@ -103,6 +105,7 @@ func chatSupportsInclude(operation transport.Operation, include []string) bool {
 }
 
 func responsesPlan(operation transport.Operation, request canonical.Request, features canonical.FeatureSet) transport.Plan {
+	// 原生 Responses 可保留的字段多于 Chat/Messages 转换，因此按下游 operation 分别限制扩展。
 	if operation != transport.OperationResponses && operation != transport.OperationChat && operation != transport.OperationMessages {
 		return transport.Unsupported(operation, "unsupported OpenAI Responses operation")
 	}
@@ -176,6 +179,7 @@ func encode(invocation transport.Invocation, responses bool) ([]byte, error) {
 	request := invocation.Request
 	targetOperation := transport.OperationChat
 	if responses {
+		// 只有原生同协议调用才恢复未建模字段；跨协议转换不能把来源协议扩展误传给上游。
 		targetOperation = transport.OperationResponses
 	}
 	if request.ToolChoice != nil && invocation.Operation != targetOperation {
@@ -332,6 +336,7 @@ func chatMessages(request canonical.Request) ([]map[string]any, error) {
 			result = append(result, map[string]any{"role": "tool", "tool_call_id": item.CallID, "content": rawText(item.Output)})
 			continue
 		case "function_call":
+			// canonical 中连续的函数调用在 Chat wire 中属于同一条 assistant message。
 			callID := item.CallID
 			if callID == "" {
 				callID = item.ID

@@ -150,6 +150,7 @@ const canAutoLoadMedia = (value: string) => {
 
 const extractMediaItems = (value: unknown, capability: string): MediaItem[] => {
   const items: MediaItem[] = [];
+  // Provider 结果结构不统一，递归扫描时同时使用字段名和能力类型推断媒体种类。
   const seen = new Set<string>();
 
   const visit = (current: unknown, path: string, hint: string) => {
@@ -352,6 +353,7 @@ const Logs: React.FC = () => {
     setIsLoading(true);
     setLoadError('');
 
+    // snapshot_at 冻结首次查询视图，后台任务持续写入时翻页仍不会重复或跳项。
     fetchTaskLogs({
       page,
       page_size: PAGE_SIZE,
@@ -410,6 +412,7 @@ const Logs: React.FC = () => {
 
   const openDetails = async (task: TaskLog) => {
     const requestNo = ++detailRequest.current;
+    // 关闭抽屉或切换任务会递增序号，迟到的详情响应不得覆盖当前选择。
     returnFocusRef.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
     setIsDrawerOpen(true);
     setSelectedTask(null);

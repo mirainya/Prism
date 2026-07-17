@@ -315,6 +315,7 @@ func (s *TaskService) updateTaskSuccess(
 	cost decimal.Decimal,
 	allowed []model.TaskStatus,
 ) (committed bool, err error) {
+	// 终态、实际结算、账号并发释放和 Call 完成在同一事务中提交。
 	resultJSON, err := json.Marshal(result)
 	if err != nil {
 		return false, fmt.Errorf("marshal task result: %w", err)
@@ -418,6 +419,7 @@ func (s *TaskService) updateTaskFail(
 	errMsg string,
 	allowed []model.TaskStatus,
 ) (committed bool, err error) {
+	// 所有失败入口汇入此处，保证退款、Attempt/Call 终态和账号释放只执行一次。
 	now := time.Now()
 	errMsg = SanitizeAPICallErrorMessage(errMsg)
 
@@ -563,6 +565,7 @@ func (s *TaskService) CancelTaskByToken(taskNo string, userID, tokenID uint) err
 }
 
 func (s *TaskService) cancelTask(taskNo string, userID uint, tokenID *uint) error {
+	// 条件状态更新提供幂等取消；已经进入终态的任务不会再次退款。
 	return model.DB().Transaction(func(tx *gorm.DB) error {
 		var task model.Task
 		query := tx.Clauses(clause.Locking{Strength: "UPDATE"}).

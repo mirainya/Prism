@@ -27,6 +27,7 @@ func New(client gatewaytransport.HTTPClient) *Transport { return &Transport{Clie
 func (*Transport) ID() gatewaytransport.ID              { return gatewaytransport.VolcengineResponsesV3 }
 
 func (*Transport) Plan(operation gatewaytransport.Operation, request canonical.Request, features canonical.FeatureSet) gatewaytransport.Plan {
+	// Ark v3 接近 Responses，但扩展集合并不相同；Plan 明确拒绝无法原样传递的字段。
 	if operation != gatewaytransport.OperationResponses && operation != gatewaytransport.OperationChat && operation != gatewaytransport.OperationMessages {
 		return gatewaytransport.Unsupported(operation, "unsupported Volcengine operation")
 	}
@@ -131,6 +132,7 @@ func (t *Transport) Prepare(_ context.Context, invocation gatewaytransport.Invoc
 	for key, value := range invocation.Route.ExtraHeaders {
 		headers.Set(key, value)
 	}
+	// Ark 的部分托管工具必须通过 beta header 显式开启。
 	for _, tool := range invocation.Request.Tools {
 		switch tool.Type {
 		case "image_process":
@@ -694,6 +696,7 @@ func (s *eventStream) Close() error {
 	return s.body.Close()
 }
 func decodeEvent(raw []byte, eventName, publicModel string) (canonical.Event, error) {
+	// Ark 同时使用 SSE event 名和 JSON type，JSON type 更具体时优先用于 canonical 映射。
 	var root map[string]json.RawMessage
 	if err := json.Unmarshal(raw, &root); err != nil {
 		return canonical.Event{}, err

@@ -41,6 +41,7 @@ func StartRequestLog(route *routing.RouteResult, prepared transport.PreparedRequ
 	if len(links) > 0 {
 		link = links[0]
 	}
+	// 统一 Call 已在 api_call_payloads 按策略保存正文，旧调用路径才把脱敏正文写入请求日志。
 	requestBody := ""
 	if link.CallID == "" {
 		requestBody = string(redactedJSON(prepared.Body))
@@ -101,6 +102,7 @@ func (l *RequestLog) CompleteStream(statusCode int, requestErr error) error {
 	events := append([]canonical.Event(nil), l.events...)
 	l.mu.Unlock()
 	body, _ := json.Marshal(events)
+	// 日志仅提取终态、usage 和预览；完整 canonical 事件另由可选 Payload 保留。
 	response := responseFromEvents(events)
 	return l.complete(body, response, statusCode, requestErr)
 }
@@ -158,6 +160,7 @@ func requestType(operation transport.Operation) model.RequestType {
 }
 
 func logURL(raw string) (string, string) {
+	// URL 用于运维展示，用户信息和敏感查询参数在入库前移除。
 	parsed, err := url.Parse(raw)
 	if err != nil {
 		return "", raw

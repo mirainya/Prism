@@ -31,6 +31,7 @@ func NewResponsesHandler(pipe *responsepipeline.Pipeline) *ResponsesHandler {
 }
 
 func (h *ResponsesHandler) Create(c *gin.Context) {
+	// 资源创建、幂等和后台状态由 Pipeline 处理；Handler 只区分流、重放与普通 JSON 三种交付方式。
 	c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, maxPublicConversationRequestBytes)
 	var req protocol.Request
 	if err := decodeStrictJSON(c, &req); err != nil {
@@ -74,6 +75,7 @@ func (h *ResponsesHandler) Create(c *gin.Context) {
 	}
 	setResponsesRecordHeaders(c, result)
 	if result.V2Stream != nil {
+		// 新流直接代理 Engine 事件；幂等流重放则从已持久化的完整响应重新生成 SSE。
 		if err := h.pipe.ProxyV2Stream(c.Request.Context(), c.Writer, result, &req); err != nil {
 			logDeliveryError("finalize responses stream delivery", result.CallID, err)
 			if !c.Writer.Written() {
@@ -94,6 +96,7 @@ func (h *ResponsesHandler) Create(c *gin.Context) {
 		return
 	}
 	encoded, err := json.Marshal(result.Response)
+	// 后台请求返回 queued 仅表示已受理，真正 Call 终态由 Worker 写入；同步与重放在此确认交付。
 	finalizeDelivery := !req.Background || result.IdempotentReplay
 	if err != nil {
 		if finalizeDelivery {

@@ -25,6 +25,7 @@ type responseConversationProjection struct {
 }
 
 func newResponseConversationProjection(request *protocol.Request, conversationID uint) (*responseConversationProjection, error) {
+	// 在协议层仍完整时截取 canonical 输入，后台恢复无需依赖原 Handler 内存状态。
 	if request == nil {
 		return nil, errors.New("Responses conversation projection request is required")
 	}
@@ -81,6 +82,7 @@ func (projection *responseConversationProjection) withResponse(response *canonic
 }
 
 func responseProjectionFromStreamSummary(projection *responseConversationProjection, summary *V2StreamSummary) *responseConversationProjection {
+	// 流聚合结果可能只有部分输出；仍保存已交付内容并附上终态错误或 usage。
 	if summary == nil {
 		return cloneResponseConversationProjection(projection)
 	}
@@ -157,6 +159,7 @@ func responseConversationInputRequest(record *model.AIResponse, source *response
 	}
 	projection := cloneResponseConversationProjection(source)
 	if projection == nil {
+		// 恢复路径优先解码原请求，旧记录缺少 RequestJSON 时再使用 InputItems。
 		var request protocol.Request
 		if len(bytes.TrimSpace(record.RequestJSON)) > 0 && !bytes.Equal(bytes.TrimSpace(record.RequestJSON), []byte("null")) {
 			if err := json.Unmarshal(record.RequestJSON, &request); err != nil {

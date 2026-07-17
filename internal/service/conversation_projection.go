@@ -24,6 +24,9 @@ const (
 
 var ErrConversationProjectionDependencyPending = errors.New("previous response conversation projection is pending")
 
+// 本文件把不同下游协议的 canonical 输入、输出投影为统一会话历史。
+// 续话请求通常会再次携带完整历史，核心难点是识别并去掉已保存前缀，同时保留本轮新增输入。
+
 // ConversationProjectionRequest is the protocol-neutral contract used by
 // public API handlers to project one gateway call into readable conversation
 // history. InputItems normally contains the downstream request history. A
@@ -212,6 +215,8 @@ func hydrateConversationTurnRecordTx(tx *gorm.DB, record *ConversationTurnRecord
 }
 
 func resolveCanonicalConversationForTurnTx(tx *gorm.DB, record *ConversationTurnRecord, call *model.APICall) (*model.Conversation, []canonical.Item, error) {
+	// 解析优先级固定为：已准备输入 -> 显式会话 -> Call 绑定会话 -> previous_response_id -> 历史前缀匹配。
+	// 越明确的关联越先使用，避免内容相同的多个会话被自动匹配到错误目标。
 	if record.InputPrepared {
 		conversation, err := loadOwnedConversationForUpdateTx(tx, record.ConversationID, record.UserID, record.TokenID)
 		if err != nil {
@@ -388,6 +393,7 @@ func prepareCanonicalConversationInputTx(
 		return canonical.CloneItems(input), nil
 	}
 	if conversation.CanonicalStateVersion == 1 && conversation.CanonicalItemCount > 0 && conversation.CanonicalMatchHash != "" {
+		// 新会话保存滚动哈希，可直接验证请求前缀；只有分叉历史才需要扫描数据库寻找公共前缀。
 		consumed, matches := canonicalConversationPrefixFromState(
 			input, conversation.CanonicalItemCount, conversation.CanonicalMatchHash,
 		)
@@ -410,6 +416,7 @@ func prepareCanonicalConversationInputTx(
 		return trimPreparedCanonicalConversationCommonPrefix(input, common), nil
 	}
 
+	// 旧数据没有匹配状态，首次续话时完整扫描一次并回填，后续即可走上面的快速路径。
 	scan, err := scanCanonicalConversationHistoryTx(tx, conversation.ID, input)
 	if err != nil {
 		return nil, err
@@ -460,6 +467,7 @@ func scanCanonicalConversationCommonPrefixTx(
 	conversationID uint,
 	input []canonical.Item,
 ) (canonicalConversationCommonPrefixScan, error) {
+	// 公共前缀用于处理客户端从较早轮次分叉的请求，只丢弃数据库与请求完全相同的历史部分。
 	var scan canonicalConversationCommonPrefixScan
 	inputFingerprints, inputPositions, valid := canonicalConversationMatchFingerprints(input)
 	if !valid || len(inputFingerprints) == 0 {
@@ -506,6 +514,7 @@ func scanCanonicalConversationCommonPrefixTx(
 	}
 	if scan.commonItemCount == scan.inputItemCount && scan.storedHasMore &&
 		scan.lastCommonDirection == model.ConversationItemInput {
+		// 请求在一轮输入的中间结束时保留整段输入，避免把同一用户动作拆成两个不完整轮次。
 		boundary, err := canonicalConversationTurnInputBoundaryTx(
 			tx, scan.lastCommonTurnID, input, scan.lastCommonInputStart,
 		)
@@ -693,6 +702,7 @@ func scanCanonicalConversationHistoryTx(
 	conversationID uint,
 	input []canonical.Item,
 ) (canonicalConversationHistoryScan, error) {
+	// 一次顺序扫描同时计算滚动哈希、完整前缀匹配和最长公共前缀，减少旧会话升级时的查询次数。
 	var scan canonicalConversationHistoryScan
 	inputFingerprints, inputPositions, inputValid := canonicalConversationMatchFingerprints(input)
 	scan.inputItemCount = uint64(len(inputFingerprints))
@@ -816,6 +826,7 @@ func matchCanonicalConversationPrefixTx(tx *gorm.DB, userID, tokenID uint, input
 	if len(conversations) == 0 {
 		return nil, 0, false, nil
 	}
+	// 选择最长匹配前缀；同长度命中多个会话时放弃自动续话，防止静默关联到错误会话。
 	bestLength := 0
 	bestIndex := -1
 	ambiguous := false
@@ -854,6 +865,7 @@ func scanCompletedCanonicalConversationFingerprintsTx(
 	observe func(*model.ConversationItem) (bool, error),
 	visit func(canonicalConversationStoredFingerprint) (bool, error),
 ) (uint64, bool, error) {
+	// 使用键集分页读取稳定顺序，避免大会话一次载入内存，也避免 OFFSET 在并发写入下漂移。
 	type pendingFingerprint struct {
 		fingerprint []byte
 		turnID      uint64
@@ -942,6 +954,7 @@ func scanCompletedCanonicalConversationFingerprintsTx(
 				totalBytes += uint64(len(encoded))
 			}
 			if item.Type == "reasoning" {
+				// reasoning 不参与历史身份匹配，但仍计入观察结果；不同 Provider 可省略或改写它。
 				proceed, err := observeRecord(record)
 				if err != nil || !proceed {
 					return totalBytes, false, err
@@ -967,6 +980,7 @@ func scanCompletedCanonicalConversationFingerprintsTx(
 				return totalBytes, false, err
 			}
 			if canonicalConversationPotentialToolShell(item) {
+				// Chat 协议可能在 function_call 前生成空 assistant message；暂存后看下一项再决定是否匹配。
 				fingerprint, err := canonicalConversationFingerprint(item)
 				if err != nil {
 					return 0, false, fmt.Errorf("fingerprint conversation item %d: %w", record.ID, err)
@@ -1148,6 +1162,7 @@ func canonicalConversationPrefixFromState(input []canonical.Item, count uint64, 
 }
 
 func canonicalConversationRollingHashes(initial string, fingerprints [][]byte) []string {
+	// H[n] = SHA256(H[n-1] || fingerprint[n])，可用固定大小状态验证任意已保存前缀。
 	var previous []byte
 	if initial != "" {
 		decoded, err := hex.DecodeString(initial)
@@ -1181,6 +1196,7 @@ func canonicalConversationFingerprintPrefixEqual(prefix, input [][]byte) bool {
 }
 
 func canonicalConversationMatchFingerprints(items []canonical.Item) ([][]byte, []int, bool) {
+	// positions 保留指纹到原切片的映射，因为 reasoning 等可忽略项不会进入指纹序列。
 	result := make([][]byte, 0, len(items))
 	positions := make([]int, 0, len(items))
 	for index := range items {

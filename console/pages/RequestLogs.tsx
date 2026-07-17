@@ -56,6 +56,7 @@ const RequestLogs: React.FC = () => {
   useEffect(() => {
     let active = true;
     setIsLoading(true);
+    // snapshot_id 在同一筛选条件下跨页复用，避免新日志插入导致 OFFSET 页面移动。
     fetchRequestLogs({ page, page_size: pageSize, snapshot_id: snapshotId.current, ...filters })
       .then(resp => {
         if (!active) return;
@@ -74,6 +75,7 @@ const RequestLogs: React.FC = () => {
 
   const openDetails = async (log: ChannelRequestLog) => {
     const requestNo = ++detailRequest.current;
+    // 列表行先提供即时概览，详情返回后仅更新仍然打开的同一次请求。
     setSelectedLog(log);
     setIsDrawerOpen(true);
     setDetailLoading(true);

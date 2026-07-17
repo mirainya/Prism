@@ -35,6 +35,7 @@ type callCompletionIntent struct {
 }
 
 func persistCallCompletionIntent(callID string, req *CompleteCallRequest, _ error) error {
+	// 完成意图只保存重建终态所需字段，不保存执行上下文或凭据。
 	if strings.TrimSpace(callID) == "" || req == nil {
 		return nil
 	}
@@ -77,6 +78,7 @@ func (s *APICallService) AcquireCallLease(callID, owner string, expiresAt time.T
 		return fmt.Errorf("%w: call id, owner, and expiration are required", ErrAPICallInvalidInput)
 	}
 	now := time.Now()
+	// 条件更新允许原 owner 续接或接管已过期租约，活跃租约不会被覆盖。
 	result := model.DB().Model(&model.APICall{}).
 		Where("id = ? AND status IN ?", callID, []model.APICallStatus{model.APICallStatusReceived, model.APICallStatusInProgress}).
 		Where("lease_owner = '' OR lease_owner = ? OR lease_expires_at IS NULL OR lease_expires_at <= ?", owner, now).
@@ -161,6 +163,7 @@ func (s *APICallService) ReconcileStaleForegroundCalls(ctx context.Context, cuto
 		}
 		call := &calls[index]
 		if call.Status != model.APICallStatusFailed && call.Status != model.APICallStatusCancelled {
+			// 先把执行终态写稳，再单独退款；退款失败可由下轮继续，且结算键保证幂等。
 			claimed, err := claimStaleForegroundCall(ctx, call.ID, cutoff)
 			if err != nil {
 				reconciliationErr = errors.Join(reconciliationErr, fmt.Errorf("claim stale call %s: %w", call.ID, err))
@@ -224,6 +227,7 @@ func claimStaleForegroundCall(ctx context.Context, callID string, cutoff time.Ti
 		}
 
 		if call.ErrorCode == callCompletionPendingCode {
+			// 优先恢复真实成功结果；只有意图损坏或 Attempt 不可恢复时才降级为 abandoned。
 			var intent callCompletionIntent
 			if err := json.Unmarshal(call.ErrorParam, &intent); err == nil {
 				completeErr := NewAPICallService().CompleteCallTx(tx, call.ID, &CompleteCallRequest{
@@ -302,6 +306,7 @@ func claimStaleForegroundCall(ctx context.Context, callID string, cutoff time.Ti
 }
 
 func refundUnsettledCallReservations(ctx context.Context, callID string) error {
+	// 每次预授权独立结算，支持多次上游尝试分别使用不同计费键。
 	var reservations []model.BillingLog
 	if err := model.DB().WithContext(ctx).
 		Where("call_id = ? AND phase = ? AND type = ?", callID, model.BillingPhaseReserve, model.BillingTypeDeduct).

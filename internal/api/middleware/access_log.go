@@ -61,6 +61,7 @@ func buildPersistentRecords(c *gin.Context, startedAt time.Time) (*model.APIAcce
 	if route == "" {
 		route = path
 	}
+	// 动态路由参数可能包含 token 或签名；敏感参数存在时只保存路由模板。
 	storedPath := path
 	if routeHasSensitiveParameter(route) {
 		storedPath = route
@@ -205,6 +206,7 @@ func auditResource(c *gin.Context, route string) (string, string) {
 }
 
 func sanitizeAccessQuery(values url.Values) string {
+	// 查询参数既可能是普通字符串，也可能内嵌 JSON 或带签名 URL，三种形态都要递归脱敏。
 	if len(values) == 0 {
 		return ""
 	}

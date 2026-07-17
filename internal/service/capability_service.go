@@ -230,6 +230,7 @@ func (s *UnifiedService) reserveInitialCapabilityTask(
 	var channel model.Channel
 	var account *model.ChannelAccount
 
+	// Call、余额预授权、Task 和账号并发占用必须一起成功，避免产生无任务扣款或无扣款任务。
 	err := model.DB().Transaction(func(tx *gorm.DB) error {
 		for i := range endpoints {
 			ep := &endpoints[i]
@@ -331,6 +332,7 @@ func (s *UnifiedService) executeSyncWithFallback(ctx context.Context, task *mode
 		return nil, fmt.Errorf("load synchronous submit checkpoint: %w", err)
 	}
 	if checkpoint != nil {
+		// 检查点表示上游提交已经开始或成功；恢复时先判定旧结果，不能直接发起第二次提交。
 		if checkpoint.LeaseOwner != lease.Owner() {
 			if err := taskSvc.SaveTaskSubmitCheckpoint(task.ID, lease.Owner(), checkpoint); err != nil {
 				return nil, fmt.Errorf("adopt synchronous submit checkpoint: %w", err)
@@ -354,6 +356,7 @@ func (s *UnifiedService) executeSyncWithFallback(ctx context.Context, task *mode
 	var lastErr error
 	started := false
 
+	// 外层按端点优先级切换渠道，内层最多尝试三个未熔断账号。
 	for i := range endpoints {
 		ep := &endpoints[i]
 		if ep.InteractionMode != model.ModeSync && ep.InteractionMode != model.ModeStream {

@@ -66,6 +66,7 @@ const playgroundProtocolRequest = async (
     body: Record<string, any>,
     signal?: AbortSignal,
 ): Promise<Response> => {
+    // 保留原始 Response，让调用方根据 Content-Type 选择 JSON 或 SSE，并可读取调试响应头。
     return fetch(`${API_BASE}/playground/${tokenId}/${endpoint}`, {
         method: 'POST',
         headers: {
@@ -133,6 +134,7 @@ export const playgroundListConversations = async (
     tokenId: string,
     params?: PlaygroundConversationListParams,
 ): Promise<PlaygroundConversationListResponse> => {
+    // API 的 snake_case 在服务边界转换，页面组件只使用 camelCase 类型。
     const query = new URLSearchParams();
     if (params?.page) query.append('page', String(params.page));
     if (params?.page_size) query.append('page_size', String(params.page_size));

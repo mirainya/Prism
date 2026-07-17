@@ -23,6 +23,7 @@ func NewEventAccumulator() *EventAccumulator {
 }
 
 func (a *EventAccumulator) Observe(event Event) {
+	// Provider 事件可能缺少 added/done 阶段，ensure 会按稳定身份创建或复用目标 Item。
 	if a == nil {
 		return
 	}
@@ -97,6 +98,7 @@ func (a *EventAccumulator) Observe(event Event) {
 }
 
 func (a *EventAccumulator) Snapshot() Response {
+	// 返回深拷贝，避免下游编码器修改累计状态后影响计费、日志或会话投影。
 	if a == nil {
 		return Response{}
 	}
@@ -184,6 +186,7 @@ func (a *EventAccumulator) ensure(event Event, fallbackType string) *Item {
 }
 
 func accumulatorItemKey(event Event, item Item) string {
+	// 首选 Provider ID；缺失时用 choice/output/tool 位置构造流内稳定键。
 	switch item.Type {
 	case "function_call":
 		return fmt.Sprintf("tool:%d:%d:%d", event.ChoiceIndex, event.OutputIndex, event.ToolIndex)
