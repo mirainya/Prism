@@ -217,6 +217,7 @@ func conversationTurnResponses(turns []service.ConversationTurnItem, includeInte
 			"call_id":         turn.CallID,
 			"model":           turn.Model,
 			"status":          turn.Status,
+			"context_mode":    turn.ContextMode,
 			"input_tokens":    turn.InputTokens,
 			"output_tokens":   turn.OutputTokens,
 			"total_tokens":    turn.TotalTokens,

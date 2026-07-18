@@ -47,6 +47,7 @@ type ConversationProjectionRequest struct {
 	InputItems    []canonical.Item
 	OutputItems   []canonical.Item
 	InputPrepared bool
+	ContextMode   model.ConversationTurnContextMode
 
 	Status       model.ConversationTurnStatus
 	FinishReason string
@@ -72,7 +73,7 @@ func ProjectAPIConversation(request ConversationProjectionRequest) (uint, error)
 		InputItems:     canonical.CloneItems(request.InputItems),
 		OutputItems:    primaryConversationOutputItems(request.OutputItems),
 		ConversationID: request.ConversationID, PreviousResponseID: strings.TrimSpace(request.PreviousResponseID),
-		InputPrepared:       request.InputPrepared,
+		InputPrepared: request.InputPrepared, ContextMode: request.ContextMode,
 		MatchCanonicalInput: true, Status: request.Status, FinishReason: request.FinishReason,
 		ProviderResponseID: request.ProviderResponseID, CallID: request.CallID,
 		RequestLogID: request.RequestLogID, ErrorType: request.ErrorType,
@@ -214,66 +215,99 @@ func hydrateConversationTurnRecordTx(tx *gorm.DB, record *ConversationTurnRecord
 	return nil
 }
 
-func resolveCanonicalConversationForTurnTx(tx *gorm.DB, record *ConversationTurnRecord, call *model.APICall) (*model.Conversation, []canonical.Item, error) {
+func resolveCanonicalConversationForTurnTx(tx *gorm.DB, record *ConversationTurnRecord, call *model.APICall) (*model.Conversation, []canonical.Item, model.ConversationTurnContextMode, error) {
 	// 解析优先级固定为：已准备输入 -> 显式会话 -> Call 绑定会话 -> previous_response_id -> 历史前缀匹配。
 	// 越明确的关联越先使用，避免内容相同的多个会话被自动匹配到错误目标。
 	if record.InputPrepared {
 		conversation, err := loadOwnedConversationForUpdateTx(tx, record.ConversationID, record.UserID, record.TokenID)
 		if err != nil {
-			return nil, nil, err
+			return nil, nil, "", err
 		}
-		return conversation, canonical.CloneItems(record.InputItems), nil
+		mode := record.ContextMode
+		if mode == "" || mode == model.ConversationTurnContextLegacy {
+			mode = explicitConversationContextMode(false, record.InputItems)
+		}
+		return conversation, canonical.CloneItems(record.InputItems), mode, nil
 	}
 	if record.ConversationID > 0 {
 		conversation, err := loadOwnedConversationForUpdateTx(tx, record.ConversationID, record.UserID, record.TokenID)
 		if err != nil {
-			return nil, nil, err
+			return nil, nil, "", err
 		}
-		input, err := trimCanonicalConversationPrefixTx(tx, conversation, record.InputItems)
-		return conversation, input, err
+		input, matched, err := trimCanonicalConversationPrefixTx(tx, conversation, record.InputItems)
+		return conversation, input, explicitConversationContextMode(matched, input), err
 	}
 	if call != nil && call.ConversationID > 0 {
 		conversation, err := loadOwnedConversationForUpdateTx(tx, call.ConversationID, record.UserID, record.TokenID)
 		if err != nil {
-			return nil, nil, err
+			return nil, nil, "", err
 		}
-		input, err := trimCanonicalConversationPrefixTx(tx, conversation, record.InputItems)
-		return conversation, input, err
+		input, matched, err := trimCanonicalConversationPrefixTx(tx, conversation, record.InputItems)
+		return conversation, input, explicitConversationContextMode(matched, input), err
 	}
 	if record.PreviousResponseID != "" {
 		conversation, found, err := resolvePreviousResponseConversationTx(tx, record.PreviousResponseID, record.UserID, record.TokenID)
 		if err != nil {
-			return nil, nil, err
+			return nil, nil, "", err
 		}
 		if found {
-			input, err := trimCanonicalConversationPrefixTx(tx, conversation, record.InputItems)
-			return conversation, input, err
+			input, matched, err := trimCanonicalConversationPrefixTx(tx, conversation, record.InputItems)
+			return conversation, input, explicitConversationContextMode(matched, input), err
 		}
 	}
 	if record.MatchCanonicalInput {
 		conversation, prefixLength, found, err := matchCanonicalConversationPrefixTx(tx, record.UserID, record.TokenID, record.InputItems)
 		if err != nil {
-			return nil, nil, err
+			return nil, nil, "", err
 		}
 		if found {
 			locked, err := loadOwnedConversationForUpdateTx(tx, conversation.ID, record.UserID, record.TokenID)
 			if err != nil {
-				return nil, nil, err
+				return nil, nil, "", err
 			}
 			consumed, matchedLength, matches, err := canonicalConversationPrefixForLockedConversationTx(tx, locked, record.InputItems)
 			if err != nil {
-				return nil, nil, err
+				return nil, nil, "", err
 			}
 			if matches && matchedLength >= prefixLength {
-				return locked, canonical.CloneItems(record.InputItems[consumed:]), nil
+				return locked, canonical.CloneItems(record.InputItems[consumed:]), model.ConversationTurnContextInferred, nil
 			}
 		}
 	}
 	conversation, err := createCanonicalConversationTx(tx, record.UserID, record.TokenID, record.Model, record.InputItems)
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, "", err
 	}
-	return conversation, canonical.CloneItems(record.InputItems), nil
+	mode := model.ConversationTurnContextNew
+	if canonicalConversationInputLooksLikeSnapshot(record.InputItems) {
+		mode = model.ConversationTurnContextSnapshot
+	}
+	return conversation, canonical.CloneItems(record.InputItems), mode, nil
+}
+
+func explicitConversationContextMode(matched bool, input []canonical.Item) model.ConversationTurnContextMode {
+	if !matched && canonicalConversationInputLooksLikeSnapshot(input) {
+		return model.ConversationTurnContextSnapshot
+	}
+	return model.ConversationTurnContextExplicit
+}
+
+func canonicalConversationInputLooksLikeSnapshot(items []canonical.Item) bool {
+	userMessages := 0
+	for _, item := range items {
+		if item.Type == "message" {
+			switch item.Role {
+			case canonical.RoleUser:
+				userMessages++
+			case canonical.RoleAssistant:
+				return true
+			}
+		}
+		if item.Type == "function_call" || item.Type == "reasoning" {
+			return true
+		}
+	}
+	return userMessages > 1
 }
 
 func loadOwnedConversationForUpdateTx(tx *gorm.DB, conversationID, userID, tokenID uint) (*model.Conversation, error) {
@@ -370,27 +404,27 @@ func trimCanonicalConversationPrefixTx(
 	tx *gorm.DB,
 	conversation *model.Conversation,
 	input []canonical.Item,
-) ([]canonical.Item, error) {
+) ([]canonical.Item, bool, error) {
 	consumed, _, matches, err := canonicalConversationPrefixForLockedConversationTx(tx, conversation, input)
 	if err != nil {
-		return nil, err
+		return nil, false, err
 	}
 	if matches {
-		return canonical.CloneItems(input[consumed:]), nil
+		return canonical.CloneItems(input[consumed:]), true, nil
 	}
-	return canonical.CloneItems(input), nil
+	return canonical.CloneItems(input), false, nil
 }
 
 func prepareCanonicalConversationInputTx(
 	tx *gorm.DB,
 	conversation *model.Conversation,
 	input []canonical.Item,
-) ([]canonical.Item, error) {
+) ([]canonical.Item, bool, error) {
 	if conversation == nil {
-		return canonical.CloneItems(input), nil
+		return canonical.CloneItems(input), false, nil
 	}
 	if conversation.CanonicalStateVersion == 1 && conversation.CanonicalItemCount == 0 && conversation.CanonicalMatchHash == "" {
-		return canonical.CloneItems(input), nil
+		return canonical.CloneItems(input), false, nil
 	}
 	if conversation.CanonicalStateVersion == 1 && conversation.CanonicalItemCount > 0 && conversation.CanonicalMatchHash != "" {
 		// 新会话保存滚动哈希，可直接验证请求前缀；只有分叉历史才需要扫描数据库寻找公共前缀。
@@ -401,43 +435,43 @@ func prepareCanonicalConversationInputTx(
 			if consumed == len(input) {
 				repeated, found, err := completedCanonicalConversationTailInputTx(tx, conversation.ID, input)
 				if err != nil {
-					return nil, err
+					return nil, false, err
 				}
 				if found {
-					return repeated, nil
+					return repeated, true, nil
 				}
 			}
-			return canonical.CloneItems(input[consumed:]), nil
+			return canonical.CloneItems(input[consumed:]), true, nil
 		}
 		common, err := scanCanonicalConversationCommonPrefixTx(tx, conversation.ID, input)
 		if err != nil {
-			return nil, err
+			return nil, false, err
 		}
-		return trimPreparedCanonicalConversationCommonPrefix(input, common), nil
+		return trimPreparedCanonicalConversationCommonPrefix(input, common), common.commonItemCount > 0, nil
 	}
 
 	// 旧数据没有匹配状态，首次续话时完整扫描一次并回填，后续即可走上面的快速路径。
 	scan, err := scanCanonicalConversationHistoryTx(tx, conversation.ID, input)
 	if err != nil {
-		return nil, err
+		return nil, false, err
 	}
 	if err := backfillCanonicalConversationStateTx(tx, conversation, scan); err != nil {
-		return nil, err
+		return nil, false, err
 	}
 	if scan.matchesInput {
 		if scan.inputConsumed == len(input) {
 			repeated, found, err := completedCanonicalConversationTailInputTx(tx, conversation.ID, input)
 			if err != nil {
-				return nil, err
+				return nil, false, err
 			}
 			if found {
-				return repeated, nil
+				return repeated, true, nil
 			}
 		}
-		return canonical.CloneItems(input[scan.inputConsumed:]), nil
+		return canonical.CloneItems(input[scan.inputConsumed:]), true, nil
 	}
 	if scan.commonItemCount == 0 {
-		return canonical.CloneItems(input), nil
+		return canonical.CloneItems(input), false, nil
 	}
 	return trimPreparedCanonicalConversationCommonPrefix(input, canonicalConversationCommonPrefixScan{
 		inputItemCount:       scan.inputItemCount,
@@ -447,7 +481,7 @@ func prepareCanonicalConversationInputTx(
 		preserveInputStart:   scan.preserveInputStart,
 		preserveInput:        scan.preserveInput,
 		storedHasMore:        scan.commonStoredHasMore,
-	}), nil
+	}), true, nil
 }
 
 type canonicalConversationCommonPrefixScan struct {

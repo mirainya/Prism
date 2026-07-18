@@ -673,7 +673,8 @@ func TestConversationProjectionInputResolvesPreviousResponseBeforeStaging(t *tes
 	if err := db.First(&entry, "call_id = ?", pendingCall.ID).Error; err != nil {
 		t.Fatal(err)
 	}
-	if stagedCall.ConversationID != conversationID || entry.ConversationID != conversationID || !entry.InputPrepared {
+	if stagedCall.ConversationID != conversationID || entry.ConversationID != conversationID || !entry.InputPrepared ||
+		entry.ContextMode != model.ConversationTurnContextExplicit {
 		t.Fatalf("resolved call=%#v entry=%#v conversation=%d", stagedCall, entry, conversationID)
 	}
 	if entry.PreviousResponseID != "provider-outbox-previous" {

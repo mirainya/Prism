@@ -156,12 +156,15 @@ func (s *ConversationProjectionOutboxService) StageInputTx(tx *gorm.DB, request 
 	}
 	input := canonical.CloneItems(request.InputItems)
 	inputPrepared := false
+	contextMode := model.ConversationTurnContextMode("")
 	if conversation != nil {
-		input, err = prepareCanonicalConversationInputTx(tx, conversation, input)
+		var matched bool
+		input, matched, err = prepareCanonicalConversationInputTx(tx, conversation, input)
 		if err != nil {
 			return fmt.Errorf("prepare canonical conversation input: %w", err)
 		}
 		inputPrepared = true
+		contextMode = explicitConversationContextMode(matched, input)
 	}
 	encoded, err := marshalConversationProjectionItems(input)
 	if err != nil {
@@ -171,7 +174,7 @@ func (s *ConversationProjectionOutboxService) StageInputTx(tx *gorm.DB, request 
 	entry := model.ConversationProjectionOutbox{
 		CallID: callID, ConversationID: request.ConversationID,
 		PreviousResponseID: previousResponseID,
-		CanonicalInput:     encoded, InputReady: true, InputPrepared: inputPrepared,
+		CanonicalInput:     encoded, InputReady: true, InputPrepared: inputPrepared, ContextMode: contextMode,
 		CreatedAt: now, UpdatedAt: now,
 	}
 	return tx.Clauses(clause.OnConflict{
@@ -182,6 +185,7 @@ func (s *ConversationProjectionOutboxService) StageInputTx(tx *gorm.DB, request 
 			"input_json":           entry.CanonicalInput,
 			"input_ready":          true,
 			"input_prepared":       entry.InputPrepared,
+			"context_mode":         entry.ContextMode,
 			"next_attempt_at":      nil,
 			"updated_at":           now,
 		}),
@@ -307,6 +311,7 @@ func (s *ConversationProjectionOutboxService) Project(callID string) (uint, erro
 		CallID: call.ID, ConversationID: entry.ConversationID,
 		PreviousResponseID: entry.PreviousResponseID,
 		InputItems:         input, OutputItems: output, InputPrepared: entry.InputPrepared, Status: status,
+		ContextMode:        entry.ContextMode,
 		RequestLogID:       entry.RequestLogID,
 		ProviderResponseID: entry.ProviderResponseID,
 		FinishReason:       entry.FinishReason,

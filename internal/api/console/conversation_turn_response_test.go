@@ -14,7 +14,7 @@ func TestConversationTurnResponsesHideInternalFields(t *testing.T) {
 		ConversationTurn: model.ConversationTurn{
 			ID: 3, ConversationID: 5, Sequence: 2, CallID: "call-test",
 			RequestLogID: 7, ProviderResponseID: "provider-secret",
-			Status: model.ConversationTurnCompleted,
+			Status: model.ConversationTurnCompleted, ContextMode: model.ConversationTurnContextSnapshot,
 		},
 		Items: []model.ConversationItem{{
 			ID: 11, Direction: model.ConversationItemInput, Ordinal: 0,
@@ -38,6 +38,9 @@ func TestConversationTurnResponsesHideInternalFields(t *testing.T) {
 	}
 	if public[0]["id"] != "3" || public[0]["sequence"] != "2" {
 		t.Fatalf("64-bit identifiers were not serialized as strings: %#v", public[0])
+	}
+	if public[0]["context_mode"] != string(model.ConversationTurnContextSnapshot) {
+		t.Fatalf("context mode = %#v", public[0]["context_mode"])
 	}
 	items := public[0]["items"].([]any)
 	item := items[0].(map[string]any)

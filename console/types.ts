@@ -343,6 +343,7 @@ export interface ConversationTurnRecord {
   model: string;
   providerResponseId?: string;
   status: 'completed' | 'failed' | 'aborted';
+  contextMode: 'legacy' | 'new' | 'explicit' | 'inferred' | 'snapshot';
   inputTokens: number;
   outputTokens: number;
   totalTokens: number;

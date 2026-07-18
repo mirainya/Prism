@@ -353,6 +353,7 @@ type ConversationTurnRecord struct {
 	ConversationID      uint
 	PreviousResponseID  string
 	InputPrepared       bool
+	ContextMode         model.ConversationTurnContextMode
 	MatchCanonicalInput bool
 	Status              model.ConversationTurnStatus
 	FinishReason        string
@@ -401,15 +402,17 @@ func RecordConversationTurn(cc *ConversationContext, record ConversationTurnReco
 			}
 
 			var (
-				conv       *model.Conversation
-				messages   []chat.ChatMessage
-				inputItems []canonical.Item
-				err        error
+				conv        *model.Conversation
+				messages    []chat.ChatMessage
+				inputItems  []canonical.Item
+				contextMode model.ConversationTurnContextMode
+				err         error
 			)
 			if recordUsesCanonicalItems(&record) {
-				conv, inputItems, err = resolveCanonicalConversationForTurnTx(tx, &record, &call)
+				conv, inputItems, contextMode, err = resolveCanonicalConversationForTurnTx(tx, &record, &call)
 			} else {
 				conv, messages, err = resolveConversationForTurnTx(tx, cc, &record)
+				contextMode = model.ConversationTurnContextLegacy
 			}
 			if err != nil {
 				return err
@@ -424,6 +427,7 @@ func RecordConversationTurn(cc *ConversationContext, record ConversationTurnReco
 				ConversationID: conv.ID, Sequence: sequence, CallID: record.CallID,
 				RequestLogID: record.RequestLogID, Model: record.Model,
 				ProviderResponseID: record.ProviderResponseID, Status: record.Status,
+				ContextMode: contextMode,
 				InputTokens: call.InputTokens, OutputTokens: call.OutputTokens,
 				TotalTokens: call.TotalTokens, Cost: call.FinalCost, LatencyMs: call.DurationMs,
 				FinishReason: record.FinishReason,

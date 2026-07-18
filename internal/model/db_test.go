@@ -76,6 +76,8 @@ func TestAutoMigrateCreatesConversationProjectionSchema(t *testing.T) {
 		{model: &Conversation{}, name: "canonical_match_hash"},
 		{model: &Conversation{}, name: "canonical_state_version"},
 		{model: &ConversationProjectionOutbox{}, name: "input_prepared"},
+		{model: &ConversationProjectionOutbox{}, name: "context_mode"},
+		{model: &ConversationTurn{}, name: "context_mode"},
 	} {
 		if !database.Migrator().HasColumn(column.model, column.name) {
 			t.Fatalf("missing column %T.%s", column.model, column.name)

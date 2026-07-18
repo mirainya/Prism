@@ -116,7 +116,7 @@ func TestListConversationTurnsEmptyResultAndJSONContract(t *testing.T) {
 	if err := json.Unmarshal(encoded, &contract); err != nil {
 		t.Fatal(err)
 	}
-	for _, key := range []string{"id", "conversation_id", "sequence", "call_id", "request_log_id", "model", "provider_response_id", "status", "input_tokens", "output_tokens", "total_tokens", "cost", "latency_ms", "finish_reason", "created_at", "items"} {
+	for _, key := range []string{"id", "conversation_id", "sequence", "call_id", "request_log_id", "model", "provider_response_id", "status", "context_mode", "input_tokens", "output_tokens", "total_tokens", "cost", "latency_ms", "finish_reason", "created_at", "items"} {
 		if _, ok := contract[key]; !ok {
 			t.Fatalf("turn JSON is missing %q: %s", key, encoded)
 		}

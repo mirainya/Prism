@@ -13,11 +13,12 @@ type ConversationProjectionOutbox struct {
 	ProviderResponseID string `gorm:"type:varchar(128);not null;default:''" json:"provider_response_id"`
 	FinishReason       string `gorm:"type:varchar(50);not null;default:''" json:"finish_reason"`
 
-	CanonicalInput  []byte `gorm:"column:input_json;type:longblob" json:"-"`
-	CanonicalOutput []byte `gorm:"column:output_json;type:longblob" json:"-"`
-	InputReady      bool   `gorm:"not null;default:false" json:"input_ready"`
-	InputPrepared   bool   `gorm:"not null;default:false" json:"input_prepared"`
-	OutputReady     bool   `gorm:"not null;default:false" json:"output_ready"`
+	CanonicalInput  []byte                      `gorm:"column:input_json;type:longblob" json:"-"`
+	CanonicalOutput []byte                      `gorm:"column:output_json;type:longblob" json:"-"`
+	InputReady      bool                        `gorm:"not null;default:false" json:"input_ready"`
+	InputPrepared   bool                        `gorm:"not null;default:false" json:"input_prepared"`
+	ContextMode     ConversationTurnContextMode `gorm:"type:varchar(24);not null;default:''" json:"context_mode"`
+	OutputReady     bool                        `gorm:"not null;default:false" json:"output_ready"`
 
 	RetryCount    int        `gorm:"not null;default:0" json:"retry_count"`
 	LastError     string     `gorm:"type:text" json:"last_error"`

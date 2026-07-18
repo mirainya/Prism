@@ -123,6 +123,13 @@ func TestProjectAPIConversationMatchesUniqueLongestCanonicalHistoryPrefix(t *tes
 	if err != nil {
 		t.Fatal(err)
 	}
+	var firstTurn model.ConversationTurn
+	if err := db.First(&firstTurn, "call_id = ?", firstCall.ID).Error; err != nil {
+		t.Fatal(err)
+	}
+	if firstTurn.ContextMode != model.ConversationTurnContextNew {
+		t.Fatalf("first turn context mode = %q", firstTurn.ContextMode)
+	}
 
 	secondCall := createConversationTestCall(t, db, "call_projection_prefix_2", 1, 2, decimal.Zero)
 	fullHistory := append(canonical.CloneItems(firstInput), canonicalMessage(canonical.RoleAssistant, "hi", "input_text"))
@@ -142,6 +149,9 @@ func TestProjectAPIConversationMatchesUniqueLongestCanonicalHistoryPrefix(t *tes
 	var secondTurn model.ConversationTurn
 	if err := db.First(&secondTurn, "call_id = ?", secondCall.ID).Error; err != nil {
 		t.Fatal(err)
+	}
+	if secondTurn.ContextMode != model.ConversationTurnContextInferred {
+		t.Fatalf("second turn context mode = %q", secondTurn.ContextMode)
 	}
 	var secondItems []model.ConversationItem
 	if err := db.Where("turn_id = ?", secondTurn.ID).Order("ordinal ASC").Find(&secondItems).Error; err != nil {
@@ -308,6 +318,9 @@ func TestCanonicalConversationStateRebuildsAfterLegacyTurn(t *testing.T) {
 	if err := db.First(&turn, "call_id = ?", nextCall.ID).Error; err != nil {
 		t.Fatal(err)
 	}
+	if turn.ContextMode != model.ConversationTurnContextExplicit {
+		t.Fatalf("explicit turn context mode = %q", turn.ContextMode)
+	}
 	var itemCount int64
 	if err := db.Model(&model.ConversationItem{}).Where("turn_id = ?", turn.ID).Count(&itemCount).Error; err != nil {
 		t.Fatal(err)
@@ -373,6 +386,9 @@ func TestProjectAPIConversationCreatesNewConversationForAmbiguousPrefix(t *testi
 	var turn model.ConversationTurn
 	if err := db.First(&turn, "call_id = ?", "call_projection_ambiguous_3").Error; err != nil {
 		t.Fatal(err)
+	}
+	if turn.ContextMode != model.ConversationTurnContextSnapshot {
+		t.Fatalf("ambiguous turn context mode = %q", turn.ContextMode)
 	}
 	var inputCount int64
 	if err := db.Model(&model.ConversationItem{}).Where("turn_id = ? AND direction = ?", turn.ID, model.ConversationItemInput).Count(&inputCount).Error; err != nil {

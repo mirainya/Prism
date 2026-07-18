@@ -374,6 +374,86 @@ const CanonicalItemRenderer: React.FC<{item: ConversationCanonicalItem}> = ({ite
     );
 };
 
+const isEmptyAssistantToolShell = (items: ConversationCanonicalItem[], index: number) => {
+    const canonical = items[index]?.canonical || {};
+    if (canonical.type !== 'message' || canonical.role !== 'assistant') return false;
+    const content = Array.isArray(canonical.content) ? canonical.content : [];
+    const hasVisibleContent = content.some((part: any) =>
+        part?.text || part?.url || part?.data || part?.file_id || part?.filename || part?.transcript,
+    );
+    const reasoning = canonical.extra?.['openai_chat.reasoning_content'];
+    if (hasVisibleContent || (typeof reasoning === 'string' && reasoning.trim())) return false;
+    for (let next = index + 1; next < items.length; next++) {
+        if (items[next]?.canonical?.type === 'reasoning') continue;
+        return items[next]?.canonical?.type === 'function_call';
+    }
+    return false;
+};
+
+const visibleCanonicalItems = (items: ConversationCanonicalItem[]) =>
+    items.filter((_, index) => !isEmptyAssistantToolShell(items, index));
+
+const inputLooksLikeHistorySnapshot = (items: ConversationCanonicalItem[]) => {
+    let userMessages = 0;
+    for (const item of items) {
+        const canonical = item.canonical || {};
+        if (canonical.type === 'message') {
+            if (canonical.role === 'assistant') return true;
+            if (canonical.role === 'user') userMessages += 1;
+        }
+        if (canonical.type === 'function_call' || canonical.type === 'reasoning') return true;
+    }
+    return userMessages > 1;
+};
+
+const CONTEXT_MODE_LABELS: Record<ConversationTurnRecord['contextMode'], string> = {
+    legacy: '旧记录',
+    new: '新会话',
+    explicit: '确定关联',
+    inferred: '推断关联',
+    snapshot: '完整上下文',
+};
+
+const contextModeLabel = (mode: ConversationTurnRecord['contextMode']) =>
+    CONTEXT_MODE_LABELS[mode] || '未知';
+
+const CanonicalTurnContent: React.FC<{record: ConversationTurnRecord}> = ({record}) => {
+    const inputItems = visibleCanonicalItems(record.items.filter(item => item.direction === 'input'));
+    const outputItems = visibleCanonicalItems(record.items.filter(item => item.direction === 'output'));
+    const snapshot = record.contextMode === 'snapshot'
+        || (record.contextMode === 'legacy' && inputLooksLikeHistorySnapshot(inputItems));
+
+    return (
+        <div className="space-y-5">
+            {inputItems.length > 0 && (snapshot ? (
+                <details className="border-y border-[var(--border-soft)] py-3">
+                    <summary className="cursor-pointer list-none text-xs font-semibold text-[var(--text-secondary)]">
+                        调用方携带的历史上下文 · {inputItems.length} 项
+                    </summary>
+                    <div className="mt-3 space-y-3">
+                        {inputItems.map(item => <CanonicalItemRenderer key={item.id} item={item}/>)}
+                    </div>
+                </details>
+            ) : (
+                <section>
+                    <div className="mb-3 text-xs font-semibold text-[var(--text-secondary)]">本次输入</div>
+                    <div className="space-y-3">
+                        {inputItems.map(item => <CanonicalItemRenderer key={item.id} item={item}/>)}
+                    </div>
+                </section>
+            ))}
+            {outputItems.length > 0 && (
+                <section>
+                    <div className="mb-3 text-xs font-semibold text-[var(--text-secondary)]">本次模型输出</div>
+                    <div className="space-y-3">
+                        {outputItems.map(item => <CanonicalItemRenderer key={item.id} item={item}/>)}
+                    </div>
+                </section>
+            )}
+        </div>
+    );
+};
+
 const formatDuration = (milliseconds: number) => milliseconds >= 1000
     ? `${(milliseconds / 1000).toFixed(2)}s`
     : `${milliseconds || 0}ms`;
@@ -465,9 +545,14 @@ const ConversationTimeline: React.FC<ConversationTimelineProps> = ({turns, conve
                             <div className="min-w-0">
                                 <div className="flex flex-wrap items-center gap-2">
                                     <h3 className="text-sm font-bold text-[var(--text-primary)]">
-                                        {turn.record ? `第 ${turn.record.sequence} 轮` : `历史轮次 ${turnIndex + 1}`}
+                                        {turn.record ? `第 ${turn.record.sequence} 次调用` : `历史调用 ${turnIndex + 1}`}
                                     </h3>
                                     <StatusBadge status={status}/>
+                                    {turn.record && (
+                                        <span className="rounded-md bg-gray-100 px-2 py-1 text-xs font-semibold text-gray-600">
+                                            {contextModeLabel(turn.record.contextMode)}
+                                        </span>
+                                    )}
                                 </div>
                                 <div className="mt-1 flex flex-wrap gap-x-3 gap-y-1 text-xs text-[var(--text-secondary)]">
                                     <span>{formatTime(turn.record?.createdAt || turn.messages[0]?.createdAt || conversation.createdAt)}</span>
@@ -483,7 +568,7 @@ const ConversationTimeline: React.FC<ConversationTimelineProps> = ({turns, conve
                         </div>
 
                         <div className="mt-4">
-                            {turn.record?.items.map(item => <CanonicalItemRenderer key={item.id} item={item}/>)}
+                            {turn.record && <CanonicalTurnContent record={turn.record}/>}
                             {turn.messages.map(message => <MessageRecord key={message.id} message={message} admin={admin}/>)}
                         </div>
 
@@ -519,14 +604,14 @@ const ConversationTimeline: React.FC<ConversationTimelineProps> = ({turns, conve
 
 const StructuredTurns: React.FC<{records: ConversationTurnRecord[]; admin: boolean; onOpenCall: (callId: string) => void}> = ({records, admin, onOpenCall}) => {
     if (records.length === 0) {
-        return <div className="py-16 text-center text-sm text-[var(--text-secondary)]">旧对话没有规范轮次记录</div>;
+        return <div className="py-16 text-center text-sm text-[var(--text-secondary)]">旧对话没有规范调用记录</div>;
     }
     return (
         <div className="divide-y divide-[var(--border-soft)] border-y border-[var(--border-soft)]">
             {records.map(record => (
                 <section key={record.id} className="py-4">
                     <div className="flex flex-wrap items-center justify-between gap-3">
-                        <div className="flex items-center gap-2"><h3 className="text-sm font-bold text-[var(--text-primary)]">第 {record.sequence} 轮</h3><StatusBadge status={record.status}/></div>
+                        <div className="flex items-center gap-2"><h3 className="text-sm font-bold text-[var(--text-primary)]">第 {record.sequence} 次调用</h3><StatusBadge status={record.status}/></div>
                         <button type="button" onClick={() => onOpenCall(record.callId)} className="inline-flex items-center gap-1.5 rounded-lg border border-[var(--border-soft)] px-2.5 py-1.5 text-xs font-semibold text-[var(--primary)] hover:bg-[var(--primary-lighter)]"><Activity size={13}/>查看调用</button>
                     </div>
                     <div className="mt-2 grid gap-x-6 md:grid-cols-2 xl:grid-cols-4">
@@ -537,6 +622,7 @@ const StructuredTurns: React.FC<{records: ConversationTurnRecord[]; admin: boole
                         <Info label="费用">{formatMoney(record.cost)}</Info>
                         <Info label="耗时">{formatDuration(record.latencyMs)}</Info>
                         <Info label="结束原因">{record.finishReason || '-'}</Info>
+                        <Info label="上下文模式">{contextModeLabel(record.contextMode)}</Info>
                         <Info label="内容项">{record.items.length}</Info>
                         {admin && <Info label="请求日志 ID">{record.requestLogId || '-'}</Info>}
                         {admin && <Info label="上游响应 ID" mono>{record.providerResponseId || '-'}</Info>}
@@ -897,7 +983,7 @@ const ChatLogs: React.FC = () => {
                             {([
                                 ['overview', '概览', LayoutList],
                                 ['conversation', '对话内容', MessageSquare],
-                                ['turns', '轮次记录', ListTree],
+                                ['turns', '调用记录', ListTree],
                             ] as const).map(([key, label, Icon]) => (
                                 <button key={key} type="button" role="tab" aria-selected={activeTab === key} onClick={() => setActiveTab(key)} className={`flex shrink-0 items-center gap-2 border-b-2 px-4 py-3 text-sm font-semibold ${activeTab === key ? 'border-[var(--primary)] text-[var(--primary)]' : 'border-transparent text-[var(--text-secondary)] hover:text-[var(--text-primary)]'}`}>
                                     <Icon size={16}/>{label}

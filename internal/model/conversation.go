@@ -80,11 +80,18 @@ func (Message) TableName() string {
 }
 
 type ConversationTurnStatus string
+type ConversationTurnContextMode string
 
 const (
 	ConversationTurnCompleted ConversationTurnStatus = "completed"
 	ConversationTurnFailed    ConversationTurnStatus = "failed"
 	ConversationTurnAborted   ConversationTurnStatus = "aborted"
+
+	ConversationTurnContextLegacy   ConversationTurnContextMode = "legacy"
+	ConversationTurnContextNew      ConversationTurnContextMode = "new"
+	ConversationTurnContextExplicit ConversationTurnContextMode = "explicit"
+	ConversationTurnContextInferred ConversationTurnContextMode = "inferred"
+	ConversationTurnContextSnapshot ConversationTurnContextMode = "snapshot"
 
 	ConversationItemInput  = "input"
 	ConversationItemOutput = "output"
@@ -94,25 +101,26 @@ const (
 // Execution and billing truth remains in APICall; this row is the durable
 // conversation projection used to rebuild ordered session history.
 type ConversationTurn struct {
-	ID                 uint64                 `gorm:"primaryKey" json:"id"`
-	ConversationID     uint                   `gorm:"not null;uniqueIndex:idx_conversation_turn_sequence,priority:1;index:idx_conversation_turn_created,priority:1" json:"conversation_id"`
-	Sequence           uint64                 `gorm:"column:turn_sequence;not null;uniqueIndex:idx_conversation_turn_sequence,priority:2" json:"sequence"`
-	CallID             string                 `gorm:"type:varchar(64);not null;uniqueIndex" json:"call_id"`
-	RequestLogID       uint                   `gorm:"not null;default:0;index" json:"request_log_id"`
-	Model              string                 `gorm:"type:varchar(80);not null;default:'';index" json:"model"`
-	ProviderResponseID string                 `gorm:"type:varchar(128);not null;default:'';index" json:"provider_response_id"`
-	Status             ConversationTurnStatus `gorm:"type:varchar(24);not null;default:'completed';index" json:"status"`
-	InputTokens        int                    `gorm:"not null;default:0" json:"input_tokens"`
-	OutputTokens       int                    `gorm:"not null;default:0" json:"output_tokens"`
-	TotalTokens        int                    `gorm:"not null;default:0" json:"total_tokens"`
-	Cost               decimal.Decimal        `gorm:"type:decimal(20,8);not null;default:0" json:"cost"`
-	LatencyMs          int64                  `gorm:"not null;default:0" json:"latency_ms"`
-	FinishReason       string                 `gorm:"type:varchar(50);not null;default:''" json:"finish_reason"`
-	ErrorType          string                 `gorm:"type:varchar(64);not null;default:''" json:"error_type"`
-	ErrorCode          string                 `gorm:"type:varchar(128);not null;default:'';index" json:"error_code"`
-	ErrorMessage       string                 `gorm:"type:text" json:"error_message"`
-	CreatedAt          time.Time              `gorm:"not null;index:idx_conversation_turn_created,priority:2" json:"created_at"`
-	UpdatedAt          time.Time              `gorm:"not null" json:"updated_at"`
+	ID                 uint64                      `gorm:"primaryKey" json:"id"`
+	ConversationID     uint                        `gorm:"not null;uniqueIndex:idx_conversation_turn_sequence,priority:1;index:idx_conversation_turn_created,priority:1" json:"conversation_id"`
+	Sequence           uint64                      `gorm:"column:turn_sequence;not null;uniqueIndex:idx_conversation_turn_sequence,priority:2" json:"sequence"`
+	CallID             string                      `gorm:"type:varchar(64);not null;uniqueIndex" json:"call_id"`
+	RequestLogID       uint                        `gorm:"not null;default:0;index" json:"request_log_id"`
+	Model              string                      `gorm:"type:varchar(80);not null;default:'';index" json:"model"`
+	ProviderResponseID string                      `gorm:"type:varchar(128);not null;default:'';index" json:"provider_response_id"`
+	Status             ConversationTurnStatus      `gorm:"type:varchar(24);not null;default:'completed';index" json:"status"`
+	ContextMode        ConversationTurnContextMode `gorm:"type:varchar(24);not null;default:'legacy'" json:"context_mode"`
+	InputTokens        int                         `gorm:"not null;default:0" json:"input_tokens"`
+	OutputTokens       int                         `gorm:"not null;default:0" json:"output_tokens"`
+	TotalTokens        int                         `gorm:"not null;default:0" json:"total_tokens"`
+	Cost               decimal.Decimal             `gorm:"type:decimal(20,8);not null;default:0" json:"cost"`
+	LatencyMs          int64                       `gorm:"not null;default:0" json:"latency_ms"`
+	FinishReason       string                      `gorm:"type:varchar(50);not null;default:''" json:"finish_reason"`
+	ErrorType          string                      `gorm:"type:varchar(64);not null;default:''" json:"error_type"`
+	ErrorCode          string                      `gorm:"type:varchar(128);not null;default:'';index" json:"error_code"`
+	ErrorMessage       string                      `gorm:"type:text" json:"error_message"`
+	CreatedAt          time.Time                   `gorm:"not null;index:idx_conversation_turn_created,priority:2" json:"created_at"`
+	UpdatedAt          time.Time                   `gorm:"not null" json:"updated_at"`
 }
 
 func (ConversationTurn) TableName() string { return "conversation_turns" }

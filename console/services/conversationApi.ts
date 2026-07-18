@@ -138,6 +138,7 @@ const mapConversationTurn = (turn: any): ConversationTurnRecord => ({
     model: turn.model,
     providerResponseId: turn.provider_response_id || undefined,
     status: turn.status,
+    contextMode: turn.context_mode || 'legacy',
     inputTokens: turn.input_tokens || 0,
     outputTokens: turn.output_tokens || 0,
     totalTokens: turn.total_tokens || 0,
