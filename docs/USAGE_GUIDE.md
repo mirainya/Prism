@@ -189,11 +189,11 @@ rate_limit:
 
 ### 启动流程
 
-服务启动时会自动执行以下初始化：
+首次部署先运行 `./prism migrate up`。服务启动时会执行以下初始化：
 
 1. 加载配置文件 `configs/config.yaml`
 2. 初始化日志系统
-3. 连接 MySQL 并自动建表（AutoMigrate）
+3. 连接 MySQL 并检查迁移状态
 4. 连接 Redis
 5. 初始化任务队列（Asynq）
 6. 启动异步 Worker

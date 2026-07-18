@@ -16,6 +16,7 @@ import (
 	"github.com/mirainya/Prism/internal/gateway"
 	"github.com/mirainya/Prism/internal/gateway/engine"
 	responsepipeline "github.com/mirainya/Prism/internal/gateway/responses"
+	schemamigrate "github.com/mirainya/Prism/internal/migrate"
 	"github.com/mirainya/Prism/internal/model"
 	"github.com/mirainya/Prism/internal/provider"
 	"github.com/mirainya/Prism/internal/worker"
@@ -24,6 +25,7 @@ import (
 	"github.com/mirainya/Prism/pkg/database"
 	"github.com/mirainya/Prism/pkg/logger"
 	"github.com/mirainya/Prism/pkg/queue"
+	"gorm.io/gorm"
 )
 
 func main() {
@@ -72,19 +74,31 @@ func main() {
 		log.Fatalf("failed to init logger: %v", err)
 	}
 
-	db, err := database.Connect()
+	migrationCommand := len(os.Args) > 1 && os.Args[1] == "migrate"
+	var db *gorm.DB
+	if migrationCommand {
+		db, err = database.ConnectForMigrations()
+	} else {
+		db, err = database.Connect()
+	}
 	if err != nil {
 		log.Fatalf("failed to connect database: %v", err)
 	}
 	model.SetDB(db)
+	if migrationCommand {
+		if err := runMigrationCommand(context.Background(), db, os.Args[2:]); err != nil {
+			log.Fatalf("migration command failed: %v", err)
+		}
+		closeDatabase(db)
+		return
+	}
+	if err := schemamigrate.EnsureCurrent(context.Background(), db); err != nil {
+		log.Fatalf("database schema is not current: %v", err)
+	}
 	if config.C.Server.ShouldResetGatewayConcurrency() {
 		if err := model.DB().Model(&model.GwChannelKey{}).Where("current_conc <> 0").Update("current_conc", 0).Error; err != nil {
 			log.Fatalf("failed to reset gateway concurrency: %v", err)
 		}
-	}
-
-	if err := model.AutoMigrate(); err != nil {
-		log.Fatalf("failed to migrate database: %v", err)
 	}
 
 	if err := cache.Init(); err != nil {
@@ -173,12 +187,61 @@ func main() {
 	cache.Close()
 
 	// 5. 关闭数据库
-	sqlDB, err := db.DB()
-	if err == nil {
-		sqlDB.Close()
-	}
+	closeDatabase(db)
 
 	logger.Info("server exited gracefully")
+}
+
+func runMigrationCommand(ctx context.Context, db *gorm.DB, args []string) error {
+	if len(args) != 1 {
+		return fmt.Errorf("usage: prism migrate <up|status|adopt>")
+	}
+	switch args[0] {
+	case "up":
+		applied, err := schemamigrate.Up(ctx, db)
+		if err != nil {
+			return err
+		}
+		if len(applied) == 0 {
+			fmt.Println("database schema is current")
+			return nil
+		}
+		for _, migration := range applied {
+			fmt.Printf("applied %s\n", migration.Filename)
+		}
+		return nil
+	case "status":
+		status, err := schemamigrate.Inspect(ctx, db)
+		if err != nil {
+			return err
+		}
+		if status.Legacy {
+			fmt.Printf("legacy database: apply SQL through 20260718_120000 and run `prism migrate adopt`\n")
+		}
+		for _, migration := range status.Applied {
+			fmt.Printf("applied %s %s\n", migration.Version, migration.Name)
+		}
+		for _, migration := range status.Pending {
+			fmt.Printf("pending %s\n", migration.Filename)
+		}
+		return nil
+	case "adopt":
+		baseline, err := schemamigrate.Adopt(ctx, db)
+		if err != nil {
+			return err
+		}
+		fmt.Printf("adopted schema baseline %s\n", baseline.Version)
+		return nil
+	default:
+		return fmt.Errorf("unknown migration command %q; use up, status, or adopt", args[0])
+	}
+}
+
+func closeDatabase(db *gorm.DB) {
+	sqlDB, err := db.DB()
+	if err == nil {
+		_ = sqlDB.Close()
+	}
 }
 
 func startWorker(v2Engine *engine.Engine) *asynq.Server {

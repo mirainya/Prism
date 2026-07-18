@@ -154,4 +154,4 @@ cd ..
 go build ./cmd/server
 ```
 
-首次启动会运行 GORM AutoMigrate。已有实例升级必须停止全部 HTTP 与 Worker 进程、备份数据库、按文件名顺序执行尚未应用的 `database/migrations/*.sql`，再启动新版本；历史回填不会由 AutoMigrate 完成，也不支持新旧版本滚动混跑。
+数据库结构只由 `database/migrations` 管理。全新安装运行 `prism migrate up`；基线前的旧库完成历史迁移后运行 `prism migrate adopt`；服务启动只检查版本，不执行 GORM AutoMigrate。存在待执行或失败中的迁移时，服务拒绝启动。

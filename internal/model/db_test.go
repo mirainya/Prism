@@ -8,6 +8,24 @@ import (
 	"gorm.io/gorm"
 )
 
+func autoMigrateTestSchema(database *gorm.DB) error {
+	if err := database.AutoMigrate(
+		&User{}, &Token{}, &Channel{}, &ChannelAccount{}, &Model{}, &Endpoint{},
+		&Task{}, &ChannelRequestLog{}, &TokenChannelPriority{}, &Conversation{},
+		&Message{}, &ConversationTurn{}, &ConversationItem{}, &ConversationProjectionOutbox{},
+		&BillingLog{}, &APICall{}, &APICallAttempt{}, &APICallPayload{}, &BalanceEntry{},
+		&APIAccessLog{}, &AuditEvent{}, &AccountModelState{}, &AccountModel{},
+		&GwChannel{}, &GwChannelKey{}, &GwAbility{}, &GwAbilityTransport{},
+		&GwRouteState{}, &GwModelMeta{}, &AIResponse{}, &AIResponseIdempotencyCache{}, &AIFile{},
+	); err != nil {
+		return err
+	}
+	if database.Migrator().HasIndex(&Conversation{}, conversationCanonicalMatchIndexName) {
+		return nil
+	}
+	return database.Migrator().CreateIndex(&conversationCanonicalMatchIndex{}, conversationCanonicalMatchIndexName)
+}
+
 func TestDBReturnsUnpollutedSession(t *testing.T) {
 	database, err := gorm.Open(sqlite.Open("file:model_session?mode=memory&cache=shared"), &gorm.Config{})
 	if err != nil {
@@ -30,7 +48,7 @@ func TestAutoMigrateCreatesConversationProjectionSchema(t *testing.T) {
 		t.Fatal(err)
 	}
 	SetDB(database)
-	if err := AutoMigrate(); err != nil {
+	if err := autoMigrateTestSchema(database); err != nil {
 		t.Fatal(err)
 	}
 	if !database.Migrator().HasIndex(&Conversation{}, conversationCanonicalMatchIndexName) {
