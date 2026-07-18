@@ -12,8 +12,8 @@ func TestLoadIncludesImmutableBaseline(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(migrations) != 1 {
-		t.Fatalf("managed migrations=%d, want 1", len(migrations))
+	if len(migrations) != 2 {
+		t.Fatalf("managed migrations=%d, want 2", len(migrations))
 	}
 	baseline := migrations[0]
 	if baseline.Filename != "20260718_150000_schema_baseline.sql" {
@@ -22,6 +22,13 @@ func TestLoadIncludesImmutableBaseline(t *testing.T) {
 	const expectedChecksum = "dedd18602a649315cb22b036f42501a016fe1f6ded0e7c132a6a8636fd2c3f8f"
 	if baseline.Checksum != expectedChecksum {
 		t.Fatalf("baseline checksum=%s, want %s", baseline.Checksum, expectedChecksum)
+	}
+	if migrations[1].Filename != "20260718_163622_drop_legacy_gateway_tables.sql" {
+		t.Fatalf("cleanup migration filename=%q", migrations[1].Filename)
+	}
+	const expectedCleanupChecksum = "b15775816c3c74bb416dfc1aeb8d1d74014e7498c2dcd2525d876dcd86c96559"
+	if migrations[1].Checksum != expectedCleanupChecksum {
+		t.Fatalf("cleanup checksum=%s, want %s", migrations[1].Checksum, expectedCleanupChecksum)
 	}
 }
 
