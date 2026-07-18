@@ -33,12 +33,6 @@ jobs:
           cache: npm
           cache-dependency-path: console/package-lock.json
 
-      - name: Test backend
-        run: go test ./...
-
-      - name: Vet backend
-        run: go vet ./...
-
       - name: Install frontend dependencies
         working-directory: console
         run: npm ci
@@ -50,3 +44,9 @@ jobs:
       - name: Build frontend
         working-directory: console
         run: npm run build
+
+      - name: Test backend
+        run: go test ./...
+
+      - name: Vet backend
+        run: go vet ./...
