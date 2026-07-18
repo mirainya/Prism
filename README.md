@@ -251,8 +251,11 @@ Responses 资源接口包括：
 ```bash
 go test ./...
 go vet ./...
+go run honnef.co/go/tools/cmd/staticcheck@v0.7.0 '-checks=all,-ST*' ./...
 
 cd console
+npm test
+npx tsc --noEmit
 npm run build
 ```
 
