@@ -17,10 +17,15 @@ RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 \
     go build -ldflags="-s -w" -o prism ./cmd/server
 
 # ---- Runtime ----
-FROM alpine:3.19
-RUN apk add --no-cache ca-certificates tzdata
+FROM alpine:3.24
+RUN apk add --no-cache ca-certificates tzdata \
+    && addgroup -S prism \
+    && adduser -S -D -H -G prism prism
 WORKDIR /app
-COPY --from=backend /app/prism .
-COPY configs/config.docker.yaml configs/config.yaml
+COPY --from=backend --chown=prism:prism /app/prism .
+COPY --chown=prism:prism configs/config.docker.yaml configs/config.yaml
+USER prism
 EXPOSE 23523
+HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
+    CMD wget -q -O /dev/null http://127.0.0.1:23523/health || exit 1
 CMD ["./prism"]
