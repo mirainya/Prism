@@ -136,7 +136,7 @@ Prism/
 
 - Go 1.25.6+
 - Node.js `^20.19.0` 或 `>=22.12.0`（Vite 6 运行时要求）
-- MySQL 8+
+- MySQL 8+（CI 持续验证版本；现有 MySQL 5.7 实例可运行，但 5.7 已停止官方维护且不在持续验证范围）
 - Redis 7+
 
 ### Docker Compose（本地体验）
@@ -162,6 +162,7 @@ npm run build
 cd ..
 
 go build -trimpath -ldflags="-s -w" -o prism ./cmd/server
+./prism migrate up
 ./prism
 ```
 
