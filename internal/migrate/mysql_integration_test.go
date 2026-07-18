@@ -33,7 +33,7 @@ func TestMySQLMigrationLifecycle(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(applied) != 1 || applied[0].Version != BaselineVersion() {
+	if len(applied) != 2 || applied[0].Version != BaselineVersion() {
 		t.Fatalf("applied=%#v", applied)
 	}
 	if err := EnsureCurrent(ctx, db); err != nil {
@@ -43,7 +43,7 @@ func TestMySQLMigrationLifecycle(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if status.Legacy || len(status.Pending) != 0 || len(status.Applied) != 1 || status.Applied[0].Dirty {
+	if status.Legacy || len(status.Pending) != 0 || len(status.Applied) != 2 || status.Applied[0].Dirty {
 		t.Fatalf("status=%#v", status)
 	}
 	for _, table := range requiredApplicationTables {

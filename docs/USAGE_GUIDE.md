@@ -61,8 +61,9 @@
 ### 方式一：使用编译好的二进制（推荐）
 
 ```bash
-# 1. 将 dist/ 目录上传到服务器
-scp -r dist/ user@server:/opt/prism/
+# 1. 上传二进制和示例配置
+scp dist/prism user@server:/opt/prism/prism
+scp configs/config.example.yaml user@server:/opt/prism/configs/config.example.yaml
 
 # 2. 进入目录
 cd /opt/prism
@@ -71,14 +72,12 @@ cd /opt/prism
 cp configs/config.example.yaml configs/config.yaml
 vim configs/config.yaml
 
-# 4. 初始化数据库（首次部署）
-# 创建数据库
+# 4. 创建数据库并执行迁移（首次部署）
 mysql -u root -p -e "CREATE DATABASE prism CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;"
-# 导入初始数据（创建管理员账号）
-mysql -u root -p prism < configs/init.sql
+chmod +x prism
+./prism migrate up
 
 # 5. 启动服务
-chmod +x prism
 ./prism
 ```
 
@@ -93,23 +92,21 @@ cd prism
 build.bat
 
 # 3. 或手动构建
-cd console && npm install && npm run build && cd ..
+cd console && npm ci && npm run build && cd ..
 set GOOS=linux
 set GOARCH=amd64
-go build -o dist/prism cmd/server/main.go
+go build -trimpath -ldflags="-s -w" -o dist/prism ./cmd/server
 ```
 
 ### 方式三：Docker 部署
 
 ```bash
-# 1. 复制 Docker 配置
-cp configs/config.docker.yaml configs/config.yaml
-
-# 2. 启动（需自行准备 docker-compose.yml）
-docker-compose up -d
+# 构建并启动仓库自带的 Compose 服务
+docker compose up -d --build
+docker compose ps
 ```
 
-> Docker 配置中 MySQL 主机名为 `mysql`，Redis 主机名为 `redis`，对应 Docker 服务名。
+Compose 会先等待 MySQL 就绪，再由一次性 `migrate` 服务执行迁移，迁移成功后启动 Prism。该配置包含固定示例凭据并公开 MySQL 与 Redis 端口，仅用于本地环境。
 
 ---
 
@@ -200,37 +197,23 @@ rate_limit:
 7. 启动定时任务（超时检测，每 5 分钟）
 8. 启动 HTTP 服务
 
-### 默认管理员账号
+### 管理员初始化
 
-```
-用户名：admin
-密码：123456
-```
-
-> 首次登录后请立即修改密码！
+当前版本不创建默认管理员。首次启动后先注册用户，再由数据库管理员将该用户的 `users.role` 设置为 `admin`。
 
 ### 验证启动
 
 ```bash
 # 检查服务是否正常
-curl http://localhost:23523/api/auth/login \
-  -X POST \
-  -H "Content-Type: application/json" \
-  -d '{"username":"admin","password":"123456"}'
+curl http://localhost:23523/health
 ```
 
 成功返回：
 ```json
 {
-  "code": 0,
-  "data": {
-    "token": "eyJhbGciOiJIUzI1NiIs...",
-    "user": {
-      "id": 1,
-      "username": "admin",
-      "role": "admin"
-    }
-  }
+  "status": "ok",
+  "db": true,
+  "redis": true
 }
 ```
 
