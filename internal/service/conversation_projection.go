@@ -1157,11 +1157,6 @@ func countCanonicalConversationMessages(items []canonical.Item) int {
 	return count
 }
 
-func canonicalConversationPrefixEqual(prefix, input []canonical.Item) bool {
-	_, _, matches := canonicalConversationPrefixConsumed(prefix, input)
-	return matches
-}
-
 func canonicalConversationPrefixConsumed(prefix, input []canonical.Item) (int, int, bool) {
 	prefixFingerprints, _, prefixOK := canonicalConversationMatchFingerprints(prefix)
 	inputFingerprints, inputPositions, inputOK := canonicalConversationMatchFingerprints(input)

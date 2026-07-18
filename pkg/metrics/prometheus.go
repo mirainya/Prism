@@ -2,6 +2,7 @@ package metrics
 
 import (
 	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/client_golang/prometheus/collectors"
 )
 
 // --- Prometheus 实现 ---
@@ -64,7 +65,7 @@ func (p *promProvider) Registry() *prometheus.Registry {
 // InitPrometheus 初始化 Prometheus 指标并替换全局 Provider
 func InitPrometheus() *prometheus.Registry {
 	registry := prometheus.NewRegistry()
-	registry.MustRegister(prometheus.NewGoCollector())
+	registry.MustRegister(collectors.NewGoCollector())
 	SetProvider(NewPrometheusProvider(registry))
 	initMetrics()
 	return registry

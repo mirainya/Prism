@@ -62,18 +62,6 @@ func (s *BillingService) DeductWithBillingContext(
 	})
 }
 
-func (s *BillingService) deductWithKeyTx(
-	tx *gorm.DB,
-	tokenID uint,
-	userID uint,
-	amount decimal.Decimal,
-	idempotentKey string,
-) error {
-	return s.deductWithBillingContextTx(
-		tx, tokenID, userID, amount, idempotentKey, BillingContext{},
-	)
-}
-
 func (s *BillingService) deductWithBillingContextTx(
 	tx *gorm.DB,
 	tokenID uint,
@@ -196,21 +184,6 @@ func (s *BillingService) RefundWithBillingContext(
 	return model.DB().Transaction(func(tx *gorm.DB) error {
 		return s.refundWithBillingContextTx(tx, tokenID, userID, amount, idempotentKey, billingContext)
 	})
-}
-
-// refundWithKeyTx applies a refund inside the caller's transaction. The
-// idempotency record is reserved before balances are changed, so concurrent
-// retries cannot credit the same refund twice.
-func (s *BillingService) refundWithKeyTx(
-	tx *gorm.DB,
-	tokenID uint,
-	userID uint,
-	amount decimal.Decimal,
-	idempotentKey string,
-) error {
-	return s.refundWithBillingContextTx(
-		tx, tokenID, userID, amount, idempotentKey, BillingContext{},
-	)
 }
 
 func (s *BillingService) refundWithBillingContextTx(

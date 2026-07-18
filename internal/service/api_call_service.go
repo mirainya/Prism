@@ -1424,14 +1424,6 @@ func sanitizeUserCall(call *model.APICall) {
 	call.ErrorParam = nil
 }
 
-func getCall(callID string) (*model.APICall, error) {
-	return getCallWithDB(model.DB(), callID)
-}
-
-func getCallWithDB(db *gorm.DB, callID string) (*model.APICall, error) {
-	return loadCallWithDB(db, callID, false)
-}
-
 func getCallForUpdateWithDB(db *gorm.DB, callID string) (*model.APICall, error) {
 	return loadCallWithDB(db, callID, true)
 }
@@ -1537,10 +1529,6 @@ func getAttempt(attemptID uint) (*model.APICallAttempt, error) {
 		return nil, err
 	}
 	return &attempt, nil
-}
-
-func getCallAttempt(callID string, attemptID uint) (*model.APICallAttempt, error) {
-	return getCallAttemptWithDB(model.DB(), callID, attemptID)
 }
 
 func getCallAttemptWithDB(db *gorm.DB, callID string, attemptID uint) (*model.APICallAttempt, error) {

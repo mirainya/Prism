@@ -18,9 +18,6 @@ import (
 // dbCounter 为每个测试生成唯一的内存库名,避免 cache=shared 跨测试残留数据
 var dbCounter int64
 
-// userCounter 为每个 seed 的 user 生成唯一 username,避免 UNIQUE 约束冲突
-var userCounter int64
-
 // TestMain 初始化全局 logger,避免 service 层 logger.Warn/Error 触发 nil panic。
 func TestMain(m *testing.M) {
 	_ = logger.Init()

@@ -461,17 +461,6 @@ func unmarshalConversationProjectionItems(encoded []byte, direction string) ([]c
 	return items, nil
 }
 
-func ensureConversationProjectionCallExists(db *gorm.DB, callID string) error {
-	var count int64
-	if err := db.Model(&model.APICall{}).Where("id = ?", callID).Count(&count).Error; err != nil {
-		return err
-	}
-	if count == 0 {
-		return fmt.Errorf("%w: %s", ErrAPICallNotFound, callID)
-	}
-	return nil
-}
-
 func lockConversationProjectionTarget(
 	tx *gorm.DB,
 	callID string,

@@ -2,26 +2,12 @@ package responses
 
 import (
 	"encoding/json"
-	"errors"
 	"strings"
 	"testing"
 
 	"github.com/mirainya/Prism/internal/model"
 	protocol "github.com/mirainya/Prism/internal/provider/responses"
 )
-
-type failingReadCloser struct {
-	reader *strings.Reader
-}
-
-func (reader *failingReadCloser) Read(buffer []byte) (int, error) {
-	if reader.reader.Len() > 0 {
-		return reader.reader.Read(buffer)
-	}
-	return 0, errors.New("connection reset")
-}
-
-func (*failingReadCloser) Close() error { return nil }
 
 func TestResolveInputFilesChecksOwnership(t *testing.T) {
 	db := openResponsesTestDB(t)
