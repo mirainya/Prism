@@ -167,7 +167,11 @@ go build -trimpath -ldflags="-s -w" -o prism ./cmd/server
 
 `console/dist` 未提交到仓库，构建后端前必须先构建前端。Windows 可运行 `build.bat` 生成 Linux AMD64 二进制。
 
-首次启动会执行 GORM AutoMigrate 创建或补充表结构。已有实例升级必须先停止全部 Prism HTTP 与 Worker 进程并备份数据库，再按文件名顺序执行 `database/migrations/` 中尚未应用的 SQL，最后启动新版本；这些数据迁移不会由 AutoMigrate 自动执行。不要滚动混跑新旧版本：历史余额回填需要稳定快照，且 `20260714_223000_remove_token_plain_keys.sql` 执行后旧版本会通过 AutoMigrate 重建明文字段。
+数据库结构只由 `database/migrations/` 管理，服务启动时不会执行 GORM AutoMigrate。全新安装先运行 `./prism migrate up`；服务发现旧库、失败中的迁移或待执行迁移时会拒绝启动。Docker Compose 已包含一次性 `migrate` 服务，会在 Prism 启动前完成该步骤。
+
+2026-07-18 基线之前创建的实例必须先停止全部 Prism HTTP 与 Worker 进程并备份数据库，按文件名顺序执行尚未应用的旧迁移至 `20260718_120000_add_conversation_turn_context_mode.sql`，再运行 `./prism migrate adopt`。完成登记后，后续升级统一运行 `./prism migrate up`。不要滚动混跑新旧版本；历史回填需要稳定快照，旧版本也不认识新的迁移状态。
+
+迁移状态可通过 `./prism migrate status` 查看。完整规则见 [`database/migrations/README.md`](database/migrations/README.md)。
 
 当前版本没有管理员自举命令。首次部署需先注册用户，再由数据库管理员将该用户的 `users.role` 提升为 `admin`，才能配置网关。
 

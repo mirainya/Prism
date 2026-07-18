@@ -63,3 +63,36 @@ jobs:
           docker build --tag prism:ci .
           test "$(docker image inspect prism:ci --format '{{.Config.User}}')" = "prism"
           test "$(docker image inspect prism:ci --format '{{json .Config.Healthcheck.Test}}')" != "null"
+
+  migration:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    services:
+      mysql:
+        image: mysql:8.0
+        env:
+          MYSQL_ROOT_PASSWORD: prism-ci
+          MYSQL_DATABASE: prism
+        ports:
+          - 3306:3306
+        options: >-
+          --health-cmd="mysqladmin ping -h localhost -pprism-ci"
+          --health-interval=5s
+          --health-timeout=3s
+          --health-retries=20
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+
+      - name: Set up Go
+        uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Test MySQL migration lifecycle
+        env:
+          PRISM_MIGRATION_TEST_DSN: "root:prism-ci@tcp(127.0.0.1:3306)/prism?charset=utf8mb4&parseTime=true&loc=UTC&multiStatements=true"
+        run: go test -tags=integration ./internal/migrate -run TestMySQLMigrationLifecycle -count=1

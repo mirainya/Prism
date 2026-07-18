@@ -4,11 +4,19 @@ services:
     ports:
       - "23523:23523"
     depends_on:
-      mysql:
-        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
       redis:
         condition: service_healthy
     restart: unless-stopped
+
+  migrate:
+    build: .
+    command: ["./prism", "migrate", "up"]
+    depends_on:
+      mysql:
+        condition: service_healthy
+    restart: "no"
 
   mysql:
     image: mysql:8.0

@@ -2,19 +2,30 @@ package database
 
 import (
 	"fmt"
+	"net"
+	"strconv"
 	"strings"
 	"time"
 
+	mysqldriver "github.com/go-sql-driver/mysql"
 	"github.com/mirainya/Prism/pkg/config"
-	"gorm.io/driver/mysql"
+	gormmysql "gorm.io/driver/mysql"
 	"gorm.io/gorm"
 	"gorm.io/gorm/logger"
 )
 
 func Connect() (*gorm.DB, error) {
+	return connect(false)
+}
+
+// ConnectForMigrations enables trusted multi-statement SQL from embedded files.
+func ConnectForMigrations() (*gorm.DB, error) {
+	return connect(true)
+}
+
+func connect(multiStatements bool) (*gorm.DB, error) {
 	cfg := config.C.Database
-	dsn := fmt.Sprintf("%s:%s@tcp(%s:%d)/%s?charset=utf8mb4&parseTime=True&loc=Local",
-		cfg.User, cfg.Password, cfg.Host, cfg.Port, cfg.DBName)
+	dsn := buildDSN(cfg, multiStatements)
 
 	logLevel := logger.Warn
 	switch strings.ToLower(cfg.LogLevel) {
@@ -26,7 +37,7 @@ func Connect() (*gorm.DB, error) {
 		logLevel = logger.Silent
 	}
 
-	db, err := gorm.Open(mysql.Open(dsn), &gorm.Config{
+	db, err := gorm.Open(gormmysql.Open(dsn), &gorm.Config{
 		Logger: logger.Default.LogMode(logLevel),
 	})
 	if err != nil {
@@ -65,4 +76,18 @@ func Connect() (*gorm.DB, error) {
 	db = db.Set("gorm:table_options", "ENGINE=InnoDB")
 
 	return db, nil
+}
+
+func buildDSN(cfg config.DatabaseConfig, multiStatements bool) string {
+	driverConfig := mysqldriver.NewConfig()
+	driverConfig.User = cfg.User
+	driverConfig.Passwd = cfg.Password
+	driverConfig.Net = "tcp"
+	driverConfig.Addr = net.JoinHostPort(cfg.Host, strconv.Itoa(cfg.Port))
+	driverConfig.DBName = cfg.DBName
+	driverConfig.ParseTime = true
+	driverConfig.Loc = time.Local
+	driverConfig.MultiStatements = multiStatements
+	driverConfig.Params = map[string]string{"charset": "utf8mb4"}
+	return driverConfig.FormatDSN()
 }
