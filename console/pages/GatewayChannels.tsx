@@ -277,6 +277,7 @@ const AbilityEditModal: React.FC<{
   onClose: () => void;
   onSave: (id: number, data: Record<string, any>) => Promise<void>;
 }> = ({ ability, onClose, onSave }) => {
+  const [modelName, setModelName] = useState(ability.model_name || '');
   const [vendorModel, setVendorModel] = useState(ability.vendor_model || '');
   const [priority, setPriority] = useState(String(ability.priority ?? 0));
   const [status, setStatus] = useState(ability.status);
@@ -328,9 +329,14 @@ const AbilityEditModal: React.FC<{
 			setError('至少启用一个上游 Transport');
 			return;
 		}
+		if (!modelName.trim()) {
+			setError('对外模型名不能为空');
+			return;
+		}
     setSaving(true);
     try {
       await onSave(ability.id, {
+        model_name: modelName.trim(),
         vendor_model: vendorModel.trim(),
         priority: Number(priority) || 0,
         status,
@@ -357,8 +363,10 @@ const AbilityEditModal: React.FC<{
         </div>
         <div className="p-5 space-y-4">
           <div>
-            <label className="block text-xs font-bold text-[var(--text-secondary)] mb-1">模型名(路由标识,不可改)</label>
-            <div className="px-3 py-2 bg-[var(--surface)] rounded-lg text-sm font-mono text-[var(--text-primary)]">{ability.model_name}</div>
+            <label className="block text-xs font-bold text-[var(--text-secondary)] mb-1">对外模型名(model_name,路由标识)</label>
+            <input value={modelName} onChange={e => setModelName(e.target.value)}
+              className="w-full px-3 py-2 bg-[var(--surface-card)] border border-[var(--border-soft)] rounded-lg text-sm font-mono focus:outline-none focus:ring-2 focus:ring-[var(--primary)]" />
+            <p className="text-[10px] text-[var(--text-secondary)] mt-1">调用方请求时填的模型名。同 key 下想区分同一上游模型(如 super/free)时,改成不同的名并保留 vendor_model 指向上游真名。</p>
           </div>
           <div>
             <label className="block text-xs font-bold text-[var(--text-secondary)] mb-1">上游模型名(vendor_model)</label>

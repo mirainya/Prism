@@ -168,6 +168,7 @@ export const GwPullModal: React.FC<{
   const [error, setError] = useState('');
   const [items, setItems] = useState<GwUpstreamModel[]>([]);
   const [checked, setChecked] = useState<Set<string>>(new Set());
+  const [aliases, setAliases] = useState<Record<string, string>>({}); // 上游id -> 自定义对外名(默认=上游id)
   const [importing, setImporting] = useState(false);
   const [result, setResult] = useState('');
 
@@ -203,7 +204,13 @@ export const GwPullModal: React.FC<{
   const toggleAll = () => setChecked(checked.size === items.length ? new Set() : new Set(items.map(m => m.id)));
 
   const handleImport = async () => {
-    const models: GwImportItem[] = items.filter(m => checked.has(m.id)).map(m => ({ model_name: m.id }));
+    // 对外名默认=上游id;改了则用自定义名并把上游id落到 vendor_model
+    const models: GwImportItem[] = items.filter(m => checked.has(m.id)).map(m => {
+      const alias = (aliases[m.id] || '').trim();
+      return alias && alias !== m.id
+        ? { model_name: alias, vendor_model: m.id }
+        : { model_name: m.id };
+    });
     if (models.length === 0) { setError('请至少勾选一个模型'); return; }
     setImporting(true); setError('');
     try {
@@ -246,14 +253,25 @@ export const GwPullModal: React.FC<{
               {items.map(m => {
                 const isChecked = checked.has(m.id);
                 return (
-                  <div key={m.id} className={`flex items-center gap-2 p-2 rounded-lg border transition-colors ${isChecked ? 'border-[var(--primary)]/40 bg-[var(--primary-lighter)]/40' : 'border-[var(--border-soft)] bg-[var(--surface)]'}`}>
-                    <button onClick={() => toggle(m.id)} className="shrink-0 text-[var(--primary)]">
-                      {isChecked ? <CheckSquare size={16} /> : <Square size={16} className="text-[var(--text-secondary)]" />}
-                    </button>
-                    <div className="min-w-0 flex-1">
-                      <div className="text-sm font-mono text-[var(--text-primary)] truncate">{m.id}</div>
+                  <div key={m.id} className={`rounded-lg border transition-colors ${isChecked ? 'border-[var(--primary)]/40 bg-[var(--primary-lighter)]/40' : 'border-[var(--border-soft)] bg-[var(--surface)]'}`}>
+                    <div className="flex items-center gap-2 p-2">
+                      <button onClick={() => toggle(m.id)} className="shrink-0 text-[var(--primary)]">
+                        {isChecked ? <CheckSquare size={16} /> : <Square size={16} className="text-[var(--text-secondary)]" />}
+                      </button>
+                      <div className="min-w-0 flex-1">
+                        <div className="text-sm font-mono text-[var(--text-primary)] truncate">{m.id}</div>
+                      </div>
+                      {m.imported && <span className="px-1.5 py-0.5 rounded text-[10px] bg-sky-100 text-sky-700 shrink-0">已导入</span>}
                     </div>
-                    {m.imported && <span className="px-1.5 py-0.5 rounded text-[10px] bg-sky-100 text-sky-700 shrink-0">已导入</span>}
+                    {isChecked && (
+                      <div className="px-2 pb-2 pl-8">
+                        <label className="block text-[10px] text-[var(--text-secondary)] mb-0.5">对外名(默认=上游id;想区分同模型时改成别名,上游真名自动落 vendor_model)</label>
+                        <input value={aliases[m.id] ?? m.id}
+                          onChange={e => setAliases(prev => ({ ...prev, [m.id]: e.target.value }))}
+                          className="w-full px-2 py-1 border border-[var(--border-soft)] rounded text-xs font-mono focus:outline-none focus:ring-1 focus:ring-[var(--primary)]"
+                          placeholder={m.id} />
+                      </div>
+                    )}
                   </div>
                 );
               })}

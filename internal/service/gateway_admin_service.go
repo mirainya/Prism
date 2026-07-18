@@ -223,8 +223,18 @@ func (s *GatewayAdminService) ListAbilities(f AbilityFilter) ([]GwAbilityRow, er
 	return rows, err
 }
 
-// UpdateAbility 更新 ability 可编辑字段(vendor/优先级/价格/状态)。
+// UpdateAbility 更新 ability 可编辑字段(对外模型名/vendor/优先级/价格/状态)。
+// model_name 是路由键:允许改名以区分同 key 下同上游模型的多条能力(如 super/free),
+// 改名后 vendor_model 决定实际发给上游的模型名。空字符串会清空路由键,故拒绝。
 func (s *GatewayAdminService) UpdateAbility(id uint, updates map[string]any) error {
+	if value, ok := updates["model_name"]; ok {
+		name, _ := value.(string)
+		name = strings.TrimSpace(name)
+		if name == "" {
+			return errors.New("model_name cannot be empty")
+		}
+		updates["model_name"] = name
+	}
 	if value, ok := updates["capabilities"]; ok {
 		capabilities, err := normalizeGwCapabilities(value)
 		if err != nil {
@@ -233,6 +243,7 @@ func (s *GatewayAdminService) UpdateAbility(id uint, updates map[string]any) err
 		updates["capabilities"] = capabilities
 	}
 	allowed := map[string]struct{}{
+		"model_name":   {},
 		"vendor_model": {}, "priority": {}, "status": {},
 		"price_mode": {}, "input_price": {}, "output_price": {},
 		"capabilities": {},
