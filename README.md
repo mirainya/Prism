@@ -112,11 +112,14 @@ Prism/
 │   ├── gateway/
 │   │   ├── canonical/             # 协议中立模型和事件
 │   │   ├── codec/                 # 三种下游协议编解码
+│   │   ├── conformance/           # 跨协议一致性校验
 │   │   ├── engine/                # 执行、重试、计费与日志
 │   │   ├── handler/               # Chat、Responses、Messages、Files
+│   │   ├── limits/                # 协议入口共享的请求限制
 │   │   ├── pipeline/              # Chat 边界编排与 Playground 复用
 │   │   ├── responses/             # Responses 生命周期
 │   │   ├── routing/               # 选路、并发和熔断
+│   │   ├── stream/                # 流式聚合（结算、日志、存会话）
 │   │   └── transport/             # 五种上游 Transport
 │   ├── model/                     # GORM 数据模型
 │   ├── service/                   # 管理、计费与异步能力业务
@@ -132,7 +135,7 @@ Prism/
 ### 环境要求
 
 - Go 1.25.6+
-- Node.js `^20.19.0` 或 `>=22.12.0`
+- Node.js `^20.19.0` 或 `>=22.12.0`（Vite 6 运行时要求）
 - MySQL 8+
 - Redis 7+
 
@@ -214,7 +217,7 @@ Responses 资源接口包括：
 ## 管理后台
 
 - 网关渠道：管理 Gateway V2 渠道、Key、模型发现与导入。
-- 对话模型：管理 Ability、Transport 探测、公开模型元数据、分组与排序。
+- 对话模型：管理 Ability、Transport 探测、公开模型元数据、分组与排序；可编辑 Ability 的对外模型名，让同一 Key 下同一上游模型以不同公开名区分（如 super / free）。
 - 能力渠道与能力配置：管理图片、视频等异步能力的渠道、账号和参数。
 - Playground：测试 Chat、Responses、Messages 和异步能力，查看历史与调试信息。
 - 用户与令牌：管理用户角色、余额、API Token、限流和充值。
