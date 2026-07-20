@@ -255,10 +255,8 @@ const ChatTab: React.FC<{ tokenId: string }> = ({ tokenId }) => {
       ...chat.messages.filter(msg => msg.role !== 'system' && msg.status !== 'failed' && msg.status !== 'aborted'),
       userMsg,
     ];
-    const reasoningEffort = thinkingLevel
-      && !selectedModelInfo?.thinking?.locked
-      && thinkingLevel !== selectedModelInfo?.thinking?.default
-      ? thinkingLevel
+    const selectedThinkingLevel = selectedModelInfo?.thinking
+      ? thinkingLevel || selectedModelInfo.thinking.default
       : undefined;
     const payload = buildProtocolPayload({
       protocol,
@@ -280,7 +278,7 @@ const ChatTab: React.FC<{ tokenId: string }> = ({ tokenId }) => {
       responseFormat,
       tools,
       toolChoice,
-      reasoningEffort,
+      reasoningEffort: undefined,
     });
     setLastPayload(payload);
     setChat(prev => ({
@@ -301,7 +299,7 @@ const ChatTab: React.FC<{ tokenId: string }> = ({ tokenId }) => {
         : protocol === 'responses'
           ? playgroundResponses
           : playgroundAnthropicMessages;
-      const res = await request(tokenId, payload, controller.signal);
+      const res = await request(tokenId, payload, controller.signal, selectedThinkingLevel);
       if (!res.ok) {
         const data = await res.json().catch(() => ({}));
         throw new Error(data.error?.message || data.message || `请求失败 (${res.status})`);

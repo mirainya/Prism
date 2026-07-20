@@ -66,11 +66,13 @@ func (p *Pipeline) buildChatRequest(req *service.CompletionRequest, route *routi
 				chatReq.MaxTokens = meta.MaxTokens
 			}
 		}
-		thinking := parseThinkingConfig(meta.ThinkingConfig)
-		if req.ReasoningEffort != nil && thinking != nil && !thinking.Locked && thinking.findOption(*req.ReasoningEffort) == nil {
-			return nil, domain.ErrBadRequest(fmt.Sprintf("reasoning_effort %q is not configured for this model", *req.ReasoningEffort))
+		if req.ThinkingLevel == nil {
+			thinking := parseThinkingConfig(meta.ThinkingConfig)
+			if req.ReasoningEffort != nil && thinking != nil && !thinking.Locked && thinking.findOption(*req.ReasoningEffort) == nil {
+				return nil, domain.ErrBadRequest(fmt.Sprintf("reasoning_effort %q is not configured for this model", *req.ReasoningEffort))
+			}
+			applyThinking(chatReq, thinking, req.ReasoningEffort)
 		}
-		applyThinking(chatReq, thinking, req.ReasoningEffort)
 	} else if req.ReasoningEffort != nil {
 		switch route.Protocol {
 		case model.ProtocolOpenAI, model.ProtocolCustom, model.ProtocolVolcengine:

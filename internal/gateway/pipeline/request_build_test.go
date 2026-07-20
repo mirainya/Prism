@@ -109,6 +109,48 @@ func TestConfiguredVolcengineReasoningIsNormalizedBeforePlan(t *testing.T) {
 	}
 }
 
+func TestModelThinkingLevelDisablesVolcengineAcrossDownstreamProtocols(t *testing.T) {
+	setupBuildRequestDB(t, "model_thinking_level_volcengine_disabled")
+	if err := model.DB().Create(&model.GwModelMeta{
+		ModelName: "public-volcengine",
+		ThinkingConfig: datatypes.JSON(`{"default":"off","options":[
+			{"value":"off","body":{"thinking":{"type":"disabled"}}},
+			{"value":"high","body":{"reasoning":{"effort":"high"}}}
+		]}`),
+	}).Error; err != nil {
+		t.Fatal(err)
+	}
+
+	for _, endpoint := range []canonical.Endpoint{
+		canonical.EndpointOpenAIChat,
+		canonical.EndpointOpenAIResponses,
+		canonical.EndpointAnthropic,
+	} {
+		request := canonical.Request{
+			Endpoint: endpoint, Model: "public-volcengine",
+			Items: []canonical.Item{{Type: "message", Role: canonical.RoleUser, Content: []canonical.Content{{Type: "input_text", Text: "hello"}}}},
+		}
+		normalized, err := ApplyModelThinkingLevel(request, request.Model, transport.VolcengineResponsesV3, "off")
+		if err != nil {
+			t.Fatalf("endpoint %s: %v", endpoint, err)
+		}
+		if normalized.Reasoning != nil || normalized.ProviderOptions.Volcengine == nil || string(normalized.ProviderOptions.Volcengine.Thinking) != `{"type":"disabled"}` {
+			t.Fatalf("endpoint %s normalized request = %#v", endpoint, normalized)
+		}
+		item := volcenginetransport.New(transport.HTTPClient{})
+		operation := transport.OperationChat
+		switch endpoint {
+		case canonical.EndpointOpenAIResponses:
+			operation = transport.OperationResponses
+		case canonical.EndpointAnthropic:
+			operation = transport.OperationMessages
+		}
+		if plan := item.Plan(operation, normalized, normalized.RequiredFeatures()); !plan.Supported() {
+			t.Fatalf("endpoint %s rejected disabled thinking: %#v", endpoint, plan)
+		}
+	}
+}
+
 func TestConfiguredAnthropicThinkingSurvivesInitialAndRoutePlanning(t *testing.T) {
 	setupBuildRequestDB(t, "build_chat_request_anthropic_thinking")
 	if err := model.DB().Create(&model.GwModelMeta{

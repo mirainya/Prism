@@ -137,6 +137,12 @@ func (p *Pipeline) v2Options(request *service.CompletionRequest) engine.ExecuteO
 			}
 			decoded.Model = request.Model
 			decoded.PreviousResponseID = previousResponseID
+			if request.ThinkingLevel != nil {
+				decoded, err = ApplyModelThinkingLevel(decoded, route.ModelName, route.Transport, *request.ThinkingLevel)
+				if err != nil {
+					return canonical.Request{}, err
+				}
+			}
 			if previousResponseID != "" {
 				decoded.TransportHints = []string{string(route.Transport)}
 			}

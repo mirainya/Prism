@@ -15,6 +15,7 @@ import (
 	"github.com/mirainya/Prism/internal/api/openaierror"
 	"github.com/mirainya/Prism/internal/domain"
 	"github.com/mirainya/Prism/internal/gateway/engine"
+	chatpipeline "github.com/mirainya/Prism/internal/gateway/pipeline"
 	responsepipeline "github.com/mirainya/Prism/internal/gateway/responses"
 	"github.com/mirainya/Prism/internal/gateway/routing"
 	gatewaytransport "github.com/mirainya/Prism/internal/gateway/transport"
@@ -65,6 +66,7 @@ func (h *ResponsesHandler) Create(c *gin.Context) {
 	result, err := h.pipe.CreateWithOptions(c.Request.Context(), token.UserID, token.ID, &req,
 		c.GetHeader("Idempotency-Key"), responsepipeline.CreateOptions{
 			RequestID: middleware.GetRequestID(c.Request.Context()), ConversationID: conversationID,
+			ThinkingLevel: strings.TrimSpace(c.GetHeader(chatpipeline.ThinkingLevelHeader)),
 		})
 	if err != nil {
 		if callID := responsepipeline.CallIDFromError(err); callID != "" {

@@ -40,24 +40,27 @@ export const playgroundChatCompletions = async (
     tokenId: string,
     body: Record<string, any>,
     signal?: AbortSignal,
+    thinkingLevel?: string,
 ): Promise<Response> => {
-    return playgroundProtocolRequest(tokenId, 'chat/completions', body, signal);
+    return playgroundProtocolRequest(tokenId, 'chat/completions', body, signal, thinkingLevel);
 };
 
 export const playgroundResponses = async (
     tokenId: string,
     body: Record<string, any>,
     signal?: AbortSignal,
+    thinkingLevel?: string,
 ): Promise<Response> => {
-    return playgroundProtocolRequest(tokenId, 'responses', body, signal);
+    return playgroundProtocolRequest(tokenId, 'responses', body, signal, thinkingLevel);
 };
 
 export const playgroundAnthropicMessages = async (
     tokenId: string,
     body: Record<string, any>,
     signal?: AbortSignal,
+    thinkingLevel?: string,
 ): Promise<Response> => {
-    return playgroundProtocolRequest(tokenId, 'messages', body, signal);
+    return playgroundProtocolRequest(tokenId, 'messages', body, signal, thinkingLevel);
 };
 
 const playgroundProtocolRequest = async (
@@ -65,6 +68,7 @@ const playgroundProtocolRequest = async (
     endpoint: 'chat/completions' | 'responses' | 'messages',
     body: Record<string, any>,
     signal?: AbortSignal,
+    thinkingLevel?: string,
 ): Promise<Response> => {
     // 保留原始 Response，让调用方根据 Content-Type 选择 JSON 或 SSE，并可读取调试响应头。
     return fetch(`${API_BASE}/playground/${tokenId}/${endpoint}`, {
@@ -72,6 +76,7 @@ const playgroundProtocolRequest = async (
         headers: {
             'Content-Type': 'application/json',
             ...getAuthHeader(),
+            ...(thinkingLevel ? { 'X-Prism-Thinking-Level': thinkingLevel } : {}),
         },
         body: JSON.stringify(body),
         signal,

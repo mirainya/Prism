@@ -16,6 +16,7 @@ import (
 	openairesponses "github.com/mirainya/Prism/internal/gateway/codec/openai_responses"
 	"github.com/mirainya/Prism/internal/gateway/engine"
 	"github.com/mirainya/Prism/internal/gateway/limits"
+	chatpipeline "github.com/mirainya/Prism/internal/gateway/pipeline"
 	"github.com/mirainya/Prism/internal/gateway/routing"
 	"github.com/mirainya/Prism/internal/model"
 	protocol "github.com/mirainya/Prism/internal/provider/responses"
@@ -71,7 +72,7 @@ func releaseBackgroundResponseLease(responseID, owner string, requeue bool) erro
 		Updates(updates).Error
 }
 
-func (p *Pipeline) createV2(ctx context.Context, userID, tokenID uint, req *protocol.Request, idempotencyKey, requestID string, conversationID uint) (out *Result, returnErr error) {
+func (p *Pipeline) createV2(ctx context.Context, userID, tokenID uint, req *protocol.Request, idempotencyKey, requestID string, conversationID uint, thinkingLevel string) (out *Result, returnErr error) {
 	// 顺序不可交换：先取得幂等所有权，再解析续话和文件，最后创建持久资源并执行。
 	// 这样并发的同 key 请求只会有一个进入上游。
 	idempotencyKey = strings.TrimSpace(idempotencyKey)
@@ -106,6 +107,9 @@ func (p *Pipeline) createV2(ctx context.Context, userID, tokenID uint, req *prot
 		}
 	}
 	store := req.Store == nil || *req.Store
+	if req.Background && strings.TrimSpace(thinkingLevel) != "" {
+		return nil, domain.ErrBadRequest("model thinking levels are not supported for background responses")
+	}
 	executionCtx := ctx
 	if idempotencyKey != "" {
 		claim, existing, err := acquireResponseIdempotency(ctx, tokenID, idempotencyKey, idempotencyRequestJSON)
@@ -159,7 +163,7 @@ func (p *Pipeline) createV2(ctx context.Context, userID, tokenID uint, req *prot
 	if err != nil {
 		return nil, errors.Join(err, p.recordResponseFailure(record, err, false, conversationProjection))
 	}
-	options := p.v2ExecuteOptions(record, req, previous, requestID, originalRequestJSON)
+	options := p.v2ExecuteOptions(record, req, previous, requestID, originalRequestJSON, thinkingLevel)
 	if req.Stream {
 		// 流式结果由 Handler 写出后确认交付，Pipeline 此时只转移 Engine Stream 的所有权。
 		executionRequest := cloneResponseRequest(req)
@@ -221,7 +225,7 @@ func (p *Pipeline) createV2(ctx context.Context, userID, tokenID uint, req *prot
 	}, nil
 }
 
-func (p *Pipeline) v2ExecuteOptions(record *model.AIResponse, request *protocol.Request, previous *model.AIResponse, requestID string, downstreamRequest []byte, billingKeys ...string) engine.ExecuteOptions {
+func (p *Pipeline) v2ExecuteOptions(record *model.AIResponse, request *protocol.Request, previous *model.AIResponse, requestID string, downstreamRequest []byte, thinkingLevel string, billingKeys ...string) engine.ExecuteOptions {
 	base := cloneResponseRequest(request)
 	base.Store = boolPointer(record.Store)
 	billingKey := record.ID
@@ -247,6 +251,12 @@ func (p *Pipeline) v2ExecuteOptions(record *model.AIResponse, request *protocol.
 				return canonical.Request{}, err
 			}
 			decoded = limits.ApplyModelMaxOutputTokens(decoded, route.ModelName)
+			if strings.TrimSpace(thinkingLevel) != "" {
+				decoded, err = chatpipeline.ApplyModelThinkingLevel(decoded, route.ModelName, route.Transport, thinkingLevel)
+				if err != nil {
+					return canonical.Request{}, err
+				}
+			}
 			if attempt.PreviousResponseID != "" {
 				decoded.TransportHints = []string{string(route.Transport)}
 			}
@@ -384,7 +394,7 @@ func (p *Pipeline) executeBackgroundV2(ctx context.Context, responseID string, f
 	billingKey := fmt.Sprintf("%s:background:%d", record.ID, attempt+1)
 	executionRequest := cloneResponseRequest(&request)
 	executionRequest.PreviousResponseID = ""
-	result, err := p.v2.Execute(execCtx, executionRequest, record.ID, p.v2ExecuteOptions(record, &request, previous, requestID, nil, billingKey))
+	result, err := p.v2.Execute(execCtx, executionRequest, record.ID, p.v2ExecuteOptions(record, &request, previous, requestID, nil, "", billingKey))
 	if err != nil {
 		if isResponseCancelled(record.ID) {
 			return p.recordResponseCancellation(record)

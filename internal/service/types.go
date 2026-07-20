@@ -48,6 +48,10 @@ type CompletionRequest struct {
 	// 值为模型 thinking_config.options 里的某个 value
 	ReasoningEffort *string
 
+	// ThinkingLevel is Prism's model-configured thinking option. Unlike
+	// ReasoningEffort, it is resolved only after the upstream route is known.
+	ThinkingLevel *string
+
 	// --- 内部字段：火山 Responses 有状态对话(B模式) ---
 	PreviousResponseID string             // 非空时启用 B 模式(只发新消息)
 	NewMessages        []chat.ChatMessage // B 模式下本轮要发送的新消息

@@ -10,6 +10,7 @@ import (
 type CreateOptions struct {
 	RequestID      string
 	ConversationID uint
+	ThinkingLevel  string
 }
 
 func (p *Pipeline) Create(ctx context.Context, userID, tokenID uint, request *protocol.Request, idempotencyKey string, requestIDs ...string) (*Result, error) {
@@ -27,7 +28,7 @@ func (p *Pipeline) CreateWithOptions(ctx context.Context, userID, tokenID uint, 
 	if p == nil || p.v2 == nil || p.engine == nil {
 		return nil, errors.New("Gateway V2 engine is not initialized")
 	}
-	return p.createV2(ctx, userID, tokenID, request, idempotencyKey, options.RequestID, options.ConversationID)
+	return p.createV2(ctx, userID, tokenID, request, idempotencyKey, options.RequestID, options.ConversationID, options.ThinkingLevel)
 }
 
 func (p *Pipeline) ExecuteBackground(ctx context.Context, responseID string, finalAttempt bool, attempts ...int) error {

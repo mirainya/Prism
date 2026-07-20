@@ -64,4 +64,7 @@ func TestCORSAllowsConversationHeaderOnPreflight(t *testing.T) {
 	if !strings.Contains(allowed, "X-Prism-Conversation-ID") {
 		t.Fatalf("allowed headers = %q", allowed)
 	}
+	if !strings.Contains(allowed, "X-Prism-Thinking-Level") {
+		t.Fatalf("allowed headers = %q", allowed)
+	}
 }

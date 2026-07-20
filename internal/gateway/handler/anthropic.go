@@ -6,6 +6,7 @@ import (
 	"io"
 	"net/http"
 	"strconv"
+	"strings"
 
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
@@ -15,6 +16,7 @@ import (
 	codec "github.com/mirainya/Prism/internal/gateway/codec/anthropic"
 	"github.com/mirainya/Prism/internal/gateway/engine"
 	"github.com/mirainya/Prism/internal/gateway/limits"
+	chatpipeline "github.com/mirainya/Prism/internal/gateway/pipeline"
 	"github.com/mirainya/Prism/internal/gateway/routing"
 	"github.com/mirainya/Prism/internal/gateway/transport"
 	"github.com/mirainya/Prism/internal/model"
@@ -72,6 +74,7 @@ func (h *AnthropicHandler) Messages(c *gin.Context) {
 		CallID: callID, ConversationID: conversationID, InputItems: request.Items,
 	}
 	store := request.Store != nil && *request.Store
+	thinkingLevel := strings.TrimSpace(c.GetHeader(chatpipeline.ThinkingLevelHeader))
 	if err := createAPIConversationCall(&service.StartCallRequest{
 		ID: callID, RequestID: requestID, UserID: token.UserID, TokenID: token.ID,
 		Endpoint: "/v1/messages", Operation: string(transport.OperationMessages), Model: request.Model,
@@ -91,7 +94,8 @@ func (h *AnthropicHandler) Messages(c *gin.Context) {
 		DeferCallCompletion: true,
 		BillingKey:          requestID, MaxAttempts: 3,
 		PrepareRoute: func(_ context.Context, candidate canonical.Request, route *routing.RouteResult) (canonical.Request, error) {
-			return limits.ApplyModelMaxOutputTokens(candidate, route.ModelName), nil
+			candidate = limits.ApplyModelMaxOutputTokens(candidate, route.ModelName)
+			return chatpipeline.ApplyModelThinkingLevel(candidate, route.ModelName, route.Transport, thinkingLevel)
 		},
 	})
 	if err != nil {

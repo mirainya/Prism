@@ -221,6 +221,9 @@ func (h *ChatHandler) Completions(c *gin.Context) {
 		ReasoningEffort:      req.ReasoningEffort,
 		PreviousResponseID:   req.PreviousResponseID,
 	}
+	if level := strings.TrimSpace(c.GetHeader(pipeline.ThinkingLevelHeader)); level != "" {
+		completionReq.ThinkingLevel = &level
+	}
 	canonicalRequest, err := pipeline.CanonicalChatRequest(completionReq, req.Messages, req.Model)
 	if err != nil {
 		respondChatPipelineError(c, err)

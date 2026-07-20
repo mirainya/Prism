@@ -8,7 +8,7 @@ const PRESETS: Record<string, ThinkingConfig> = {
         default: 'default',
         options: [
             { label: '厂商默认', value: 'default', body: {} },
-            { label: '关闭', value: 'off', body: { reasoning: { effort: 'minimal' } } },
+            { label: '关闭', value: 'off', body: { thinking: { type: 'disabled' } } },
             { label: '轻量', value: 'low', body: { reasoning: { effort: 'low' } } },
             { label: '均衡', value: 'medium', body: { reasoning: { effort: 'medium' } } },
             { label: '深度', value: 'high', body: { reasoning: { effort: 'high' } } },

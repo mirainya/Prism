@@ -6,11 +6,13 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strings"
 
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 	"github.com/mirainya/Prism/internal/api/middleware"
 	"github.com/mirainya/Prism/internal/api/resp"
+	"github.com/mirainya/Prism/internal/gateway/pipeline"
 	gwstream "github.com/mirainya/Prism/internal/gateway/stream"
 	"github.com/mirainya/Prism/internal/model"
 	"github.com/mirainya/Prism/internal/provider/chat"
@@ -122,6 +124,9 @@ func PlaygroundChatCompletions(c *gin.Context) {
 		Seed:               req.Seed,
 		User:               req.User,
 		ReasoningEffort:    req.ReasoningEffort,
+	}
+	if level := strings.TrimSpace(c.GetHeader(pipeline.ThinkingLevelHeader)); level != "" {
+		completionReq.ThinkingLevel = &level
 	}
 	if cc.Conv != nil {
 		completionReq.ConversationRecordID = cc.Conv.ID
