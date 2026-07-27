@@ -90,6 +90,9 @@ func EncodeResponseJSON(source canonical.Response) ([]byte, error) {
 		ID: source.ID, Object: "response", CreatedAt: source.CreatedAt, Status: source.Status,
 		Model: source.Model, Output: outputJSON, IncompleteDetails: cloneRaw(source.IncompleteDetails),
 		Metadata: cloneStrings(source.Metadata),
+		// 官方响应对象要求 tools 恒为数组、truncation/parallel_tool_calls 取 OpenAI 缺省；
+		// 上游真实值经 ProviderExtensions 合并或调用方 applyResponseRequestFields 覆盖。
+		Tools: json.RawMessage(`[]`), Truncation: "disabled", ParallelToolCalls: true,
 	}
 	if response.ID == "" {
 		response.ID = source.ProviderResponseID
@@ -145,6 +148,10 @@ func normalizeResponseOutputIDs(source canonical.Response) []canonical.Item {
 // retain their payload while canonical events receive the standard event name.
 func EncodeSSEFrame(event canonical.Event) ([]byte, error) {
 	// encodeEvent 只从 canonical 字段构造标准帧；Raw 类型才允许保留原生扩展正文。
+	if event.Type == canonical.EventUsage {
+		// 官方 Responses 流没有独立 usage 事件，usage 只出现在终态 response 对象里，该帧吞掉。
+		return nil, nil
+	}
 	payload, eventName, err := encodeEvent(event)
 	if err != nil {
 		return nil, err
@@ -247,6 +254,13 @@ func decodeContent(raw json.RawMessage) ([]canonical.Content, error) {
 			Format: rawString(object["format"]), Detail: rawString(object["detail"]),
 			Transcript: rawString(object["transcript"]),
 			Extra:      extraExcept(object, "type", "text", "image_url", "video_url", "audio_url", "file_url", "file_data", "file_id", "filename", "content_type", "format", "detail", "transcript", "input_audio"),
+		}
+		if kind == "refusal" {
+			// 官方 refusal 部件文本在 refusal 字段，text 仅作旧编码后备。
+			if value := rawString(object["refusal"]); value != "" {
+				part.Text = value
+			}
+			delete(part.Extra, "refusal")
 		}
 		if kind == "input_audio" || kind == "output_audio" {
 			var audio map[string]json.RawMessage
@@ -640,7 +654,10 @@ func encodeContent(source []canonical.Content) ([]map[string]any, error) {
 		}
 		value["type"] = part.Type
 		delete(value, extraInputAudioOptions)
-		if part.Text != "" || part.Type == "input_text" || part.Type == "output_text" || part.Type == "text" || part.Type == "refusal" {
+		if part.Type == "refusal" {
+			// 官方 refusal 部件结构是 {"type":"refusal","refusal":"..."}，不带 text。
+			value["refusal"] = part.Text
+		} else if part.Text != "" || part.Type == "input_text" || part.Type == "output_text" || part.Type == "text" {
 			value["text"] = part.Text
 		}
 		switch part.Type {
@@ -821,8 +838,6 @@ func encodeEvent(event canonical.Event) ([]byte, string, error) {
 		body["output_index"] = event.OutputIndex
 		setEventItemID(body, event.Item)
 		body["delta"] = event.Delta
-	case canonical.EventUsage:
-		body["usage"] = encodeUsage(event.Usage)
 	}
 	encoded, err := json.Marshal(body)
 	return encoded, name, err

@@ -439,6 +439,78 @@ func TestSSEEncoderDeduplicatesChatReasoningAndToolLifecycle(t *testing.T) {
 	}
 }
 
+func TestDecodeResponseNormalizesCachedUsageRoundTrip(t *testing.T) {
+	response, err := DecodeResponse([]byte(`{
+		"id":"msg_1","model":"claude","stop_reason":"end_turn","content":[{"type":"text","text":"ok"}],
+		"usage":{"input_tokens":3,"output_tokens":4,"cache_read_input_tokens":2,"cache_creation_input_tokens":1}
+	}`), "public")
+	if err != nil {
+		t.Fatal(err)
+	}
+	usage := response.Usage
+	if usage == nil || usage.InputTokens != 6 || usage.CachedInputTokens != 2 || usage.TotalTokens != 10 {
+		t.Fatalf("usage = %#v", usage)
+	}
+	encoded, err := EncodeResponseJSON(response)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, expected := range []string{`"input_tokens":3`, `"cache_read_input_tokens":2`, `"cache_creation_input_tokens":1`} {
+		if !strings.Contains(string(encoded), expected) {
+			t.Fatalf("missing %s in %s", expected, encoded)
+		}
+	}
+}
+
+func TestAnthropicFinishReasonMapsOpenAIVocabulary(t *testing.T) {
+	for _, test := range []struct{ source, want string }{
+		{"stop", "end_turn"}, {"length", "max_tokens"}, {"tool_calls", "tool_use"}, {"content_filter", "refusal"},
+		{"end_turn", "end_turn"}, {"tool_use", "tool_use"}, {"max_tokens", "max_tokens"}, {"refusal", "refusal"},
+		{"stop_sequence", "stop_sequence"}, {"", "end_turn"},
+	} {
+		if got := anthropicFinishReason(test.source); got != test.want {
+			t.Fatalf("anthropicFinishReason(%q) = %q, want %q", test.source, got, test.want)
+		}
+	}
+}
+
+func TestSSEEncoderFallsBackToChatFinishReasonExtra(t *testing.T) {
+	item := &canonical.Item{Type: "message", Role: canonical.RoleAssistant, Extra: map[string]json.RawMessage{
+		"openai_chat.finish_reason": json.RawMessage(`"tool_calls"`),
+	}}
+	encoded := encodeSSEEvents(t, NewSSEEncoder("public-model"), []canonical.Event{
+		{Type: canonical.EventTextDelta, Delta: "checking"},
+		{Type: canonical.EventOutputItemDone, Item: item},
+		{Type: canonical.EventCompleted},
+	})
+	if !strings.Contains(encoded, `"stop_reason":"tool_use"`) {
+		t.Fatalf("chat finish_reason extra was ignored: %s", encoded)
+	}
+
+	// 终态 Response.FinishReason 优先于 Item.Extra 兜底。
+	explicit := encodeSSEEvents(t, NewSSEEncoder("public-model"), []canonical.Event{
+		{Type: canonical.EventTextDelta, Delta: "checking"},
+		{Type: canonical.EventOutputItemDone, Item: item},
+		{Type: canonical.EventCompleted, Response: &canonical.Response{FinishReason: "stop"}},
+	})
+	if !strings.Contains(explicit, `"stop_reason":"end_turn"`) || strings.Contains(explicit, `"stop_reason":"tool_use"`) {
+		t.Fatalf("explicit finish_reason was overridden: %s", explicit)
+	}
+}
+
+func TestSSEEncoderMergesUsageIntoTerminalDelta(t *testing.T) {
+	encoded := encodeSSEEvents(t, NewSSEEncoder("public-model"), []canonical.Event{
+		{Type: canonical.EventTextDelta, Delta: "answer"},
+		{Type: canonical.EventUsage, Usage: &canonical.Usage{InputTokens: 2, OutputTokens: 7, TotalTokens: 9}},
+		{Type: canonical.EventCompleted, Response: &canonical.Response{FinishReason: "stop"}},
+	})
+	assertSSEEventCount(t, encoded, "message_delta", 1)
+	assertSSEEventCount(t, encoded, "message_stop", 1)
+	if !strings.Contains(encoded, `"output_tokens":7`) || !strings.Contains(encoded, `"stop_reason":"end_turn"`) {
+		t.Fatalf("terminal delta lost usage or stop_reason: %s", encoded)
+	}
+}
+
 func encodeSSEEvents(t *testing.T, encoder *SSEEncoder, events []canonical.Event) string {
 	t.Helper()
 	var encoded strings.Builder

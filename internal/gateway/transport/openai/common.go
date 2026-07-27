@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"sort"
 	"strings"
 
 	"github.com/mirainya/Prism/internal/gateway/canonical"
@@ -165,10 +166,22 @@ type sse struct {
 	doneIsTerminal bool
 	doneSent       bool
 	pending        []canonical.Event
-	terminal       *canonical.Event
+	terminals      []canonical.Event
 }
 
 func (s *sse) Close() error { return s.body.Close() }
+
+// flushTerminals 把暂存的各 choice 终态按 choice 顺序放回队列；
+// n>1 时各 choice 的 finish 帧到达顺序不定，Engine 按 choice 0 优先结算。
+func (s *sse) flushTerminals() {
+	if len(s.terminals) == 0 {
+		return
+	}
+	sort.SliceStable(s.terminals, func(i, j int) bool { return s.terminals[i].ChoiceIndex < s.terminals[j].ChoiceIndex })
+	s.pending = append(s.pending, s.terminals...)
+	s.terminals = nil
+}
+
 func (s *sse) Next(ctx context.Context) (canonical.Event, error) {
 	for {
 		if len(s.pending) > 0 {
@@ -181,11 +194,9 @@ func (s *sse) Next(ctx context.Context) (canonical.Event, error) {
 		}
 		frame, err := s.reader.Next(ctx)
 		if err == io.EOF {
-			if s.terminal != nil {
-				event := *s.terminal
-				s.terminal = nil
-				s.doneSent = true
-				return event, nil
+			if len(s.terminals) > 0 {
+				s.flushTerminals()
+				continue
 			}
 			return canonical.Event{}, err
 		}
@@ -194,11 +205,9 @@ func (s *sse) Next(ctx context.Context) (canonical.Event, error) {
 		}
 		data := bytes.TrimSpace(frame.Data)
 		if bytes.Equal(data, []byte("[DONE]")) {
-			if s.terminal != nil {
-				event := *s.terminal
-				s.terminal = nil
-				s.doneSent = true
-				return event, nil
+			if len(s.terminals) > 0 {
+				s.flushTerminals()
+				continue
 			}
 			if s.doneIsTerminal && !s.doneSent {
 				s.doneSent = true
@@ -213,15 +222,15 @@ func (s *sse) Next(ctx context.Context) (canonical.Event, error) {
 		for _, event := range events {
 			// 暂存 Chat 终态，等待可能紧随其后的 usage 帧合并后再交给 Engine 结算。
 			if s.doneIsTerminal && isTerminal(event.Type) && event.Type != canonical.EventError && event.Usage == nil {
-				copy := event
-				s.terminal = &copy
+				s.terminals = append(s.terminals, event)
 				continue
 			}
-			if s.doneIsTerminal && event.Type == canonical.EventUsage && event.Usage != nil && s.terminal != nil {
-				s.terminal.Usage = event.Usage
-				s.terminal.Raw = append(json.RawMessage(nil), event.Raw...)
-				s.pending = append(s.pending, *s.terminal)
-				s.terminal = nil
+			if s.doneIsTerminal && event.Type == canonical.EventUsage && event.Usage != nil && len(s.terminals) > 0 {
+				for index := range s.terminals {
+					s.terminals[index].Usage = event.Usage
+					s.terminals[index].Raw = append(json.RawMessage(nil), event.Raw...)
+				}
+				s.flushTerminals()
 				continue
 			}
 			s.pending = append(s.pending, event)

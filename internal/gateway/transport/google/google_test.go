@@ -831,6 +831,177 @@ func TestStreamPreservesGoogleProofs(t *testing.T) {
 	}
 }
 
+func TestPlanAllowsLabelledJSONSchemaAndEncodesResponseSchema(t *testing.T) {
+	strict := true
+	request := canonical.Request{
+		Model:          "m",
+		Items:          []canonical.Item{{Type: "message", Role: canonical.RoleUser, Content: []canonical.Content{{Type: "input_text", Text: "hi"}}}},
+		ResponseFormat: &canonical.ResponseFormat{Type: "json_schema", Name: "answer_shape", Description: "structured answer", Strict: &strict, Schema: json.RawMessage(`{"type":"object"}`)},
+	}
+	plan := New(nil).Plan(transport.OperationResponses, request, canonical.FeatureSet{})
+	if plan.Kind != transport.PlanConverted {
+		t.Fatalf("json_schema plan = %#v", plan)
+	}
+	prepared, err := New(nil).Prepare(context.Background(), transport.Invocation{Route: transport.Route{BaseURL: "https://example.test", VendorModel: "gemini"}, Operation: transport.OperationResponses, Request: request})
+	if err != nil {
+		t.Fatal(err)
+	}
+	body := string(prepared.Body)
+	for _, expected := range []string{`"responseMimeType":"application/json"`, `"responseJsonSchema":{"type":"object"}`} {
+		if !strings.Contains(body, expected) {
+			t.Fatalf("generationConfig missing %s: %s", expected, body)
+		}
+	}
+	if strings.Contains(body, "answer_shape") || strings.Contains(body, "structured answer") {
+		t.Fatalf("json_schema labels leaked into request body: %s", body)
+	}
+	unknown := canonical.Request{ResponseFormat: &canonical.ResponseFormat{Type: "grammar"}}
+	if plan := New(nil).Plan(transport.OperationResponses, unknown, canonical.FeatureSet{}); plan.Supported() {
+		t.Fatalf("unknown response format was accepted: %#v", plan)
+	}
+}
+
+func TestDecodeResponseFinishReasons(t *testing.T) {
+	cases := []struct {
+		name         string
+		body         string
+		status       string
+		finishReason string
+		errorType    string
+	}{
+		{"stop", `{"candidates":[{"content":{"parts":[{"text":"hi"}]},"finishReason":"STOP"}]}`, "completed", "stop", ""},
+		{"stop with tool call", `{"candidates":[{"content":{"parts":[{"functionCall":{"id":"call_1","name":"lookup","args":{}}}]},"finishReason":"STOP"}]}`, "completed", "tool_calls", ""},
+		{"max tokens", `{"candidates":[{"content":{"parts":[{"text":"hi"}]},"finishReason":"MAX_TOKENS"}]}`, "incomplete", "length", ""},
+		{"safety", `{"candidates":[{"content":{"parts":[{"text":"hi"}]},"finishReason":"SAFETY"}]}`, "completed", "content_filter", ""},
+		{"recitation", `{"candidates":[{"finishReason":"RECITATION"}]}`, "completed", "content_filter", ""},
+		{"blocklist", `{"candidates":[{"finishReason":"BLOCKLIST"}]}`, "completed", "content_filter", ""},
+		{"prohibited content", `{"candidates":[{"finishReason":"PROHIBITED_CONTENT"}]}`, "completed", "content_filter", ""},
+		{"spii", `{"candidates":[{"finishReason":"SPII"}]}`, "completed", "content_filter", ""},
+		{"image safety", `{"candidates":[{"finishReason":"IMAGE_SAFETY"}]}`, "completed", "content_filter", ""},
+		{"malformed function call", `{"candidates":[{"finishReason":"MALFORMED_FUNCTION_CALL","finishMessage":"bad call"}]}`, "failed", "MALFORMED_FUNCTION_CALL", "invalid_request_error"},
+		{"unknown enum", `{"candidates":[{"content":{"parts":[{"text":"hi"}]},"finishReason":"FUTURE_REASON"}]}`, "completed", "FUTURE_REASON", ""},
+	}
+	for _, testCase := range cases {
+		t.Run(testCase.name, func(t *testing.T) {
+			response, err := decodeResponse([]byte(testCase.body), transport.Route{PublicModel: "public"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if response.Status != testCase.status || response.FinishReason != testCase.finishReason {
+				t.Fatalf("status=%q finish=%q, want %q/%q", response.Status, response.FinishReason, testCase.status, testCase.finishReason)
+			}
+			if testCase.errorType == "" {
+				if response.Error != nil {
+					t.Fatalf("unexpected error %#v", response.Error)
+				}
+			} else if response.Error == nil || response.Error.Type != testCase.errorType || response.Error.Retryable {
+				t.Fatalf("error = %#v", response.Error)
+			}
+		})
+	}
+}
+
+func TestStreamFinishReasons(t *testing.T) {
+	cases := []struct {
+		name         string
+		frame        string
+		eventType    canonical.EventType
+		finishReason string
+		errorType    string
+	}{
+		{"stop", `{"candidates":[{"content":{"parts":[{"text":"hi"}]},"finishReason":"STOP"}]}`, canonical.EventCompleted, "stop", ""},
+		{"same-frame tool call", `{"candidates":[{"content":{"parts":[{"functionCall":{"name":"lookup","args":{}}}]},"finishReason":"STOP"}]}`, canonical.EventCompleted, "tool_calls", ""},
+		{"max tokens", `{"candidates":[{"finishReason":"MAX_TOKENS"}]}`, canonical.EventIncomplete, "length", ""},
+		{"safety", `{"candidates":[{"finishReason":"SAFETY"}]}`, canonical.EventCompleted, "content_filter", ""},
+		{"prohibited content", `{"candidates":[{"finishReason":"PROHIBITED_CONTENT"}]}`, canonical.EventCompleted, "content_filter", ""},
+		{"malformed function call", `{"candidates":[{"finishReason":"MALFORMED_FUNCTION_CALL","finishMessage":"bad"}]}`, canonical.EventFailed, "", "invalid_request_error"},
+		{"unknown enum", `{"candidates":[{"finishReason":"FUTURE_REASON"}]}`, canonical.EventCompleted, "FUTURE_REASON", ""},
+	}
+	for _, testCase := range cases {
+		t.Run(testCase.name, func(t *testing.T) {
+			events, err := decodeStreamEvents([]byte(testCase.frame), 1)
+			if err != nil {
+				t.Fatal(err)
+			}
+			terminal := events[len(events)-1]
+			if terminal.Type != testCase.eventType {
+				t.Fatalf("terminal = %#v", terminal)
+			}
+			if testCase.errorType != "" {
+				if terminal.Error == nil || terminal.Error.Type != testCase.errorType || terminal.Error.Retryable {
+					t.Fatalf("terminal error = %#v", terminal.Error)
+				}
+				return
+			}
+			if terminal.Error != nil {
+				t.Fatalf("unexpected terminal error %#v", terminal.Error)
+			}
+			if terminal.Response == nil || terminal.Response.FinishReason != testCase.finishReason {
+				t.Fatalf("terminal response = %#v", terminal.Response)
+			}
+		})
+	}
+}
+
+func TestStreamCrossFrameToolCallUpgradesFinishReason(t *testing.T) {
+	decoder := &sse{}
+	first, err := decodeStreamEvents([]byte(`{"candidates":[{"content":{"parts":[{"functionCall":{"name":"lookup","args":{}}}]}}]}`), 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	decoder.normalizeEvents(first)
+	second, err := decodeStreamEvents([]byte(`{"candidates":[{"finishReason":"STOP"}]}`), 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	second = decoder.normalizeEvents(second)
+	terminal := second[len(second)-1]
+	if terminal.Type != canonical.EventCompleted || terminal.Response == nil || terminal.Response.FinishReason != "tool_calls" {
+		t.Fatalf("terminal = %#v", terminal)
+	}
+}
+
+func TestUsageFromGeminiFollowsOpenAINormalization(t *testing.T) {
+	response, err := decodeResponse([]byte(`{"candidates":[{"content":{"parts":[{"text":"hi"}]},"finishReason":"STOP"}],"usageMetadata":{"promptTokenCount":10,"candidatesTokenCount":5,"thoughtsTokenCount":7,"totalTokenCount":22,"cachedContentTokenCount":4}}`), transport.Route{PublicModel: "public"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	usage := response.Usage
+	if usage == nil || usage.InputTokens != 10 || usage.OutputTokens != 12 || usage.TotalTokens != 22 || usage.CachedInputTokens != 4 || usage.ReasoningOutputTokens != 7 {
+		t.Fatalf("usage = %#v", usage)
+	}
+}
+
+func TestHTTPErrorLeavesCodeEmptyWhenBodyUnparseable(t *testing.T) {
+	err := newHTTPError(http.StatusBadGateway, []byte("upstream exploded"))
+	var upstream *HTTPError
+	if !errors.As(err, &upstream) || upstream.Details == nil {
+		t.Fatalf("error = %#v", err)
+	}
+	if upstream.Details.Code != "" {
+		t.Fatalf("code = %q", upstream.Details.Code)
+	}
+}
+
+func TestPlanRejectsNonTextSystemParts(t *testing.T) {
+	item := New(nil)
+	nonText := canonical.Request{Items: []canonical.Item{
+		{Type: "message", Role: canonical.RoleSystem, Content: []canonical.Content{{Type: "input_image", Data: "aW1n", MediaType: "image/png"}}},
+		{Type: "message", Role: canonical.RoleUser, Content: []canonical.Content{{Type: "input_text", Text: "hi"}}},
+	}}
+	if plan := item.Plan(transport.OperationResponses, nonText, canonical.FeatureSet{}); plan.Supported() {
+		t.Fatalf("non-text system part was accepted: %#v", plan)
+	}
+	developer := canonical.Request{Items: []canonical.Item{{Type: "message", Role: canonical.RoleDeveloper, Content: []canonical.Content{{Type: "input_file", URL: "https://example.test/doc.pdf"}}}}}
+	if plan := item.Plan(transport.OperationResponses, developer, canonical.FeatureSet{}); plan.Supported() {
+		t.Fatalf("non-text developer part was accepted: %#v", plan)
+	}
+	textOnly := canonical.Request{Items: []canonical.Item{{Type: "message", Role: canonical.RoleSystem, Content: []canonical.Content{{Type: "input_text", Text: "rules"}}}}}
+	if plan := item.Plan(transport.OperationResponses, textOnly, canonical.FeatureSet{}); !plan.Supported() {
+		t.Fatalf("text system message was rejected: %#v", plan)
+	}
+}
+
 func TestHTTPErrorPreservesNumericCode(t *testing.T) {
 	err := newHTTPError(http.StatusTooManyRequests, []byte(`{"error":{"code":429,"message":"slow","status":"RESOURCE_EXHAUSTED"}}`))
 	var upstream *HTTPError

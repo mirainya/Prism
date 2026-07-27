@@ -97,6 +97,10 @@ func consumeV2Stream(ctx context.Context, writer io.Writer, stream v2EventSource
 				abortV2Stream(stream, encodeErr, false)
 				return aggregator.summary(), encodeErr
 			}
+			// 编码器可能吞掉不属于公开协议的事件（如独立 usage 帧），返回空帧。
+			if len(frame) == 0 {
+				continue
+			}
 			if writeErr := writeV2SSEFrame(writer, frame); writeErr != nil {
 				abortV2Stream(stream, writeErr, true)
 				return aggregator.summary(), writeErr
@@ -153,6 +157,8 @@ type v2ConvertedStream struct {
 	options  V2StreamPublicOptions
 	sequence int64
 	created  bool
+	// usage 暂存独立 EventUsage;官方 Responses 流没有该事件,只随终态 response 对象下发。
+	usage *canonical.Usage
 
 	outputs map[string]*v2ConvertedOutput
 	byID    map[string]*v2ConvertedOutput
@@ -313,6 +319,10 @@ func (s *v2ConvertedStream) events(event canonical.Event) []canonical.Event {
 			}
 		}
 		events = append(events, s.finishOutput(output)...)
+	case canonical.EventUsage:
+		if event.Usage != nil {
+			s.usage = cloneV2Usage(event.Usage)
+		}
 	case canonical.EventCompleted, canonical.EventIncomplete, canonical.EventFailed:
 		events = append(events, s.finishAllOutputs()...)
 		terminal := event
@@ -650,6 +660,8 @@ func (s *v2ConvertedStream) terminalResponse(event canonical.Event) canonical.Re
 	}
 	if event.Usage != nil {
 		response.Usage = cloneV2Usage(event.Usage)
+	} else if response.Usage == nil && s.usage != nil {
+		response.Usage = cloneV2Usage(s.usage)
 	}
 	if event.Error != nil {
 		response.Error = cloneV2Error(event.Error)

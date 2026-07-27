@@ -471,12 +471,21 @@ func encodeChoices(items []canonical.Item, defaultFinish string) ([]map[string]a
 		message := choice["message"].(map[string]any)
 		switch item.Type {
 		case "message":
-			content, err := encodeContent(item.Content, extensionString(item.Extra, extraContentMode))
+			// refusal / 音频在 Chat wire 中是 message 级字段而非 content 部件，先提升再编码剩余正文，
+			// 否则 encodeContent 会因无法表示它们而让整个响应编码失败。
+			body, refusal, audio := liftMessageParts(item.Content)
+			content, err := encodeContent(body, extensionString(item.Extra, extraContentMode))
 			if err != nil {
 				return nil, err
 			}
 			message["role"] = item.Role
 			message["content"] = content
+			if refusal != "" {
+				message["refusal"] = refusal
+			}
+			if audio != nil {
+				message["audio"] = audio
+			}
 			if reasoning := extensionString(item.Extra, extraReasoning); reasoning != "" {
 				message["reasoning_content"] = reasoning
 			}
@@ -522,7 +531,10 @@ func encodeChoices(items []canonical.Item, defaultFinish string) ([]map[string]a
 			}
 			calls = append(calls, map[string]any{"id": callID, "type": "function", "function": map[string]any{"name": item.Name, "arguments": jsonStringValue(item.Arguments)}})
 			message["tool_calls"] = calls
-			message["content"] = nil
+			// 助手正文与 tool_calls 在 Chat wire 中可并存，只把空正文归一为 null。
+			if text, ok := message["content"].(string); ok && text == "" {
+				message["content"] = nil
+			}
 			if choice["finish_reason"] == "" || choice["finish_reason"] == "stop" {
 				choice["finish_reason"] = "tool_calls"
 			}
@@ -535,13 +547,48 @@ func encodeChoices(items []canonical.Item, defaultFinish string) ([]map[string]a
 	return result, nil
 }
 
+// liftMessageParts 把 refusal / output_audio 部件从 content 中摘出，返回剩余正文部件与两个 message 级值。
+func liftMessageParts(parts []canonical.Content) ([]canonical.Content, string, map[string]any) {
+	var refusal strings.Builder
+	var audio map[string]any
+	body := make([]canonical.Content, 0, len(parts))
+	for _, part := range parts {
+		switch part.Type {
+		case "refusal":
+			refusal.WriteString(part.Text)
+		case "output_audio":
+			if audio == nil {
+				audio = map[string]any{}
+			}
+			if part.Data != "" {
+				audio["data"] = appendString(audio["data"], part.Data)
+			}
+			if part.Transcript != "" {
+				audio["transcript"] = appendString(audio["transcript"], part.Transcript)
+			}
+		case "":
+			// 稀疏 ContentIndex 留下的空占位块，跳过。
+		default:
+			body = append(body, part)
+		}
+	}
+	return body, refusal.String(), audio
+}
+
+func appendString(current any, addition string) string {
+	text, _ := current.(string)
+	return text + addition
+}
+
 func encodeContent(parts []canonical.Content, mode string) (any, error) {
 	if mode == "null" {
 		return nil, nil
 	}
 	if mode != "array" {
 		var text strings.Builder
-		allText := len(parts) > 0
+		// 空 parts 也视为纯文本,返回 ""——避免落到 array 兜底分支输出 [],
+		// 违反 OpenAI Chat 规范(message.content 必须是 string 或 null)。
+		allText := true
 		for _, part := range parts {
 			if part.Type != "" && part.Type != "input_text" && part.Type != "output_text" && part.Type != "text" {
 				allText = false

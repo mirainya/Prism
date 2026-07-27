@@ -28,7 +28,7 @@ func (*Transport) Plan(operation transport.Operation, request canonical.Request,
 	if operation != transport.OperationMessages && operation != transport.OperationChat && operation != transport.OperationResponses {
 		return transport.Unsupported(operation, "unsupported Anthropic operation")
 	}
-	if request.Background || request.PreviousResponseID != "" || !transport.SupportsLocalResponsesInclude(operation, request.Include) || len(request.Modalities) > 0 || hasVolcengineOptions(request.ProviderOptions.Volcengine) {
+	if request.Background || request.PreviousResponseID != "" || !transport.SupportsLocalResponsesInclude(operation, request.Include) || !textOnlyModalities(request.Modalities) || hasVolcengineOptions(request.ProviderOptions.Volcengine) {
 		return transport.Unsupported(operation, "Anthropic Messages cannot express response persistence or provider options")
 	}
 	// Responses storage is owned by Prism; other downstream protocols would be
@@ -139,6 +139,11 @@ func isAnthropicReasoningContent(content canonical.Content) bool {
 	return content.Type == "reasoning_text" || content.Type == "thinking"
 }
 
+func textOnlyModalities(modalities []string) bool {
+	// 显式 ["text"] 与缺省等价，可放行；含 audio 等其他形态仍拒绝。
+	return len(modalities) == 0 || (len(modalities) == 1 && modalities[0] == "text")
+}
+
 func hasVolcengineOptions(options *canonical.VolcengineOptions) bool {
 	return options != nil && (len(options.Thinking) > 0 || len(options.Caching) > 0 || len(options.Session) > 0 || len(options.ContextManagement) > 0 || options.ExpireAt != nil || len(options.Unknown) > 0)
 }
@@ -198,11 +203,7 @@ func (t *Transport) ExecutePrepared(ctx context.Context, invocation transport.In
 	if response.StatusCode < 200 || response.StatusCode >= 300 {
 		return canonical.Response{}, newHTTPError(response.StatusCode, raw)
 	}
-	result, err := codecanthropic.DecodeResponse(raw, invocation.Route.PublicModel)
-	if err == nil {
-		augmentResponseUsage(&result, raw)
-	}
-	return result, err
+	return codecanthropic.DecodeResponse(raw, invocation.Route.PublicModel)
 }
 
 func (t *Transport) Stream(ctx context.Context, invocation transport.Invocation) (transport.EventStream, transport.PreparedRequest, error) {
@@ -268,11 +269,17 @@ type stream struct {
 	reader      *transport.SSEReader
 	publicModel string
 	responseID  string
+	model       string
 	finish      string
 	usage       canonical.Usage
 	hasUsage    bool
-	blocks      map[int]canonical.Item
-	toolDeltas  map[int]bool
+	// usage 的原始分量：anthropic 的 input_tokens 不含缓存读写，归一时需分开累计。
+	inputTokens   int
+	outputTokens  int
+	cacheRead     int
+	cacheCreation int
+	blocks        map[int]canonical.Item
+	toolDeltas    map[int]bool
 }
 
 func (s *stream) Close() error { return s.body.Close() }
@@ -318,14 +325,13 @@ func (s *stream) decode(name string, raw []byte) (canonical.Event, bool, error) 
 			return canonical.Event{}, false, err
 		}
 		s.responseID = message.ID
-		s.usage.InputTokens = message.Usage.InputTokens
-		s.usage.CachedInputTokens = message.Usage.CacheReadInputTokens
-		s.usage.Extra = map[string]json.RawMessage{"cache_creation_input_tokens": mustRaw(message.Usage.CacheCreationInputTokens)}
-		s.hasUsage = true
+		s.inputTokens, s.cacheRead, s.cacheCreation = message.Usage.InputTokens, message.Usage.CacheReadInputTokens, message.Usage.CacheCreationInputTokens
+		s.refreshUsage()
 		model := s.publicModel
 		if model == "" {
 			model = message.Model
 		}
+		s.model = model
 		response := canonical.Response{ID: message.ID, ProviderResponseID: message.ID, Model: model, Status: "in_progress", Usage: s.usageValue()}
 		base.Type, base.Response, base.Usage, base.ProviderResponseID = canonical.EventResponseCreated, &response, response.Usage, message.ID
 		return base, true, nil
@@ -390,7 +396,8 @@ func (s *stream) decode(name string, raw []byte) (canonical.Event, bool, error) 
 		return base, true, nil
 	case "content_block_stop":
 		index := rawInt(root["index"])
-		base.Type, base.OutputIndex, base.ContentIndex = canonical.EventContentPartDone, index, 0
+		// ToolIndex 必须与 start/delta 保持同一 index，否则累积器与下游 SSE 编码器按键查块会漂移。
+		base.Type, base.OutputIndex, base.ContentIndex, base.ToolIndex = canonical.EventContentPartDone, index, 0, index
 		if item, ok := s.blocks[index]; ok {
 			item.Status = "completed"
 			if item.Type == "function_call" {
@@ -406,19 +413,27 @@ func (s *stream) decode(name string, raw []byte) (canonical.Event, bool, error) 
 			StopReason string `json:"stop_reason"`
 		}
 		var usage struct {
-			InputTokens  int `json:"input_tokens"`
-			OutputTokens int `json:"output_tokens"`
+			InputTokens              int `json:"input_tokens"`
+			OutputTokens             int `json:"output_tokens"`
+			CacheCreationInputTokens int `json:"cache_creation_input_tokens"`
+			CacheReadInputTokens     int `json:"cache_read_input_tokens"`
 		}
 		_ = json.Unmarshal(root["delta"], &delta)
 		_ = json.Unmarshal(root["usage"], &usage)
 		s.finish = delta.StopReason
 		if usage.InputTokens > 0 {
-			s.usage.InputTokens = usage.InputTokens
+			s.inputTokens = usage.InputTokens
 		}
-		s.usage.OutputTokens = usage.OutputTokens
-		s.usage.TotalTokens = s.usage.InputTokens + s.usage.OutputTokens
-		s.hasUsage = true
+		if usage.CacheReadInputTokens > 0 {
+			s.cacheRead = usage.CacheReadInputTokens
+		}
+		if usage.CacheCreationInputTokens > 0 {
+			s.cacheCreation = usage.CacheCreationInputTokens
+		}
+		s.outputTokens = usage.OutputTokens
+		s.refreshUsage()
 		base.Type, base.Usage = canonical.EventUsage, s.usageValue()
+		base.Response = &canonical.Response{Status: responseStatus(delta.StopReason), FinishReason: delta.StopReason, Usage: base.Usage}
 		return base, true, nil
 	case "message_stop":
 		base.Type = canonical.EventCompleted
@@ -426,6 +441,8 @@ func (s *stream) decode(name string, raw []byte) (canonical.Event, bool, error) 
 			base.Type = canonical.EventIncomplete
 		}
 		base.ProviderResponseID, base.Usage = s.responseID, s.usageValue()
+		// 终态事件按约定携带上游原生 stop reason，供下游编码器映射自家 finish_reason 词表。
+		base.Response = &canonical.Response{ID: s.responseID, ProviderResponseID: s.responseID, Model: s.model, Status: responseStatus(s.finish), FinishReason: s.finish, Usage: base.Usage}
 		return base, true, nil
 	case "error":
 		errorRaw := root["error"]
@@ -440,12 +457,31 @@ func (s *stream) decode(name string, raw []byte) (canonical.Event, bool, error) 
 	}
 }
 
+// refreshUsage 按 OpenAI 口径归一：InputTokens=全部输入（含缓存读+写），CachedInputTokens 为其中缓存读子集。
+func (s *stream) refreshUsage() {
+	s.usage.InputTokens = s.inputTokens + s.cacheRead + s.cacheCreation
+	s.usage.CachedInputTokens = s.cacheRead
+	s.usage.OutputTokens = s.outputTokens
+	s.usage.TotalTokens = s.usage.InputTokens + s.usage.OutputTokens
+	s.usage.Extra = map[string]json.RawMessage{"cache_creation_input_tokens": mustRaw(s.cacheCreation)}
+	s.hasUsage = true
+}
+
 func (s *stream) usageValue() *canonical.Usage {
 	if !s.hasUsage {
 		return nil
 	}
 	copy := s.usage
 	return &copy
+}
+
+func responseStatus(stopReason string) string {
+	switch stopReason {
+	case "max_tokens", "model_context_window_exceeded", "pause_turn":
+		return "incomplete"
+	default:
+		return "completed"
+	}
 }
 
 func decodeAnthropicError(raw []byte, status int) *canonical.Error {
@@ -456,25 +492,6 @@ func decodeAnthropicError(raw []byte, status int) *canonical.Error {
 	}
 	typeName := rawString(root["type"])
 	return &canonical.Error{Status: status, Type: typeName, Code: typeName, Message: rawString(root["message"]), Retryable: typeName == "overloaded_error" || status == http.StatusTooManyRequests || status >= 500, Raw: append(json.RawMessage(nil), raw...)}
-}
-
-func augmentResponseUsage(response *canonical.Response, raw []byte) {
-	if response == nil || response.Usage == nil {
-		return
-	}
-	var wire struct {
-		Usage struct {
-			CacheCreationInputTokens int `json:"cache_creation_input_tokens"`
-			CacheReadInputTokens     int `json:"cache_read_input_tokens"`
-		} `json:"usage"`
-	}
-	if json.Unmarshal(raw, &wire) != nil {
-		return
-	}
-	response.Usage.CachedInputTokens = wire.Usage.CacheReadInputTokens
-	if wire.Usage.CacheCreationInputTokens != 0 {
-		response.Usage.Extra = map[string]json.RawMessage{"cache_creation_input_tokens": mustRaw(wire.Usage.CacheCreationInputTokens)}
-	}
 }
 
 func rawString(raw json.RawMessage) string {

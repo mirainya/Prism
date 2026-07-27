@@ -449,6 +449,196 @@ func TestDecodeChatToolChunkStartsBeforeInitialArguments(t *testing.T) {
 	}
 }
 
+func TestChatMessagesPreserveAssistantContentBeforeToolCalls(t *testing.T) {
+	request := canonical.Request{Items: []canonical.Item{
+		{Type: "message", Role: canonical.RoleAssistant, Content: []canonical.Content{{Type: "output_text", Text: "let me check"}}},
+		{Type: "function_call", CallID: "call_1", Name: "lookup", Arguments: json.RawMessage(`{"q":"x"}`)},
+	}}
+	messages, err := chatMessages(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(messages) != 1 {
+		t.Fatalf("messages = %#v", messages)
+	}
+	if content, _ := messages[0]["content"].(string); content != "let me check" {
+		t.Fatalf("assistant content was dropped: %#v", messages[0])
+	}
+	if calls, _ := messages[0]["tool_calls"].([]any); len(calls) != 1 {
+		t.Fatalf("tool_calls = %#v", messages[0])
+	}
+
+	empty := canonical.Request{Items: []canonical.Item{
+		{Type: "message", Role: canonical.RoleAssistant},
+		{Type: "function_call", CallID: "call_2", Name: "lookup", Arguments: json.RawMessage(`{}`)},
+	}}
+	messages, err = chatMessages(empty)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(messages) != 1 || messages[0]["content"] != nil {
+		t.Fatalf("empty assistant content must stay null: %#v", messages)
+	}
+}
+
+func TestChatStreamFlushesTerminalsForAllChoices(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
+		writer.Header().Set("Content-Type", "text/event-stream")
+		_, _ = io.WriteString(writer, "data: {\"choices\":[{\"index\":0,\"delta\":{\"content\":\"a\"}}]}\n\n"+
+			"data: {\"choices\":[{\"index\":1,\"delta\":{},\"finish_reason\":\"length\"}]}\n\n"+
+			"data: {\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n"+
+			"data: {\"choices\":[],\"usage\":{\"prompt_tokens\":2,\"completion_tokens\":3,\"total_tokens\":5}}\n\n"+
+			"data: [DONE]\n\n")
+	}))
+	defer server.Close()
+	stream, _, err := transport.Stream(context.Background(), NewChat(server.Client()), transport.Invocation{Route: transport.Route{BaseURL: server.URL}, Operation: transport.OperationChat, Request: canonical.Request{Model: "m", Stream: true, Items: []canonical.Item{{Type: "message", Role: canonical.RoleUser, Content: []canonical.Content{{Type: "input_text", Text: "hi"}}}}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer stream.Close()
+	var terminals []canonical.Event
+	for {
+		event, err := stream.Next(context.Background())
+		if errors.Is(err, io.EOF) {
+			break
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
+		if event.Type == canonical.EventCompleted || event.Type == canonical.EventIncomplete {
+			terminals = append(terminals, event)
+		}
+	}
+	if len(terminals) != 2 {
+		t.Fatalf("terminals = %#v", terminals)
+	}
+	first, second := terminals[0], terminals[1]
+	if first.ChoiceIndex != 0 || first.Type != canonical.EventCompleted || first.Response == nil || first.Response.FinishReason != "stop" {
+		t.Fatalf("choice 0 terminal = %#v", first)
+	}
+	if second.ChoiceIndex != 1 || second.Type != canonical.EventIncomplete || second.Response == nil || second.Response.FinishReason != "length" {
+		t.Fatalf("choice 1 terminal = %#v", second)
+	}
+	// Engine 在第一个终态事件上结算,usage 必须已附着。
+	if first.Usage == nil || first.Usage.TotalTokens != 5 || second.Usage == nil || second.Usage.TotalTokens != 5 {
+		t.Fatalf("terminal usage = %#v / %#v", first.Usage, second.Usage)
+	}
+	if first.Item == nil || string(first.Item.Extra[chatFinishReason]) != `"stop"` {
+		t.Fatalf("choice 0 finish extra = %#v", first.Item)
+	}
+}
+
+func TestResponsesPrepareDisablesStoreForStatelessRequests(t *testing.T) {
+	item := NewResponses(nil)
+	prepare := func(request canonical.Request) map[string]json.RawMessage {
+		t.Helper()
+		prepared, err := item.Prepare(context.Background(), transport.Invocation{Route: transport.Route{BaseURL: "https://example.test"}, Operation: transport.OperationChat, Request: request})
+		if err != nil {
+			t.Fatal(err)
+		}
+		var body map[string]json.RawMessage
+		if err := json.Unmarshal(prepared.Body, &body); err != nil {
+			t.Fatal(err)
+		}
+		return body
+	}
+	base := canonical.Request{Model: "m", Items: []canonical.Item{{Type: "message", Role: canonical.RoleUser, Content: []canonical.Content{{Type: "input_text", Text: "hi"}}}}}
+
+	if body := prepare(base); string(body["store"]) != "false" {
+		t.Fatalf("stateless request must disable store: %s", body["store"])
+	}
+
+	storeEnabled := true
+	enabled := base
+	enabled.Store = &storeEnabled
+	if body := prepare(enabled); string(body["store"]) != "true" {
+		t.Fatalf("explicit store must be preserved: %s", body["store"])
+	}
+
+	continuation := base
+	continuation.PreviousResponseID = "resp_prev"
+	if body := prepare(continuation); body["store"] != nil {
+		t.Fatalf("native continuation must not force store: %s", body["store"])
+	}
+}
+
+func TestChatStreamSeparatesTextRefusalAndAudioSlots(t *testing.T) {
+	frames := []string{
+		`{"choices":[{"index":0,"delta":{"role":"assistant","content":"hi"}}]}`,
+		`{"choices":[{"index":0,"delta":{"refusal":"no "}}]}`,
+		`{"choices":[{"index":0,"delta":{"content":" there"}}]}`,
+		`{"choices":[{"index":0,"delta":{"refusal":"way"}}]}`,
+		`{"choices":[{"index":0,"delta":{"audio":{"id":"au_1","data":"AAA","transcript":"he"}}}]}`,
+		`{"choices":[{"index":0,"delta":{"audio":{"data":"BBB","transcript":"llo"}}}]}`,
+	}
+	accumulator := canonical.NewEventAccumulator()
+	for _, frame := range frames {
+		events, err := decodeChatEvents("", []byte(frame), transport.Route{})
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, event := range events {
+			if event.Item != nil && len(event.Item.Content) == 1 {
+				switch event.Item.Content[0].Type {
+				case "refusal":
+					if event.ContentIndex != 1 {
+						t.Fatalf("refusal content index = %d", event.ContentIndex)
+					}
+				case "output_audio":
+					if event.ContentIndex != 2 {
+						t.Fatalf("audio content index = %d", event.ContentIndex)
+					}
+				}
+			}
+			accumulator.Observe(event)
+		}
+	}
+	snapshot := accumulator.Snapshot()
+	if len(snapshot.Output) != 1 {
+		t.Fatalf("output = %#v", snapshot.Output)
+	}
+	content := snapshot.Output[0].Content
+	if len(content) != 3 {
+		t.Fatalf("content = %#v", content)
+	}
+	if content[0].Type != "output_text" || content[0].Text != "hi there" {
+		t.Fatalf("text part = %#v", content[0])
+	}
+	if content[1].Type != "refusal" || content[1].Text != "no way" {
+		t.Fatalf("refusal part = %#v", content[1])
+	}
+	if content[2].Type != "output_audio" || content[2].Data != "AAABBB" || content[2].Transcript != "hello" {
+		t.Fatalf("audio part = %#v", content[2])
+	}
+}
+
+func TestChatStreamTerminalCarriesResponseFinishReason(t *testing.T) {
+	event, err := decodeChatEvent("", []byte(`{"choices":[{"delta":{},"finish_reason":"tool_calls"}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}`), transport.Route{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if event.Type != canonical.EventCompleted || event.Response == nil || event.Response.FinishReason != "tool_calls" {
+		t.Fatalf("event = %#v", event)
+	}
+	if event.Item == nil || string(event.Item.Extra[chatFinishReason]) != `"tool_calls"` {
+		t.Fatalf("finish extra = %#v", event.Item)
+	}
+}
+
+func TestDecodeChatContentParsesImageURL(t *testing.T) {
+	response, err := decodeChat([]byte(`{"id":"chat_1","choices":[{"index":0,"message":{"role":"assistant","content":[{"type":"text","text":"look"},{"type":"image_url","image_url":{"url":"https://example.test/img.png","detail":"high"}}]},"finish_reason":"stop"}]}`), transport.Route{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(response.Output) != 1 || len(response.Output[0].Content) != 2 {
+		t.Fatalf("output = %#v", response.Output)
+	}
+	image := response.Output[0].Content[1]
+	if image.Type != "image_url" || image.URL != "https://example.test/img.png" || image.Detail != "high" {
+		t.Fatalf("image part = %#v", image)
+	}
+}
+
 func TestChatStreamAttachesTrailingUsageToTerminal(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
 		writer.Header().Set("Content-Type", "text/event-stream")

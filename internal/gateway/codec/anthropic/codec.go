@@ -14,6 +14,8 @@ import (
 const (
 	extraRequest  = "anthropic.messages.request_extras"
 	extraRawBlock = "anthropic.raw_block"
+	// extraChatFinishReason 是 openai_chat 上游在输出 Item.Extra 里携带的 choice 级 finish_reason。
+	extraChatFinishReason = "openai_chat.finish_reason"
 )
 
 type requestWire struct {
@@ -963,8 +965,12 @@ type SSEEncoder struct {
 	terminal       bool
 	nextBlockIndex int
 	sawTool        bool
-	blocks         map[streamBlockKey]streamBlock
-	blockOrder     []streamBlockKey
+	// chatFinish 记录流内 Item.Extra 携带的 openai_chat.finish_reason，终态缺 FinishReason 时兜底。
+	chatFinish string
+	// pendingUsage 暂存 EventUsage，anthropic 协议要求 usage 随带 stop_reason 的终态 message_delta 一起下发。
+	pendingUsage *canonical.Usage
+	blocks       map[streamBlockKey]streamBlock
+	blockOrder   []streamBlockKey
 }
 
 func NewSSEEncoder(publicModel string) *SSEEncoder {
@@ -980,6 +986,11 @@ func (e *SSEEncoder) Encode(event canonical.Event) ([]byte, error) {
 	}
 	if event.Type == canonical.EventRaw {
 		return EncodeSSEFrame(event)
+	}
+	if event.Item != nil {
+		if finish := rawString(event.Item.Extra[extraChatFinishReason]); finish != "" {
+			e.chatFinish = finish
+		}
 	}
 
 	// Provider 的 canonical 事件粒度并不统一，编码器会补 message_start、block_start 和 block_stop。
@@ -1050,10 +1061,14 @@ func (e *SSEEncoder) Encode(event canonical.Event) ([]byte, error) {
 		if err := appendEncoded(e.ensureMessageStart(event)); err != nil {
 			return nil, err
 		}
-		if err := appendEncoded(EncodeSSEFrame(event)); err != nil {
-			return nil, err
+		// 不单独发 stop_reason:null 的 message_delta，usage 暂存到终态与 stop_reason 合并下发。
+		if usage := eventUsage(event); usage != nil {
+			e.pendingUsage = usage
 		}
 	case canonical.EventCompleted, canonical.EventIncomplete:
+		if eventUsage(event) == nil {
+			event.Usage = e.pendingUsage
+		}
 		if err := appendEncoded(e.ensureMessageStart(event)); err != nil {
 			return nil, err
 		}
@@ -1180,13 +1195,21 @@ func (e *SSEEncoder) stopBlock(key streamBlockKey, event canonical.Event) ([]byt
 }
 
 func (e *SSEEncoder) withTerminalFinish(event canonical.Event) canonical.Event {
-	if !e.sawTool || event.Type != canonical.EventCompleted || (event.Response != nil && event.Response.FinishReason != "") {
+	if event.Response != nil && event.Response.FinishReason != "" {
 		return event
 	}
-	response := canonical.Response{Model: e.publicModel, FinishReason: "tool_use", Usage: eventUsage(event)}
+	// 终态缺 FinishReason 时优先用流内的 openai_chat.finish_reason 扩展，sawTool 启发式仅作最后兜底。
+	finish := e.chatFinish
+	if finish == "" && e.sawTool && event.Type == canonical.EventCompleted {
+		finish = "tool_use"
+	}
+	if finish == "" {
+		return event
+	}
+	response := canonical.Response{Model: e.publicModel, FinishReason: finish, Usage: eventUsage(event)}
 	if event.Response != nil {
 		response = *event.Response
-		response.FinishReason = "tool_use"
+		response.FinishReason = finish
 	}
 	event.Response = &response
 	return event
@@ -1388,9 +1411,11 @@ func decodeUsage(raw json.RawMessage) (*canonical.Usage, error) {
 	if err := json.Unmarshal(raw, &fields); err != nil {
 		return nil, err
 	}
+	cacheRead, cacheCreation := rawInt(fields["cache_read_input_tokens"]), rawInt(fields["cache_creation_input_tokens"])
+	// anthropic 的 input_tokens 不含缓存读写；canonical 按 OpenAI 口径归一：InputTokens=全部输入，CachedInputTokens 为缓存读子集。
 	usage := &canonical.Usage{
-		InputTokens: rawInt(fields["input_tokens"]), OutputTokens: rawInt(fields["output_tokens"]),
-		CachedInputTokens: rawInt(fields["cache_read_input_tokens"]),
+		InputTokens: rawInt(fields["input_tokens"]) + cacheRead + cacheCreation, OutputTokens: rawInt(fields["output_tokens"]),
+		CachedInputTokens: cacheRead,
 		Extra:             extraExcept(fields, "input_tokens", "output_tokens", "cache_read_input_tokens"),
 	}
 	usage.TotalTokens = usage.InputTokens + usage.OutputTokens
@@ -1402,7 +1427,12 @@ func encodeUsage(usage *canonical.Usage) map[string]any {
 	if usage == nil {
 		return result
 	}
-	result["input_tokens"], result["output_tokens"] = usage.InputTokens, usage.OutputTokens
+	// canonical InputTokens 为 OpenAI 口径（含缓存读写），回写 anthropic wire 时扣除缓存部分还原 input_tokens。
+	input := usage.InputTokens - usage.CachedInputTokens - rawInt(usage.Extra["cache_creation_input_tokens"])
+	if input < 0 {
+		input = 0
+	}
+	result["input_tokens"], result["output_tokens"] = input, usage.OutputTokens
 	for key, raw := range usage.Extra {
 		if key == "input_tokens" || key == "output_tokens" || !json.Valid(raw) {
 			continue

@@ -61,6 +61,16 @@ func (*Transport) Plan(operation transport.Operation, request canonical.Request,
 		return transport.Unsupported(operation, "Gemini GenerateContent requires the original first-call proof for function-call history")
 	}
 	for index, item := range request.Items {
+		if (item.Type == "" || item.Type == "message") && (item.Role == canonical.RoleSystem || item.Role == canonical.RoleDeveloper) {
+			for _, block := range item.Content {
+				switch block.Type {
+				case "", "input_text", "output_text", "text":
+				default:
+					// systemInstruction 只承载文本，非文本 part 编码时会被静默丢弃，须在选路阶段拒绝。
+					return transport.Unsupported(operation, "Gemini systemInstruction cannot carry non-text parts")
+				}
+			}
+		}
 		if item.ProviderCallIDOmitted && item.Type != "function_call" {
 			return transport.Unsupported(operation, "Gemini GenerateContent cannot preserve provider call-ID state on "+item.Type)
 		}
@@ -94,7 +104,8 @@ func (*Transport) Plan(operation transport.Operation, request canonical.Request,
 		return transport.Unsupported(operation, "Gemini GenerateContent cannot guarantee disabled parallel tool calls")
 	}
 	if format := request.ResponseFormat; format != nil {
-		if (format.Type != "json_object" && format.Type != "json_schema") || format.Name != "" || format.Description != "" || format.Strict != nil {
+		// name/description/strict 只是 json_schema 的标签，约束由 schema 本身承载，可安全丢弃。
+		if format.Type != "json_object" && format.Type != "json_schema" {
 			return transport.Unsupported(operation, "Gemini GenerateContent cannot preserve this response format")
 		}
 	}
@@ -812,6 +823,7 @@ func decodeResponse(raw []byte, route transport.Route) (canonical.Response, erro
 		choiceIndex := geminiCandidateIndex(candidateIndex, candidate.Index)
 		message := canonical.Item{Type: "message", Role: canonical.RoleAssistant, Status: "completed"}
 		activeReasoning := -1
+		hasToolCall := false
 		flushMessage := func() {
 			if len(message.Content) == 0 {
 				return
@@ -849,6 +861,7 @@ func decodeResponse(raw []byte, route transport.Route) (canonical.Response, erro
 			}
 			if part.FunctionCall != nil {
 				activeReasoning = -1
+				hasToolCall = true
 				flushMessage()
 				callID := part.FunctionCall.ID
 				if callID == "" {
@@ -871,13 +884,14 @@ func decodeResponse(raw []byte, route transport.Route) (canonical.Response, erro
 		}
 		flushMessage()
 		if candidate.FinishReason != "" {
-			response.FinishReason = candidate.FinishReason
+			response.FinishReason = googleFinishReason(candidate.FinishReason, hasToolCall)
 			switch finishEventType(candidate.FinishReason) {
 			case canonical.EventIncomplete:
 				response.Status = "incomplete"
 			case canonical.EventFailed:
+				// MALFORMED_FUNCTION_CALL 是模型产出的调用不合法，重试同一请求不会自愈。
 				response.Status = "failed"
-				response.Error = &canonical.Error{Type: "server_error", Code: candidate.FinishReason, Message: candidate.FinishMessage, Raw: append(json.RawMessage(nil), raw...)}
+				response.Error = &canonical.Error{Type: "invalid_request_error", Code: candidate.FinishReason, Message: candidate.FinishMessage, Raw: append(json.RawMessage(nil), raw...)}
 			}
 		}
 	}
@@ -912,7 +926,8 @@ func usageFromGemini(usage *geminiUsage) *canonical.Usage {
 	if usage == nil {
 		return nil
 	}
-	return &canonical.Usage{InputTokens: usage.PromptTokenCount, OutputTokens: usage.CandidatesTokenCount, TotalTokens: usage.TotalTokenCount, CachedInputTokens: usage.CachedContentTokens, ReasoningOutputTokens: usage.ThoughtsTokenCount}
+	// OpenAI 口径归一：Gemini candidatesTokenCount 不含 thoughts，OutputTokens 需补上 reasoning 部分。
+	return &canonical.Usage{InputTokens: usage.PromptTokenCount, OutputTokens: usage.CandidatesTokenCount + usage.ThoughtsTokenCount, TotalTokens: usage.TotalTokenCount, CachedInputTokens: usage.CachedContentTokens, ReasoningOutputTokens: usage.ThoughtsTokenCount}
 }
 
 type HTTPError struct {
@@ -945,7 +960,7 @@ func newHTTPError(status int, body []byte) error {
 		typeName = "rate_limit_error"
 	}
 	details := &canonical.Error{Status: status, Type: typeName, Code: upstream.Error.Status, Message: upstream.Error.Message, Retryable: status == http.StatusTooManyRequests || status >= 500, Raw: append(json.RawMessage(nil), body...)}
-	if details.Code == "" {
+	if details.Code == "" && upstream.Error.Code != nil {
 		details.Code = fmt.Sprint(upstream.Error.Code)
 	}
 	return &HTTPError{Status: status, Body: append([]byte(nil), body...), Details: details}
@@ -1203,6 +1218,10 @@ func (s *sse) normalizeEvents(events []canonical.Event) []canonical.Event {
 		case canonical.EventCompleted, canonical.EventIncomplete, canonical.EventFailed:
 			delete(s.activeMessages, choice)
 			delete(s.activeReasoning, choice)
+			// Gemini 终帧不重述前文 part：跨帧出现过工具调用时，STOP 终态要升级为 tool_calls。
+			if event.Type == canonical.EventCompleted && event.Response != nil && event.Response.FinishReason == "stop" && len(s.toolOutputs) > 0 {
+				event.Response.FinishReason = "tool_calls"
+			}
 		}
 		result = append(result, *event)
 	}
@@ -1245,6 +1264,7 @@ func decodeStreamEvents(raw []byte, sequence int64) ([]canonical.Event, error) {
 	events := make([]canonical.Event, 0)
 	terminalType := canonical.EventType("")
 	terminalChoice := 0
+	terminalFinish := ""
 	var terminalError *canonical.Error
 	if response.PromptFeedback != nil && response.PromptFeedback.BlockReason != "" {
 		terminalType = canonical.EventFailed
@@ -1252,6 +1272,7 @@ func decodeStreamEvents(raw []byte, sequence int64) ([]canonical.Event, error) {
 	}
 	for candidateIndex, candidate := range response.Candidates {
 		choiceIndex := geminiCandidateIndex(candidateIndex, candidate.Index)
+		frameToolCall := false
 		for partIndex, part := range candidate.Content.Parts {
 			proof := googleProof(part.ThoughtSignature)
 			emitted := false
@@ -1285,6 +1306,7 @@ func decodeStreamEvents(raw []byte, sequence int64) ([]canonical.Event, error) {
 				emitted = true
 			}
 			if part.FunctionCall != nil {
+				frameToolCall = true
 				callID := part.FunctionCall.ID
 				if callID == "" {
 					callID = fmt.Sprintf("call_%d_%d_%d", choiceIndex, sequence, partIndex)
@@ -1314,13 +1336,19 @@ func decodeStreamEvents(raw []byte, sequence int64) ([]canonical.Event, error) {
 		if candidate.FinishReason != "" {
 			terminalType = finishEventType(candidate.FinishReason)
 			terminalChoice = choiceIndex
+			terminalFinish = googleFinishReason(candidate.FinishReason, frameToolCall)
 			if terminalType == canonical.EventFailed {
-				terminalError = &canonical.Error{Type: "server_error", Code: candidate.FinishReason, Message: candidate.FinishMessage, Raw: append(json.RawMessage(nil), raw...)}
+				terminalError = &canonical.Error{Type: "invalid_request_error", Code: candidate.FinishReason, Message: candidate.FinishMessage, Raw: append(json.RawMessage(nil), raw...)}
 			}
 		}
 	}
 	if terminalType != "" {
-		events = append(events, canonical.Event{Type: terminalType, SequenceNumber: sequence, ChoiceIndex: terminalChoice, Usage: usageFromGemini(response.UsageMetadata), Error: terminalError, ProviderResponseID: response.ResponseID, Raw: append(json.RawMessage(nil), raw...)})
+		usage := usageFromGemini(response.UsageMetadata)
+		events = append(events, canonical.Event{
+			Type: terminalType, SequenceNumber: sequence, ChoiceIndex: terminalChoice, Usage: usage, Error: terminalError, ProviderResponseID: response.ResponseID,
+			Response: &canonical.Response{Status: googleTerminalStatus(terminalType), FinishReason: terminalFinish, Usage: usage},
+			Raw:      append(json.RawMessage(nil), raw...),
+		})
 	} else if response.UsageMetadata != nil {
 		events = append(events, canonical.Event{Type: canonical.EventUsage, SequenceNumber: sequence, Usage: usageFromGemini(response.UsageMetadata), Raw: append(json.RawMessage(nil), raw...)})
 	}
@@ -1364,13 +1392,42 @@ func audioFormat(mediaType string) string {
 }
 
 func finishEventType(reason string) canonical.EventType {
+	// SAFETY 族按 openai 语义属内容截断而非请求失败；未知枚举按正常完成处理。
 	switch reason {
 	case "MAX_TOKENS":
 		return canonical.EventIncomplete
-	case "STOP":
-		return canonical.EventCompleted
-	default:
+	case "MALFORMED_FUNCTION_CALL":
 		return canonical.EventFailed
+	default:
+		return canonical.EventCompleted
+	}
+}
+
+// googleFinishReason 输出 openai 风格词表（google 无对应下游 codec）；未知枚举原样透传。
+func googleFinishReason(reason string, hasToolCall bool) string {
+	switch reason {
+	case "STOP":
+		if hasToolCall {
+			return "tool_calls"
+		}
+		return "stop"
+	case "MAX_TOKENS":
+		return "length"
+	case "SAFETY", "RECITATION", "BLOCKLIST", "PROHIBITED_CONTENT", "SPII", "IMAGE_SAFETY":
+		return "content_filter"
+	default:
+		return reason
+	}
+}
+
+func googleTerminalStatus(eventType canonical.EventType) string {
+	switch eventType {
+	case canonical.EventIncomplete:
+		return "incomplete"
+	case canonical.EventFailed:
+		return "failed"
+	default:
+		return "completed"
 	}
 }
 

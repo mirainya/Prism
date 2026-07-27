@@ -191,11 +191,89 @@ func TestEventAccumulatorPlacesSingleContentAtEventIndex(t *testing.T) {
 		Item: &Item{Type: "message", Role: RoleAssistant, Content: []Content{{Type: "output_image", URL: "https://example.test/image.png"}}},
 	})
 
+	// 稀疏索引留下的空占位块不进入快照，索引 1 的空洞被丢弃。
 	output := acc.Snapshot().Output
-	if len(output) != 1 || len(output[0].Content) != 3 {
+	if len(output) != 1 || len(output[0].Content) != 2 {
 		t.Fatalf("indexed content was flattened: %#v", output)
 	}
-	if output[0].Content[0].Text != "answer" || output[0].Content[2].URL != "https://example.test/image.png" {
+	if output[0].Content[0].Text != "answer" || output[0].Content[1].URL != "https://example.test/image.png" {
 		t.Fatalf("indexed content mismatch: %#v", output[0].Content)
+	}
+}
+
+func TestEventAccumulatorKeepsAnthropicToolIdentityWhenDoneDropsToolIndex(t *testing.T) {
+	acc := NewEventAccumulator()
+	tool := Item{ID: "tool_1", Type: "function_call", CallID: "tool_1", Name: "weather", Arguments: json.RawMessage(`{}`)}
+	acc.Observe(Event{Type: EventOutputItemAdded, OutputIndex: 1, ToolIndex: 1, Item: &tool})
+	acc.Observe(Event{Type: EventToolArgumentsDelta, OutputIndex: 1, ToolIndex: 1, Item: &tool, Delta: `{"city":"Tokyo"}`})
+	done := tool
+	done.Status = "completed"
+	done.Arguments = json.RawMessage(`{"city":"Tokyo"}`)
+	// content_block_stop 只带 index，ToolIndex/OutputIndex 与 start 阶段不一致。
+	acc.Observe(Event{Type: EventOutputItemDone, OutputIndex: 1, ToolIndex: 0, Item: &done})
+
+	output := acc.Snapshot().Output
+	if len(output) != 1 {
+		t.Fatalf("tool output count = %d, want 1: %#v", len(output), output)
+	}
+	if output[0].CallID != "tool_1" || string(output[0].Arguments) != `{"city":"Tokyo"}` || output[0].Status != "completed" {
+		t.Fatalf("tool identity was split: %#v", output[0])
+	}
+}
+
+func TestEventAccumulatorAppendsStreamedAudioFragments(t *testing.T) {
+	acc := NewEventAccumulator()
+	for _, fragment := range []Content{
+		{Type: "output_audio", Data: "AAA", Transcript: "he"},
+		{Type: "output_audio", Data: "BBB", Transcript: "llo"},
+		{Type: "output_audio", Data: "CCC", Transcript: " world"},
+	} {
+		part := fragment
+		acc.Observe(Event{
+			Type: EventOutputItemAdded, ContentIndex: 2,
+			Item: &Item{Type: "message", Role: RoleAssistant, Content: []Content{part}},
+		})
+	}
+
+	output := acc.Snapshot().Output
+	if len(output) != 1 {
+		t.Fatalf("audio output count = %d, want 1: %#v", len(output), output)
+	}
+	audio := output[0].Content[len(output[0].Content)-1]
+	if audio.Type != "output_audio" || audio.Data != "AAABBBCCC" || audio.Transcript != "hello world" {
+		t.Fatalf("audio fragments were not appended: %#v", audio)
+	}
+}
+
+func TestEventAccumulatorDeepCopiesErrorParam(t *testing.T) {
+	acc := NewEventAccumulator()
+	param := map[string]any{"field": "model", "path": []any{"body", "model"}}
+	acc.Observe(Event{Type: EventError, Error: &Error{Message: "bad request", Param: param}})
+
+	param["field"] = "mutated"
+	param["path"].([]any)[0] = "mutated"
+	snapshot := acc.Snapshot()
+	if snapshot.Error == nil {
+		t.Fatal("error was dropped")
+	}
+	held, ok := snapshot.Error.Param.(map[string]any)
+	if !ok {
+		t.Fatalf("param type = %T", snapshot.Error.Param)
+	}
+	if held["field"] != "model" || held["path"].([]any)[0] != "body" {
+		t.Fatalf("param shared storage with source: %#v", held)
+	}
+}
+
+func TestEventAccumulatorOmitsRoleOnToolFallbackItems(t *testing.T) {
+	acc := NewEventAccumulator()
+	acc.Observe(Event{Type: EventToolArgumentsDelta, ToolIndex: 0, Delta: `{"city":"Tokyo"}`})
+
+	output := acc.Snapshot().Output
+	if len(output) != 1 || output[0].Type != "function_call" {
+		t.Fatalf("fallback tool item = %#v", output)
+	}
+	if output[0].Role != "" {
+		t.Fatalf("function_call carried role %q", output[0].Role)
 	}
 }

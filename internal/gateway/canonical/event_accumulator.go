@@ -13,12 +13,14 @@ type EventAccumulator struct {
 	outputs            map[string]*Item
 	order              []string
 	toolArgumentDeltas map[string]bool
+	toolKeys           map[string]string
 }
 
 func NewEventAccumulator() *EventAccumulator {
 	return &EventAccumulator{
 		outputs:            make(map[string]*Item),
 		toolArgumentDeltas: make(map[string]bool),
+		toolKeys:           make(map[string]string),
 	}
 }
 
@@ -45,7 +47,7 @@ func (a *EventAccumulator) Observe(event Event) {
 		EventReasoningPartAdded, EventReasoningTextDone, EventReasoningPartDone:
 		if event.Item != nil {
 			item := CloneItems([]Item{*event.Item})[0]
-			if item.Type == "function_call" && a.toolArgumentDeltas[accumulatorItemKey(event, item)] && isEmptyJSONObject(item.Arguments) {
+			if item.Type == "function_call" && a.toolArgumentDeltas[a.itemKey(event, item)] && isEmptyJSONObject(item.Arguments) {
 				item.Arguments = nil
 			}
 			itemEvent := event
@@ -55,10 +57,10 @@ func (a *EventAccumulator) Observe(event Event) {
 		}
 	case EventTextDelta:
 		target := a.ensure(event, "message")
-		appendContentDelta(target, event.ContentIndex, "output_text", event.Delta)
+		appendContentDelta(target, event.ContentIndex, deltaContentType(event, "output_text"), event.Delta)
 	case EventReasoningDelta:
 		target := a.ensure(event, "reasoning")
-		appendContentDelta(target, event.ContentIndex, "reasoning_text", event.Delta)
+		appendContentDelta(target, event.ContentIndex, deltaContentType(event, "reasoning_text"), event.Delta)
 	case EventProviderProof:
 		if event.Item != nil && event.Item.Proof != nil {
 			item := CloneItems([]Item{*event.Item})[0]
@@ -78,7 +80,7 @@ func (a *EventAccumulator) Observe(event Event) {
 			item.Arguments = nil
 			itemEvent.Item = &item
 		}
-		key := accumulatorItemKey(event, item)
+		key := a.itemKey(event, item)
 		target := a.ensure(itemEvent, "function_call")
 		if !a.toolArgumentDeltas[key] {
 			target.Arguments = nil
@@ -107,7 +109,9 @@ func (a *EventAccumulator) Snapshot() Response {
 		result.Output = make([]Item, 0, len(a.order))
 		for _, key := range a.order {
 			if item := a.outputs[key]; item != nil {
-				result.Output = append(result.Output, CloneItems([]Item{*item})[0])
+				clone := CloneItems([]Item{*item})[0]
+				clone.Content = compactContent(clone.Content)
+				result.Output = append(result.Output, clone)
 			}
 		}
 	}
@@ -155,7 +159,7 @@ func (a *EventAccumulator) mergeResponse(response Response) {
 }
 
 func (a *EventAccumulator) ensure(event Event, fallbackType string) *Item {
-	item := Item{Type: fallbackType, Role: RoleAssistant}
+	item := Item{Type: fallbackType}
 	if event.Item != nil {
 		item = CloneItems([]Item{*event.Item})[0]
 		if event.Type == EventToolArgumentsDelta {
@@ -164,11 +168,13 @@ func (a *EventAccumulator) ensure(event Event, fallbackType string) *Item {
 		if item.Type == "" {
 			item.Type = fallbackType
 		}
-		if item.Role == "" && (item.Type == "message" || item.Type == "reasoning") {
-			item.Role = RoleAssistant
-		}
 	}
-	key := accumulatorItemKey(event, item)
+	// 内容块由调用方按事件索引放置，这里剥离以避免同一事件被合并两次。
+	item.Content = nil
+	if item.Role == "" && (item.Type == "message" || item.Type == "reasoning") {
+		item.Role = RoleAssistant
+	}
+	key := a.itemKey(event, item)
 	if current := a.outputs[key]; current != nil {
 		mergeItem(current, item)
 		return current
@@ -185,11 +191,56 @@ func (a *EventAccumulator) ensure(event Event, fallbackType string) *Item {
 	return &copy
 }
 
+func (a *EventAccumulator) itemKey(event Event, item Item) string {
+	if item.Type == "function_call" {
+		return a.toolKey(event, item)
+	}
+	return accumulatorItemKey(event, item)
+}
+
+// toolKey 以 Provider 身份(call_id/item_id)锁定工具调用，位置只作别名：
+// Anthropic 的 content_block_stop 会丢掉 start 阶段的 index，纯位置键会把同一次调用拆成两个 Item。
+func (a *EventAccumulator) toolKey(event Event, item Item) string {
+	position := fmt.Sprintf("tool:%d:%d:%d", event.ChoiceIndex, event.OutputIndex, event.ToolIndex)
+	identities := make([]string, 0, 3)
+	if item.CallID != "" {
+		identities = append(identities, "call:"+item.CallID)
+	}
+	if item.ID != "" && item.ID != item.CallID {
+		identities = append(identities, "id:"+item.ID)
+	}
+	if a.toolKeys == nil {
+		a.toolKeys = make(map[string]string)
+	}
+	key := ""
+	for _, identity := range identities {
+		if known := a.toolKeys[identity]; known != "" {
+			key = known
+			break
+		}
+	}
+	if key == "" {
+		if len(identities) > 0 {
+			key = identities[0]
+		} else if known := a.toolKeys[position]; known != "" {
+			key = known
+		} else {
+			key = position
+		}
+	}
+	for _, identity := range identities {
+		a.toolKeys[identity] = key
+	}
+	if a.toolKeys[position] == "" {
+		// 位置别名只登记一次，避免不同工具复用同一位置后互相覆盖。
+		a.toolKeys[position] = key
+	}
+	return key
+}
+
 func accumulatorItemKey(event Event, item Item) string {
 	// 首选 Provider ID；缺失时用 choice/output/tool 位置构造流内稳定键。
 	switch item.Type {
-	case "function_call":
-		return fmt.Sprintf("tool:%d:%d:%d", event.ChoiceIndex, event.OutputIndex, event.ToolIndex)
 	case "reasoning":
 		return fmt.Sprintf("reasoning:%d:%d", event.ChoiceIndex, event.OutputIndex)
 	case "message":
@@ -216,6 +267,14 @@ func mergeEventItem(target *Item, source Item, contentIndex int) {
 		return
 	}
 	mergeItem(target, source)
+}
+
+// deltaContentType 让 transport 通过单块 Item 声明增量的内容类型(如 openai chat 的 refusal)。
+func deltaContentType(event Event, fallback string) string {
+	if event.Item != nil && len(event.Item.Content) == 1 && event.Item.Content[0].Type != "" {
+		return event.Item.Content[0].Type
+	}
+	return fallback
 }
 
 func appendContentDelta(item *Item, index int, contentType, delta string) {
@@ -297,6 +356,30 @@ func isEmptyJSONObject(raw json.RawMessage) bool {
 	return ok && len(object) == 0
 }
 
+// compactContent 丢弃稀疏 ContentIndex 造成的空占位块，快照不向下游暴露空洞。
+func compactContent(content []Content) []Content {
+	kept := make([]Content, 0, len(content))
+	for _, part := range content {
+		if isPlaceholderContent(part) {
+			continue
+		}
+		kept = append(kept, part)
+	}
+	if len(kept) == len(content) {
+		return content
+	}
+	if len(kept) == 0 {
+		return nil
+	}
+	return kept
+}
+
+func isPlaceholderContent(part Content) bool {
+	return part.Type == "" && part.Text == "" && part.URL == "" && part.Data == "" && part.FileID == "" &&
+		part.Filename == "" && part.MediaType == "" && part.Format == "" && part.Detail == "" &&
+		part.Transcript == "" && len(part.Extra) == 0
+}
+
 func mergeContent(target *Content, source Content) {
 	if source.Type != "" {
 		target.Type = source.Type
@@ -307,7 +390,11 @@ func mergeContent(target *Content, source Content) {
 	if source.URL != "" {
 		target.URL = source.URL
 	}
-	if source.Data != "" {
+	if target.Type == "output_audio" {
+		// 音频按分片流式下发，Data/Transcript 必须追加而非覆盖。
+		target.Data += source.Data
+		target.Transcript += source.Transcript
+	} else if source.Data != "" {
 		target.Data = source.Data
 	}
 	if source.FileID != "" {
@@ -325,7 +412,7 @@ func mergeContent(target *Content, source Content) {
 	if source.Detail != "" {
 		target.Detail = source.Detail
 	}
-	if source.Transcript != "" {
+	if source.Transcript != "" && target.Type != "output_audio" {
 		target.Transcript = source.Transcript
 	}
 	if source.Extra != nil {
@@ -364,5 +451,6 @@ func cloneError(source *Error) *Error {
 	}
 	clone := *source
 	clone.Raw = cloneRaw(source.Raw)
+	clone.Param = cloneAny(source.Param)
 	return &clone
 }

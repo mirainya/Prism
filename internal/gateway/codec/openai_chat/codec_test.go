@@ -175,3 +175,39 @@ func TestEncodeSyntheticSSEError(t *testing.T) {
 		t.Fatalf("bad error frame: %s", frame)
 	}
 }
+
+func TestEncodeResponseKeepsAssistantTextAlongsideToolCalls(t *testing.T) {
+	response := canonical.Response{ID: "chatcmpl_1", Model: "public", FinishReason: "tool_use", Output: []canonical.Item{
+		{Type: "message", Role: canonical.RoleAssistant, Content: []canonical.Content{{Type: "output_text", Text: "让我查一下天气"}}},
+		{Type: "function_call", CallID: "call_1", Name: "weather", Arguments: json.RawMessage(`{"city":"tokyo"}`)},
+	}}
+	encoded, err := EncodeResponseJSON(response)
+	if err != nil {
+		t.Fatalf("encode response: %v", err)
+	}
+	if !strings.Contains(string(encoded), `"content":"让我查一下天气"`) {
+		t.Fatalf("assistant text dropped: %s", encoded)
+	}
+	if !strings.Contains(string(encoded), `"name":"weather"`) || !strings.Contains(string(encoded), `"finish_reason":"tool_calls"`) {
+		t.Fatalf("tool call missing: %s", encoded)
+	}
+}
+
+func TestEncodeResponseLiftsRefusalAndAudioParts(t *testing.T) {
+	response := canonical.Response{ID: "chatcmpl_1", Model: "public", FinishReason: "stop", Output: []canonical.Item{
+		{Type: "message", Role: canonical.RoleAssistant, Content: []canonical.Content{
+			{Type: "output_text", Text: "hi"},
+			{Type: "refusal", Text: "I cannot help"},
+			{Type: "output_audio", Data: "YWJj", Transcript: "spoken"},
+		}},
+	}}
+	encoded, err := EncodeResponseJSON(response)
+	if err != nil {
+		t.Fatalf("encode must not fail on refusal/audio parts: %v", err)
+	}
+	for _, want := range []string{`"refusal":"I cannot help"`, `"data":"YWJj"`, `"transcript":"spoken"`, `"content":"hi"`} {
+		if !strings.Contains(string(encoded), want) {
+			t.Fatalf("missing %s in %s", want, encoded)
+		}
+	}
+}

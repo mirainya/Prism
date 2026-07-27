@@ -205,6 +205,11 @@ func encode(invocation transport.Invocation, responses bool) ([]byte, error) {
 		}
 		if request.Store != nil {
 			body["store"] = *request.Store
+		} else if request.PreviousResponseID == "" {
+			// Responses 下游经 pipeline 时 Store 恒为非 nil(record.Store)，走到这里说明来源协议
+			// 无 store 概念(Chat/Messages 转换)。上游 Responses 默认 store=true，必须显式关闭，
+			// 否则普通对话被上游持久化；带 previous_response_id 的原生续话依赖上游状态，不强制。
+			body["store"] = false
 		}
 		if request.Background {
 			body["background"] = true
@@ -343,9 +348,13 @@ func chatMessages(request canonical.Request) ([]map[string]any, error) {
 			}
 			call := map[string]any{"id": callID, "type": "function", "function": map[string]any{"name": item.Name, "arguments": rawText(item.Arguments)}}
 			if len(result) > 0 && result[len(result)-1]["role"] == canonical.RoleAssistant {
-				calls, _ := result[len(result)-1]["tool_calls"].([]any)
-				result[len(result)-1]["tool_calls"] = append(calls, call)
-				result[len(result)-1]["content"] = nil
+				last := result[len(result)-1]
+				calls, _ := last["tool_calls"].([]any)
+				last["tool_calls"] = append(calls, call)
+				// 历史 assistant 正文与 tool_calls 在 Chat wire 中可并存，只把空字符串归一为 null。
+				if text, ok := last["content"].(string); ok && text == "" {
+					last["content"] = nil
+				}
 			} else {
 				result = append(result, map[string]any{"role": canonical.RoleAssistant, "content": nil, "tool_calls": []any{call}})
 			}
@@ -1063,6 +1072,16 @@ func decodeChatContent(raw json.RawMessage) ([]canonical.Content, error) {
 		if typeName == "text" {
 			content.Type = "output_text"
 		}
+		if nested := part["image_url"]; len(nested) > 0 {
+			var image struct {
+				URL    string `json:"url"`
+				Detail string `json:"detail"`
+			}
+			if err := json.Unmarshal(nested, &image); err != nil {
+				return nil, err
+			}
+			content.URL, content.Detail = image.URL, image.Detail
+		}
 		result = append(result, content)
 	}
 	return result, nil
@@ -1112,14 +1131,17 @@ func decodeChatEvents(_ string, raw []byte, _ transport.Route) ([]canonical.Even
 			events = append(events, event)
 		}
 		if choice.Delta.Refusal != "" {
+			// 槽位契约:text 固定 ContentIndex 0、refusal 1、output_audio 2，避免增量挤进同一内容块。
 			event := base
 			event.Type, event.Delta = canonical.EventTextDelta, choice.Delta.Refusal
+			event.ContentIndex = 1
 			event.Item = &canonical.Item{Type: "message", Content: []canonical.Content{{Type: "refusal"}}}
 			events = append(events, event)
 		}
 		if choice.Delta.Audio != nil {
 			event := base
 			event.Type = canonical.EventOutputItemAdded
+			event.ContentIndex = 2
 			event.Item = &canonical.Item{
 				Type: "message",
 				Content: []canonical.Content{{
@@ -1156,6 +1178,8 @@ func decodeChatEvents(_ string, raw []byte, _ transport.Route) ([]canonical.Even
 				event.Type = canonical.EventIncomplete
 			}
 			event.Usage = usage
+			// 终态事件同时携带 Response.FinishReason(上游原生值)，Extra 保留 choice 级补充。
+			event.Response = &canonical.Response{FinishReason: choice.FinishReason}
 			event.Item = &canonical.Item{Extra: map[string]json.RawMessage{chatFinishReason: must(choice.FinishReason)}}
 			events = append(events, event)
 		}

@@ -105,6 +105,41 @@ func cloneStringMap(source map[string]string) map[string]string {
 	return clone
 }
 
+// cloneAny 深拷贝解码自上游 JSON 的任意值，避免快照与源共享 map/slice 存储。
+func cloneAny(source any) any {
+	switch value := source.(type) {
+	case nil:
+		return nil
+	case map[string]any:
+		clone := make(map[string]any, len(value))
+		for key, element := range value {
+			clone[key] = cloneAny(element)
+		}
+		return clone
+	case []any:
+		clone := make([]any, len(value))
+		for index, element := range value {
+			clone[index] = cloneAny(element)
+		}
+		return clone
+	case json.RawMessage:
+		return cloneRaw(value)
+	case string, bool, float64, float32, int, int32, int64, uint, uint32, uint64:
+		return source
+	default:
+		// 非 JSON 基础类型走一次 JSON 往返，失败则原样保留。
+		raw, err := json.Marshal(source)
+		if err != nil {
+			return source
+		}
+		var decoded any
+		if json.Unmarshal(raw, &decoded) != nil {
+			return source
+		}
+		return decoded
+	}
+}
+
 func clonePointer[T any](source *T) *T {
 	if source == nil {
 		return nil

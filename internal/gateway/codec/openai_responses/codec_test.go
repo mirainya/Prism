@@ -285,6 +285,118 @@ func TestResponsesFunctionCallProofCarrierRequiresUniqueMatchingCall(t *testing.
 	}
 }
 
+func TestResponsesRefusalFieldRoundTrip(t *testing.T) {
+	var request protocol.Request
+	if err := json.Unmarshal([]byte(`{
+		"model":"gpt","input":[{"type":"message","role":"assistant","status":"completed","content":[
+			{"type":"output_text","text":"partial"},
+			{"type":"refusal","refusal":"I cannot help"}
+		]}]
+	}`), &request); err != nil {
+		t.Fatal(err)
+	}
+	decoded, err := DecodeRequest(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	refusal := decoded.Items[0].Content[1]
+	if refusal.Type != "refusal" || refusal.Text != "I cannot help" {
+		t.Fatalf("refusal was not decoded: %#v", refusal)
+	}
+	if _, ok := refusal.Extra["refusal"]; ok {
+		t.Fatalf("refusal field leaked into extras: %#v", refusal.Extra)
+	}
+
+	encoded, err := EncodeResponseJSON(canonical.Response{ID: "resp_1", Model: "gpt", Output: decoded.Items})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var wire protocol.Response
+	if err := json.Unmarshal(encoded, &wire); err != nil {
+		t.Fatal(err)
+	}
+	var output []struct {
+		Content []map[string]json.RawMessage `json:"content"`
+	}
+	if err := json.Unmarshal(wire.Output, &output); err != nil {
+		t.Fatal(err)
+	}
+	part := output[0].Content[1]
+	if rawString(part["refusal"]) != "I cannot help" {
+		t.Fatalf("refusal field missing on wire: %s", wire.Output)
+	}
+	if _, ok := part["text"]; ok {
+		t.Fatalf("refusal part must not carry text: %s", wire.Output)
+	}
+
+	roundTrip, err := DecodeItems(wire.Output)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if roundTrip[0].Content[1].Type != "refusal" || roundTrip[0].Content[1].Text != "I cannot help" {
+		t.Fatalf("refusal round trip = %#v", roundTrip[0].Content)
+	}
+
+	legacy, err := DecodeItems(json.RawMessage(`[{"type":"message","role":"assistant","content":[{"type":"refusal","text":"legacy"}]}]`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if legacy[0].Content[0].Text != "legacy" {
+		t.Fatalf("legacy refusal text was lost: %#v", legacy[0].Content)
+	}
+}
+
+func TestEncodeResponseJSONEmitsSpecCompliantDefaults(t *testing.T) {
+	encoded, err := EncodeResponseJSON(canonical.Response{
+		ID: "resp_1", Model: "public", Status: "completed", CreatedAt: 7,
+		Output: []canonical.Item{{ID: "msg_1", Type: "message", Role: canonical.RoleAssistant, Content: []canonical.Content{{Type: "output_text", Text: "done"}}}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var result map[string]json.RawMessage
+	if err := json.Unmarshal(encoded, &result); err != nil {
+		t.Fatal(err)
+	}
+	if string(result["tools"]) != "[]" {
+		t.Fatalf("tools = %s, want []", result["tools"])
+	}
+	if string(result["truncation"]) != `"disabled"` {
+		t.Fatalf("truncation = %s, want \"disabled\"", result["truncation"])
+	}
+	if string(result["parallel_tool_calls"]) != "true" {
+		t.Fatalf("parallel_tool_calls = %s, want true", result["parallel_tool_calls"])
+	}
+
+	overridden, err := EncodeResponseJSON(canonical.Response{
+		ID: "resp_1", Model: "public", Status: "completed",
+		ProviderExtensions: map[string]json.RawMessage{
+			"tools":               json.RawMessage(`[{"type":"function","name":"lookup"}]`),
+			"truncation":          json.RawMessage(`"auto"`),
+			"parallel_tool_calls": json.RawMessage(`false`),
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := json.Unmarshal(overridden, &result); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(result["tools"]), `"lookup"`) || string(result["truncation"]) != `"auto"` || string(result["parallel_tool_calls"]) != "false" {
+		t.Fatalf("upstream values were not preserved: %s", overridden)
+	}
+}
+
+func TestEncodeSSEFrameSwallowsStandaloneUsageEvent(t *testing.T) {
+	frame, err := EncodeSSEFrame(canonical.Event{Type: canonical.EventUsage, SequenceNumber: 2, Usage: &canonical.Usage{InputTokens: 3, OutputTokens: 2, TotalTokens: 5}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(frame) != 0 {
+		t.Fatalf("standalone usage frame must be swallowed: %s", frame)
+	}
+}
+
 func TestEncodeResponsePreservesProviderAndUsageExtensions(t *testing.T) {
 	encoded, err := EncodeResponseJSON(canonical.Response{
 		ID: "resp_1", Model: "public", Status: "completed", CreatedAt: 7,

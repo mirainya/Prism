@@ -222,6 +222,8 @@ func encodeRequest(request canonical.Request, vendorModel string, preserveRespon
 	if request.Background {
 		body["background"] = true
 	}
+	// 这里刻意不像 openai transport 那样在 Store 缺省时补 store:false：
+	// 豆包 Responses 是有状态设计，续话依赖上游留存的 response id，强制关闭会打断续话。
 	if request.Store != nil {
 		body["store"] = *request.Store
 	}
@@ -695,6 +697,19 @@ func (s *eventStream) Close() error {
 	}
 	return s.body.Close()
 }
+// knownEventTypes 是 canonical 承认的流事件类型集合，用于把 Ark 私有事件挡在 EventRaw 之外。
+var knownEventTypes = map[canonical.EventType]bool{
+	canonical.EventResponseCreated: true, canonical.EventResponseQueued: true, canonical.EventResponseInProgress: true,
+	canonical.EventOutputItemAdded: true, canonical.EventOutputItemDone: true,
+	canonical.EventContentPartAdded: true, canonical.EventContentPartDone: true,
+	canonical.EventTextDelta: true, canonical.EventTextDone: true,
+	canonical.EventReasoningDelta: true, canonical.EventReasoningPartAdded: true,
+	canonical.EventReasoningTextDone: true, canonical.EventReasoningPartDone: true,
+	canonical.EventProviderProof: true, canonical.EventToolArgumentsDelta: true, canonical.EventUsage: true,
+	canonical.EventCompleted: true, canonical.EventIncomplete: true, canonical.EventFailed: true,
+	canonical.EventError: true, canonical.EventRaw: true,
+}
+
 func decodeEvent(raw []byte, eventName, publicModel string) (canonical.Event, error) {
 	// Ark 同时使用 SSE event 名和 JSON type，JSON type 更具体时优先用于 canonical 映射。
 	var root map[string]json.RawMessage
@@ -710,12 +725,21 @@ func decodeEvent(raw []byte, eventName, publicModel string) (canonical.Event, er
 		eventType = canonical.EventReasoningDelta
 	} else if typeName == "response.reasoning_text.done" {
 		eventType = canonical.EventReasoningTextDone
+	} else if !knownEventTypes[eventType] {
+		// 未知类型归一为 EventRaw（与 openai transport 的 responseEventType 一致），
+		// 否则会把 Ark 私有事件名当 canonical 类型塞给引擎，下游 SSE 编码无从处理。
+		eventType = canonical.EventRaw
 	}
 	contentIndex := rawInt(root["content_index"])
 	if summaryIndex, ok := root["summary_index"]; ok {
 		contentIndex = rawInt(summaryIndex)
 	}
-	event := canonical.Event{Type: eventType, RawType: eventName, Raw: append(json.RawMessage(nil), raw...), SequenceNumber: rawInt64(root["sequence_number"]), OutputIndex: rawInt(root["output_index"]), ContentIndex: contentIndex, ToolIndex: rawInt(root["tool_index"]), Delta: first(root, "delta", "text", "arguments"), ProviderResponseID: rawString(root["response_id"])}
+	rawType := eventName
+	if rawType == "" {
+		// SSE 帧缺 event 名时退回 JSON type，避免 Raw 事件下游编码时无名可用。
+		rawType = typeName
+	}
+	event := canonical.Event{Type: eventType, RawType: rawType, Raw: append(json.RawMessage(nil), raw...), SequenceNumber: rawInt64(root["sequence_number"]), OutputIndex: rawInt(root["output_index"]), ContentIndex: contentIndex, ToolIndex: rawInt(root["tool_index"]), Delta: first(root, "delta", "text", "arguments"), ProviderResponseID: rawString(root["response_id"])}
 	if typeName == "error" {
 		event.Error = decodeError(root)
 		return event, nil

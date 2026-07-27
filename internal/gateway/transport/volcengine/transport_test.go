@@ -433,6 +433,19 @@ func TestHTTPErrorIncludesVolcengineDetails(t *testing.T) {
 	}
 }
 
+func TestDecodeEventNormalizesUnknownTypeToRaw(t *testing.T) {
+	event, err := decodeEvent([]byte(`{"type":"response.ark_private_signal","output_index":2}`), "", "public")
+	if err != nil {
+		t.Fatalf("decode event: %v", err)
+	}
+	if event.Type != canonical.EventRaw {
+		t.Fatalf("unknown Ark event must normalize to EventRaw, got %q", event.Type)
+	}
+	if event.RawType != "response.ark_private_signal" {
+		t.Fatalf("RawType must fall back to JSON type, got %q", event.RawType)
+	}
+}
+
 func invocation(stream bool, tools []canonical.Tool) gatewaytransport.Invocation {
 	return gatewaytransport.Invocation{Route: gatewaytransport.Route{BaseURL: "https://ark.example", APIKey: "key", VendorModel: "vendor", PublicModel: "public"}, Operation: gatewaytransport.OperationResponses, Request: canonical.Request{Endpoint: canonical.EndpointOpenAIResponses, Model: "public", Stream: stream, Items: []canonical.Item{{Type: "message", Role: canonical.RoleUser, Content: []canonical.Content{{Type: "input_text", Text: "hello"}}}}, Tools: tools, ProviderOptions: canonical.ProviderOptions{Volcengine: &canonical.VolcengineOptions{Thinking: json.RawMessage(`{"type":"enabled"}`), Unknown: map[string]json.RawMessage{"future_option": json.RawMessage(`true`)}}}}}
 }

@@ -312,6 +312,121 @@ func TestStreamPreservesRedactedThinkingBlock(t *testing.T) {
 	}
 }
 
+func TestStreamContentBlockStopKeepsToolIndex(t *testing.T) {
+	decoder := &stream{blocks: map[int]canonical.Item{}, toolDeltas: map[int]bool{}}
+	frames := []struct{ name, data string }{
+		{"message_start", `{"type":"message_start","message":{"id":"msg_1","model":"claude","usage":{"input_tokens":1}}}`},
+		{"content_block_start", `{"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}`},
+		{"content_block_delta", `{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"checking"}}`},
+		{"content_block_stop", `{"type":"content_block_stop","index":0}`},
+		{"content_block_start", `{"type":"content_block_start","index":1,"content_block":{"type":"tool_use","id":"tool_1","name":"lookup","input":{}}}`},
+		{"content_block_delta", `{"type":"content_block_delta","index":1,"delta":{"type":"input_json_delta","partial_json":"{}"}}`},
+		{"content_block_stop", `{"type":"content_block_stop","index":1}`},
+	}
+	var events []canonical.Event
+	for index, frame := range frames {
+		event, emit, err := decoder.decode(frame.name, []byte(frame.data))
+		if err != nil || !emit {
+			t.Fatalf("frame %d emit=%v err=%v", index, emit, err)
+		}
+		events = append(events, event)
+	}
+	if textStop := events[3]; textStop.Type != canonical.EventContentPartDone || textStop.OutputIndex != 0 || textStop.ToolIndex != 0 {
+		t.Fatalf("text stop = %#v", textStop)
+	}
+	toolStop := events[6]
+	if toolStop.Type != canonical.EventOutputItemDone || toolStop.OutputIndex != 1 || toolStop.ToolIndex != 1 {
+		t.Fatalf("tool stop = %#v", toolStop)
+	}
+	if events[4].ToolIndex != toolStop.ToolIndex || events[5].ToolIndex != toolStop.ToolIndex {
+		t.Fatalf("tool index drifted: start=%d delta=%d stop=%d", events[4].ToolIndex, events[5].ToolIndex, toolStop.ToolIndex)
+	}
+}
+
+func TestStreamTerminalCarriesFinishReason(t *testing.T) {
+	decoder := &stream{blocks: map[int]canonical.Item{}, toolDeltas: map[int]bool{}}
+	if _, _, err := decoder.decode("message_start", []byte(`{"type":"message_start","message":{"id":"msg_1","model":"claude","usage":{"input_tokens":2}}}`)); err != nil {
+		t.Fatal(err)
+	}
+	usageEvent, _, err := decoder.decode("message_delta", []byte(`{"type":"message_delta","delta":{"stop_reason":"tool_use"},"usage":{"output_tokens":3}}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if usageEvent.Response == nil || usageEvent.Response.FinishReason != "tool_use" || usageEvent.Response.Status != "completed" || usageEvent.Response.Usage == nil {
+		t.Fatalf("usage event response = %#v", usageEvent.Response)
+	}
+	terminal, _, err := decoder.decode("message_stop", []byte(`{"type":"message_stop"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if terminal.Type != canonical.EventCompleted || terminal.Response == nil || terminal.Response.FinishReason != "tool_use" {
+		t.Fatalf("terminal = %#v response=%#v", terminal, terminal.Response)
+	}
+
+	truncated := &stream{blocks: map[int]canonical.Item{}, toolDeltas: map[int]bool{}}
+	if _, _, err := truncated.decode("message_delta", []byte(`{"type":"message_delta","delta":{"stop_reason":"max_tokens"},"usage":{"output_tokens":9}}`)); err != nil {
+		t.Fatal(err)
+	}
+	incomplete, _, err := truncated.decode("message_stop", []byte(`{"type":"message_stop"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if incomplete.Type != canonical.EventIncomplete || incomplete.Response == nil || incomplete.Response.FinishReason != "max_tokens" || incomplete.Response.Status != "incomplete" {
+		t.Fatalf("incomplete terminal = %#v response=%#v", incomplete, incomplete.Response)
+	}
+}
+
+func TestStreamNormalizesCachedUsage(t *testing.T) {
+	decoder := &stream{blocks: map[int]canonical.Item{}, toolDeltas: map[int]bool{}}
+	start, _, err := decoder.decode("message_start", []byte(`{"type":"message_start","message":{"id":"msg_1","model":"claude","usage":{"input_tokens":2,"cache_read_input_tokens":8,"cache_creation_input_tokens":5}}}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if start.Usage == nil || start.Usage.InputTokens != 15 || start.Usage.CachedInputTokens != 8 || !strings.Contains(string(start.Usage.Extra["cache_creation_input_tokens"]), "5") {
+		t.Fatalf("start usage = %#v", start.Usage)
+	}
+	final, _, err := decoder.decode("message_delta", []byte(`{"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":3}}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if final.Usage == nil || final.Usage.InputTokens != 15 || final.Usage.CachedInputTokens != 8 || final.Usage.OutputTokens != 3 || final.Usage.TotalTokens != 18 {
+		t.Fatalf("final usage = %#v", final.Usage)
+	}
+}
+
+func TestExecuteNormalizesCachedUsage(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
+		writer.Write([]byte(`{"id":"msg_1","model":"claude","content":[{"type":"text","text":"ok"}],"stop_reason":"end_turn",
+			"usage":{"input_tokens":1,"output_tokens":2,"cache_read_input_tokens":4,"cache_creation_input_tokens":3,"server_tool_use":{"web_search_requests":1}}}`))
+	}))
+	defer server.Close()
+	invocation := transport.Invocation{Route: transport.Route{BaseURL: server.URL, PublicModel: "public"}, Operation: transport.OperationMessages, Request: canonical.Request{Model: "public", Items: []canonical.Item{{Type: "message", Role: canonical.RoleUser, Content: []canonical.Content{{Type: "input_text", Text: "hi"}}}}}}
+	response, _, err := transport.Execute(context.Background(), New(nil), invocation)
+	if err != nil {
+		t.Fatal(err)
+	}
+	usage := response.Usage
+	if usage == nil || usage.InputTokens != 8 || usage.CachedInputTokens != 4 || usage.TotalTokens != 10 {
+		t.Fatalf("usage = %#v", usage)
+	}
+	if !strings.Contains(string(usage.Extra["cache_creation_input_tokens"]), "3") || len(usage.Extra["server_tool_use"]) == 0 {
+		t.Fatalf("usage extras were dropped: %#v", usage.Extra)
+	}
+}
+
+func TestPlanAllowsTextOnlyModalities(t *testing.T) {
+	item := New(nil)
+	if plan := item.Plan(transport.OperationResponses, canonical.Request{Modalities: []string{"text"}}, canonical.FeatureSet{}); !plan.Supported() {
+		t.Fatalf("modalities [text] was rejected: %#v", plan)
+	}
+	if plan := item.Plan(transport.OperationResponses, canonical.Request{Modalities: []string{"audio"}}, canonical.FeatureSet{}); plan.Supported() {
+		t.Fatalf("modalities [audio] was accepted: %#v", plan)
+	}
+	if plan := item.Plan(transport.OperationResponses, canonical.Request{Modalities: []string{"text", "audio"}}, canonical.FeatureSet{}); plan.Supported() {
+		t.Fatalf("modalities [text audio] was accepted: %#v", plan)
+	}
+}
+
 func TestHTTPErrorIncludesAnthropicDetails(t *testing.T) {
 	err := newHTTPError(http.StatusTooManyRequests, []byte(`{"type":"error","error":{"type":"rate_limit_error","message":"slow"}}`))
 	var upstream *HTTPError

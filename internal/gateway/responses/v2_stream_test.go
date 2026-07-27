@@ -627,6 +627,48 @@ func TestConsumeV2StreamPreservesUnknownNativeEventWithoutNumericLoss(t *testing
 	}
 }
 
+func TestConsumeV2StreamFoldsUsageIntoTerminalResponse(t *testing.T) {
+	// anthropic 形状：usage 独立事件先到，终态事件本身不带 usage。
+	events := &v2StreamEvents{events: []canonical.Event{
+		{Type: canonical.EventOutputTextDelta, OutputIndex: 0, ContentIndex: 0, Delta: "hi"},
+		{Type: canonical.EventUsage, Usage: &canonical.Usage{InputTokens: 3, OutputTokens: 2, TotalTokens: 5}},
+		{Type: canonical.EventCompleted, ProviderResponseID: "provider_resp"},
+	}}
+	var output bytes.Buffer
+	summary, err := consumeV2Stream(context.Background(), &output, events, V2StreamPublicOptions{
+		ResponseID: "resp_public", Model: "public", CreatedAt: 123,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(output.String(), "event: response.usage") {
+		t.Fatalf("non-standard response.usage frame leaked: %s", output.String())
+	}
+	completed := ""
+	for _, frame := range strings.Split(output.String(), "\n\n") {
+		if strings.HasPrefix(frame, "event: response.completed") {
+			completed = strings.SplitN(frame, "\ndata: ", 2)[1]
+		}
+	}
+	if completed == "" {
+		t.Fatalf("missing completed frame: %s", output.String())
+	}
+	var body struct {
+		Response struct {
+			Usage *protocol.Usage `json:"usage"`
+		} `json:"response"`
+	}
+	if err := json.Unmarshal([]byte(completed), &body); err != nil {
+		t.Fatal(err)
+	}
+	if body.Response.Usage == nil || body.Response.Usage.InputTokens != 3 || body.Response.Usage.OutputTokens != 2 || body.Response.Usage.TotalTokens != 5 {
+		t.Fatalf("completed frame usage = %#v\n%s", body.Response.Usage, completed)
+	}
+	if summary.Usage == nil || summary.Usage.TotalTokens != 5 {
+		t.Fatalf("summary usage = %#v", summary.Usage)
+	}
+}
+
 func TestConsumeV2StreamRequiresTerminalEvent(t *testing.T) {
 	events := &v2StreamEvents{events: []canonical.Event{{Type: canonical.EventOutputTextDelta, Delta: "partial"}}}
 	var output bytes.Buffer
