@@ -72,3 +72,37 @@ func TestParseResponseMappingSupportsRevisedPrompt(t *testing.T) {
 		t.Fatalf("RevisedPrompt = %q", mapping.RevisedPrompt)
 	}
 }
+
+func TestParseProgressResponseNormalizesFailedStatus(t *testing.T) {
+	parser := NewDefaultParser()
+	result, err := parser.ParseProgressResponse([]byte(`{
+		"status":"FAILED",
+		"error":"API Error: openai returned 451: unsafe image"
+	}`), &ResponseMapping{
+		Status: "status",
+		Error:  "error",
+	})
+	if err != nil {
+		t.Fatalf("ParseProgressResponse() error = %v", err)
+	}
+	if result.Status != StatusFail {
+		t.Fatalf("Status = %q, want %q", result.Status, StatusFail)
+	}
+	if result.Error != "API Error: openai returned 451: unsafe image" {
+		t.Fatalf("Error = %q", result.Error)
+	}
+}
+
+func TestParseProgressResponseNormalizesMappedFailedStatus(t *testing.T) {
+	parser := NewDefaultParser()
+	result, err := parser.ParseProgressResponse([]byte(`{"status":"failed"}`), &ResponseMapping{
+		Status:        "status",
+		StatusMapping: map[string]string{"FAILED": "failed"},
+	})
+	if err != nil {
+		t.Fatalf("ParseProgressResponse() error = %v", err)
+	}
+	if result.Status != StatusFail {
+		t.Fatalf("Status = %q, want %q", result.Status, StatusFail)
+	}
+}

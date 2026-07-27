@@ -3,8 +3,10 @@ package service
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"time"
 
+	"github.com/mirainya/Prism/internal/domain"
 	"github.com/mirainya/Prism/internal/model"
 )
 
@@ -25,6 +27,7 @@ type ImageResult struct {
 	URLs          []string
 	RevisedPrompt string
 	Error         string
+	HTTPStatus    int
 }
 
 // taskResultPayload 对应 task.Result 存储的统一结果结构
@@ -59,11 +62,7 @@ func (s *UnifiedService) InvokeAndWait(ctx context.Context, req *InvokeRequest, 
 	}
 	if invokeResp.Status == string(model.TaskStatusFailed) {
 		task, _ := s.taskByNo(invokeResp.TaskID, req.UserID)
-		res := &ImageResult{Done: true, Success: false, TaskNo: invokeResp.TaskID, Status: invokeResp.Status}
-		if task != nil {
-			res.Error = task.ErrorMessage
-		}
-		return res, nil
+		return buildFailedImageResult(task, invokeResp.TaskID, invokeResp.Status), nil
 	}
 
 	// 异步渠道: 轮询等待
@@ -84,13 +83,7 @@ func (s *UnifiedService) InvokeAndWait(ctx context.Context, req *InvokeRequest, 
 			case model.TaskStatusSuccess:
 				return buildImageResult(task), nil
 			case model.TaskStatusFailed, model.TaskStatusCancelled:
-				return &ImageResult{
-					Done:    true,
-					Success: false,
-					TaskNo:  task.TaskNo,
-					Status:  string(task.Status),
-					Error:   task.ErrorMessage,
-				}, nil
+				return buildFailedImageResult(task, task.TaskNo, string(task.Status)), nil
 			}
 			// 仍在处理中,检查是否超时
 			if time.Now().After(deadline) {
@@ -102,6 +95,26 @@ func (s *UnifiedService) InvokeAndWait(ctx context.Context, req *InvokeRequest, 
 			}
 		}
 	}
+}
+
+func buildFailedImageResult(task *model.Task, taskNo, status string) *ImageResult {
+	result := &ImageResult{
+		Done:    true,
+		Success: false,
+		TaskNo:  taskNo,
+		Status:  status,
+	}
+	if task == nil {
+		return result
+	}
+	result.Error = task.ErrorMessage
+	if result.Error != "" {
+		statusCode := domain.UpstreamStatusCode(errors.New(result.Error))
+		if statusCode >= 400 && statusCode < 600 {
+			result.HTTPStatus = statusCode
+		}
+	}
+	return result
 }
 
 // taskByNo 按 task_no + user 读取任务

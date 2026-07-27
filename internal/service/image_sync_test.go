@@ -52,3 +52,37 @@ func TestBuildImageResultEmptyResult(t *testing.T) {
 		t.Errorf("empty result: Success=%v URLs=%#v", res.Success, res.URLs)
 	}
 }
+
+func TestBuildFailedImageResultExtractsUpstreamStatus(t *testing.T) {
+	task := &model.Task{
+		TaskNo:       "t-failed",
+		Status:       model.TaskStatusFailed,
+		ErrorMessage: `API Error: openai returned 451: {"error":{"message":"unsafe image"}}`,
+	}
+
+	res := buildFailedImageResult(task, task.TaskNo, string(task.Status))
+
+	if !res.Done || res.Success || res.Status != string(model.TaskStatusFailed) {
+		t.Fatalf("result = %#v", res)
+	}
+	if res.HTTPStatus != 451 {
+		t.Fatalf("HTTPStatus = %d, want 451", res.HTTPStatus)
+	}
+	if res.Error != task.ErrorMessage {
+		t.Fatalf("Error = %q", res.Error)
+	}
+}
+
+func TestBuildFailedImageResultIgnoresNonErrorStatus(t *testing.T) {
+	task := &model.Task{
+		TaskNo:       "t-failed-no-http",
+		Status:       model.TaskStatusFailed,
+		ErrorMessage: "render failed without an HTTP status",
+	}
+
+	res := buildFailedImageResult(task, task.TaskNo, string(task.Status))
+
+	if res.HTTPStatus != 0 {
+		t.Fatalf("HTTPStatus = %d, want 0", res.HTTPStatus)
+	}
+}

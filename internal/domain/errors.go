@@ -126,8 +126,9 @@ func ClassifyUpstreamError(err error) (shouldBreak bool, backoff time.Duration) 
 
 // parseStatusFromString 兜底: 从 "http error: 401, body: ..." 或 "status 503" 提取状态码
 func parseStatusFromString(msg string) int {
-	for _, prefix := range []string{"http error: ", "status "} {
-		idx := strings.Index(msg, prefix)
+	lowerMessage := strings.ToLower(msg)
+	for _, prefix := range []string{"http error: ", "status=", "status ", "returned "} {
+		idx := strings.Index(lowerMessage, prefix)
 		if idx < 0 {
 			continue
 		}

@@ -708,6 +708,46 @@ func TestTaskPollFinalFailureEndsAttemptAndCall(t *testing.T) {
 	assertCapabilityRequestLog(t, db, task, channel, finalAttempt, metadata, "render failed")
 }
 
+func TestTaskPollNested451FailureEndsImmediately(t *testing.T) {
+	db, task, channel, endpoint := setupCapabilityWorkerTest(t, model.TaskStatusProcessing, model.ModePoll)
+	seedCompletedSubmitAttempt(t, task, channel, endpoint)
+	metadata := provider.RequestMetadata{
+		Method: httpMethodGet, RequestPath: "/actual/poll/provider-task", StatusCode: 200,
+		DurationMs: 13, RequestAt: time.Now().Add(-time.Second),
+	}
+	message := `API Error: openai returned 451: {"error":{"message":"unsafe image"}}`
+	newProvider = func(*model.Channel, *model.ChannelAccount, *model.Endpoint) (provider.Provider, error) {
+		return &scriptedCapabilityProvider{progress: []progressReply{{result: provider.ProgressResult{
+			RequestMetadata: metadata,
+			Status:          provider.StatusFail,
+			Error:           message,
+		}}}}, nil
+	}
+	requeueCalls := 0
+	requeueTaskPoll = func(uint, int, int) error {
+		requeueCalls++
+		return nil
+	}
+
+	if err := HandleTaskPoll(context.Background(), newTaskPollJob(task.ID, 0)); err != nil {
+		t.Fatalf("handle 451 poll failure: %v", err)
+	}
+
+	var failed model.Task
+	if err := db.First(&failed, task.ID).Error; err != nil {
+		t.Fatal(err)
+	}
+	if failed.Status != model.TaskStatusFailed || failed.ErrorMessage != message || requeueCalls != 0 {
+		t.Fatalf("task = status %s error %q requeues %d", failed.Status, failed.ErrorMessage, requeueCalls)
+	}
+	attempts := loadCapabilityAttempts(t, db, task.CallID)
+	finalAttempt := attempts[len(attempts)-1]
+	if finalAttempt.Status != model.APICallAttemptStatusFailed || finalAttempt.HTTPStatus != 451 ||
+		finalAttempt.ErrorRetryable || finalAttempt.ErrorMessage != message {
+		t.Fatalf("final poll attempt = %#v", finalAttempt)
+	}
+}
+
 func TestTaskPollStopsWhenCallbackClaimsFinalization(t *testing.T) {
 	db, task, channel, endpoint := setupCapabilityWorkerTest(t, model.TaskStatusProcessing, model.ModeCallback)
 	seedCompletedSubmitAttempt(t, task, channel, endpoint)

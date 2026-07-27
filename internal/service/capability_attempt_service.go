@@ -73,8 +73,11 @@ func FinishCapabilityAttempt(
 		return fmt.Errorf("%w: task, channel and endpoint are required", ErrAPICallInvalidInput)
 	}
 	statusCode := metadata.StatusCode
-	if statusCode == 0 && requestErr != nil {
-		statusCode = domain.UpstreamStatusCode(requestErr)
+	if requestErr != nil {
+		errorStatusCode := domain.UpstreamStatusCode(requestErr)
+		if errorStatusCode >= 400 && errorStatusCode < 600 && (statusCode == 0 || statusCode < 400) {
+			statusCode = errorStatusCode
+		}
 	}
 	requestPath := sanitizeCapabilityRequestPath(metadata.RequestPath)
 	if requestPath == "" {

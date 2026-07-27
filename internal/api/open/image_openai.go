@@ -424,7 +424,11 @@ func invokeOpenAIImage(
 
 	// 明确失败
 	if result.Done && !result.Success {
-		openAIError(c, http.StatusBadGateway, result.Error, "api_error")
+		statusCode := result.HTTPStatus
+		if statusCode < 400 || statusCode >= 600 {
+			statusCode = http.StatusBadGateway
+		}
+		openAIError(c, statusCode, result.Error, "api_error")
 		return
 	}
 

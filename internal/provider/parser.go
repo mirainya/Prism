@@ -196,13 +196,29 @@ func (p *DefaultParser) ParseCallbackResponse(body []byte, mapping *ResponseMapp
 }
 
 func (p *DefaultParser) mapStatus(raw string, mapping map[string]string) TaskStatus {
-	if mapping == nil {
-		return TaskStatus(strings.ToUpper(raw))
+	value := strings.TrimSpace(raw)
+	if mapping != nil {
+		if mapped, ok := mapping[value]; ok {
+			value = mapped
+		} else {
+			for source, mapped := range mapping {
+				if strings.EqualFold(strings.TrimSpace(source), value) {
+					value = mapped
+					break
+				}
+			}
+		}
 	}
-	if mapped, ok := mapping[raw]; ok {
-		return TaskStatus(strings.ToUpper(mapped))
+
+	normalized := strings.ToUpper(strings.TrimSpace(value))
+	switch normalized {
+	case "FAILED", "FAILURE", "ERROR", "CANCELED", "CANCELLED":
+		return StatusFail
+	case "SUCCEEDED", "COMPLETED", "DONE":
+		return StatusSuccess
+	default:
+		return TaskStatus(normalized)
 	}
-	return TaskStatus(strings.ToUpper(raw))
 }
 
 func ParseResponseMapping(data []byte) (*ResponseMapping, error) {

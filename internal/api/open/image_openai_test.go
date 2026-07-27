@@ -173,6 +173,32 @@ func TestCreateImageGenerationOpenAIReturnsBase64Response(t *testing.T) {
 	}
 }
 
+func TestCreateImageGenerationOpenAIForwardsUpstreamFailureStatus(t *testing.T) {
+	message := `API Error: openai returned 451: {"error":{"message":"unsafe image"}}`
+	fake := &fakeOpenAIImageService{result: &service.ImageResult{
+		Done: true, Success: false, Status: "failed", Error: message, HTTPStatus: 451,
+	}}
+	recorder := serveOpenAIImageRequest(t, fake, nil, `{
+		"model":"gpt-image-prism","prompt":"draw"
+	}`)
+
+	if recorder.Code != http.StatusUnavailableForLegalReasons {
+		t.Fatalf("status = %d, body = %s", recorder.Code, recorder.Body.String())
+	}
+	var response struct {
+		Error struct {
+			Message string `json:"message"`
+			Type    string `json:"type"`
+		} `json:"error"`
+	}
+	if err := json.Unmarshal(recorder.Body.Bytes(), &response); err != nil {
+		t.Fatal(err)
+	}
+	if response.Error.Message != message || response.Error.Type != "api_error" {
+		t.Fatalf("response = %#v", response)
+	}
+}
+
 func TestCreateImageGenerationOpenAICancelsTimedOutTask(t *testing.T) {
 	fake := &fakeOpenAIImageService{result: &service.ImageResult{
 		Done: false, TaskNo: "task-timeout", Status: "processing",
