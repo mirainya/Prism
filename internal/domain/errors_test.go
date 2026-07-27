@@ -48,6 +48,7 @@ func TestUpstreamStatusCode(t *testing.T) {
 		{fmt.Errorf("upstream returned status 503"), 503},
 		{fmt.Errorf("upstream error: status=422, body=invalid request"), 422},
 		{fmt.Errorf("API Error: openai returned 451: unsafe image"), 451},
+		{fmt.Errorf(`API Error: openai returned 400: {"error":{"message":"The generated images appear to be unsafe.","code":"ERR-5CCF05E363"}}`), 400},
 		{fmt.Errorf("API ERROR: OPENAI RETURNED 451: unsafe image"), 451},
 		{fmt.Errorf("submit: %w", &UpstreamError{StatusCode: 429}), 429},
 		{fmt.Errorf("no code here"), 0},

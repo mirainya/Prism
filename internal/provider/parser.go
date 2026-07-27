@@ -148,8 +148,40 @@ func (p *DefaultParser) ParseProgressResponse(body []byte, mapping *ResponseMapp
 	if mapping.Error != "" {
 		result.Error = gjson.Get(jsonStr, normalizeGjsonPath(mapping.Error)).String()
 	}
+	if result.Status == StatusFail && strings.TrimSpace(result.Error) == "" {
+		result.Error = extractFailureMessage(jsonStr)
+	}
 
 	return result, nil
+}
+
+func extractFailureMessage(jsonStr string) string {
+	paths := []string{
+		"error.message", "error",
+		"data.error.message", "data.error",
+		"result.error.message", "result.error",
+		"fail_reason", "failure_reason", "error_message", "error_msg",
+		"data.fail_reason", "data.failure_reason", "data.error_message", "data.error_msg",
+		"result.fail_reason", "result.failure_reason", "result.error_message", "result.error_msg",
+		"message", "data.message", "result.message",
+	}
+	for _, path := range paths {
+		value := gjson.Get(jsonStr, path)
+		if !value.Exists() || value.Type == gjson.Null {
+			continue
+		}
+		message := strings.TrimSpace(value.String())
+		if value.Type == gjson.JSON {
+			message = strings.TrimSpace(value.Raw)
+		}
+		if message != "" && !strings.EqualFold(message, "success") {
+			return message
+		}
+	}
+
+	// A failed response is more useful than a generic placeholder even when the
+	// endpoint has not configured the vendor's error field yet.
+	return strings.TrimSpace(jsonStr)
 }
 
 // ParseCallbackResponse 解析回调请求体，返回进度结果和 provider_task_id

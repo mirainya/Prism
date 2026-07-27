@@ -199,6 +199,24 @@ func TestCreateImageGenerationOpenAIForwardsUpstreamFailureStatus(t *testing.T) 
 	}
 }
 
+func TestCreateImageGenerationOpenAIForwardsUpstreamBadRequestStatus(t *testing.T) {
+	message := `API Error: openai returned 400: {"error":{"message":"The generated images appear to be unsafe. Try modifying the prompts or the seeds.","type":"invalid_request_error","param":"","code":"ERR-5CCF05E363"}}`
+	fake := &fakeOpenAIImageService{result: &service.ImageResult{
+		Done: true, Success: false, Status: "failed", Error: message, HTTPStatus: 400,
+	}}
+	recorder := serveOpenAIImageRequest(t, fake, nil, `{
+		"model":"gpt-image-prism","prompt":"draw"
+	}`)
+
+	if recorder.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, body = %s", recorder.Code, recorder.Body.String())
+	}
+	if !strings.Contains(recorder.Body.String(), "ERR-5CCF05E363") ||
+		!strings.Contains(recorder.Body.String(), "invalid_request_error") {
+		t.Fatalf("body = %s", recorder.Body.String())
+	}
+}
+
 func TestCreateImageGenerationOpenAICancelsTimedOutTask(t *testing.T) {
 	fake := &fakeOpenAIImageService{result: &service.ImageResult{
 		Done: false, TaskNo: "task-timeout", Status: "processing",

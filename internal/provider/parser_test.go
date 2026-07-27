@@ -1,6 +1,9 @@
 package provider
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 func TestParseSubmitResponseExtractsB64Data(t *testing.T) {
 	parser := NewDefaultParser()
@@ -104,5 +107,35 @@ func TestParseProgressResponseNormalizesMappedFailedStatus(t *testing.T) {
 	}
 	if result.Status != StatusFail {
 		t.Fatalf("Status = %q, want %q", result.Status, StatusFail)
+	}
+}
+
+func TestParseProgressResponseExtractsUnmappedFailureMessage(t *testing.T) {
+	parser := NewDefaultParser()
+	message := `API Error: openai returned 400: {"error":{"message":"The generated images appear to be unsafe. Try modifying the prompts or the seeds.","type":"invalid_request_error","param":"","code":"ERR-5CCF05E363"}}`
+	result, err := parser.ParseProgressResponse([]byte(`{
+		"status":"FAILED",
+		"data":{"error":"`+strings.ReplaceAll(message, `"`, `\"`)+`"}
+	}`), &ResponseMapping{
+		Status: "status",
+		Error:  "missing.error.path",
+	})
+	if err != nil {
+		t.Fatalf("ParseProgressResponse() error = %v", err)
+	}
+	if result.Status != StatusFail || result.Error != message {
+		t.Fatalf("result = %#v", result)
+	}
+}
+
+func TestParseProgressResponsePreservesUnknownFailurePayload(t *testing.T) {
+	parser := NewDefaultParser()
+	body := `{"status":"FAILED","details":{"vendor_failure":"openai returned 451"}}`
+	result, err := parser.ParseProgressResponse([]byte(body), &ResponseMapping{Status: "status"})
+	if err != nil {
+		t.Fatalf("ParseProgressResponse() error = %v", err)
+	}
+	if result.Error != body {
+		t.Fatalf("Error = %q, want raw failed payload", result.Error)
 	}
 }
