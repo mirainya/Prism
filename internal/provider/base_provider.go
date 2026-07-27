@@ -392,17 +392,20 @@ func (p *BaseProvider) GetProgress(ctx context.Context, providerTaskID string) (
 	if err != nil {
 		return ProgressResult{}, fmt.Errorf("read response: %w", err)
 	}
+	result.RawResponse = append(json.RawMessage(nil), respBody...)
 
 	if resp.StatusCode >= 400 {
 		// 返回结构化错误(保留 status code),交由 poll_worker 分级决定继续轮询或快速失败
-		return ProgressResult{}, &domain.UpstreamError{StatusCode: resp.StatusCode, Body: extractUpstreamErrorMessage(respBody)}
+		return result, &domain.UpstreamError{StatusCode: resp.StatusCode, Body: extractUpstreamErrorMessage(respBody)}
 	}
 
 	mapping := p.PollResponseMapping
 	if mapping.IsEmpty() {
 		mapping = p.ResponseMapping
 	}
-	return p.Parser.ParseProgressResponse(respBody, mapping)
+	parsed, parseErr := p.Parser.ParseProgressResponse(respBody, mapping)
+	parsed.RawResponse = result.RawResponse
+	return parsed, parseErr
 }
 
 // ParseCallback 使用独立的 CallbackMapping 解析回调

@@ -217,6 +217,33 @@ func TestCreateImageGenerationOpenAIForwardsUpstreamBadRequestStatus(t *testing.
 	}
 }
 
+func TestCreateImageGenerationOpenAIPassesThroughUpstreamErrorBody(t *testing.T) {
+	errorBody := json.RawMessage(`{"error":{"message":"unsafe image","type":"invalid_request_error","code":"ERR-TEST"}}`)
+	fake := &fakeOpenAIImageService{result: &service.ImageResult{
+		Done: true, Success: false, Status: "failed", Error: "wrapped error", HTTPStatus: 400, ErrorBody: errorBody,
+	}}
+	recorder := serveOpenAIImageRequest(t, fake, nil, `{
+		"model":"gpt-image-prism","prompt":"draw"
+	}`)
+
+	if recorder.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, body = %s", recorder.Code, recorder.Body.String())
+	}
+	var actual any
+	var expected any
+	if err := json.Unmarshal(recorder.Body.Bytes(), &actual); err != nil {
+		t.Fatal(err)
+	}
+	if err := json.Unmarshal(errorBody, &expected); err != nil {
+		t.Fatal(err)
+	}
+	actualJSON, _ := json.Marshal(actual)
+	expectedJSON, _ := json.Marshal(expected)
+	if string(actualJSON) != string(expectedJSON) {
+		t.Fatalf("body = %s, want %s", actualJSON, expectedJSON)
+	}
+}
+
 func TestCreateImageGenerationOpenAICancelsTimedOutTask(t *testing.T) {
 	fake := &fakeOpenAIImageService{result: &service.ImageResult{
 		Done: false, TaskNo: "task-timeout", Status: "processing",

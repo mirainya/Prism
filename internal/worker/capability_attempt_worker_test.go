@@ -682,9 +682,11 @@ func TestTaskPollFinalFailureEndsAttemptAndCall(t *testing.T) {
 		Method: httpMethodGet, RequestPath: "/actual/poll/provider-task", StatusCode: 200,
 		DurationMs: 13, RequestAt: time.Now().Add(-time.Second),
 	}
+	rawResponse := json.RawMessage(`{"status":"FAILED","message":"render failed"}`)
 	newProvider = func(*model.Channel, *model.ChannelAccount, *model.Endpoint) (provider.Provider, error) {
 		return &scriptedCapabilityProvider{progress: []progressReply{{result: provider.ProgressResult{
 			RequestMetadata: metadata,
+			RawResponse:     rawResponse,
 			Status:          provider.StatusFail,
 			Error:           "render failed",
 		}}}}, nil
@@ -706,6 +708,13 @@ func TestTaskPollFinalFailureEndsAttemptAndCall(t *testing.T) {
 	assertTaskAndCallTerminal(t, db, task.ID, task.CallID, model.TaskStatusFailed, model.APICallStatusFailed, finalAttempt.ID)
 	assertWorkerBillingAttempt(t, db, task.TaskNo, finalAttempt.ID)
 	assertCapabilityRequestLog(t, db, task, channel, finalAttempt, metadata, "render failed")
+	var failedTask model.Task
+	if err := db.First(&failedTask, task.ID).Error; err != nil {
+		t.Fatal(err)
+	}
+	if string(failedTask.VendorResponse) != string(rawResponse) {
+		t.Fatalf("VendorResponse = %s, want %s", failedTask.VendorResponse, rawResponse)
+	}
 }
 
 func TestTaskPollNested451FailureEndsImmediately(t *testing.T) {

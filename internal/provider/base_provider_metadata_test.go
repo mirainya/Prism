@@ -108,9 +108,10 @@ func TestBaseProviderGetProgressReturnsMetadataOnSuccessAndError(t *testing.T) {
 		name       string
 		statusCode int
 		wantError  bool
+		wantRaw    string
 	}{
-		{name: "success", statusCode: http.StatusOK},
-		{name: "upstream error", statusCode: http.StatusServiceUnavailable, wantError: true},
+		{name: "success", statusCode: http.StatusOK, wantRaw: `{"status":"processing","progress":25}`},
+		{name: "upstream error", statusCode: http.StatusServiceUnavailable, wantError: true, wantRaw: `{"message":"unavailable"}`},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -150,6 +151,9 @@ func TestBaseProviderGetProgressReturnsMetadataOnSuccessAndError(t *testing.T) {
 				if result.Status != StatusProcessing || result.Progress != 25 {
 					t.Fatalf("GetProgress() result = %#v", result)
 				}
+			}
+			if string(result.RawResponse) != test.wantRaw {
+				t.Fatalf("RawResponse = %s, want %s", result.RawResponse, test.wantRaw)
 			}
 			assertRequestMetadata(t, result.RequestMetadata, http.MethodGet, "/prefix/tasks/task-1", test.statusCode)
 		})

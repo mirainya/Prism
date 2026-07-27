@@ -2,6 +2,7 @@ package provider
 
 import (
 	"context"
+	"encoding/json"
 	"time"
 )
 
@@ -51,6 +52,7 @@ type SubmitResult struct {
 
 type ProgressResult struct {
 	RequestMetadata RequestMetadata
+	RawResponse     json.RawMessage
 	Status          TaskStatus
 	Progress        int
 	URLs            []string

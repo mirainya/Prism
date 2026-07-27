@@ -140,6 +140,15 @@ func HandleTaskPoll(ctx context.Context, t *asynq.Task) error {
 		return fmt.Errorf("start poll attempt: %w", err)
 	}
 	result, err := prov.GetProgress(ctx, task.VendorTaskID)
+	if len(result.RawResponse) > 0 {
+		vendorResponse := result.RawResponse
+		if !json.Valid(vendorResponse) {
+			vendorResponse, _ = json.Marshal(map[string]string{"raw": string(result.RawResponse)})
+		}
+		if saveErr := taskService.UpdateVendorResponse(task.ID, vendorResponse); saveErr != nil {
+			return fmt.Errorf("save poll vendor response: %w", saveErr)
+		}
+	}
 	attemptErr := err
 	if attemptErr == nil && result.Status == provider.StatusFail {
 		if result.Error == "" {

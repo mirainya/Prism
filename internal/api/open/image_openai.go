@@ -428,6 +428,10 @@ func invokeOpenAIImage(
 		if statusCode < 400 || statusCode >= 600 {
 			statusCode = http.StatusBadGateway
 		}
+		if len(result.ErrorBody) > 0 {
+			c.Data(statusCode, "application/json; charset=utf-8", result.ErrorBody)
+			return
+		}
 		openAIError(c, statusCode, result.Error, "api_error")
 		return
 	}

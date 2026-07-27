@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"net/http"
+	"strings"
 	"time"
 
 	"github.com/mirainya/Prism/internal/domain"
@@ -28,6 +30,7 @@ type ImageResult struct {
 	RevisedPrompt string
 	Error         string
 	HTTPStatus    int
+	ErrorBody     json.RawMessage
 }
 
 // taskResultPayload 对应 task.Result 存储的统一结果结构
@@ -108,13 +111,98 @@ func buildFailedImageResult(task *model.Task, taskNo, status string) *ImageResul
 		return result
 	}
 	result.Error = task.ErrorMessage
-	if result.Error != "" {
-		statusCode := domain.UpstreamStatusCode(errors.New(result.Error))
-		if statusCode >= 400 && statusCode < 600 {
-			result.HTTPStatus = statusCode
-		}
+	result.HTTPStatus, result.ErrorBody = imageUpstreamFailure(json.RawMessage(task.VendorResponse), result.Error)
+	if result.HTTPStatus == 0 && result.Error != "" {
+		result.HTTPStatus = normalizedImageFailureStatus(domain.UpstreamStatusCode(errors.New(result.Error)))
 	}
 	return result
+}
+
+func imageUpstreamFailure(raw json.RawMessage, fallbackMessage string) (int, json.RawMessage) {
+	if len(raw) == 0 || !json.Valid(raw) {
+		return 0, nil
+	}
+
+	var payload any
+	if json.Unmarshal(raw, &payload) == nil {
+		if statusCode, body := findEmbeddedOpenAIError(payload); statusCode != 0 && len(body) > 0 {
+			return statusCode, body
+		}
+	}
+
+	var directEnvelope struct {
+		Error json.RawMessage `json:"error"`
+	}
+	if json.Unmarshal(raw, &directEnvelope) == nil && len(directEnvelope.Error) > 0 {
+		statusCode := normalizedImageFailureStatus(domain.UpstreamStatusCode(errors.New(string(raw))))
+		if statusCode == 0 {
+			statusCode = http.StatusUnprocessableEntity
+		}
+		return statusCode, append(json.RawMessage(nil), raw...)
+	}
+
+	statusCode := normalizedImageFailureStatus(domain.UpstreamStatusCode(errors.New(string(raw))))
+	if statusCode == 0 {
+		statusCode = http.StatusUnprocessableEntity
+	}
+	body, err := json.Marshal(map[string]any{
+		"error": map[string]any{
+			"message":           fallbackMessage,
+			"type":              "upstream_task_error",
+			"code":              "upstream_task_failed",
+			"upstream_response": json.RawMessage(raw),
+		},
+	})
+	if err != nil {
+		return statusCode, nil
+	}
+	return statusCode, body
+}
+
+func findEmbeddedOpenAIError(value any) (int, json.RawMessage) {
+	switch typed := value.(type) {
+	case string:
+		statusCode := normalizedImageFailureStatus(domain.UpstreamStatusCode(errors.New(typed)))
+		if statusCode == 0 {
+			return 0, nil
+		}
+		for index := strings.Index(typed, "{"); index >= 0; {
+			candidate := strings.TrimSpace(typed[index:])
+			if json.Valid([]byte(candidate)) {
+				var envelope struct {
+					Error json.RawMessage `json:"error"`
+				}
+				if json.Unmarshal([]byte(candidate), &envelope) == nil && len(envelope.Error) > 0 {
+					return statusCode, json.RawMessage(candidate)
+				}
+			}
+			next := strings.Index(typed[index+1:], "{")
+			if next < 0 {
+				break
+			}
+			index += next + 1
+		}
+	case []any:
+		for _, item := range typed {
+			if statusCode, body := findEmbeddedOpenAIError(item); statusCode != 0 {
+				return statusCode, body
+			}
+		}
+	case map[string]any:
+		for _, item := range typed {
+			if statusCode, body := findEmbeddedOpenAIError(item); statusCode != 0 {
+				return statusCode, body
+			}
+		}
+	}
+	return 0, nil
+}
+
+func normalizedImageFailureStatus(statusCode int) int {
+	if statusCode >= 400 && statusCode < 600 {
+		return statusCode
+	}
+	return 0
 }
 
 // taskByNo 按 task_no + user 读取任务
