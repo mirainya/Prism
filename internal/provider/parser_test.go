@@ -130,12 +130,29 @@ func TestParseProgressResponseExtractsUnmappedFailureMessage(t *testing.T) {
 
 func TestParseProgressResponsePreservesUnknownFailurePayload(t *testing.T) {
 	parser := NewDefaultParser()
-	body := `{"status":"FAILED","details":{"vendor_failure":"openai returned 451"}}`
+	body := `{"status":"FAILED","details":{"vendor_failure":"render rejected by vendor"}}`
 	result, err := parser.ParseProgressResponse([]byte(body), &ResponseMapping{Status: "status"})
 	if err != nil {
 		t.Fatalf("ParseProgressResponse() error = %v", err)
 	}
 	if result.Error != body {
 		t.Fatalf("Error = %q, want raw failed payload", result.Error)
+	}
+}
+
+func TestParseProgressResponseFindsNestedHTTPFailureBeforeGenericMessage(t *testing.T) {
+	parser := NewDefaultParser()
+	message := `API Error: openai returned 400: {"error":{"message":"unsafe image"}}`
+	body := `{
+		"status":"FAILED",
+		"message":"The task could not be completed",
+		"details":{"vendor_failure":"` + strings.ReplaceAll(message, `"`, `\"`) + `"}
+	}`
+	result, err := parser.ParseProgressResponse([]byte(body), &ResponseMapping{Status: "status"})
+	if err != nil {
+		t.Fatalf("ParseProgressResponse() error = %v", err)
+	}
+	if result.Error != message {
+		t.Fatalf("Error = %q", result.Error)
 	}
 }

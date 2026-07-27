@@ -2,8 +2,10 @@ package provider
 
 import (
 	"encoding/json"
+	"errors"
 	"strings"
 
+	"github.com/mirainya/Prism/internal/domain"
 	"github.com/tidwall/gjson"
 )
 
@@ -156,6 +158,13 @@ func (p *DefaultParser) ParseProgressResponse(body []byte, mapping *ResponseMapp
 }
 
 func extractFailureMessage(jsonStr string) string {
+	var payload any
+	if json.Unmarshal([]byte(jsonStr), &payload) == nil {
+		if message := findHTTPFailureMessage(payload); message != "" {
+			return message
+		}
+	}
+
 	paths := []string{
 		"error.message", "error",
 		"data.error.message", "data.error",
@@ -182,6 +191,29 @@ func extractFailureMessage(jsonStr string) string {
 	// A failed response is more useful than a generic placeholder even when the
 	// endpoint has not configured the vendor's error field yet.
 	return strings.TrimSpace(jsonStr)
+}
+
+func findHTTPFailureMessage(value any) string {
+	switch typed := value.(type) {
+	case string:
+		statusCode := domain.UpstreamStatusCode(errors.New(typed))
+		if statusCode >= 400 && statusCode < 600 {
+			return strings.TrimSpace(typed)
+		}
+	case []any:
+		for _, item := range typed {
+			if message := findHTTPFailureMessage(item); message != "" {
+				return message
+			}
+		}
+	case map[string]any:
+		for _, item := range typed {
+			if message := findHTTPFailureMessage(item); message != "" {
+				return message
+			}
+		}
+	}
+	return ""
 }
 
 // ParseCallbackResponse 解析回调请求体，返回进度结果和 provider_task_id
