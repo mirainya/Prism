@@ -2,6 +2,7 @@ package admin
 
 import (
 	"encoding/json"
+	"errors"
 	"net/http"
 	"strconv"
 
@@ -48,7 +49,7 @@ func CreateChannelCapability(c *gin.Context) {
 
 	ep, err := endpointAdminService.CreateEndpoint(&req)
 	if err != nil {
-		resp.ErrorMsg(c, http.StatusInternalServerError, 500, err.Error())
+		writeEndpointAdminError(c, err)
 		return
 	}
 
@@ -69,14 +70,14 @@ func UpdateChannelCapability(c *gin.Context) {
 		"model_code": true, "channel_id": true,
 		"protocol": true, "request_path": true, "request_method": true, "content_type": true,
 		"auth_location": true, "auth_key": true, "auth_value_prefix": true,
-		"vendor_model": true,
+		"vendor_model":     true,
 		"interaction_mode": true, "supports_stream": true, "default_stream": true,
 		"price_mode": true, "input_price": true, "output_price": true,
 		"param_mapping": true, "param_schema": true, "response_mapping": true,
 		"poll_path": true, "poll_method": true, "poll_interval": true, "poll_max_attempts": true,
 		"poll_param_mapping": true, "poll_response_mapping": true,
 		"callback_mapping": true,
-		"extra_headers": true, "extra_config": true,
+		"extra_headers":    true, "extra_config": true,
 		"timeout": true, "priority": true, "status": true,
 	}
 
@@ -103,13 +104,40 @@ func UpdateChannelCapability(c *gin.Context) {
 		}
 	}
 
-	ep, err := endpointAdminService.UpdateEndpoint(uint(id), req)
+	var bindingUpdates *[]service.EndpointAccountBindingInput
+	if rawBindings, ok := raw["account_bindings"]; ok {
+		payload, err := json.Marshal(rawBindings)
+		if err != nil {
+			resp.ErrorMsg(c, http.StatusBadRequest, 400, "invalid account_bindings")
+			return
+		}
+		var bindings []service.EndpointAccountBindingInput
+		if err := json.Unmarshal(payload, &bindings); err != nil {
+			resp.ErrorMsg(c, http.StatusBadRequest, 400, "invalid account_bindings")
+			return
+		}
+		bindingUpdates = &bindings
+	}
+
+	ep, err := endpointAdminService.UpdateEndpoint(uint(id), req, bindingUpdates)
 	if err != nil {
-		resp.ErrorMsg(c, http.StatusInternalServerError, 500, err.Error())
+		writeEndpointAdminError(c, err)
 		return
 	}
 
 	resp.Success(c, ep)
+}
+
+func writeEndpointAdminError(c *gin.Context, err error) {
+	status := http.StatusInternalServerError
+	code := 500
+	if errors.Is(err, service.ErrEndpointAccountMismatch) ||
+		errors.Is(err, service.ErrEndpointDuplicateAccount) ||
+		errors.Is(err, service.ErrEndpointInvalidBinding) {
+		status = http.StatusBadRequest
+		code = 400
+	}
+	resp.ErrorMsg(c, status, code, err.Error())
 }
 
 // DeleteChannelCapability 删除端点

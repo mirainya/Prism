@@ -4,39 +4,57 @@ import (
 	"context"
 	"encoding/base64"
 	"fmt"
+	"net/http"
 	"path/filepath"
 	"strings"
 
 	"github.com/mirainya/Prism/internal/model"
+	"github.com/mirainya/Prism/pkg/filestorage"
 	"github.com/mirainya/Prism/pkg/safeurl"
 )
 
-// resolveFileParams 图生图文件预处理:仅对配了 extra_config.image_edit 的端点,
-// 把其 file_field 字段里的图片 URL 下载并转为 @base64:filename:data 格式,
-// 供 BaseProvider.buildMultipartBody 上传文件流(OpenAI /v1/images/edits 约定)。
-// 支持单个 URL 或 URL 数组(多参考图)。
-//
-// 未配 image_edit 的端点(豆包/duomi 等 JSON 直传 URL,或文生图/chat/video)一律原样返回,
-// 图 URL 由 param_mapping 的 field_mapping 透传给上游,不受本函数影响。
-func resolveFileParams(ctx context.Context, params map[string]any, endpoint *model.Endpoint) (map[string]any, error) {
+var uploadImageEditBytes = filestorage.TransferBytes
+var downloadImageEditURL = downloadToBase64
+
+// resolveFileParams prepares reference images according to endpoint image_edit config.
+// URL mode uploads internal images and emits public URLs. Multipart mode converts
+// public URLs to the internal file representation used by BaseProvider.
+func resolveFileParams(ctx context.Context, params map[string]any, endpoint *model.Endpoint, capabilityCode string) (map[string]any, error) {
 	ie := endpoint.ImageEdit()
 	if ie == nil {
-		return params, nil // 端点未启用图生图文件上传,原样透传
+		return params, nil
 	}
 
-	val, ok := params[ie.FileField]
+	sourceField, val, ok := findImageEditParam(params, ie.FileField)
 	if !ok {
-		return params, nil // 本次请求未带参考图(纯文生图)
+		return params, nil
 	}
 
-	// 把单个 URL 下载并转为 @base64:filename:data
-	convert := func(urlStr string) (string, error) {
-		if !strings.HasPrefix(urlStr, "http") {
-			return urlStr, nil // 已是 @base64:... 或非 URL,原样保留
+	convert := func(field, value string) (string, error) {
+		if ie.InputMode == model.ImageInputModeURL {
+			if strings.HasPrefix(value, "http://") || strings.HasPrefix(value, "https://") {
+				return value, nil
+			}
+			data, contentType, ok, err := decodeInternalImage(value)
+			if err != nil {
+				return "", fmt.Errorf("decode reference image for field %s: %w", field, err)
+			}
+			if !ok {
+				return "", fmt.Errorf("field %s must contain an image URL or uploaded image", field)
+			}
+			imageURL, err := uploadImageEditBytes(ctx, data, contentType, capabilityCode)
+			if err != nil {
+				return "", fmt.Errorf("upload reference image for field %s: %w", field, err)
+			}
+			return imageURL, nil
 		}
-		b64Data, filename, err := downloadToBase64(ctx, urlStr)
+
+		if !strings.HasPrefix(value, "http://") && !strings.HasPrefix(value, "https://") {
+			return value, nil // 已是 @base64:... 或非 URL,原样保留
+		}
+		b64Data, filename, err := downloadImageEditURL(ctx, value)
 		if err != nil {
-			return "", fmt.Errorf("download reference image for field %s: %w", ie.FileField, err)
+			return "", fmt.Errorf("download reference image for field %s: %w", field, err)
 		}
 		return "@base64:" + filename + ":" + b64Data, nil
 	}
@@ -45,42 +63,128 @@ func resolveFileParams(ctx context.Context, params map[string]any, endpoint *mod
 	for k, v := range params {
 		result[k] = v
 	}
+	if sourceField != ie.FileField {
+		delete(result, sourceField)
+	}
 
-	switch v := val.(type) {
-	case string:
-		converted, err := convert(v)
-		if err != nil {
-			return nil, err
-		}
-		result[ie.FileField] = converted
-	case []any:
-		out := make([]any, 0, len(v))
-		for _, item := range v {
-			s, ok := item.(string)
-			if !ok {
-				out = append(out, item)
-				continue
-			}
-			converted, err := convert(s)
+	converted, err := convertImageEditValue(ie.FileField, val, convert)
+	if err != nil {
+		return nil, err
+	}
+	result[ie.FileField] = converted
+
+	// Stored masks also need to become file parts for multipart edit endpoints.
+	if ie.InputMode == model.ImageInputModeMultipart {
+		if mask, exists := result["mask"]; exists {
+			convertedMask, err := convertImageEditValue("mask", mask, convert)
 			if err != nil {
 				return nil, err
 			}
-			out = append(out, converted)
+			result["mask"] = convertedMask
 		}
-		result[ie.FileField] = out
-	case []string:
-		out := make([]string, 0, len(v))
-		for _, item := range v {
-			converted, err := convert(item)
-			if err != nil {
-				return nil, err
-			}
-			out = append(out, converted)
-		}
-		result[ie.FileField] = out
 	}
 
 	return result, nil
+}
+
+func convertImageEditValue(
+	field string,
+	value any,
+	convert func(string, string) (string, error),
+) (any, error) {
+	switch typed := value.(type) {
+	case string:
+		return convert(field, typed)
+	case []any:
+		converted := make([]any, 0, len(typed))
+		for _, item := range typed {
+			stringValue, ok := item.(string)
+			if !ok {
+				return nil, fmt.Errorf("field %s must contain only strings", field)
+			}
+			convertedValue, err := convert(field, stringValue)
+			if err != nil {
+				return nil, err
+			}
+			converted = append(converted, convertedValue)
+		}
+		return converted, nil
+	case []string:
+		converted := make([]string, 0, len(typed))
+		for _, item := range typed {
+			convertedValue, err := convert(field, item)
+			if err != nil {
+				return nil, err
+			}
+			converted = append(converted, convertedValue)
+		}
+		return converted, nil
+	default:
+		return nil, fmt.Errorf("field %s must be a string or string array", field)
+	}
+}
+
+func findImageEditParam(params map[string]any, configuredField string) (string, any, bool) {
+	configuredValue, configuredExists := params[configuredField]
+	if configuredExists && hasImageEditValue(configuredValue) {
+		return configuredField, configuredValue, true
+	}
+	for _, field := range []string{"image_urls", "image", "images"} {
+		if field == configuredField {
+			continue
+		}
+		if value, ok := params[field]; ok && hasImageEditValue(value) {
+			return field, value, true
+		}
+	}
+	if configuredExists {
+		return configuredField, configuredValue, true
+	}
+	return "", nil, false
+}
+
+func hasImageEditValue(value any) bool {
+	switch typed := value.(type) {
+	case string:
+		return strings.TrimSpace(typed) != ""
+	case []any:
+		return len(typed) > 0
+	case []string:
+		return len(typed) > 0
+	default:
+		return value != nil
+	}
+}
+
+func decodeInternalImage(value string) ([]byte, string, bool, error) {
+	encoded := ""
+	if strings.HasPrefix(value, "@base64:") {
+		parts := strings.SplitN(strings.TrimPrefix(value, "@base64:"), ":", 2)
+		if len(parts) != 2 || strings.TrimSpace(parts[1]) == "" {
+			return nil, "", true, fmt.Errorf("invalid internal base64 image")
+		}
+		encoded = parts[1]
+	} else if strings.HasPrefix(value, "data:") {
+		parts := strings.SplitN(value, ",", 2)
+		if len(parts) != 2 || !strings.Contains(parts[0], ";base64") {
+			return nil, "", true, fmt.Errorf("invalid image data URL")
+		}
+		encoded = parts[1]
+	} else {
+		return nil, "", false, nil
+	}
+
+	data, err := base64.StdEncoding.DecodeString(encoded)
+	if err != nil {
+		return nil, "", true, err
+	}
+	contentType := http.DetectContentType(data)
+	switch contentType {
+	case "image/png", "image/jpeg", "image/webp":
+		return data, contentType, true, nil
+	default:
+		return nil, "", true, fmt.Errorf("unsupported image type %s", contentType)
+	}
 }
 
 // downloadToBase64 下载 URL 内容并返回 base64 编码字符串和文件名
@@ -94,6 +198,12 @@ func downloadToBase64(ctx context.Context, urlStr string) (string, string, error
 	ext := inferExtension(contentType, urlStr)
 	filename := "upload" + ext
 	return base64.StdEncoding.EncodeToString(result.Data), filename, nil
+}
+
+// DownloadImageAsBase64 downloads a public image URL and returns its base64 payload.
+func DownloadImageAsBase64(ctx context.Context, urlStr string) (string, error) {
+	b64Data, _, err := downloadToBase64(ctx, urlStr)
+	return b64Data, err
 }
 
 // inferExtension 根据 Content-Type 和 URL 推断文件扩展名

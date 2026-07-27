@@ -12,8 +12,8 @@ func TestLoadIncludesImmutableBaseline(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(migrations) != 2 {
-		t.Fatalf("managed migrations=%d, want 2", len(migrations))
+	if len(migrations) != 5 {
+		t.Fatalf("managed migrations=%d, want 5", len(migrations))
 	}
 	baseline := migrations[0]
 	if baseline.Filename != "20260718_150000_schema_baseline.sql" {
@@ -29,6 +29,27 @@ func TestLoadIncludesImmutableBaseline(t *testing.T) {
 	const expectedCleanupChecksum = "b15775816c3c74bb416dfc1aeb8d1d74014e7498c2dcd2525d876dcd86c96559"
 	if migrations[1].Checksum != expectedCleanupChecksum {
 		t.Fatalf("cleanup checksum=%s, want %s", migrations[1].Checksum, expectedCleanupChecksum)
+	}
+	if migrations[2].Filename != "20260726_170000_endpoints_model_fk_on_update_cascade.sql" {
+		t.Fatalf("fk migration filename=%q", migrations[2].Filename)
+	}
+	const expectedFKChecksum = "515d4206fef899add83d7f9fe70406cfa7b8e39b4ccf8e0eb16cd904e2c89c32"
+	if migrations[2].Checksum != expectedFKChecksum {
+		t.Fatalf("fk checksum=%s, want %s", migrations[2].Checksum, expectedFKChecksum)
+	}
+	if migrations[3].Filename != "20260727_180000_add_endpoint_accounts.sql" {
+		t.Fatalf("endpoint account migration filename=%q", migrations[3].Filename)
+	}
+	const expectedEndpointAccountChecksum = "ef5ad77bd507db2bfcf56bfd09d60b6d71e9c28186cbcbcce19cea3192364cd3"
+	if migrations[3].Checksum != expectedEndpointAccountChecksum {
+		t.Fatalf("endpoint account checksum=%s, want %s", migrations[3].Checksum, expectedEndpointAccountChecksum)
+	}
+	if migrations[4].Filename != "20260727_210000_fix_duomi_gpt_image2_input_mapping.sql" {
+		t.Fatalf("duomi image mapping migration filename=%q", migrations[4].Filename)
+	}
+	const expectedDuomiImageMappingChecksum = "a170e61d8334ce3ce634be572e0b6ea3240dfcb505beb3318f5bca821a8258ad"
+	if migrations[4].Checksum != expectedDuomiImageMappingChecksum {
+		t.Fatalf("duomi image mapping checksum=%s, want %s", migrations[4].Checksum, expectedDuomiImageMappingChecksum)
 	}
 }
 

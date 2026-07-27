@@ -61,7 +61,7 @@ func NewProvider(channel *model.Channel, account *model.ChannelAccount, endpoint
 	}
 
 	// 图生图配置(端点 extra_config.image_edit): 有则填充,provider 据此在带参考图时切 /edits+multipart
-	if ie := endpoint.ImageEdit(); ie != nil {
+	if ie := endpoint.ImageEdit(); ie != nil && ie.InputMode == model.ImageInputModeMultipart {
 		base.ImageEditPath = ie.EditPath
 		base.ImageEditField = ie.FileField
 	}

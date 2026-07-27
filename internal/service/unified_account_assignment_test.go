@@ -18,6 +18,19 @@ import (
 	"gorm.io/gorm"
 )
 
+func bindEndpointAccountForTest(t *testing.T, endpointID, accountID uint) {
+	t.Helper()
+	binding := &model.EndpointAccount{
+		EndpointID: endpointID,
+		AccountID:  accountID,
+		Status:     1,
+		Weight:     10,
+	}
+	if err := model.DB().Create(binding).Error; err != nil {
+		t.Fatalf("create endpoint account binding: %v", err)
+	}
+}
+
 func TestInvokeRecordsFailedCallWhenNoEndpointIsAvailable(t *testing.T) {
 	db := setupTestDB(t)
 	if err := db.AutoMigrate(&model.Endpoint{}); err != nil {
@@ -92,6 +105,68 @@ func TestFindEndpointsDoesNotIgnoreUnknownRequestedChannel(t *testing.T) {
 	}
 }
 
+func TestFindEndpointsResolvesOpenAIImageCompatibilityAlias(t *testing.T) {
+	db := setupTestDB(t)
+	if err := db.AutoMigrate(&model.Channel{}, &model.Endpoint{}); err != nil {
+		t.Fatal(err)
+	}
+	channel := &model.Channel{Type: "image-alias-channel", Status: 1}
+	if err := db.Create(channel).Error; err != nil {
+		t.Fatal(err)
+	}
+	endpoint := &model.Endpoint{
+		ChannelID: channel.ID, ModelCode: "seedream-v4", VendorModel: "vendor-seedream-v4", Status: 1,
+	}
+	if err := db.Create(endpoint).Error; err != nil {
+		t.Fatal(err)
+	}
+
+	endpoints, err := NewUnifiedService().findEndpointsForCapability(&InvokeRequest{
+		Capability: "text2img",
+		Model:      "gpt-image-seedream-v4",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(endpoints) != 1 || endpoints[0].ID != endpoint.ID {
+		t.Fatalf("endpoints = %#v", endpoints)
+	}
+}
+
+func TestFindEndpointsPrefersExactOpenAIImageModelOverCompatibilityAlias(t *testing.T) {
+	db := setupTestDB(t)
+	if err := db.AutoMigrate(&model.Channel{}, &model.Endpoint{}); err != nil {
+		t.Fatal(err)
+	}
+	channel := &model.Channel{Type: "image-exact-channel", Status: 1}
+	if err := db.Create(channel).Error; err != nil {
+		t.Fatal(err)
+	}
+	aliasTarget := &model.Endpoint{
+		ChannelID: channel.ID, ModelCode: "seedream-v4", VendorModel: "vendor-seedream-v4", Priority: 100, Status: 1,
+	}
+	exact := &model.Endpoint{
+		ChannelID: channel.ID, ModelCode: "gpt-image-seedream-v4", VendorModel: "vendor-exact", Status: 1,
+	}
+	if err := db.Create(aliasTarget).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Create(exact).Error; err != nil {
+		t.Fatal(err)
+	}
+
+	endpoints, err := NewUnifiedService().findEndpointsForCapability(&InvokeRequest{
+		Capability: "text2img",
+		Model:      "gpt-image-seedream-v4",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(endpoints) != 1 || endpoints[0].ID != exact.ID {
+		t.Fatalf("endpoints = %#v", endpoints)
+	}
+}
+
 func TestReserveInitialCapabilityTaskCommitsBillingAccountAndTaskTogether(t *testing.T) {
 	db := setupTestDB(t)
 	if err := db.AutoMigrate(&model.Channel{}); err != nil {
@@ -112,6 +187,7 @@ func TestReserveInitialCapabilityTaskCommitsBillingAccountAndTaskTogether(t *tes
 		AccountID:  account.ID,
 		InputPrice: decimal.NewFromInt(2),
 	}
+	bindEndpointAccountForTest(t, endpoint.ID, account.ID)
 	cost := decimal.NewFromInt(2)
 	invokeReq := &InvokeRequest{
 		UserID:     user.ID,
@@ -216,6 +292,7 @@ func TestCapabilityTaskSuccessSettlesAndCompletesCallOnce(t *testing.T) {
 		InteractionMode: model.ModeSync,
 		InputPrice:      decimal.NewFromInt(3),
 	}
+	bindEndpointAccountForTest(t, endpoint.ID, account.ID)
 	reserved := decimal.NewFromInt(3)
 	actual := decimal.NewFromInt(2)
 	request := &InvokeRequest{
@@ -290,6 +367,8 @@ func TestCapabilityReservationUsesActuallySelectedEndpointPrice(t *testing.T) {
 		BaseModel: model.BaseModel{ID: 36}, ChannelID: channel.ID, AccountID: availableAccount.ID,
 		ModelCode: "affordable", VendorModel: "vendor-affordable", InputPrice: decimal.NewFromInt(2),
 	}
+	bindEndpointAccountForTest(t, unavailable.ID, fullAccount.ID)
+	bindEndpointAccountForTest(t, selected.ID, availableAccount.ID)
 	request := &InvokeRequest{
 		UserID: user.ID, TokenID: token.ID, CallID: "call_selected_price", RequestID: "request-selected-price",
 		Capability: "image-test", Params: map[string]any{"prompt": "test"},
@@ -385,6 +464,8 @@ func TestSynchronousFallbackSettlesUsingSuccessfulEndpointPrice(t *testing.T) {
 	if err := db.Create(&secondEndpoint).Error; err != nil {
 		t.Fatal(err)
 	}
+	bindEndpointAccountForTest(t, firstEndpoint.ID, firstAccount.ID)
+	bindEndpointAccountForTest(t, secondEndpoint.ID, secondAccount.ID)
 	request := &InvokeRequest{
 		UserID: user.ID, TokenID: token.ID, CallID: "call_sync_fallback", RequestID: "request-sync-fallback",
 		Capability: "image-fallback", Model: "image-fallback", Params: map[string]any{"prompt": "test"},
@@ -493,6 +574,7 @@ func TestAsyncSynchronousCapabilityUsesDurableQueue(t *testing.T) {
 	if err := db.Create(&endpoint).Error; err != nil {
 		t.Fatal(err)
 	}
+	bindEndpointAccountForTest(t, endpoint.ID, account.ID)
 
 	response, err := NewUnifiedService().Invoke(context.Background(), &InvokeRequest{
 		UserID: user.ID, TokenID: token.ID, Capability: endpoint.ModelCode, Model: endpoint.ModelCode,
@@ -537,6 +619,7 @@ func TestInitialEnqueueFailureKeepsDurableTaskIntent(t *testing.T) {
 	if err := db.Create(endpoint).Error; err != nil {
 		t.Fatal(err)
 	}
+	bindEndpointAccountForTest(t, endpoint.ID, account.ID)
 	previousEnqueue := enqueueCapabilityTask
 	enqueueCapabilityTask = func(uint) error { return errors.New("redis unavailable") }
 	t.Cleanup(func() { enqueueCapabilityTask = previousEnqueue })
@@ -636,6 +719,8 @@ func TestSynchronousFallbackLedgerFailureQueuesCheckpointRecovery(t *testing.T) 
 	if err := db.Create(&secondEndpoint).Error; err != nil {
 		t.Fatal(err)
 	}
+	bindEndpointAccountForTest(t, firstEndpoint.ID, firstAccount.ID)
+	bindEndpointAccountForTest(t, secondEndpoint.ID, secondAccount.ID)
 
 	request := &InvokeRequest{
 		UserID: user.ID, TokenID: token.ID, CallID: "call_sync_recovery", RequestID: "request-sync-recovery",
@@ -748,6 +833,7 @@ func TestSynchronousSuccessCheckpointWriteFailureDoesNotRepeatUpstream(t *testin
 	if err := db.Create(&endpoint).Error; err != nil {
 		t.Fatal(err)
 	}
+	bindEndpointAccountForTest(t, endpoint.ID, account.ID)
 	request := &InvokeRequest{
 		UserID: user.ID, TokenID: token.ID, CallID: "call_sync_checkpoint_failure",
 		RequestID: "request-sync-checkpoint-failure", Capability: endpoint.ModelCode,
@@ -1039,6 +1125,91 @@ func TestSelectAndAssignAccountForEndpointRejectsTerminalTask(t *testing.T) {
 	}
 }
 
+func TestSelectAccountForEndpointUsesOnlyExplicitBindings(t *testing.T) {
+	db := setupTestDB(t)
+	bound := &model.ChannelAccount{ChannelID: 41, Status: 1, Weight: 1}
+	unbound := &model.ChannelAccount{ChannelID: 41, Status: 1, Weight: 1000}
+	if err := db.Create(bound).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Create(unbound).Error; err != nil {
+		t.Fatal(err)
+	}
+	ep := &model.Endpoint{
+		BaseModel: model.BaseModel{ID: 101},
+		ChannelID: 41,
+		AccountID: unbound.ID,
+		ModelCode: "explicit-binding-only",
+	}
+	bindEndpointAccountForTest(t, ep.ID, bound.ID)
+
+	var selected *model.ChannelAccount
+	if err := db.Transaction(func(tx *gorm.DB) error {
+		var err error
+		selected, err = NewUnifiedService().selectAccountForEndpointTx(tx, ep, nil)
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if selected.ID != bound.ID {
+		t.Fatalf("selected account = %d, want explicitly bound %d", selected.ID, bound.ID)
+	}
+	var gotUnbound model.ChannelAccount
+	if err := db.First(&gotUnbound, unbound.ID).Error; err != nil {
+		t.Fatal(err)
+	}
+	if gotUnbound.CurrentTasks != 0 {
+		t.Fatalf("unbound account current_tasks = %d, want 0", gotUnbound.CurrentTasks)
+	}
+}
+
+func TestSelectAccountForEndpointSupportsManyToManyBindings(t *testing.T) {
+	db := setupTestDB(t)
+	first := &model.ChannelAccount{ChannelID: 42, Status: 1, Weight: 10}
+	second := &model.ChannelAccount{ChannelID: 42, Status: 1, Weight: 10}
+	if err := db.Create(first).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Create(second).Error; err != nil {
+		t.Fatal(err)
+	}
+	firstEndpoint := &model.Endpoint{BaseModel: model.BaseModel{ID: 102}, ChannelID: 42, ModelCode: "many-keys"}
+	secondEndpoint := &model.Endpoint{BaseModel: model.BaseModel{ID: 103}, ChannelID: 42, ModelCode: "many-capabilities"}
+	if err := db.Create(&model.EndpointAccount{
+		EndpointID: firstEndpoint.ID, AccountID: first.ID, Status: 1, Priority: 10, Weight: 10,
+	}).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Create(&model.EndpointAccount{
+		EndpointID: firstEndpoint.ID, AccountID: second.ID, Status: 1, Priority: 100, Weight: 10,
+	}).Error; err != nil {
+		t.Fatal(err)
+	}
+	bindEndpointAccountForTest(t, secondEndpoint.ID, first.ID)
+
+	var selectedFirst, selectedSecond *model.ChannelAccount
+	if err := db.Transaction(func(tx *gorm.DB) error {
+		var err error
+		selectedFirst, err = NewUnifiedService().selectAccountForEndpointTx(tx, firstEndpoint, nil)
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if selectedFirst.ID != second.ID {
+		t.Fatalf("first endpoint selected account = %d, want priority account %d", selectedFirst.ID, second.ID)
+	}
+	if err := db.Transaction(func(tx *gorm.DB) error {
+		var err error
+		selectedSecond, err = NewUnifiedService().selectAccountForEndpointTx(tx, secondEndpoint, nil)
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if selectedSecond.ID != first.ID {
+		t.Fatalf("second endpoint selected account = %d, want shared account %d", selectedSecond.ID, first.ID)
+	}
+}
+
 func TestSelectAndAssignAccountForEndpointReacquiresReleasedAccountOnce(t *testing.T) {
 	db := setupTestDB(t)
 	account := &model.ChannelAccount{
@@ -1065,6 +1236,7 @@ func TestSelectAndAssignAccountForEndpointReacquiresReleasedAccountOnce(t *testi
 		ChannelID: account.ChannelID,
 		AccountID: account.ID,
 	}
+	bindEndpointAccountForTest(t, ep.ID, account.ID)
 	svc := NewUnifiedService()
 
 	selected, err := svc.selectAndAssignAccountForEndpoint(task.ID, ep, nil)

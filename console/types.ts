@@ -66,6 +66,17 @@ export interface CapabilityStandardParamSchema {
 
 export type CapabilityStandardParams = Record<string, CapabilityStandardParamSchema>;
 
+export interface EndpointAccountBinding {
+  id: string;
+  endpointId: string;
+  accountId: string;
+  status: number;
+  priority: number;
+  weight: number;
+  accountName?: string;
+  accountStatus: number;
+}
+
 // 能力定义
 export interface Capability {
   code: string;
@@ -112,6 +123,7 @@ export interface ChannelCapability {
   responseMapping: Record<string, any>;
   callbackMapping: Record<string, any>;
   extraConfig: Record<string, any>;
+  accountBindings: EndpointAccountBinding[];
   status: number;
   createdAt: string;
   updatedAt: string;

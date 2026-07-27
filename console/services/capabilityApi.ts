@@ -1,5 +1,17 @@
-import { Capability, ChannelCapability, CapabilityWithChannels } from '../types';
+import { Capability, ChannelCapability, CapabilityWithChannels, EndpointAccountBinding } from '../types';
 import { request } from './request';
+
+const mapEndpointAccountBindings = (bindings: any[] | undefined): EndpointAccountBinding[] =>
+  (bindings || []).map(binding => ({
+    id: String(binding.id),
+    endpointId: String(binding.endpoint_id),
+    accountId: String(binding.account_id),
+    status: binding.status ?? 1,
+    priority: binding.priority ?? 0,
+    weight: binding.weight ?? 10,
+    accountName: binding.account?.name || '',
+    accountStatus: binding.account?.status ?? 0,
+  }));
 
 export const fetchCapabilities = async (): Promise<Capability[]> => {
   const data = await request<any[]>('/admin/capabilities');
@@ -119,6 +131,7 @@ export const fetchChannelCapabilities = async (channelId?: string, capabilityCod
     responseMapping: cc.response_mapping || {},
     callbackMapping: cc.callback_mapping || {},
     extraConfig: cc.extra_config || {},
+    accountBindings: mapEndpointAccountBindings(cc.account_bindings),
     status: cc.status,
     createdAt: cc.created_at,
     updatedAt: cc.updated_at,
@@ -157,6 +170,7 @@ export const getChannelCapability = async (id: string): Promise<ChannelCapabilit
     responseMapping: cc.response_mapping || {},
     callbackMapping: cc.callback_mapping || {},
     extraConfig: cc.extra_config || {},
+    accountBindings: mapEndpointAccountBindings(cc.account_bindings),
     status: cc.status,
     createdAt: cc.created_at,
     updatedAt: cc.updated_at,
@@ -168,6 +182,12 @@ export const getChannelCapability = async (id: string): Promise<ChannelCapabilit
 export const createChannelCapability = async (data: {
   channel_id: number;
   account_id?: number;
+  account_bindings?: Array<{
+    account_id: number;
+    status: number;
+    priority: number;
+    weight: number;
+  }>;
   model_code: string;
   model?: string;
   name?: string;
@@ -217,6 +237,7 @@ export const createChannelCapability = async (data: {
     responseMapping: cc.response_mapping || {},
     callbackMapping: cc.callback_mapping || {},
     extraConfig: cc.extra_config || {},
+    accountBindings: mapEndpointAccountBindings(cc.account_bindings),
     status: cc.status,
     createdAt: new Date().toISOString(),
     updatedAt: new Date().toISOString(),

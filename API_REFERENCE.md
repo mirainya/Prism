@@ -365,6 +365,7 @@ curl "$BASE_URL/v1/files" \
 
 图片生成。**OpenAI 标准协议**，任何 OpenAI 图像客户端/SDK 可即插即用。
 对外统一同步返图：同步渠道直接返回，异步渠道网关内部轮询等待（默认上限 300s）。
+超过等待上限时，Prism 会取消内部任务、退回预授权费用，并返回 OpenAI 格式的 HTTP 504，不返回异步 `task_id`。
 
 ```json
 // Request (OpenAI 标准，字段平铺在顶层)
@@ -397,12 +398,43 @@ curl "$BASE_URL/v1/files" \
 // 失败 (HTTP 4xx/5xx，OpenAI 错误格式)
 {"error": {"message": "reason", "type": "invalid_request_error|api_error|authentication_error"}}
 
-// 超时降级 (HTTP 202，异步渠道超过等待上限仍未出图)
-{"status": "processing", "task_id": "xxx", "message": "query via GET /v1/tasks/{task_id}"}
+// response_format=b64_json 时
+{
+  "created": 1700000000,
+  "data": [
+    {"b64_json": "iVBORw0KGgo...", "revised_prompt": "..."}
+  ]
+}
+
+// 超时 (HTTP 504)
+{"error": {"message": "image generation timed out", "type": "api_error"}}
 ```
 
-> `prompt` 之外的参数经渠道 `param_mapping`（含 `computed_params` 计算）映射后透传给上游。
-> 超时上限内出图直接返，超限返 202 + task_id，客户端用 `GET /v1/tasks/{task_id}` 后续查询。
+> `response_format` 由 Prism 响应层处理，`user` 仅作协议兼容保留；其余生成参数经渠道 `param_mapping`（含 `computed_params` 计算）映射后透传给上游。
+> `response_format` 省略时默认为 `url`。使用 `b64_json` 时，Prism 会安全下载生成结果并编码，单张图片最大 32 MiB。
+> 对接 sub2api 时，请求模型使用 `gpt-image-<Prism 模型 code>`。Prism 会先查完整模型名，查不到时再按去掉 `gpt-image-` 前缀后的模型 `code` 或 `vendor_model` 路由，无需复制模型或端点。
+
+### POST /v1/images/edits
+
+图生图。使用 OpenAI Images Edits multipart/form-data 协议，同步返回结构与 `/v1/images/generations` 相同。
+
+```bash
+curl -X POST "https://prism.example/v1/images/edits" \
+  -H "Authorization: Bearer <API_KEY>" \
+  -F "model=gpt-image-example" \
+  -F "prompt=Edit this image" \
+  -F "image=@input.png" \
+  -F "size=1024x1024" \
+  -F "response_format=b64_json"
+```
+
+字段：`model`、`prompt`、`image` 必填；`mask`、`n`、`size`、`aspect_ratio`、`quality`、`response_format`、`output_format`、`output_compression`、`moderation`、`style` 可选。支持 PNG、JPEG、WebP，单文件最大 20 MiB，请求体最大 40 MiB。
+
+端点配置位于“能力配置 → 渠道能力配置 → 请求配置 → 参考图输入适配”：
+
+- 上游接收图片 URL：选择“图片 URL”，填写上游字段（如 `image_urls`）。Prism 会先上传客户端文件，再发送 URL 数组。
+- 上游接收文件：选择“Multipart 文件”，填写图片字段及编辑路径。Prism 会按 multipart/form-data 调用上游。
+- 旧端点未设置 `input_mode` 时按 Multipart 模式处理。
 
 ### POST /v1/videos/generations
 

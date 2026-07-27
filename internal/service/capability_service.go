@@ -663,7 +663,7 @@ func recoverSynchronousSubmit(taskID uint, lease **TaskWorkerLease, cause error)
 // doSubmit executes one upstream submit without changing task state or account counters.
 func (s *UnifiedService) doSubmit(ctx context.Context, lease *TaskWorkerLease, task *model.Task, endpoint *model.Endpoint, channel *model.Channel, account *model.ChannelAccount, mappedParams map[string]any) (provider.SubmitResult, *model.APICallAttempt, *TaskSubmitCheckpoint, error) {
 	// multipart 端点：将参数中的文件 URL 下载并转为 @base64:filename:data 格式
-	resolvedParams, err := resolveFileParams(ctx, mappedParams, endpoint)
+	resolvedParams, err := resolveFileParams(ctx, mappedParams, endpoint, endpoint.ModelCode)
 	if err != nil {
 		return provider.SubmitResult{}, nil, nil, fmt.Errorf("resolve file params: %w", err)
 	}
@@ -855,17 +855,30 @@ func (s *UnifiedService) findEndpointsForCapability(req *InvokeRequest) ([]model
 	requestedModel := strings.TrimSpace(req.Model)
 	capability := strings.TrimSpace(req.Capability)
 	if requestedModel != "" && requestedModel != capability {
-		err := buildQuery().
-			Where("(model_code = ? OR vendor_model = ?)", requestedModel, requestedModel).
-			Order("priority DESC, id ASC").
-			Find(&endpoints).Error
-		if err != nil {
+		findRequestedModel := func(modelName string) error {
+			endpoints = nil
+			return buildQuery().
+				Where("(model_code = ? OR vendor_model = ?)", modelName, modelName).
+				Order("priority DESC, id ASC").
+				Find(&endpoints).Error
+		}
+		if err := findRequestedModel(requestedModel); err != nil {
 			return nil, fmt.Errorf("find endpoints for requested model: %w", err)
 		}
 		if len(endpoints) > 0 {
 			return endpoints, nil
 		}
-		endpoints = nil
+
+		// sub2api only accepts gpt-image-* names on its Images API. Keep exact
+		// Prism model names authoritative, then resolve the suffix as a compatibility alias.
+		if alias := openAIImageModelAlias(requestedModel, capability); alias != "" {
+			if err := findRequestedModel(alias); err != nil {
+				return nil, fmt.Errorf("find endpoints for image model alias: %w", err)
+			}
+			if len(endpoints) > 0 {
+				return endpoints, nil
+			}
+		}
 	}
 
 	if err := buildQuery().Where("model_code = ?", capability).Order("priority DESC, id ASC").Find(&endpoints).Error; err != nil {
@@ -878,6 +891,14 @@ func (s *UnifiedService) findEndpointsForCapability(req *InvokeRequest) ([]model
 		return nil, fmt.Errorf("no available endpoint for capability: %s", capability)
 	}
 	return endpoints, nil
+}
+
+func openAIImageModelAlias(requestedModel, capability string) string {
+	const prefix = "gpt-image-"
+	if capability != "text2img" || !strings.HasPrefix(strings.ToLower(requestedModel), prefix) {
+		return ""
+	}
+	return strings.TrimSpace(requestedModel[len(prefix):])
 }
 
 func mapParams(params map[string]any, mapping datatypes.JSON) map[string]any {

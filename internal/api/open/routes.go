@@ -17,6 +17,7 @@ func RegisterRoutes(group *gin.RouterGroup) {
 
 	// OpenAI 标准图像接口(同步返图,自动适配同步/异步渠道)
 	group.POST("/images/generations", CreateImageGenerationOpenAI)
+	group.POST("/images/edits", CreateImageEditOpenAI)
 	group.POST("/videos/generations", CreateVideoGeneration)
 
 	// Chat 接口

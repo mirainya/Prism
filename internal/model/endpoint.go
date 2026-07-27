@@ -2,6 +2,7 @@ package model
 
 import (
 	"encoding/json"
+	"strings"
 	"time"
 
 	"github.com/shopspring/decimal"
@@ -22,10 +23,10 @@ const (
 
 // Model 统一模型定义
 type Model struct {
-	Code        string         `gorm:"primaryKey;type:varchar(80);comment:模型标识" json:"code"`
-	Name        string         `gorm:"type:varchar(100);not null;comment:显示名称" json:"name"`
-	Type        ModelType      `gorm:"type:varchar(20);not null;default:'chat';comment:模型类型" json:"type"`
-	Provider    string         `gorm:"type:varchar(30);default:'';comment:来源标识" json:"provider"`
+	Code     string    `gorm:"primaryKey;type:varchar(80);comment:模型标识" json:"code"`
+	Name     string    `gorm:"type:varchar(100);not null;comment:显示名称" json:"name"`
+	Type     ModelType `gorm:"type:varchar(20);not null;default:'chat';comment:模型类型" json:"type"`
+	Provider string    `gorm:"type:varchar(30);default:'';comment:来源标识" json:"provider"`
 	// Protocol chat 去端点化后的协议类型(openai/anthropic/google/volcengine)。仅 chat 走合成虚拟端点时使用;空=openai
 	Protocol    Protocol       `gorm:"type:varchar(20);default:'openai';comment:协议类型(chat虚拟端点用)" json:"protocol"`
 	Description string         `gorm:"type:varchar(500);default:'';comment:模型描述" json:"description"`
@@ -36,11 +37,11 @@ type Model struct {
 	// 思考模式配置 (JSON,空=不支持思考)。结构见 service.ThinkingConfig
 	ThinkingConfig datatypes.JSON `gorm:"type:json;comment:思考模式配置(档位/默认/锁定)" json:"thinking_config"`
 
-	Sort        int            `gorm:"default:0;index;comment:排序(降序)" json:"sort"`
-	Status      int8           `gorm:"default:1;comment:状态(1启用/0禁用)" json:"status"`
-	CreatedAt   time.Time      `gorm:"index;comment:创建时间" json:"created_at"`
-	UpdatedAt   time.Time      `gorm:"comment:更新时间" json:"updated_at"`
-	DeletedAt   gorm.DeletedAt `gorm:"index;comment:删除时间" json:"-"`
+	Sort      int            `gorm:"default:0;index;comment:排序(降序)" json:"sort"`
+	Status    int8           `gorm:"default:1;comment:状态(1启用/0禁用)" json:"status"`
+	CreatedAt time.Time      `gorm:"index;comment:创建时间" json:"created_at"`
+	UpdatedAt time.Time      `gorm:"comment:更新时间" json:"updated_at"`
+	DeletedAt gorm.DeletedAt `gorm:"index;comment:删除时间" json:"-"`
 }
 
 func (Model) TableName() string {
@@ -81,7 +82,7 @@ type Endpoint struct {
 	BaseModel
 	ModelCode string `gorm:"type:varchar(80);not null;index;comment:模型标识" json:"model_code"`
 	ChannelID uint   `gorm:"not null;index;comment:渠道ID" json:"channel_id"`
-	// AccountID 所属账号(key)ID。能力端点(image/video)绑定到具体 key;0=渠道级(遗留,走账号池)
+	// AccountID 是旧版单 Key 绑定字段。能力路由改用 EndpointAccounts 后仅保留用于版本回退。
 	AccountID uint `gorm:"index;default:0;comment:所属账号(key)ID,0=渠道级兼容" json:"account_id"`
 
 	// 协议
@@ -132,23 +133,47 @@ type Endpoint struct {
 	Status       int8           `gorm:"default:1;comment:状态" json:"status"`
 
 	// 关联
-	Model   *Model   `gorm:"foreignKey:ModelCode;references:Code" json:"model,omitempty"`
-	Channel *Channel `gorm:"foreignKey:ChannelID" json:"channel,omitempty"`
+	Model           *Model            `gorm:"foreignKey:ModelCode;references:Code" json:"model,omitempty"`
+	Channel         *Channel          `gorm:"foreignKey:ChannelID" json:"channel,omitempty"`
+	AccountBindings []EndpointAccount `gorm:"foreignKey:EndpointID" json:"account_bindings,omitempty"`
 }
 
 func (Endpoint) TableName() string {
 	return "endpoints"
 }
 
-// ImageEditConfig 图生图配置(从 extra_config.image_edit 读取)
-// 声明该端点如何处理"带参考图"的请求:切换到 EditPath + multipart 文件上传,
-// 把 FileField 字段的图片 URL 下载成文件流上传(OpenAI /v1/images/edits 约定)。
-// 未配置(nil)的端点(如豆包/duomi)保持原路径 JSON,由 param_mapping 的 field_mapping 处理图 URL 透传。
-type ImageEditConfig struct {
-	Enabled   bool   `json:"enabled"`    // 是否启用图生图自动路由
-	EditPath  string `json:"edit_path"`  // 图生图请求路径,如 /v1/images/edits
-	FileField string `json:"file_field"` // 参考图字段名,如 image;该字段的 URL 会被下载转文件上传
+// EndpointAccount records which channel keys may execute an image/video endpoint.
+// Bindings are deleted physically, so the unique endpoint/account pair can be recreated.
+type EndpointAccount struct {
+	ID         uint      `gorm:"primaryKey" json:"id"`
+	EndpointID uint      `gorm:"not null;uniqueIndex:idx_endpoint_account;index:idx_endpoint_accounts_route,priority:1;comment:端点ID" json:"endpoint_id"`
+	AccountID  uint      `gorm:"not null;uniqueIndex:idx_endpoint_account;index;comment:渠道账号(key)ID" json:"account_id"`
+	Status     int8      `gorm:"not null;index:idx_endpoint_accounts_route,priority:2;comment:状态(1启用/0禁用)" json:"status"`
+	Priority   int       `gorm:"not null;default:0;index:idx_endpoint_accounts_route,priority:3;comment:优先级(降序)" json:"priority"`
+	Weight     int       `gorm:"not null;default:10;comment:同优先级流量权重" json:"weight"`
+	CreatedAt  time.Time `json:"created_at"`
+	UpdatedAt  time.Time `json:"updated_at"`
+
+	Account *ChannelAccount `gorm:"foreignKey:AccountID" json:"account,omitempty"`
 }
+
+func (EndpointAccount) TableName() string {
+	return "endpoint_accounts"
+}
+
+// ImageEditConfig 声明端点如何接收参考图。Multipart 模式切换编辑路径并上传文件，
+// URL 模式沿用请求路径并发送公开图片 URL。
+type ImageEditConfig struct {
+	Enabled   bool   `json:"enabled"`    // 是否启用图生图输入适配
+	InputMode string `json:"input_mode"` // multipart: 文件上传; url: 上传存储后以 URL 透传
+	EditPath  string `json:"edit_path"`  // multipart 模式的图生图请求路径,如 /v1/images/edits
+	FileField string `json:"file_field"` // 参数映射后的上游图片字段名,如 image 或 image_urls
+}
+
+const (
+	ImageInputModeMultipart = "multipart"
+	ImageInputModeURL       = "url"
+)
 
 // ImageEdit 从 ExtraConfig 解析图生图配置,未配置或未启用返回 nil
 func (e *Endpoint) ImageEdit() *ImageEditConfig {
@@ -164,8 +189,24 @@ func (e *Endpoint) ImageEdit() *ImageEditConfig {
 	if cfg.ImageEdit == nil || !cfg.ImageEdit.Enabled {
 		return nil
 	}
+	cfg.ImageEdit.InputMode = strings.ToLower(strings.TrimSpace(cfg.ImageEdit.InputMode))
+	if cfg.ImageEdit.InputMode == "" {
+		cfg.ImageEdit.InputMode = ImageInputModeMultipart
+	}
+	if cfg.ImageEdit.InputMode != ImageInputModeMultipart && cfg.ImageEdit.InputMode != ImageInputModeURL {
+		return nil
+	}
+	cfg.ImageEdit.EditPath = strings.TrimSpace(cfg.ImageEdit.EditPath)
+	cfg.ImageEdit.FileField = strings.TrimSpace(cfg.ImageEdit.FileField)
+	if cfg.ImageEdit.InputMode == ImageInputModeMultipart && cfg.ImageEdit.EditPath == "" {
+		cfg.ImageEdit.EditPath = "/v1/images/edits"
+	}
 	if cfg.ImageEdit.FileField == "" {
-		cfg.ImageEdit.FileField = "image"
+		if cfg.ImageEdit.InputMode == ImageInputModeURL {
+			cfg.ImageEdit.FileField = "image_urls"
+		} else {
+			cfg.ImageEdit.FileField = "image"
+		}
 	}
 	return cfg.ImageEdit
 }

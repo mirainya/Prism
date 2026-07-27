@@ -2,8 +2,8 @@ import React, { useEffect, useState } from 'react';
 import { X } from 'lucide-react';
 import { Modal } from '../../components/ui/Modal';
 import JsonEditor from '../../components/ui/JsonEditor';
-import { createChannelCapability, updateChannelCapability } from '../../services/api';
-import { ChannelCapability, Channel, Capability } from '../../types';
+import { createChannelCapability, fetchChannelAccounts, updateChannelCapability } from '../../services/api';
+import { ChannelCapability, Channel, ChannelAccount, Capability } from '../../types';
 import {
     RESULT_MODES, STANDARD_PARAMS, STANDARD_RESPONSE, POLL_PARAMS,
     STANDARD_STATUS_VALUES,
@@ -15,6 +15,12 @@ import {
     parseParamMapping, parseResponseMapping, buildParamMapping, buildResponseMapping,
 } from './mappingUtils';
 
+type AccountBindingDraft = {
+    account_id: number;
+    status: number;
+    priority: number;
+    weight: number;
+};
 
 const ChannelCapabilityModal: React.FC<{
     isOpen: boolean;
@@ -24,17 +30,21 @@ const ChannelCapabilityModal: React.FC<{
     capabilities: Capability[];
     defaultChannelId?: number;
     defaultAccountId?: number;
+    initialTab?: 'basic' | 'accounts';
     onClose: () => void;
     onSave: () => void;
-}> = ({isOpen, capabilityCode, channelCapability, channels, capabilities, defaultChannelId, defaultAccountId, onClose, onSave}) => {
-    const [activeTab, setActiveTab] = useState<'basic' | 'request' | 'param' | 'response' | 'poll_response' | 'callback' | 'schema'>('basic');
+}> = ({isOpen, capabilityCode, channelCapability, channels, capabilities, defaultChannelId, defaultAccountId, initialTab = 'basic', onClose, onSave}) => {
+    const [activeTab, setActiveTab] = useState<'basic' | 'accounts' | 'request' | 'param' | 'response' | 'poll_response' | 'callback' | 'schema'>('basic');
     const [form, setForm] = useState({
         channel_id: 0, capability_code: '', model: '', name: '', price: 0, price_unit: 'request',
         result_mode: 'poll', request_path: '', request_method: 'POST', content_type: 'application/json',
         auth_location: 'header', auth_key: 'Authorization', auth_value_prefix: 'Bearer ',
         poll_path: '', poll_method: 'GET', poll_interval: 5, poll_max_attempts: 60, transfer_enabled: false,
-        account_id: 0,
+        image_edit_enabled: false, image_input_mode: 'multipart', image_edit_path: '/v1/images/edits', image_file_field: 'image',
     });
+    const [accountBindings, setAccountBindings] = useState<AccountBindingDraft[]>([]);
+    const [availableAccounts, setAvailableAccounts] = useState<ChannelAccount[]>([]);
+    const [accountsLoading, setAccountsLoading] = useState(false);
     const [paramFieldMappings, setParamFieldMappings] = useState<FieldMapping[]>([]);
     const [paramValueMappings, setParamValueMappings] = useState<ValueMapping[]>([]);
     const [paramFixedParams, setParamFixedParams] = useState<FixedParam[]>([]);
@@ -54,14 +64,16 @@ const ChannelCapabilityModal: React.FC<{
     const [callbackStatusMappings, setCallbackStatusMappings] = useState<{stdValue: string; vendorValue: string}[]>([]);
     const [paramSchemaJson, setParamSchemaJson] = useState('');
     const [paramSchemaError, setParamSchemaError] = useState('');
+    const [basicError, setBasicError] = useState('');
     const [loading, setLoading] = useState(false);
 
     useEffect(() => {
         // 后端保存嵌套映射对象，编辑器使用可增删的行数组；打开时一次拆解全部子配置。
         if (channelCapability) {
+            const imageEdit = channelCapability.extraConfig?.image_edit || {};
+            const imageInputMode = imageEdit.input_mode === 'url' ? 'url' : 'multipart';
             setForm({
                 channel_id: Number(channelCapability.channelId),
-                account_id: Number(channelCapability.accountId) || 0,
                 capability_code: channelCapability.capabilityCode,
                 model: channelCapability.model || '',
                 name: channelCapability.name || '',
@@ -79,7 +91,17 @@ const ChannelCapabilityModal: React.FC<{
                 poll_interval: channelCapability.pollInterval || 5,
                 poll_max_attempts: channelCapability.pollMaxAttempts || 60,
                 transfer_enabled: channelCapability.extraConfig?.transfer_enabled === true,
+                image_edit_enabled: imageEdit.enabled === true,
+                image_input_mode: imageInputMode,
+                image_edit_path: imageEdit.edit_path || '/v1/images/edits',
+                image_file_field: imageEdit.file_field || (imageInputMode === 'url' ? 'image_urls' : 'image'),
             });
+            setAccountBindings((channelCapability.accountBindings || []).map(binding => ({
+                account_id: Number(binding.accountId),
+                status: binding.status,
+                priority: binding.priority,
+                weight: binding.weight,
+            })));
             const paramData = parseParamMapping(channelCapability.paramMapping || {});
             setParamFieldMappings(paramData.fieldMappings);
             setParamValueMappings(paramData.valueMappings);
@@ -124,12 +146,13 @@ const ChannelCapabilityModal: React.FC<{
         } else {
             setForm({
                 channel_id: defaultChannelId || (channels[0]?.id ? Number(channels[0].id) : 0),
-                account_id: defaultAccountId || 0,
                 capability_code: capabilityCode, model: '', name: '', price: 0, price_unit: 'request',
                 result_mode: 'poll', request_path: '', request_method: 'POST', content_type: 'application/json',
                 auth_location: 'header', auth_key: 'Authorization', auth_value_prefix: 'Bearer ',
                 poll_path: '', poll_method: 'GET', poll_interval: 5, poll_max_attempts: 60, transfer_enabled: false,
+                image_edit_enabled: false, image_input_mode: 'multipart', image_edit_path: '/v1/images/edits', image_file_field: 'image',
             });
+            setAccountBindings(defaultAccountId ? [{account_id: defaultAccountId, status: 1, priority: 0, weight: 10}] : []);
             setParamFieldMappings([]); setParamValueMappings([]); setParamFixedParams([]); setParamTypeConverts([]);
             setRespFieldMappings([]); setRespValueMappings([]); setRespTypeConverts([]); setRespSuccessCondition(null);
             setPollRespFieldMappings([]); setPollRespValueMappings([]); setPollRespTypeConverts([]); setPollRespSuccessCondition(null);
@@ -137,11 +160,33 @@ const ChannelCapabilityModal: React.FC<{
             setCallbackConfig({task_id_path: '', status_path: '', result_path: ''}); setCallbackStatusMappings([]);
             setParamSchemaJson('');
         }
-        setActiveTab('basic');
-    }, [channelCapability, capabilityCode, channels, isOpen, defaultChannelId]);
+        setBasicError('');
+        setActiveTab(initialTab);
+    }, [channelCapability, capabilityCode, channels, isOpen, defaultChannelId, defaultAccountId, initialTab]);
+
+    useEffect(() => {
+        if (!isOpen || !form.channel_id) {
+            setAvailableAccounts([]);
+            return;
+        }
+        let cancelled = false;
+        setAccountsLoading(true);
+        fetchChannelAccounts(String(form.channel_id))
+            .then(accounts => {
+                if (!cancelled) setAvailableAccounts(accounts);
+            })
+            .catch(() => {
+                if (!cancelled) setAvailableAccounts([]);
+            })
+            .finally(() => {
+                if (!cancelled) setAccountsLoading(false);
+            });
+        return () => { cancelled = true; };
+    }, [isOpen, form.channel_id]);
 
     const baseTabs = [
         {key: 'basic', label: '基本信息'},
+        {key: 'accounts', label: `绑定 Key (${accountBindings.length})`},
         {key: 'request', label: '请求配置'},
         {key: 'schema', label: '参数Schema'},
         {key: 'param', label: '参数映射'},
@@ -170,6 +215,12 @@ const ChannelCapabilityModal: React.FC<{
 
     const handleSubmit = async (e: React.FormEvent) => {
         e.preventDefault();
+        if (!form.channel_id || !form.capability_code.trim()) {
+            setBasicError(!form.channel_id ? '请选择渠道' : '请选择能力 / 模型');
+            setActiveTab('basic');
+            return;
+        }
+        setBasicError('');
         setLoading(true);
         try {
             // 提交前把各 Tab 的行状态重新组装成 Provider 执行器使用的映射对象。
@@ -188,13 +239,23 @@ const ChannelCapabilityModal: React.FC<{
                 if (Object.keys(statusMap).length > 0) callbackMapping.status_mapping = statusMap;
             }
             const data: Record<string, any> = {
-                channel_id: form.channel_id, account_id: form.account_id, model_code: form.capability_code, model: form.model, name: form.name,
+                channel_id: form.channel_id, model_code: form.capability_code, model: form.model, name: form.name,
+                account_bindings: accountBindings,
                 price: form.price, price_unit: form.price_unit, interaction_mode: form.result_mode,
                 request_path: form.request_path, request_method: form.request_method, content_type: form.content_type,
                 auth_location: form.auth_location, auth_key: form.auth_key, auth_value_prefix: form.auth_value_prefix,
                 poll_path: form.poll_path, poll_method: form.poll_method, poll_interval: form.poll_interval,
                 poll_max_attempts: form.poll_max_attempts, param_mapping: paramMapping, callback_mapping: callbackMapping,
-                extra_config: {transfer_enabled: form.transfer_enabled},
+                extra_config: {
+                    ...(channelCapability?.extraConfig || {}),
+                    transfer_enabled: form.transfer_enabled,
+                    image_edit: form.image_edit_enabled ? {
+                        enabled: true,
+                        input_mode: form.image_input_mode,
+                        file_field: form.image_file_field.trim() || (form.image_input_mode === 'url' ? 'image_urls' : 'image'),
+                        ...(form.image_input_mode === 'multipart' ? {edit_path: form.image_edit_path.trim() || '/v1/images/edits'} : {}),
+                    } : {enabled: false},
+                },
             };
             if (paramSchemaJson.trim()) {
                 try { data.param_schema = JSON.parse(paramSchemaJson); } catch { setParamSchemaError('JSON 格式错误'); setLoading(false); return; }
@@ -253,18 +314,30 @@ const ChannelCapabilityModal: React.FC<{
                     {/* 基本信息 */}
                     {activeTab === 'basic' && (
                         <div className="space-y-4">
+                            {basicError && (
+                                <div className="px-3 py-2 border border-red-200 bg-red-50 text-red-700 text-sm rounded-lg">
+                                    {basicError}
+                                </div>
+                            )}
                             <div className="grid grid-cols-2 gap-4">
                                 <div>
                                     <label className="block text-sm font-medium text-[var(--text-primary)] mb-1">渠道 <span className="text-red-500">*</span></label>
-                                    <select value={form.channel_id} onChange={e => setForm({...form, channel_id: Number(e.target.value)})}
+                                    <select value={form.channel_id} onChange={e => {
+                                        setForm({...form, channel_id: Number(e.target.value)});
+                                        setAccountBindings([]);
+                                        setBasicError('');
+                                    }}
                                         className="w-full px-3 py-2 border border-[var(--border-soft)] rounded-lg focus:outline-none focus:ring-2 focus:ring-[var(--primary)]" required>
                                         <option value={0}>选择渠道</option>
                                         {channels.map(ch => (<option key={ch.id} value={ch.id}>{ch.name} ({ch.type})</option>))}
                                     </select>
                                 </div>
                                 <div>
-                                    <label className="block text-sm font-medium text-[var(--text-primary)] mb-1">能力编码 <span className="text-red-500">*</span></label>
-                                    <select value={form.capability_code} onChange={e => setForm({...form, capability_code: e.target.value})}
+                                    <label className="block text-sm font-medium text-[var(--text-primary)] mb-1">能力 / 模型 <span className="text-red-500">*</span></label>
+                                    <select value={form.capability_code} onChange={e => {
+                                        setForm({...form, capability_code: e.target.value});
+                                        setBasicError('');
+                                    }}
                                         className="w-full px-3 py-2 border border-[var(--border-soft)] rounded-lg focus:outline-none focus:ring-2 focus:ring-[var(--primary)]" required>
                                         <option value="">选择能力</option>
                                         {capabilities.map(cap => (<option key={cap.code} value={cap.code}>{cap.name} ({cap.code})</option>))}
@@ -318,6 +391,60 @@ const ChannelCapabilityModal: React.FC<{
                         </div>
                     )}
 
+                    {activeTab === 'accounts' && (
+                        <div className="space-y-3">
+                            {!form.channel_id ? (
+                                <div className="py-10 text-center text-sm text-[var(--text-secondary)]">未选择渠道</div>
+                            ) : accountsLoading ? (
+                                <div className="py-10 text-center text-sm text-[var(--text-secondary)]">加载中...</div>
+                            ) : availableAccounts.length === 0 ? (
+                                <div className="py-10 text-center text-sm text-[var(--text-secondary)]">当前渠道没有 Key</div>
+                            ) : (
+                                <div className="border border-[var(--border-soft)] rounded-lg overflow-hidden">
+                                    <div className="grid grid-cols-[minmax(0,1fr)_5rem_5rem_4rem] gap-3 px-3 py-2 bg-[var(--surface)] text-xs font-medium text-[var(--text-secondary)]">
+                                        <span>Key</span>
+                                        <span>优先级</span>
+                                        <span>权重</span>
+                                        <span>状态</span>
+                                    </div>
+                                    {availableAccounts.map(account => {
+                                        const accountId = Number(account.id);
+                                        const binding = accountBindings.find(item => item.account_id === accountId);
+                                        return (
+                                            <div key={account.id} className="grid grid-cols-[minmax(0,1fr)_5rem_5rem_4rem] gap-3 items-center px-3 py-3 border-t border-[var(--border-soft)]">
+                                                <label className="flex items-center gap-2 min-w-0">
+                                                    <input type="checkbox" checked={Boolean(binding)}
+                                                        onChange={event => {
+                                                            if (event.target.checked) {
+                                                                setAccountBindings([...accountBindings, {account_id: accountId, status: 1, priority: 0, weight: 10}]);
+                                                            } else {
+                                                                setAccountBindings(accountBindings.filter(item => item.account_id !== accountId));
+                                                            }
+                                                        }}
+                                                        className="h-4 w-4 text-[var(--primary)] border-gray-300 rounded focus:ring-[var(--primary)]" />
+                                                    <span className="truncate text-sm text-[var(--text-primary)]">{account.name || `Key #${account.id}`}</span>
+                                                    {account.status !== 1 && <span className="text-xs text-red-500">已停用</span>}
+                                                </label>
+                                                <input type="number" value={binding?.priority ?? 0} disabled={!binding}
+                                                    onChange={event => setAccountBindings(accountBindings.map(item => item.account_id === accountId ? {...item, priority: Number(event.target.value)} : item))}
+                                                    className="w-full px-2 py-1.5 border border-[var(--border-soft)] rounded-md text-sm disabled:opacity-40" />
+                                                <input type="number" value={binding?.weight ?? 10} disabled={!binding} min="1"
+                                                    onChange={event => setAccountBindings(accountBindings.map(item => item.account_id === accountId ? {...item, weight: Math.max(1, Number(event.target.value) || 1)} : item))}
+                                                    className="w-full px-2 py-1.5 border border-[var(--border-soft)] rounded-md text-sm disabled:opacity-40" />
+                                                <label className="flex items-center gap-1.5 text-xs text-[var(--text-secondary)]">
+                                                    <input type="checkbox" checked={binding?.status === 1} disabled={!binding}
+                                                        onChange={event => setAccountBindings(accountBindings.map(item => item.account_id === accountId ? {...item, status: event.target.checked ? 1 : 0} : item))}
+                                                        className="h-4 w-4 text-[var(--primary)] border-gray-300 rounded focus:ring-[var(--primary)]" />
+                                                    启用
+                                                </label>
+                                            </div>
+                                        );
+                                    })}
+                                </div>
+                            )}
+                        </div>
+                    )}
+
                     {/* 请求配置 */}
                     {activeTab === 'request' && (
                         <div className="space-y-4">
@@ -345,6 +472,55 @@ const ChannelCapabilityModal: React.FC<{
                                         <option value="multipart/form-data">multipart/form-data</option>
                                     </select>
                                 </div>
+                            </div>
+                            <div className="border-t border-[var(--border-soft)] pt-4 space-y-4">
+                                <div className="flex items-center gap-2">
+                                    <input type="checkbox" id="image_edit_enabled" checked={form.image_edit_enabled}
+                                        onChange={e => setForm({...form, image_edit_enabled: e.target.checked})}
+                                        className="h-4 w-4 text-[var(--primary)] border-gray-300 rounded focus:ring-[var(--primary)]" />
+                                    <label htmlFor="image_edit_enabled" className="text-sm font-medium text-[var(--text-primary)]">参考图输入适配</label>
+                                </div>
+                                {form.image_edit_enabled && (
+                                    <div className="space-y-4">
+                                        <div>
+                                            <label className="block text-sm font-medium text-[var(--text-primary)] mb-1">图片输入模式</label>
+                                            <div className="grid grid-cols-2 rounded-lg border border-[var(--border-soft)] overflow-hidden">
+                                                {[
+                                                    {value: 'multipart', label: 'Multipart 文件'},
+                                                    {value: 'url', label: '图片 URL'},
+                                                ].map(option => (
+                                                    <button key={option.value} type="button"
+                                                        onClick={() => setForm({
+                                                            ...form,
+                                                            image_input_mode: option.value,
+                                                            image_file_field: option.value === 'url' ? 'image_urls' : 'image',
+                                                        })}
+                                                        className={`px-3 py-2 text-sm transition-colors ${form.image_input_mode === option.value ? 'bg-[var(--primary)] text-white' : 'bg-[var(--surface-card)] text-[var(--text-secondary)] hover:bg-[var(--surface)]'}`}>
+                                                        {option.label}
+                                                    </button>
+                                                ))}
+                                            </div>
+                                        </div>
+                                        <div className={`grid gap-4 ${form.image_input_mode === 'multipart' ? 'grid-cols-2' : 'grid-cols-1'}`}>
+                                            <div>
+                                                <label className="block text-sm font-medium text-[var(--text-primary)] mb-1">上游图片字段</label>
+                                                <input type="text" value={form.image_file_field}
+                                                    onChange={e => setForm({...form, image_file_field: e.target.value})}
+                                                    className="w-full px-3 py-2 border border-[var(--border-soft)] rounded-lg focus:outline-none focus:ring-2 focus:ring-[var(--primary)]"
+                                                    placeholder={form.image_input_mode === 'url' ? 'image_urls' : 'image'} />
+                                            </div>
+                                            {form.image_input_mode === 'multipart' && (
+                                                <div>
+                                                    <label className="block text-sm font-medium text-[var(--text-primary)] mb-1">图片编辑路径</label>
+                                                    <input type="text" value={form.image_edit_path}
+                                                        onChange={e => setForm({...form, image_edit_path: e.target.value})}
+                                                        className="w-full px-3 py-2 border border-[var(--border-soft)] rounded-lg focus:outline-none focus:ring-2 focus:ring-[var(--primary)]"
+                                                        placeholder="/v1/images/edits" />
+                                                </div>
+                                            )}
+                                        </div>
+                                    </div>
+                                )}
                             </div>
                             <div className="border-t border-[var(--border-soft)] pt-4 mt-4">
                                 <h4 className="text-sm font-medium text-[var(--text-primary)] mb-3">认证配置</h4>

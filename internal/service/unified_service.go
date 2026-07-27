@@ -1,7 +1,6 @@
 package service
 
 import (
-	"fmt"
 	"math/rand"
 	"time"
 
@@ -55,90 +54,65 @@ type ThinkingLevelInfo struct {
 	Value string `json:"value"`
 }
 
-// selectAccountTx selects and acquires an account inside the caller's transaction.
-func (s *UnifiedService) selectAccountTx(
-	tx *gorm.DB,
-	channelID uint,
-	modelCode string,
-	excludeAccountIDs []uint,
-	requireExplicit bool,
-) (*model.ChannelAccount, error) {
-	var accounts []model.ChannelAccount
-
-	q := tx.Clauses(clause.Locking{Strength: "UPDATE"}).
-		Where("channel_id = ? AND status = 1", channelID).
-		Where("max_tasks = 0 OR current_tasks < max_tasks")
-
-	// 白名单: supported_models 为空(NULL/[]/null)=支持所有; 非空则必须包含 modelCode
-	if modelCode != "" {
-		if requireExplicit {
-			// 必须显式列出该 model(NULL/空白名单不参与)
-			q = q.Where("JSON_LENGTH(supported_models) > 0 AND JSON_CONTAINS(supported_models, ?)",
-				fmt.Sprintf("%q", modelCode))
-		} else {
-			q = q.Where(
-				"supported_models IS NULL OR JSON_LENGTH(supported_models) = 0 OR JSON_CONTAINS(supported_models, ?)",
-				fmt.Sprintf("%q", modelCode),
-			)
-		}
-		// 排除对该模型熔断中的账号
-		q = q.Where(
-			"id NOT IN (SELECT account_id FROM account_model_states WHERE model_code = ? AND disabled_until > ?)",
-			modelCode, time.Now(),
-		)
-	}
-	// 排除本轮已尝试的账号
-	if len(excludeAccountIDs) > 0 {
-		q = q.Where("id NOT IN ?", excludeAccountIDs)
-	}
-
-	if err := q.Find(&accounts).Error; err != nil {
-		return nil, err
-	}
-	if len(accounts) == 0 {
-		return nil, gorm.ErrRecordNotFound
-	}
-
-	// 加权随机选择
-	selected := &accounts[0]
-	totalWeight := 0
-	for i := range accounts {
-		w := accounts[i].Weight
-		if w <= 0 {
-			w = 1
-		}
-		totalWeight += w
-	}
-	r := rand.Intn(totalWeight)
-	cumulative := 0
-	for i := range accounts {
-		w := accounts[i].Weight
-		if w <= 0 {
-			w = 1
-		}
-		cumulative += w
-		if r < cumulative {
-			selected = &accounts[i]
-			break
-		}
-	}
-
-	if err := tx.Model(selected).UpdateColumn("current_tasks", gorm.Expr("current_tasks + 1")).Error; err != nil {
-		return nil, err
-	}
-	result := *selected
-	return &result, nil
-}
-
 func (s *UnifiedService) selectAccountForEndpointTx(
 	tx *gorm.DB,
 	ep *model.Endpoint,
 	excludeAccountIDs []uint,
 ) (*model.ChannelAccount, error) {
-	if ep.AccountID != 0 {
-		return s.selectBoundAccountTx(tx, ep.AccountID, ep.ModelCode, excludeAccountIDs)
+	var bindings []model.EndpointAccount
+	q := tx.Clauses(clause.Locking{Strength: "UPDATE"}).
+		Model(&model.EndpointAccount{}).
+		Select("endpoint_accounts.*").
+		Joins("JOIN channel_accounts ON channel_accounts.id = endpoint_accounts.account_id AND channel_accounts.deleted_at IS NULL").
+		Where("endpoint_accounts.endpoint_id = ? AND endpoint_accounts.status = 1", ep.ID).
+		Where("channel_accounts.channel_id = ? AND channel_accounts.status = 1", ep.ChannelID).
+		Where("channel_accounts.max_tasks = 0 OR channel_accounts.current_tasks < channel_accounts.max_tasks")
+	if ep.ModelCode != "" {
+		q = q.Where(
+			"endpoint_accounts.account_id NOT IN (SELECT account_id FROM account_model_states WHERE model_code = ? AND disabled_until > ?)",
+			ep.ModelCode, time.Now(),
+		)
 	}
-	return s.selectAccountTx(tx, ep.ChannelID, ep.ModelCode, excludeAccountIDs, false)
+	if len(excludeAccountIDs) > 0 {
+		q = q.Where("endpoint_accounts.account_id NOT IN ?", excludeAccountIDs)
+	}
+	if err := q.Order("endpoint_accounts.priority DESC, endpoint_accounts.id ASC").Find(&bindings).Error; err != nil {
+		return nil, err
+	}
+	if len(bindings) == 0 {
+		return nil, gorm.ErrRecordNotFound
+	}
+
+	// Priority defines fallback tiers. Weight distributes traffic only inside the highest available tier.
+	highestPriority := bindings[0].Priority
+	candidateCount := 0
+	totalWeight := 0
+	for i := range bindings {
+		if bindings[i].Priority != highestPriority {
+			break
+		}
+		candidateCount++
+		weight := bindings[i].Weight
+		if weight <= 0 {
+			weight = 1
+		}
+		totalWeight += weight
+	}
+	selected := &bindings[0]
+	randomWeight := rand.Intn(totalWeight)
+	cumulative := 0
+	for i := 0; i < candidateCount; i++ {
+		weight := bindings[i].Weight
+		if weight <= 0 {
+			weight = 1
+		}
+		cumulative += weight
+		if randomWeight < cumulative {
+			selected = &bindings[i]
+			break
+		}
+	}
+	return s.selectBoundAccountTx(tx, selected.AccountID, ep.ModelCode, excludeAccountIDs)
 }
 
 // selectAndAssignAccountForEndpoint acquires a fallback account slot and
@@ -165,11 +139,7 @@ func (s *UnifiedService) selectAndAssignAccountForEndpoint(
 		}
 
 		var err error
-		if ep.AccountID != 0 {
-			selected, err = s.selectBoundAccountTx(tx, ep.AccountID, ep.ModelCode, excludeAccountIDs)
-		} else {
-			selected, err = s.selectAccountTx(tx, ep.ChannelID, ep.ModelCode, excludeAccountIDs, false)
-		}
+		selected, err = s.selectAccountForEndpointTx(tx, ep, excludeAccountIDs)
 		if err != nil {
 			return err
 		}

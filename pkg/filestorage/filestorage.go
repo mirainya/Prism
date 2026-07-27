@@ -75,6 +75,18 @@ func TransferBase64(ctx context.Context, b64 string, capabilityCode string) (str
 	return upload(ctx, decoded, contentType, capabilityCode)
 }
 
+// TransferBytes uploads in-memory file data to xfilestorage and returns its public URL.
+func TransferBytes(ctx context.Context, data []byte, contentType string, capabilityCode string) (string, error) {
+	cfg := config.C.FileStorage
+	if cfg.BaseURL == "" || cfg.APIKey == "" {
+		return "", fmt.Errorf("file storage not configured")
+	}
+	if len(data) == 0 {
+		return "", fmt.Errorf("file data is empty")
+	}
+	return upload(ctx, data, contentType, capabilityCode)
+}
+
 func upload(ctx context.Context, data []byte, contentType string, capabilityCode string) (string, error) {
 	cfg := config.C.FileStorage
 
@@ -128,10 +140,19 @@ func upload(ctx context.Context, data []byte, contentType string, capabilityCode
 		return "", fmt.Errorf("parse upload result: %w", err)
 	}
 
-	if result.URL != "" && !strings.HasPrefix(result.URL, "http") {
-		result.URL = "https://" + result.URL
-	}
+	result.URL = normalizePublicURL(result.URL)
 	return result.URL, nil
+}
+
+func normalizePublicURL(rawURL string) string {
+	rawURL = strings.TrimSpace(rawURL)
+	if strings.HasPrefix(rawURL, "http://") {
+		return "https://" + strings.TrimPrefix(rawURL, "http://")
+	}
+	if rawURL != "" && !strings.HasPrefix(rawURL, "https://") {
+		return "https://" + rawURL
+	}
+	return rawURL
 }
 
 func parseBase64(s string) (data string, contentType string) {

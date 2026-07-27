@@ -1,5 +1,8 @@
 import React, { useEffect, useMemo, useState } from 'react';
-import { Plus, Settings, Cpu, Edit2, Trash2, ChevronDown, ChevronRight, Power, RefreshCw, Search, GripVertical } from 'lucide-react';
+import {
+    Plus, Cpu, Edit2, Trash2, PanelRightOpen, Power, RefreshCw, Search,
+    GripVertical, Route, KeyRound, CircleCheck, CircleAlert,
+} from 'lucide-react';
 import { DndContext, PointerSensor, closestCenter, useSensor, useSensors, DragStartEvent, DragEndEvent } from '@dnd-kit/core';
 import { SortableContext, arrayMove, useSortable, rectSortingStrategy } from '@dnd-kit/sortable';
 import { CSS } from '@dnd-kit/utilities';
@@ -11,10 +14,12 @@ import {
 import { Capability, ChannelCapability, Channel } from '../types';
 import {
     CAPABILITY_TYPES, CAPABILITY_TYPE_ORDER, RESULT_MODES,
-    normalizeText, getCapabilityTypeLabel, getCapabilityTypeBadgeClass, formatPrice,
+    normalizeText, getCapabilityTypeLabel, getCapabilityTypeBadgeClass,
 } from './capabilities/constants';
 import CapabilityModal from './capabilities/CapabilityModal';
 import ChannelCapabilityModal from './capabilities/ChannelCapabilityModal';
+import { getEndpointRouteState } from './capabilities/CapabilityEndpointList';
+import CapabilityDetailDrawer from './capabilities/CapabilityDetailDrawer';
 import { Select } from '../components/ui';
 
 // 可拖拽能力卡外壳:useSortable 作用于外层卡片,通过 render-prop 把拖拽手柄注入卡头
@@ -35,7 +40,7 @@ const SortableCapabilityCard: React.FC<{
     ) : null;
     return (
         <div ref={setNodeRef} style={style}
-            className={`rounded-2xl border border-[var(--border-soft)] bg-[var(--surface-card)] shadow-sm overflow-hidden flex flex-col ${isExpanded ? 'md:col-span-2 xl:col-span-3' : ''}`}>
+            className={`rounded-2xl border bg-[var(--surface-card)] shadow-sm overflow-hidden flex flex-col ${isExpanded ? 'border-[var(--primary)] ring-2 ring-[var(--primary)]/15' : 'border-[var(--border-soft)]'}`}>
             {children(dragHandle)}
         </div>
     );
@@ -47,10 +52,13 @@ const Capabilities: React.FC = () => {
   const [channels, setChannels] = useState<Channel[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [expandedCapability, setExpandedCapability] = useState<string | null>(null);
+  const [expandedEndpointId, setExpandedEndpointId] = useState<string | null>(null);
   const [searchTerm, setSearchTerm] = useState('');
   const [filterType, setFilterType] = useState('');
   const [filterStatus, setFilterStatus] = useState('all');
   const [filterChannel, setFilterChannel] = useState('');
+  const [filterAccount, setFilterAccount] = useState('');
+  const [filterAvailability, setFilterAvailability] = useState('');
   const [filterResultMode, setFilterResultMode] = useState('');
 
     const [capabilityModal, setCapabilityModal] = useState<{
@@ -60,8 +68,15 @@ const Capabilities: React.FC = () => {
     const [ccModal, setCcModal] = useState<{
         open: boolean;
         capabilityCode: string;
-        cc: ChannelCapability | null
-    }>({open: false, capabilityCode: '', cc: null});
+        cc: ChannelCapability | null;
+        initialTab: 'basic' | 'accounts';
+    }>({open: false, capabilityCode: '', cc: null, initialTab: 'basic'});
+
+    const channelMap = useMemo(() => {
+        const map = new Map<string, Channel>();
+        channels.forEach(channel => { map.set(channel.id, channel); });
+        return map;
+    }, [channels]);
 
     const channelNameMap = useMemo(() => {
         const map = new Map<string, string>();
@@ -79,17 +94,47 @@ const Capabilities: React.FC = () => {
         return map;
     }, [channelCapabilities]);
 
-    // 应用 渠道 + 交互模式 筛选后，每个能力的可见渠道配置
+    const capabilityStatusMap = useMemo(() => {
+        const map = new Map<string, number>();
+        capabilities.forEach(capability => map.set(capability.code, capability.status));
+        return map;
+    }, [capabilities]);
+
+    const accountOptions = useMemo(() => {
+        const optionMap = new Map<string, string>();
+        channelCapabilities.forEach(endpoint => {
+            endpoint.accountBindings.forEach(binding => {
+                const channelName = channelNameMap.get(endpoint.channelId);
+                const name = binding.accountName || `Key #${binding.accountId}`;
+                optionMap.set(binding.accountId, channelName ? `${name} · ${channelName}` : name);
+            });
+        });
+        return Array.from(optionMap, ([value, label]) => ({value, label}))
+            .sort((a, b) => a.label.localeCompare(b.label));
+    }, [channelCapabilities, channelNameMap]);
+
+    // 端点筛选集中在这里，能力搜索和展开列表共用同一结果。
     const visibleCCsByCodeMap = useMemo(() => {
         const map = new Map<string, ChannelCapability[]>();
         channelCapabilitiesByCodeMap.forEach((list, code) => {
-            map.set(code, list.filter(cc =>
-                (!filterChannel || String(cc.channelId) === filterChannel) &&
-                (!filterResultMode || cc.resultMode === filterResultMode)
-            ));
+            map.set(code, list.filter(cc => {
+                const routeState = getEndpointRouteState(
+                    cc,
+                    capabilityStatusMap.get(code) ?? 0,
+                    channelMap.get(cc.channelId)?.status ?? 0,
+                );
+                const matchesAvailability = !filterAvailability
+                    || (filterAvailability === 'available' && routeState.available)
+                    || (filterAvailability === 'unavailable' && !routeState.available)
+                    || (filterAvailability === 'unbound' && cc.accountBindings.length === 0);
+                return (!filterChannel || String(cc.channelId) === filterChannel)
+                    && (!filterAccount || cc.accountBindings.some(binding => binding.accountId === filterAccount))
+                    && (!filterResultMode || cc.resultMode === filterResultMode)
+                    && matchesAvailability;
+            }));
         });
         return map;
-    }, [channelCapabilitiesByCodeMap, filterChannel, filterResultMode]);
+    }, [channelCapabilitiesByCodeMap, capabilityStatusMap, channelMap, filterChannel, filterAccount, filterAvailability, filterResultMode]);
 
     const stats = useMemo(() => ({
         totalCapabilities: capabilities.length,
@@ -100,7 +145,7 @@ const Capabilities: React.FC = () => {
 
     const filteredCapabilities = useMemo(() => {
         const keyword = searchTerm.trim().toLowerCase();
-        const ccFilterActive = !!filterChannel || !!filterResultMode;
+        const ccFilterActive = !!filterChannel || !!filterAccount || !!filterAvailability || !!filterResultMode;
         return capabilities.filter(cap => {
             const normalizedType = cap.type || 'other';
             const relatedCCs = channelCapabilitiesByCodeMap.get(cap.code) || [];
@@ -111,11 +156,14 @@ const Capabilities: React.FC = () => {
             const matchesCcFilter = !ccFilterActive || (visibleCCsByCodeMap.get(cap.code)?.length || 0) > 0;
             const matchesKeyword = !keyword || [
                 cap.name, cap.code, cap.description, normalizedType,
-                ...relatedCCs.flatMap(cc => [cc.name, cc.model, cc.requestPath, cc.resultMode, channelNameMap.get(cc.channelId)]),
+                ...relatedCCs.flatMap(cc => [
+                    cc.name, cc.model, cc.requestPath, cc.resultMode, channelNameMap.get(cc.channelId),
+                    ...cc.accountBindings.flatMap(binding => [binding.accountName, binding.accountId]),
+                ]),
             ].some(field => normalizeText(field).includes(keyword));
             return matchesType && matchesStatus && matchesCcFilter && matchesKeyword;
         });
-    }, [capabilities, channelCapabilitiesByCodeMap, visibleCCsByCodeMap, channelNameMap, filterStatus, filterType, filterChannel, filterResultMode, searchTerm]);
+    }, [capabilities, channelCapabilitiesByCodeMap, visibleCCsByCodeMap, channelNameMap, filterStatus, filterType, filterChannel, filterAccount, filterAvailability, filterResultMode, searchTerm]);
 
     // 扁平卡片列表:按类型顺序聚类、类型内按名称排序(去掉分组盒子,类型仅作卡内徽章+筛选)
     const sortedCapabilities = useMemo(() => {
@@ -132,7 +180,15 @@ const Capabilities: React.FC = () => {
         });
     }, [filteredCapabilities]);
 
-    const resetFilters = () => { setSearchTerm(''); setFilterType(''); setFilterStatus('all'); setFilterChannel(''); setFilterResultMode(''); };
+    const resetFilters = () => {
+        setSearchTerm('');
+        setFilterType('');
+        setFilterStatus('all');
+        setFilterChannel('');
+        setFilterAccount('');
+        setFilterAvailability('');
+        setFilterResultMode('');
+    };
 
     useEffect(() => { loadData(); }, []);
 
@@ -173,7 +229,8 @@ const Capabilities: React.FC = () => {
 
     // 拖拽排序:仅同类型内允许(跨类型忽略);搜索/筛选激活时禁拖(顺序会被筛选打乱)
     const sensors = useSensors(useSensor(PointerSensor, { activationConstraint: { distance: 5 } }));
-    const filterActive = !!searchTerm.trim() || !!filterType || filterStatus !== 'all' || !!filterChannel || !!filterResultMode;
+    const filterActive = !!searchTerm.trim() || !!filterType || filterStatus !== 'all'
+        || !!filterChannel || !!filterAccount || !!filterAvailability || !!filterResultMode;
     const canDrag = !filterActive;
 
     const handleDragStart = (_e: DragStartEvent) => {
@@ -203,6 +260,16 @@ const Capabilities: React.FC = () => {
             loadData(true); // 失败回滚
         }
     };
+
+    const selectedCapability = expandedCapability
+        ? capabilities.find(capability => capability.code === expandedCapability) || null
+        : null;
+    const endpointFilterActive = !!filterChannel || !!filterAccount || !!filterAvailability || !!filterResultMode;
+    const selectedEndpoints = selectedCapability
+        ? ((endpointFilterActive
+            ? visibleCCsByCodeMap.get(selectedCapability.code)
+            : channelCapabilitiesByCodeMap.get(selectedCapability.code)) || [])
+        : [];
 
   return (
     <div className="space-y-4 md:space-y-6">
@@ -243,28 +310,36 @@ const Capabilities: React.FC = () => {
       </div>
 
       <div className="bg-[var(--surface-card)] rounded-2xl shadow-sm border border-[var(--border-soft)] p-3 md:p-4 space-y-3 md:space-y-4">
-        <div className="flex flex-col lg:flex-row gap-3 md:gap-4">
-          <div className="relative flex-1">
+        <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-4 2xl:grid-cols-9">
+          <div className="relative sm:col-span-2 2xl:col-span-2">
             <Search size={16} className="absolute left-3 top-1/2 -translate-y-1/2 text-[var(--text-secondary)]" />
             <input type="text" value={searchTerm} onChange={e => setSearchTerm(e.target.value)}
-              placeholder="搜索能力名、编码..."
+              placeholder="搜索能力、端点或 Key..."
               className="w-full pl-9 pr-4 py-2 border border-[var(--border-soft)] rounded-lg focus:outline-none focus:ring-2 focus:ring-[var(--primary)] text-sm" />
           </div>
-          <div className="lg:w-52">
+          <div>
             <Select value={filterType} onChange={setFilterType} placeholder="全部类型"
               options={[{ label: '全部类型', value: '' }, ...CAPABILITY_TYPES]} />
           </div>
-          <div className="lg:w-52">
+          <div>
             <Select value={filterStatus} onChange={setFilterStatus} placeholder="全部状态"
               options={[{ label: '全部状态', value: 'all' }, { label: '仅启用', value: 'enabled' }, { label: '仅禁用', value: 'disabled' }]} />
           </div>
-          <div className="lg:w-52">
-            <Select value={filterChannel} onChange={setFilterChannel} placeholder="全部渠道"
-              options={[{ label: '全部渠道', value: '' }, ...channels.map(ch => ({ label: ch.name, value: String(ch.id) }))]} />
-          </div>
-          <div className="lg:w-52">
-            <Select value={filterResultMode} onChange={setFilterResultMode} placeholder="全部交互模式"
-              options={[{ label: '全部交互模式', value: '' }, ...RESULT_MODES]} />
+          <div>
+             <Select value={filterChannel} onChange={setFilterChannel} placeholder="全部渠道"
+               options={[{ label: '全部渠道', value: '' }, ...channels.map(ch => ({ label: ch.name, value: String(ch.id) }))]} />
+           </div>
+           <div>
+             <Select value={filterAccount} onChange={setFilterAccount} placeholder="全部 Key"
+               options={[{ label: '全部 Key', value: '' }, ...accountOptions]} />
+           </div>
+           <div>
+             <Select value={filterAvailability} onChange={setFilterAvailability} placeholder="全部线路状态"
+               options={[{ label: '全部线路状态', value: '' }, { label: '仅可用', value: 'available' }, { label: '仅不可用', value: 'unavailable' }, { label: '仅未绑定 Key', value: 'unbound' }]} />
+           </div>
+          <div>
+             <Select value={filterResultMode} onChange={setFilterResultMode} placeholder="全部交互模式"
+               options={[{ label: '全部交互模式', value: '' }, ...RESULT_MODES]} />
           </div>
           <button type="button" onClick={resetFilters}
             className="px-4 py-2 border border-[var(--border-soft)] rounded-lg text-sm text-[var(--text-primary)] hover:bg-[var(--surface)] transition-colors">
@@ -304,20 +379,35 @@ const Capabilities: React.FC = () => {
           <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4 items-start">
                 {sortedCapabilities.map(cap => {
                   const isExpanded = expandedCapability === cap.code;
-                  const ccFilterActive = !!filterChannel || !!filterResultMode;
+                  const ccFilterActive = !!filterChannel || !!filterAccount || !!filterAvailability || !!filterResultMode;
                   const relatedCCs = (ccFilterActive ? visibleCCsByCodeMap.get(cap.code) : channelCapabilitiesByCodeMap.get(cap.code)) || [];
-                  const enabledCCCount = relatedCCs.filter(cc => cc.status === 1).length;
-                  const standardParamCount = Object.keys(cap.standardParams || {}).length;
+                  const endpointStates = relatedCCs.map(endpoint => getEndpointRouteState(
+                    endpoint,
+                    cap.status,
+                    channelMap.get(endpoint.channelId)?.status ?? 0,
+                  ));
+                  const uniqueKeyCount = new Set(relatedCCs.flatMap(endpoint => endpoint.accountBindings.map(binding => binding.accountId))).size;
+                  const activeRouteCount = endpointStates.reduce((total, state) => total + (state.available ? state.activeBindings.length : 0), 0);
+                  const unavailableEndpointCount = endpointStates.filter(state => !state.available).length;
+                  const summaryItems = [
+                    {label: '端点', value: relatedCCs.length, icon: Route, className: 'text-blue-600'},
+                    {label: '绑定 Key', value: uniqueKeyCount, icon: KeyRound, className: 'text-violet-600'},
+                    {label: '有效线路', value: activeRouteCount, icon: CircleCheck, className: 'text-green-600'},
+                    {label: '不可用', value: unavailableEndpointCount, icon: CircleAlert, className: unavailableEndpointCount > 0 ? 'text-red-600' : 'text-[var(--text-secondary)]'},
+                  ];
 
                   return (
                     <SortableCapabilityCard key={cap.code} code={cap.code} isExpanded={isExpanded} canDrag={canDrag}>
                       {(dragHandle) => (
                       <>
-                      {/* 卡头:图标+名称+状态,点击展开/收起 */}
+                      {/* 卡头:能力身份与总状态 */}
                       <div className="p-4 flex items-start gap-3 cursor-pointer hover:bg-[var(--surface)]"
-                        onClick={() => setExpandedCapability(isExpanded ? null : cap.code)}>
+                        onClick={() => {
+                          setExpandedCapability(isExpanded ? null : cap.code);
+                          setExpandedEndpointId(null);
+                        }}>
                         {dragHandle}
-                        <div className="p-2.5 bg-[var(--primary-lighter)] text-[var(--primary)] rounded-xl shrink-0"><Cpu size={20} /></div>
+                        <div className="p-2.5 bg-[var(--primary-lighter)] text-[var(--primary)] rounded-lg shrink-0"><Cpu size={20} /></div>
                         <div className="min-w-0 flex-1">
                           <div className="flex items-center gap-2">
                             <h3 className="text-base font-bold text-[var(--text-primary)] truncate" title={cap.name}>{cap.name}</h3>
@@ -326,17 +416,26 @@ const Capabilities: React.FC = () => {
                             </span>
                           </div>
                           <div className="text-xs text-[var(--text-secondary)] mt-1 truncate" title={cap.code}>{cap.code}</div>
+                          <span className={`mt-2 inline-flex px-2 py-0.5 rounded text-xs ${getCapabilityTypeBadgeClass(cap.type)}`}>
+                            {getCapabilityTypeLabel(cap.type)}
+                          </span>
                         </div>
                         <div className="pt-1 text-[var(--text-secondary)] shrink-0">
-                          {isExpanded ? <ChevronDown size={18} /> : <ChevronRight size={18} />}
+                          <PanelRightOpen size={18} className={isExpanded ? 'text-[var(--primary)]' : ''} />
                         </div>
                       </div>
 
-                      {/* 标签:类型 + 渠道配置数 + 标准参数数 */}
-                      <div className="flex flex-wrap items-center gap-2 px-4 text-xs">
-                        <span className={`px-2 py-1 rounded ${getCapabilityTypeBadgeClass(cap.type)}`}>{getCapabilityTypeLabel(cap.type)}</span>
-                        <span className="px-2 py-1 rounded bg-[var(--primary-lighter)] text-[var(--text-secondary)]">渠道配置 {relatedCCs.length}</span>
-                        <span className="px-2 py-1 rounded bg-[var(--primary-lighter)] text-[var(--text-secondary)]">标准参数 {standardParamCount}</span>
+                      {/* 固定四项摘要，保持所有能力卡高度稳定 */}
+                      <div className="grid grid-cols-4 border-y border-[var(--border-soft)] bg-[var(--surface)]/60">
+                        {summaryItems.map(({label, value, icon: Icon, className}, index) => (
+                          <div key={label} className={`min-w-0 px-2 py-2.5 text-center ${index > 0 ? 'border-l border-[var(--border-soft)]' : ''}`}>
+                            <div className={`flex items-center justify-center gap-1 ${className}`}>
+                              <Icon size={13} />
+                              <span className="text-sm font-bold">{value}</span>
+                            </div>
+                            <div className="mt-0.5 truncate text-[11px] text-[var(--text-secondary)]" title={label}>{label}</div>
+                          </div>
+                        ))}
                       </div>
 
                       {/* 描述 */}
@@ -364,88 +463,6 @@ const Capabilities: React.FC = () => {
                         </button>
                       </div>
 
-                      {isExpanded && (
-                        <div className="border-t border-[var(--border-soft)] bg-[var(--surface)]/70 p-4">
-                          <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between mb-4">
-                            <div>
-                              <h4 className="text-sm font-bold text-gray-800">渠道能力配置</h4>
-                              <p className="text-sm text-[var(--text-secondary)] mt-1">共 {relatedCCs.length} 个配置，已启用 {enabledCCCount} 个</p>
-                            </div>
-                            <button onClick={() => setCcModal({open: true, capabilityCode: cap.code, cc: null})}
-                              className="inline-flex items-center gap-2 px-4 py-2 bg-[var(--primary)] text-white rounded-lg text-sm font-bold hover:opacity-90">
-                              <Plus size={14} />
-                              添加渠道配置
-                            </button>
-                          </div>
-
-                          {relatedCCs.length === 0 ? (
-                            <div className="bg-[var(--surface-card)] border border-dashed border-[var(--border-soft)] rounded-2xl px-6 py-10 text-center">
-                              <Settings size={32} className="mx-auto text-gray-300 mb-3" />
-                              <div className="text-sm font-medium text-[var(--text-primary)]">当前能力还没有渠道配置</div>
-                              <div className="text-sm text-[var(--text-secondary)] mt-1 mb-4">可以立即添加一个渠道配置来接入具体渠道能力</div>
-                              <button onClick={() => setCcModal({open: true, capabilityCode: cap.code, cc: null})}
-                                className="inline-flex items-center gap-2 px-4 py-2 bg-[var(--primary)] text-white rounded-lg text-sm font-bold hover:opacity-90">
-                                <Plus size={14} />
-                                添加渠道配置
-                              </button>
-                            </div>
-                          ) : (
-                            <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-3">
-                              {relatedCCs.map(cc => (
-                                <div key={cc.id} className="bg-[var(--surface-card)] rounded-2xl border border-[var(--border-soft)] shadow-sm flex flex-col overflow-hidden">
-                                  {/* 头部:图标 + 名称 + 状态 */}
-                                  <div className="flex items-center gap-2.5 p-4 pb-3">
-                                    <div className="p-2 bg-[var(--primary-lighter)] rounded-xl shrink-0">
-                                      <Settings size={16} className="text-[var(--text-secondary)]" />
-                                    </div>
-                                    <span className="font-semibold text-[var(--text-primary)] truncate flex-1" title={cc.name || cc.model || '未命名'}>
-                                      {cc.name || cc.model || '未命名'}
-                                    </span>
-                                    <span className={`text-xs px-2 py-1 rounded-full shrink-0 ${cc.status === 1 ? 'bg-green-50 text-green-600' : 'bg-red-50 text-red-600'}`}>
-                                      {cc.status === 1 ? '启用' : '禁用'}
-                                    </span>
-                                  </div>
-                                  {/* 标签:渠道 + 模式 */}
-                                  <div className="flex flex-wrap items-center gap-2 px-4">
-                                    <span className="text-xs px-2 py-1 rounded-full bg-blue-50 text-blue-600 truncate max-w-full" title={channelNameMap.get(cc.channelId) || String(cc.channelId)}>
-                                      {channelNameMap.get(cc.channelId) || cc.channelId}
-                                    </span>
-                                    <span className="text-xs px-2 py-1 rounded-full bg-purple-50 text-purple-600">{cc.resultMode}</span>
-                                  </div>
-                                  {/* 明细:方法路径 / 价格 / 模型 */}
-                                  <div className="px-4 pt-3 pb-4 mt-3 space-y-1.5 text-sm text-[var(--text-secondary)] border-t border-[var(--border-soft)]">
-                                    <div className="truncate" title={`${cc.requestMethod} ${cc.requestPath || ''}`}>
-                                      <span className="text-[var(--text-primary)] font-medium mr-1.5">{cc.requestMethod}</span>
-                                      {cc.requestPath || '未配置路径'}
-                                    </div>
-                                    <div>价格 {formatPrice(cc.price)}/{cc.priceUnit || 'request'}</div>
-                                    {cc.model ? <div className="truncate" title={cc.model}>模型 {cc.model}</div> : null}
-                                  </div>
-                                  {/* 操作 */}
-                                  <div className="flex items-center gap-2 px-4 py-3 mt-auto bg-[var(--surface)]/60 border-t border-[var(--border-soft)]">
-                                    <button onClick={() => handleToggleCcStatus(cc)}
-                                      className={`inline-flex items-center justify-center gap-1 flex-1 px-2 py-1.5 rounded-lg text-sm ${cc.status === 1 ? 'text-yellow-700 bg-yellow-50 hover:bg-yellow-100' : 'text-green-700 bg-green-50 hover:bg-green-100'}`}
-                                      title={cc.status === 1 ? '禁用' : '启用'}>
-                                      <Power size={14} />
-                                      {cc.status === 1 ? '禁用' : '启用'}
-                                    </button>
-                                    <button onClick={() => setCcModal({open: true, capabilityCode: cap.code, cc})}
-                                      className="inline-flex items-center justify-center gap-1 flex-1 px-2 py-1.5 text-sm text-[var(--primary)] bg-[var(--primary-lighter)] hover:bg-indigo-100 rounded-lg">
-                                      <Edit2 size={14} />
-                                      编辑
-                                    </button>
-                                    <button onClick={() => handleDeleteChannelCapability(cc.id)}
-                                      className="inline-flex items-center justify-center gap-1 flex-1 px-2 py-1.5 text-sm text-red-600 bg-red-50 hover:bg-red-100 rounded-lg">
-                                      <Trash2 size={14} />
-                                      删除
-                                    </button>
-                                  </div>
-                                </div>
-                              ))}
-                            </div>
-                          )}
-                        </div>
-                      )}
                       </>
                       )}
                     </SortableCapabilityCard>
@@ -469,9 +486,25 @@ const Capabilities: React.FC = () => {
             channelCapability={ccModal.cc}
             channels={channels}
             capabilities={capabilities}
-            onClose={() => setCcModal({open: false, capabilityCode: '', cc: null})}
+            initialTab={ccModal.initialTab}
+            onClose={() => setCcModal({open: false, capabilityCode: '', cc: null, initialTab: 'basic'})}
             onSave={() => loadData(true)}
         />
+        {selectedCapability && (
+            <CapabilityDetailDrawer
+                capability={selectedCapability}
+                endpoints={selectedEndpoints}
+                channelMap={channelMap}
+                expandedEndpointId={expandedEndpointId}
+                onClose={() => { setExpandedCapability(null); setExpandedEndpointId(null); }}
+                onToggleExpanded={id => setExpandedEndpointId(current => current === id ? null : id)}
+                onAdd={() => setCcModal({open: true, capabilityCode: selectedCapability.code, cc: null, initialTab: 'basic'})}
+                onEdit={cc => setCcModal({open: true, capabilityCode: selectedCapability.code, cc, initialTab: 'basic'})}
+                onManageKeys={cc => setCcModal({open: true, capabilityCode: selectedCapability.code, cc, initialTab: 'accounts'})}
+                onToggleStatus={handleToggleCcStatus}
+                onDelete={handleDeleteChannelCapability}
+            />
+        )}
       </>)}
     </div>
   );

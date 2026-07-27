@@ -80,9 +80,9 @@ const ChannelRow: React.FC<{
   };
 
   const selectedAccount = accounts.find(a => a.id === selectedAccountId) || null;
-  // 能力端点跟随选中 key: 只显示归属该 key 的端点(accountId 匹配)
+  // 能力端点跟随选中 Key，关联表是唯一来源。
   const keyCapabilities = selectedAccountId
-    ? capabilities.filter(c => c.accountId === selectedAccountId)
+    ? capabilities.filter(c => c.accountBindings.some(binding => binding.accountId === selectedAccountId))
     : [];
 
   const handleCopyApiKey = async (accountId: string, apiKey: string) => {
