@@ -12,8 +12,8 @@ func TestLoadIncludesImmutableBaseline(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(migrations) != 5 {
-		t.Fatalf("managed migrations=%d, want 5", len(migrations))
+	if len(migrations) != 6 {
+		t.Fatalf("managed migrations=%d, want 6", len(migrations))
 	}
 	baseline := migrations[0]
 	if baseline.Filename != "20260718_150000_schema_baseline.sql" {
@@ -50,6 +50,13 @@ func TestLoadIncludesImmutableBaseline(t *testing.T) {
 	const expectedDuomiImageMappingChecksum = "a170e61d8334ce3ce634be572e0b6ea3240dfcb505beb3318f5bca821a8258ad"
 	if migrations[4].Checksum != expectedDuomiImageMappingChecksum {
 		t.Fatalf("duomi image mapping checksum=%s, want %s", migrations[4].Checksum, expectedDuomiImageMappingChecksum)
+	}
+	if migrations[5].Filename != "20260728_181500_unify_image_endpoint_supports_stream.sql" {
+		t.Fatalf("image stream support migration filename=%q", migrations[5].Filename)
+	}
+	const expectedImageStreamSupportChecksum = "be762ef3b036c0115aa1c740cf580b9108eab49e122fa233b2df4c18fca8a189"
+	if migrations[5].Checksum != expectedImageStreamSupportChecksum {
+		t.Fatalf("image stream support checksum=%s, want %s", migrations[5].Checksum, expectedImageStreamSupportChecksum)
 	}
 }
 
