@@ -12,7 +12,7 @@ import (
 // parseImageSSEStream 边读边解析图像生成的 SSE 流(如 sub2api 带 stream:true 的响应)。
 //
 // 靠 data JSON 的 type 字段区分事件(中转路径可能无 event: 行,不能依赖它):
-//   - image_generation.completed / image_edit.completed → 取 b64_json,立即返回成功
+//   - image_generation.completed / image_edit.completed → 取 b64_json 或 url,立即返回成功
 //   - error / *.failed                                  → 取错误消息返回 error
 //   - image_generation.partial_image / *.partial_image  → 记为兜底
 //
@@ -20,8 +20,7 @@ import (
 func parseImageSSEStream(r io.Reader) (SubmitResult, error) {
 	reader := bufio.NewReader(r)
 	var dataLines []string
-	var lastPartialB64 string
-	var partialRevised string
+	var lastPartial imageOutput
 
 	// flush 处理一个完整事件块(空行触发)。done=true 表示遇到 [DONE] 应停止。
 	flush := func() (res SubmitResult, matched bool, done bool, err error) {
@@ -43,31 +42,27 @@ func parseImageSSEStream(r io.Reader) (SubmitResult, error) {
 		typ := gjson.Get(payload, "type").String()
 		obj := gjson.Get(payload, "object").String()
 		switch {
-		// A) completed 事件(顶层 b64_json)
+		// A) completed 事件(顶层 b64_json / url)
 		case strings.HasSuffix(typ, "completed"):
-			b64 := gjson.Get(payload, "b64_json").String()
-			revised := gjson.Get(payload, "revised_prompt").String()
-			if b64 == "" {
+			img := extractImageOutput(payload, "")
+			if img.empty() {
+				img = extractImageOutput(payload, "data.0.")
+			}
+			if img.empty() {
 				return // completed 但无图,继续兜底
 			}
-			out := SubmitResult{Status: StatusSuccess, B64Data: []string{b64}}
-			if revised != "" {
-				out.RevisedPrompt = revised
-			}
-			return out, true, true, nil
+			return img.result(), true, true, nil
 
-		// B) result 事件(data[0].b64_json), 兼容 image.generation.result / image.edit.result
+		// B) result 事件(data[0].b64_json / data[0].url), 兼容 image.generation.result / image.edit.result
 		case strings.HasSuffix(obj, ".result"):
-			b64 := gjson.Get(payload, "data.0.b64_json").String()
-			revised := gjson.Get(payload, "data.0.revised_prompt").String()
-			if b64 == "" {
+			img := extractImageOutput(payload, "data.0.")
+			if img.empty() {
+				img = extractImageOutput(payload, "")
+			}
+			if img.empty() {
 				return // result 但无图,继续兜底
 			}
-			out := SubmitResult{Status: StatusSuccess, B64Data: []string{b64}}
-			if revised != "" {
-				out.RevisedPrompt = revised
-			}
-			return out, true, true, nil
+			return img.result(), true, true, nil
 
 		case typ == "error" || strings.HasSuffix(typ, "failed") || obj == "error":
 			msg := gjson.Get(payload, "error.message").String()
@@ -83,23 +78,21 @@ func parseImageSSEStream(r io.Reader) (SubmitResult, error) {
 			}
 			return SubmitResult{}, false, true, fmt.Errorf("%s", msg)
 
-		// A) partial_image 事件(顶层 b64_json)
+		// A) partial_image 事件(顶层 b64_json / url)
 		case strings.HasSuffix(typ, "partial_image"):
-			if b64 := gjson.Get(payload, "b64_json").String(); b64 != "" {
-				lastPartialB64 = b64
+			img := extractImageOutput(payload, "")
+			if img.empty() {
+				img = extractImageOutput(payload, "data.0.")
 			}
-			if rp := gjson.Get(payload, "revised_prompt").String(); rp != "" {
-				partialRevised = rp
-			}
+			lastPartial.merge(img)
 
-		// B) chunk 事件(可能带 data[0].b64_json 的 partial 图)
+		// B) chunk 事件(可能带 data[0].b64_json / data[0].url 的 partial 图)
 		case strings.HasSuffix(obj, ".chunk"):
-			if b64 := gjson.Get(payload, "data.0.b64_json").String(); b64 != "" {
-				lastPartialB64 = b64
+			img := extractImageOutput(payload, "data.0.")
+			if img.empty() {
+				img = extractImageOutput(payload, "")
 			}
-			if rp := gjson.Get(payload, "data.0.revised_prompt").String(); rp != "" {
-				partialRevised = rp
-			}
+			lastPartial.merge(img)
 		}
 		return
 	}
@@ -142,12 +135,83 @@ func parseImageSSEStream(r io.Reader) (SubmitResult, error) {
 	}
 
 	// 无 completed:降级用最后一张 partial
-	if lastPartialB64 != "" {
-		out := SubmitResult{Status: StatusSuccess, B64Data: []string{lastPartialB64}}
-		if partialRevised != "" {
-			out.RevisedPrompt = partialRevised
-		}
-		return out, nil
+	if !lastPartial.empty() {
+		return lastPartial.result(), nil
 	}
 	return SubmitResult{}, fmt.Errorf("upstream did not return image output")
+}
+
+// imageOutput 是单个 SSE 事件里解出的图像产物。
+// 上游按 response_format 二选一给出 b64_json 或 url,两者都要能接。
+type imageOutput struct {
+	b64     string
+	url     string
+	revised string
+}
+
+func (o imageOutput) empty() bool { return o.b64 == "" && o.url == "" }
+
+// merge 用新事件的非空字段覆盖旧值(partial 兜底取最后一张)。
+func (o *imageOutput) merge(next imageOutput) {
+	if next.b64 != "" {
+		o.b64 = next.b64
+		o.url = ""
+	}
+	if next.url != "" {
+		o.url = next.url
+		o.b64 = ""
+	}
+	if next.revised != "" {
+		o.revised = next.revised
+	}
+}
+
+func (o imageOutput) result() SubmitResult {
+	out := SubmitResult{Status: StatusSuccess, RevisedPrompt: o.revised}
+	switch {
+	case o.b64 != "":
+		out.B64Data = []string{o.b64}
+	case o.url != "":
+		out.URLs = []string{o.url}
+	}
+	return out
+}
+
+// extractImageOutput 从事件 JSON 取图,prefix 区分顶层("")与 sub2api 的 data 数组("data.0.")。
+// url 若是 data URI(如 sub2api 在 response_format=url 时返回的 data:image/png;base64,...),
+// 剥壳还原成 base64 走转存路径,真实 http 链接才留在 URLs。
+func extractImageOutput(payload, prefix string) imageOutput {
+	out := imageOutput{
+		b64:     gjson.Get(payload, prefix+"b64_json").String(),
+		revised: gjson.Get(payload, prefix+"revised_prompt").String(),
+	}
+	if out.b64 != "" {
+		return out
+	}
+	raw := gjson.Get(payload, prefix+"url").String()
+	if raw == "" {
+		return out
+	}
+	if b64, ok := decodeBase64DataURI(raw); ok {
+		out.b64 = b64
+		return out
+	}
+	out.url = raw
+	return out
+}
+
+// decodeBase64DataURI 解出 data:<mediatype>;base64,<data> 里的 base64 载荷。
+func decodeBase64DataURI(s string) (string, bool) {
+	if !strings.HasPrefix(s, "data:") {
+		return "", false
+	}
+	idx := strings.Index(s, ";base64,")
+	if idx < 0 {
+		return "", false
+	}
+	data := s[idx+len(";base64,"):]
+	if data == "" {
+		return "", false
+	}
+	return data, true
 }

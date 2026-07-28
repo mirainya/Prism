@@ -133,3 +133,79 @@ func TestParseImageSSEStream_RevisedPromptFromPartial(t *testing.T) {
 		t.Fatalf("RevisedPrompt = %q, want cat", res.RevisedPrompt)
 	}
 }
+
+// response_format=url 时 sub2api 把图放在 data[0].url，且值是 data URI 而非 http 链接。
+// 解析器必须能取到，否则用户选了 url 就永远拿不到图。
+func TestParseImageSSEStream_URLOutput(t *testing.T) {
+	tests := []struct {
+		name     string
+		input    string
+		wantB64  string
+		wantURLs []string
+		wantRP   string
+	}{
+		{
+			name: "result event with data URI url",
+			input: "data: {\"object\":\"image.generation.chunk\",\"data\":[]}\n\n" +
+				"data: {\"object\":\"image.generation.result\",\"data\":[{\"url\":\"data:image/png;base64,aW1n\"}]}\n\n" +
+				"data: [DONE]\n\n",
+			wantB64: "aW1n",
+		},
+		{
+			name: "result event with http url",
+			input: "data: {\"object\":\"image.generation.result\",\"data\":[{\"url\":\"https://cdn.test/a.png\",\"revised_prompt\":\"an apple\"}]}\n\n" +
+				"data: [DONE]\n\n",
+			wantURLs: []string{"https://cdn.test/a.png"},
+			wantRP:   "an apple",
+		},
+		{
+			name: "completed event with top-level data URI url",
+			input: "data: {\"type\":\"image_generation.completed\",\"url\":\"data:image/png;base64,ZG9uZQ==\"}\n\n" +
+				"data: [DONE]\n\n",
+			wantB64: "ZG9uZQ==",
+		},
+		{
+			name: "completed event with nested url",
+			input: "data: {\"type\":\"image_generation.completed\",\"data\":[{\"url\":\"https://cdn.test/nested.png\"}]}\n\n" +
+				"data: [DONE]\n\n",
+			wantURLs: []string{"https://cdn.test/nested.png"},
+		},
+		{
+			name: "chunk url as partial fallback",
+			input: "data: {\"object\":\"image.generation.chunk\",\"data\":[{\"url\":\"data:image/png;base64,cGFydA==\"}]}\n\n" +
+				"data: [DONE]\n\n",
+			wantB64: "cGFydA==",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			res, err := parseImageSSEStream(strings.NewReader(tt.input))
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if res.Status != StatusSuccess {
+				t.Fatalf("Status = %s, want %s", res.Status, StatusSuccess)
+			}
+			if tt.wantB64 != "" {
+				if len(res.B64Data) != 1 || res.B64Data[0] != tt.wantB64 {
+					t.Fatalf("B64Data = %v, want [%s]", res.B64Data, tt.wantB64)
+				}
+				if len(res.URLs) != 0 {
+					t.Fatalf("URLs = %v, want empty (data URI must decode into B64Data)", res.URLs)
+				}
+			}
+			if len(tt.wantURLs) > 0 {
+				if len(res.URLs) != len(tt.wantURLs) || res.URLs[0] != tt.wantURLs[0] {
+					t.Fatalf("URLs = %v, want %v", res.URLs, tt.wantURLs)
+				}
+				if len(res.B64Data) != 0 {
+					t.Fatalf("B64Data = %v, want empty for http url", res.B64Data)
+				}
+			}
+			if tt.wantRP != "" && res.RevisedPrompt != tt.wantRP {
+				t.Fatalf("RevisedPrompt = %q, want %q", res.RevisedPrompt, tt.wantRP)
+			}
+		})
+	}
+}
