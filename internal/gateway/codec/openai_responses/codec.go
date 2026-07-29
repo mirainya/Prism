@@ -59,7 +59,7 @@ func DecodeRequest(source protocol.Request) (canonical.Request, error) {
 		Endpoint: canonical.EndpointOpenAIResponses, Model: source.Model, Items: items,
 		Instructions: source.Instructions, Tools: tools, ToolChoice: choice,
 		ParallelToolCalls: cloneBool(source.ParallelToolCalls), ResponseFormat: format, Reasoning: reasoning,
-		Stream: source.Stream, Store: cloneBool(source.Store), Background: source.Background,
+		Stream: source.Stream, Store: cloneBool(source.Store), ServiceTier: source.ServiceTier, Background: source.Background,
 		PreviousResponseID: source.PreviousResponseID, MaxOutputTokens: intPointer(source.MaxOutputTokens),
 		Temperature: cloneFloat(source.Temperature), TopP: cloneFloat(source.TopP), User: source.User,
 		Metadata: cloneStrings(source.Metadata), Include: append([]string(nil), source.Include...),
@@ -869,7 +869,7 @@ func requestExtras(source protocol.Request) (map[string]json.RawMessage, error) 
 	for _, key := range []string{
 		"model", "input", "instructions", "stream", "store", "background", "previous_response_id",
 		"tools", "tool_choice", "parallel_tool_calls", "max_output_tokens", "temperature", "top_p",
-		"reasoning", "metadata", "include", "user", "thinking", "caching", "session",
+		"reasoning", "metadata", "include", "service_tier", "user", "thinking", "caching", "session",
 		"context_management", "expire_at",
 	} {
 		delete(fields, key)

@@ -166,6 +166,42 @@ func TestChatPlanDropsResponsesEncryptedReasoningInclude(t *testing.T) {
 	}
 }
 
+func TestOpenAIServiceTierSurvivesResponsesRouting(t *testing.T) {
+	request := canonical.Request{
+		Model: "m", ServiceTier: "auto",
+		Items: []canonical.Item{{Type: "message", Role: canonical.RoleUser, Content: []canonical.Content{{Type: "input_text", Text: "hi"}}}},
+	}
+	tests := []struct {
+		name string
+		item transport.Transport
+	}{
+		{name: "converted chat", item: NewChat(nil)},
+		{name: "native responses", item: NewResponses(nil)},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			plan := test.item.Plan(transport.OperationResponses, request, canonical.FeatureSet{})
+			if !plan.Supported() {
+				t.Fatalf("plan = %#v", plan)
+			}
+			prepared, err := test.item.Prepare(context.Background(), transport.Invocation{
+				Route:     transport.Route{BaseURL: "https://example.test", VendorModel: "m"},
+				Operation: transport.OperationResponses, Request: request,
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			var body map[string]json.RawMessage
+			if err := json.Unmarshal(prepared.Body, &body); err != nil {
+				t.Fatal(err)
+			}
+			if got := string(body["service_tier"]); got != `"auto"` {
+				t.Fatalf("service_tier = %s body=%s", got, prepared.Body)
+			}
+		})
+	}
+}
+
 func TestChatPlanRejectsUnsupportedResponsesInclude(t *testing.T) {
 	tests := []struct {
 		name      string

@@ -12,13 +12,17 @@ import (
 func TestDecodeRequestMapsMultimodalToolsAndExtensions(t *testing.T) {
 	max := 128
 	strict := true
-	request := chat.ChatRequest{Model: "public", MaxCompletionTokens: &max, Messages: []chat.ChatMessage{{Role: "user", Content: []any{map[string]any{"type": "text", "text": "hi"}, map[string]any{"type": "image_url", "image_url": map[string]any{"url": "https://example.test/a.png", "detail": "low"}}}}}, Tools: []chat.ToolDefinition{{Type: "function", Function: chat.FunctionDef{Name: "weather", Parameters: json.RawMessage(`{"type":"object"}`), Strict: &strict}}}, ToolChoice: map[string]any{"type": "function", "function": map[string]any{"name": "weather"}}, ExtraBody: map[string]any{"frequency_penalty": 0.2, "vendor_flag": true}}
+	serviceTier := "auto"
+	request := chat.ChatRequest{Model: "public", MaxCompletionTokens: &max, ServiceTier: &serviceTier, Messages: []chat.ChatMessage{{Role: "user", Content: []any{map[string]any{"type": "text", "text": "hi"}, map[string]any{"type": "image_url", "image_url": map[string]any{"url": "https://example.test/a.png", "detail": "low"}}}}}, Tools: []chat.ToolDefinition{{Type: "function", Function: chat.FunctionDef{Name: "weather", Parameters: json.RawMessage(`{"type":"object"}`), Strict: &strict}}}, ToolChoice: map[string]any{"type": "function", "function": map[string]any{"name": "weather"}}, ExtraBody: map[string]any{"frequency_penalty": 0.2, "vendor_flag": true}}
 	decoded, err := DecodeRequest(request)
 	if err != nil {
 		t.Fatalf("decode request: %v", err)
 	}
 	if decoded.Endpoint != canonical.EndpointOpenAIChat || decoded.MaxOutputTokens == nil || *decoded.MaxOutputTokens != 128 {
 		t.Fatalf("bad request mapping: %#v", decoded)
+	}
+	if decoded.ServiceTier != "auto" {
+		t.Fatalf("service tier = %q", decoded.ServiceTier)
 	}
 	if len(decoded.Items) != 1 || len(decoded.Items[0].Content) != 2 || decoded.Items[0].Content[1].URL == "" {
 		t.Fatalf("multimodal mapping failed: %#v", decoded.Items)
@@ -28,6 +32,8 @@ func TestDecodeRequestMapsMultimodalToolsAndExtensions(t *testing.T) {
 	}
 	if len(decoded.ClientExtensions[extraRequest]) == 0 {
 		t.Fatal("unmodeled request fields were lost")
+	} else if strings.Contains(string(decoded.ClientExtensions[extraRequest]), `"service_tier"`) {
+		t.Fatalf("service tier remained an extension: %s", decoded.ClientExtensions[extraRequest])
 	}
 }
 

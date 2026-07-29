@@ -286,6 +286,9 @@ func encode(invocation transport.Invocation, responses bool) ([]byte, error) {
 	if request.TopP != nil {
 		body["top_p"] = *request.TopP
 	}
+	if request.ServiceTier != "" {
+		body["service_tier"] = request.ServiceTier
+	}
 	if !responses && len(request.Stop) > 0 {
 		body["stop"] = request.Stop
 	}

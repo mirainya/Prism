@@ -48,7 +48,7 @@ func TestDecodeRequestNormalizesCallsAudioFilesAndKnownExtras(t *testing.T) {
 				{"type":"input_audio","input_audio":{"data":"YWJj","format":"wav"}},
 				{"type":"input_file","file_data":"ZmlsZQ==","filename":"notes.txt","content_type":"text/plain"}
 			]}
-		],"conversation":"conv_1","max_tool_calls":3,"text":{"format":{"type":"text"},"verbosity":"low"}
+		],"conversation":"conv_1","max_tool_calls":3,"service_tier":"auto","text":{"format":{"type":"text"},"verbosity":"low"}
 	}`), &request); err != nil {
 		t.Fatal(err)
 	}
@@ -65,8 +65,13 @@ func TestDecodeRequestNormalizesCallsAudioFilesAndKnownExtras(t *testing.T) {
 	if got := decoded.Items[2].Content[1]; got.Filename != "notes.txt" || got.MediaType != "text/plain" {
 		t.Fatalf("file = %#v", got)
 	}
+	if decoded.ServiceTier != "auto" {
+		t.Fatalf("service tier = %q", decoded.ServiceTier)
+	}
 	if extras := string(decoded.ClientExtensions[extraRequest]); !strings.Contains(extras, `"conversation":"conv_1"`) || !strings.Contains(extras, `"max_tool_calls":3`) || !strings.Contains(extras, `"verbosity":"low"`) {
 		t.Fatalf("known extensions were lost: %s", extras)
+	} else if strings.Contains(extras, `"service_tier"`) {
+		t.Fatalf("service tier remained an extension: %s", extras)
 	}
 }
 

@@ -65,10 +65,14 @@ func DecodeRequest(source chat.ChatRequest) (canonical.Request, error) {
 		value := source.MaxTokens
 		maxOutput = &value
 	}
+	serviceTier := ""
+	if source.ServiceTier != nil {
+		serviceTier = *source.ServiceTier
+	}
 	return canonical.Request{
 		Endpoint: canonical.EndpointOpenAIChat, Model: source.Model, Items: items,
 		Tools: tools, ToolChoice: choice, ParallelToolCalls: cloneBool(source.ParallelToolCalls), ResponseFormat: format,
-		Stream: source.Stream, Store: cloneBool(source.Store), MaxOutputTokens: maxOutput,
+		Stream: source.Stream, Store: cloneBool(source.Store), ServiceTier: serviceTier, MaxOutputTokens: maxOutput,
 		Temperature: cloneFloat(source.Temperature), TopP: cloneFloat(source.TopP), Stop: append([]string(nil), source.Stop...),
 		User: source.User, Metadata: cloneStrings(source.Metadata), Modalities: append([]string(nil), source.Modalities...),
 		ClientExtensions: extras,
@@ -645,7 +649,7 @@ func requestExtras(source chat.ChatRequest) (map[string]json.RawMessage, error) 
 	}
 	for _, key := range []string{
 		"model", "messages", "temperature", "max_tokens", "max_completion_tokens", "top_p", "stop", "stream",
-		"stream_options", "tools", "tool_choice", "parallel_tool_calls", "response_format", "user", "modalities", "store", "metadata",
+		"stream_options", "tools", "tool_choice", "parallel_tool_calls", "response_format", "user", "modalities", "store", "metadata", "service_tier",
 	} {
 		delete(fields, key)
 	}

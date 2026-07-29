@@ -167,6 +167,7 @@ type Request struct {
 
 	Stream             bool              `json:"stream,omitempty"`
 	Store              *bool             `json:"store,omitempty"`
+	ServiceTier        string            `json:"service_tier,omitempty"`
 	Background         bool              `json:"background,omitempty"`
 	PreviousResponseID string            `json:"previous_response_id,omitempty"`
 	MaxOutputTokens    *int              `json:"max_output_tokens,omitempty"`
