@@ -1,6 +1,8 @@
 package open
 
 import (
+	"errors"
+	"net/http"
 	"testing"
 	"time"
 
@@ -40,6 +42,15 @@ func TestMapLegacyVideoStatus(t *testing.T) {
 	for _, test := range tests {
 		if got := mapLegacyVideoStatus(test.status); got != test.want {
 			t.Errorf("status %q mapped to %q, want %q", test.status, got, test.want)
+		}
+	}
+}
+
+func TestClassifyVideoCreateErrorTreatsMissingRouteAsUnavailable(t *testing.T) {
+	for _, err := range []error{video.ErrNoChannel, video.ErrNoKey, video.ErrEngineUnavailable} {
+		status, errorType, errorCode := classifyVideoCreateError(errors.Join(err, errors.New("route unavailable")))
+		if status != http.StatusServiceUnavailable || errorType != "service_unavailable_error" || errorCode != "video_channel_unavailable" {
+			t.Fatalf("classification for %v = %d/%s/%s", err, status, errorType, errorCode)
 		}
 	}
 }

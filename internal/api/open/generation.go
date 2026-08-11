@@ -110,46 +110,42 @@ func CreateVideoGeneration(c *gin.Context) {
 		return
 	}
 
-	// 尝试 VideoEngine 路由
-	if videoEngine != nil {
-		req, buildErr := buildVideoCreateRequest(raw, token.UserID, token.ID, modelName, prompt, callbackURL)
-		req.CallID = service.GenerateAPICallID()
-		req.RequestID = middleware.GetRequestID(c.Request.Context())
-		req.Endpoint = c.FullPath()
-		req.Operation = "videos.generate"
-		c.Header(prismCallIDHeader, req.CallID)
-		if buildErr != nil {
-			recordVideoCreateFailure(req, http.StatusBadRequest, "invalid_request_error", "invalid_video_request", buildErr)
-			resp.BadRequest(c, perrors.WithMessage(perrors.ErrInvalidParams, buildErr.Error()))
-			return
-		}
-		result, err := videoEngine.CreateTask(c.Request.Context(), req)
-		if err == nil {
-			resp.Success(c, GenerationResponse{ID: result.TaskID, Status: "queued"})
-			return
-		}
-		// 路由失败则 fallback 到旧能力系统
-		if !errors.Is(err, video.ErrNoChannel) && !errors.Is(err, video.ErrNoKey) {
-			status, errorType, errorCode := classifyVideoCreateError(err)
-			recordVideoCreateFailure(req, status, errorType, errorCode, err)
-			switch status {
-			case http.StatusBadRequest:
-				if errors.Is(err, service.ErrInsufficientTokenBalance) || errors.Is(err, service.ErrInsufficientUserBalance) {
-					resp.BadRequest(c, perrors.WithMessage(perrors.ErrInsufficientQuota, err.Error()))
-				} else {
-					resp.BadRequest(c, perrors.WithMessage(perrors.ErrInvalidParams, err.Error()))
-				}
-			case http.StatusNotFound:
-				resp.ErrorMsg(c, status, 404, err.Error())
-			default:
-				resp.ErrorMsg(c, status, status, err.Error())
-			}
-			return
-		}
+	if videoEngine == nil {
+		resp.ErrorMsg(c, http.StatusServiceUnavailable, 503, video.ErrEngineUnavailable.Error())
+		return
 	}
 
-	// Fallback: 旧能力系统
-	createGenerationFallback(c, raw, modelName, prompt, callbackURL, token)
+	req, buildErr := buildVideoCreateRequest(raw, token.UserID, token.ID, modelName, prompt, callbackURL)
+	req.CallID = service.GenerateAPICallID()
+	req.RequestID = middleware.GetRequestID(c.Request.Context())
+	req.Endpoint = c.FullPath()
+	req.Operation = "videos.generate"
+	c.Header(prismCallIDHeader, req.CallID)
+	if buildErr != nil {
+		recordVideoCreateFailure(req, http.StatusBadRequest, "invalid_request_error", "invalid_video_request", buildErr)
+		resp.BadRequest(c, perrors.WithMessage(perrors.ErrInvalidParams, buildErr.Error()))
+		return
+	}
+	result, err := videoEngine.CreateTask(c.Request.Context(), req)
+	if err == nil {
+		resp.Success(c, GenerationResponse{ID: result.TaskID, Status: "queued"})
+		return
+	}
+
+	status, errorType, errorCode := classifyVideoCreateError(err)
+	recordVideoCreateFailure(req, status, errorType, errorCode, err)
+	switch status {
+	case http.StatusBadRequest:
+		if errors.Is(err, service.ErrInsufficientTokenBalance) || errors.Is(err, service.ErrInsufficientUserBalance) {
+			resp.BadRequest(c, perrors.WithMessage(perrors.ErrInsufficientQuota, err.Error()))
+		} else {
+			resp.BadRequest(c, perrors.WithMessage(perrors.ErrInvalidParams, err.Error()))
+		}
+	case http.StatusNotFound:
+		resp.ErrorMsg(c, status, 404, err.Error())
+	default:
+		resp.ErrorMsg(c, status, status, err.Error())
+	}
 }
 
 func classifyVideoCreateError(err error) (int, string, string) {
@@ -160,6 +156,8 @@ func classifyVideoCreateError(err error) (int, string, string) {
 		return http.StatusNotFound, "invalid_request_error", "asset_not_found"
 	case errors.Is(err, service.ErrInsufficientTokenBalance), errors.Is(err, service.ErrInsufficientUserBalance):
 		return http.StatusBadRequest, "billing_error", "insufficient_quota"
+	case errors.Is(err, video.ErrNoChannel), errors.Is(err, video.ErrNoKey), errors.Is(err, video.ErrEngineUnavailable):
+		return http.StatusServiceUnavailable, "service_unavailable_error", "video_channel_unavailable"
 	default:
 		return http.StatusInternalServerError, "video_error", "video_create_failed"
 	}
@@ -243,55 +241,4 @@ func buildVideoCreateRequest(raw map[string]any, userID, tokenID uint, modelName
 		req.Params = params
 	}
 	return req, nil
-}
-
-func createGenerationFallback(c *gin.Context, raw map[string]any, modelName, prompt, callbackURL string, token *model.Token) {
-	params := make(map[string]any, len(raw))
-	for k, v := range raw {
-		if k == "callback_url" || k == "params" {
-			continue
-		}
-		params[k] = v
-	}
-	if nested, ok := raw["params"].(map[string]any); ok {
-		for k, v := range nested {
-			params[k] = v
-		}
-	} else if rawParams, ok := raw["params"].(json.RawMessage); ok && len(rawParams) > 0 {
-		var nested map[string]any
-		if json.Unmarshal(rawParams, &nested) == nil {
-			for k, v := range nested {
-				params[k] = v
-			}
-		}
-	}
-
-	invokeReq := &service.InvokeRequest{
-		UserID:         token.UserID,
-		TokenID:        token.ID,
-		Capability:     "text2video",
-		RouteOperation: service.RouteOperationVideosGenerate,
-		Model:          modelName,
-		CallbackURL:    callbackURL,
-		Params:         params,
-	}
-	attachCapabilityCallIdentity(c, invokeReq, "videos.generate")
-	invokeResp, err := capabilityService.Invoke(c.Request.Context(), invokeReq)
-	if err != nil {
-		if errors.Is(err, service.ErrInvalidCallbackURL) {
-			resp.BadRequest(c, perrors.WithMessage(perrors.ErrInvalidParams, err.Error()))
-			return
-		}
-		if errors.Is(err, service.ErrInsufficientTokenBalance) || errors.Is(err, service.ErrInsufficientUserBalance) {
-			resp.BadRequest(c, perrors.WithMessage(perrors.ErrInsufficientQuota, err.Error()))
-			return
-		}
-		resp.ErrorMsg(c, http.StatusInternalServerError, 500, err.Error())
-		return
-	}
-
-	resp.Success(c, GenerationResponse{
-		ID:     invokeResp.TaskID,
-		Status: invokeResp.Status,
-	})
 }
