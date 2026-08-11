@@ -24,6 +24,7 @@ type playgroundVideoModelOptions struct {
 	Ratios                      []string                   `json:"ratios,omitempty"`
 	DurationMin                 int                        `json:"duration_min,omitempty"`
 	DurationMax                 int                        `json:"duration_max,omitempty"`
+	DurationOptions             []int                      `json:"duration_options,omitempty"`
 	TaskTypes                   []string                   `json:"task_types,omitempty"`
 	RequireVisualMediaWithAudio bool                       `json:"require_visual_media_with_audio,omitempty"`
 	AllowGeneratedAudio         *bool                      `json:"allow_generated_audio,omitempty"`
@@ -80,6 +81,7 @@ type playgroundVideoModelValidation struct {
 	MaxVideoDuration            float64                    `json:"max_video_duration_total"`
 	MaxAudioDuration            float64                    `json:"max_audio_duration_total"`
 	Parameters                  []playgroundVideoParameter `json:"parameters"`
+	AvailableUntil              string                     `json:"available_until"`
 }
 
 type playgroundVideoAdapterSettings struct {
@@ -96,7 +98,7 @@ type playgroundVideoAdapterSettings struct {
 	} `json:"local_cancel"`
 }
 
-var playgroundVideoTaskTypeOrder = []string{"text", "first_frame", "first_last_frame", "multimodal"}
+var playgroundVideoTaskTypeOrder = []string{"text", "first_frame", "first_last_frame", "multimodal", "video_extension"}
 
 func SetVideoEngine(e *video.Engine) {
 	playgroundVideoEngine = e
@@ -113,27 +115,52 @@ func PlaygroundListVideoModels(c *gin.Context) {
 		resp.InternalError(c, errors.ErrInternalError)
 		return
 	}
-	var activeKeyChannelIDs []uint
-	if err := model.DB().Model(&video.VideoChannelKey{}).
-		Where("status = ?", "active").Distinct("channel_id").Pluck("channel_id", &activeKeyChannelIDs).Error; err != nil {
+	var activeKeys []video.VideoChannelKey
+	if err := model.DB().Where("status = ?", "active").Order("channel_id ASC, id ASC").Find(&activeKeys).Error; err != nil {
 		resp.InternalError(c, errors.ErrInternalError)
 		return
 	}
-	activeChannels := make(map[uint]struct{}, len(activeKeyChannelIDs))
-	for _, channelID := range activeKeyChannelIDs {
-		activeChannels[channelID] = struct{}{}
+	representativeKeys := make(map[uint]*video.VideoChannelKey, len(activeKeys))
+	for index := range activeKeys {
+		key := &activeKeys[index]
+		if representativeKeys[key.ChannelID] == nil {
+			representativeKeys[key.ChannelID] = key
+		}
 	}
+	discoveredCapabilities := discoverPlaygroundVideoCapabilities(c.Request.Context(), channels, representativeKeys)
 
 	seen := make(map[string]bool)
 	var models []string
 	modelOptions := make(map[string]playgroundVideoModelOptions)
 	channelOptions := make([]playgroundVideoChannelOption, 0, len(channels))
 	for _, ch := range channels {
-		if _, available := activeChannels[ch.ID]; !available {
+		if representativeKeys[ch.ID] == nil {
 			continue
 		}
 		var ms []string
 		if json.Unmarshal(ch.Models, &ms) != nil || len(ms) == 0 {
+			continue
+		}
+		var envelope struct {
+			Adapter playgroundVideoAdapterSettings `json:"adapter"`
+		}
+		_ = json.Unmarshal(ch.ExtraConfig, &envelope)
+		discovered := discoveredCapabilities[ch.ID]
+		availableModels := make([]string, 0, len(ms))
+		for _, modelName := range ms {
+			rule := envelope.Adapter.Validation.Models[modelName]
+			if !playgroundVideoModelAvailable(rule.AvailableUntil) {
+				continue
+			}
+			if len(discovered) > 0 {
+				if _, exists := discovered[modelName]; !exists {
+					continue
+				}
+			}
+			availableModels = append(availableModels, modelName)
+		}
+		ms = availableModels
+		if len(ms) == 0 {
 			continue
 		}
 		for _, m := range ms {
@@ -142,14 +169,13 @@ func PlaygroundListVideoModels(c *gin.Context) {
 				models = append(models, m)
 			}
 		}
-		var envelope struct {
-			Adapter playgroundVideoAdapterSettings `json:"adapter"`
-		}
-		_ = json.Unmarshal(ch.ExtraConfig, &envelope)
 		perChannelOptions := make(map[string]playgroundVideoModelOptions, len(ms))
 		for _, modelName := range ms {
 			options := envelope.Adapter.Validation.Models[modelName]
 			channelModelOptions := playgroundVideoOptionsForChannel(ch, modelName, options, envelope.Adapter)
+			if capability, exists := discovered[modelName]; exists {
+				channelModelOptions = restrictPlaygroundVideoOptions(channelModelOptions, capability)
+			}
 			if len(channelModelOptions.TaskTypes) == 0 {
 				channelModelOptions.TaskTypes = []string{"text", "multimodal"}
 			}
@@ -234,6 +260,7 @@ func mergePlaygroundVideoOptions(current, next playgroundVideoModelOptions) play
 	current.Ratios = mergeOptionalStringOptions(current.Ratios, next.Ratios)
 	current.DurationMin = mergeMinimumConstraint(current.DurationMin, next.DurationMin)
 	current.DurationMax = mergeMaximumConstraint(current.DurationMax, next.DurationMax)
+	current.DurationOptions = mergeOptionalIntOptions(current.DurationOptions, next.DurationOptions)
 	current.TaskTypes = appendUniqueOrdered(current.TaskTypes, next.TaskTypes...)
 	current.RequireVisualMediaWithAudio = current.RequireVisualMediaWithAudio && next.RequireVisualMediaWithAudio
 	current.AllowGeneratedAudio = mergeOptionalBool(current.AllowGeneratedAudio, next.AllowGeneratedAudio)
@@ -257,6 +284,24 @@ func mergeOptionalStringOptions(current, next []string) []string {
 		return nil
 	}
 	return appendUniqueOrdered(current, next...)
+}
+
+func mergeOptionalIntOptions(current, next []int) []int {
+	if len(current) == 0 || len(next) == 0 {
+		return nil
+	}
+	seen := make(map[int]struct{}, len(current)+len(next))
+	result := make([]int, 0, len(current)+len(next))
+	for _, values := range [][]int{current, next} {
+		for _, value := range values {
+			if _, exists := seen[value]; exists {
+				continue
+			}
+			seen[value] = struct{}{}
+			result = append(result, value)
+		}
+	}
+	return result
 }
 
 func mergeMinimumConstraint(current, next int) int {
@@ -315,6 +360,7 @@ func clonePlaygroundVideoParameters(parameters []playgroundVideoParameter) []pla
 func clonePlaygroundVideoOptions(options playgroundVideoModelOptions) playgroundVideoModelOptions {
 	options.Resolutions = append([]string(nil), options.Resolutions...)
 	options.Ratios = append([]string(nil), options.Ratios...)
+	options.DurationOptions = append([]int(nil), options.DurationOptions...)
 	options.TaskTypes = append([]string(nil), options.TaskTypes...)
 	options.AllowGeneratedAudio = cloneBool(options.AllowGeneratedAudio)
 	options.AllowedRoles = append([]string(nil), options.AllowedRoles...)
@@ -366,7 +412,14 @@ func videoTaskTypesForChannel(channel video.VideoChannel, rule playgroundVideoMo
 			}
 			return false
 		}
-		return mode != "text" || !rule.RequireMedia
+		switch mode {
+		case "text":
+			return !rule.RequireMedia
+		case "references":
+			return true
+		default:
+			return false
+		}
 	}
 	supportsRole := func(role string) bool {
 		if len(rule.AllowedRoles) == 0 {
@@ -384,8 +437,11 @@ func videoTaskTypesForChannel(channel video.VideoChannel, rule playgroundVideoMo
 	if supportsMode("text") {
 		types = append(types, "text")
 	}
+	if supportsMode("video_extension") {
+		types = append(types, "video_extension")
+	}
 	if !supportsMode("references") {
-		return types
+		return orderVideoTaskTypes(types)
 	}
 	firstFrame := capabilities["first_frame"] && supportsRole("first_frame")
 	lastFrame := capabilities["last_frame"] && supportsRole("last_frame")
@@ -398,7 +454,7 @@ func videoTaskTypesForChannel(channel video.VideoChannel, rule playgroundVideoMo
 	if supportsRole("reference_image") || supportsRole("reference_video") || supportsRole("reference_audio") {
 		types = append(types, "multimodal")
 	}
-	return types
+	return orderVideoTaskTypes(types)
 }
 
 func appendUniqueOrdered(target []string, values ...string) []string {

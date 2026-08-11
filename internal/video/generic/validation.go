@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/mirainya/Prism/internal/video"
 )
@@ -23,6 +24,12 @@ func (a *Adapter) ValidateRequest(_ context.Context, request *video.GenerateRequ
 	rule, exists := a.config.Validation.Models[request.Model]
 	if !exists {
 		return fmt.Errorf("generic adapter does not support model %q", request.Model)
+	}
+	if rule.AvailableUntil != "" {
+		until, err := time.Parse(time.RFC3339, rule.AvailableUntil)
+		if err != nil || !time.Now().Before(until) {
+			return fmt.Errorf("model %q is no longer available", request.Model)
+		}
 	}
 	return validateRequestRule(request, rule)
 }
@@ -42,6 +49,11 @@ func validateRequestRule(request *video.GenerateRequest, rule validationRule) er
 	}
 	if rule.AllowGeneratedAudio != nil && !*rule.AllowGeneratedAudio && request.Audio {
 		return errors.New("generated audio is not supported")
+	}
+	for _, name := range rule.ForbiddenParameters {
+		if _, exists := request.Params[name]; exists {
+			return fmt.Errorf("parameter %q is not supported", name)
+		}
 	}
 	for _, parameter := range rule.Parameters {
 		value, exists := request.Params[parameter.Name]
@@ -66,6 +78,7 @@ func validateRequestRule(request *video.GenerateRequest, rule validationRule) er
 	}
 
 	counts := map[string]int{}
+	roleCounts := map[string]int{}
 	totals := map[string]float64{}
 	mediaCount := 0
 	for _, item := range request.Content {
@@ -75,6 +88,7 @@ func validateRequestRule(request *video.GenerateRequest, rule validationRule) er
 		}
 		mediaCount++
 		counts[kind]++
+		roleCounts[item.Role]++
 		if len(rule.AllowedRoles) > 0 && !contains(rule.AllowedRoles, item.Role) {
 			return fmt.Errorf("content role %q is not supported", item.Role)
 		}
@@ -93,6 +107,24 @@ func validateRequestRule(request *video.GenerateRequest, rule validationRule) er
 	}
 	if rule.RequireVisualMediaWithAudio && counts["audio"] > 0 && counts["image"] == 0 && counts["video"] == 0 {
 		return errors.New("audio references require image or video media")
+	}
+	if modeRule, exists := rule.TaskModeRules[request.TaskMode]; exists {
+		if modeRule.MinMedia > 0 && mediaCount < modeRule.MinMedia {
+			return fmt.Errorf("task mode %q requires at least %d reference items", request.TaskMode, modeRule.MinMedia)
+		}
+		if modeRule.MaxMedia > 0 && mediaCount > modeRule.MaxMedia {
+			return fmt.Errorf("task mode %q allows at most %d reference items", request.TaskMode, modeRule.MaxMedia)
+		}
+		for role := range roleCounts {
+			if len(modeRule.AllowedRoles) > 0 && !contains(modeRule.AllowedRoles, role) {
+				return fmt.Errorf("content role %q is not supported for task mode %q", role, request.TaskMode)
+			}
+		}
+		for role, expected := range modeRule.ExactRoleCounts {
+			if roleCounts[role] != expected {
+				return fmt.Errorf("task mode %q requires exactly %d %s items", request.TaskMode, expected, role)
+			}
+		}
 	}
 	if rule.MaxImages > 0 && counts["image"] > rule.MaxImages ||
 		rule.MaxVideos > 0 && counts["video"] > rule.MaxVideos ||

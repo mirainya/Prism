@@ -51,6 +51,41 @@ func TestPlaygroundVideoOptionsForChannelUsesAdapterConfiguration(t *testing.T) 
 	}
 }
 
+func TestRestrictPlaygroundVideoOptionsUsesStaticAndDiscoveredIntersection(t *testing.T) {
+	allowAudio := true
+	remoteAudio := false
+	remoteCancel := false
+	options := playgroundVideoModelOptions{
+		Resolutions: []string{"720p", "1080p"}, Ratios: []string{"16:9", "9:16"},
+		DurationMin: 4, DurationMax: 20, MaxImages: 30, AllowGeneratedAudio: &allowAudio,
+		CancelStatuses: []string{"submitted"},
+	}
+	discovered := video.DiscoveredModelCapabilities{
+		Resolutions: []string{"480p", "720p"}, Ratios: []string{"16:9"},
+		DurationOptions: []int{5, 6, 7}, DurationMin: 5, DurationMax: 30, MaxImages: 10,
+		AllowGeneratedAudio: &remoteAudio, SupportsCancel: &remoteCancel,
+	}
+
+	restricted := restrictPlaygroundVideoOptions(options, discovered)
+	if !slices.Equal(restricted.Resolutions, []string{"720p"}) || !slices.Equal(restricted.Ratios, []string{"16:9"}) {
+		t.Fatalf("formats=%#v", restricted)
+	}
+	if restricted.DurationMin != 5 || restricted.DurationMax != 20 || restricted.MaxImages != 10 ||
+		!slices.Equal(restricted.DurationOptions, []int{5, 6, 7}) ||
+		restricted.AllowGeneratedAudio == nil || *restricted.AllowGeneratedAudio || len(restricted.CancelStatuses) != 0 {
+		t.Fatalf("restricted=%#v", restricted)
+	}
+}
+
+func TestRestrictPlaygroundVideoOptionsKeepsStaticDurationBounds(t *testing.T) {
+	options := playgroundVideoModelOptions{DurationMin: 4, DurationMax: 15}
+	discovered := video.DiscoveredModelCapabilities{DurationOptions: []int{2, 4, 8, 15, 20}}
+	restricted := restrictPlaygroundVideoOptions(options, discovered)
+	if !slices.Equal(restricted.DurationOptions, []int{4, 8, 15}) {
+		t.Fatalf("duration options = %#v", restricted.DurationOptions)
+	}
+}
+
 func TestMergePlaygroundVideoOptionsKeepsAnyRoutableChoice(t *testing.T) {
 	allowAudio := false
 	current := playgroundVideoModelOptions{

@@ -39,6 +39,15 @@ func TestVideoTaskTypesForChannel(t *testing.T) {
 			},
 			wantTaskType: []string{"multimodal"},
 		},
+		{
+			name:    "h seedance 2.5 supports video extension",
+			channel: video.VideoChannel{Capabilities: []byte(`{"audio":true}`)},
+			rule: playgroundVideoModelValidation{
+				TaskModes:    []string{"text", "references", "video_extension"},
+				AllowedRoles: []string{"reference_image", "reference_video", "reference_audio"},
+			},
+			wantTaskType: []string{"text", "multimodal", "video_extension"},
+		},
 	}
 
 	for _, tt := range tests {

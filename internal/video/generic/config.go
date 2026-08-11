@@ -8,6 +8,7 @@ import (
 	"net/url"
 	"regexp"
 	"strings"
+	"time"
 
 	"github.com/mirainya/Prism/internal/video"
 )
@@ -71,6 +72,17 @@ type responseConfig struct {
 	UnknownStatus       string            `json:"unknown_status"`
 }
 
+type capabilityDiscoveryConfig struct {
+	Enabled          bool                `json:"enabled"`
+	Method           string              `json:"method"`
+	Path             string              `json:"path"`
+	Root             string              `json:"root"`
+	PlatformPath     string              `json:"platform_path"`
+	Fields           map[string]string   `json:"fields"`
+	DefaultTaskModes []string            `json:"default_task_modes"`
+	TaskModeMap      map[string][]string `json:"task_mode_map"`
+}
+
 type parameterOption struct {
 	Label string `json:"label"`
 	Value any    `json:"value"`
@@ -84,25 +96,35 @@ type parameterRule struct {
 	Options []parameterOption `json:"options"`
 }
 
+type taskModeValidationRule struct {
+	AllowedRoles    []string       `json:"allowed_roles"`
+	MinMedia        int            `json:"min_media"`
+	MaxMedia        int            `json:"max_media"`
+	ExactRoleCounts map[string]int `json:"exact_role_counts"`
+}
+
 type validationRule struct {
-	DurationMin                 int             `json:"duration_min"`
-	DurationMax                 int             `json:"duration_max"`
-	Resolutions                 []string        `json:"resolutions"`
-	Ratios                      []string        `json:"ratios"`
-	TaskModes                   []string        `json:"task_modes"`
-	RequireMedia                bool            `json:"require_media"`
-	RequireVisualMediaWithAudio bool            `json:"require_visual_media_with_audio"`
-	AllowGeneratedAudio         *bool           `json:"allow_generated_audio"`
-	AllowedRoles                []string        `json:"allowed_roles"`
-	MaxImages                   int             `json:"max_images"`
-	MaxVideos                   int             `json:"max_videos"`
-	MaxAudios                   int             `json:"max_audios"`
-	MaxMedia                    int             `json:"max_media"`
-	MediaDurationMin            float64         `json:"media_duration_min"`
-	MediaDurationMax            float64         `json:"media_duration_max"`
-	MaxVideoDuration            float64         `json:"max_video_duration_total"`
-	MaxAudioDuration            float64         `json:"max_audio_duration_total"`
-	Parameters                  []parameterRule `json:"parameters"`
+	DurationMin                 int                               `json:"duration_min"`
+	DurationMax                 int                               `json:"duration_max"`
+	Resolutions                 []string                          `json:"resolutions"`
+	Ratios                      []string                          `json:"ratios"`
+	TaskModes                   []string                          `json:"task_modes"`
+	RequireMedia                bool                              `json:"require_media"`
+	RequireVisualMediaWithAudio bool                              `json:"require_visual_media_with_audio"`
+	AllowGeneratedAudio         *bool                             `json:"allow_generated_audio"`
+	AllowedRoles                []string                          `json:"allowed_roles"`
+	MaxImages                   int                               `json:"max_images"`
+	MaxVideos                   int                               `json:"max_videos"`
+	MaxAudios                   int                               `json:"max_audios"`
+	MaxMedia                    int                               `json:"max_media"`
+	MediaDurationMin            float64                           `json:"media_duration_min"`
+	MediaDurationMax            float64                           `json:"media_duration_max"`
+	MaxVideoDuration            float64                           `json:"max_video_duration_total"`
+	MaxAudioDuration            float64                           `json:"max_audio_duration_total"`
+	Parameters                  []parameterRule                   `json:"parameters"`
+	ForbiddenParameters         []string                          `json:"forbidden_parameters"`
+	TaskModeRules               map[string]taskModeValidationRule `json:"task_mode_rules"`
+	AvailableUntil              string                            `json:"available_until"`
 }
 
 type validationConfig struct {
@@ -115,20 +137,21 @@ type localCancelConfig struct {
 }
 
 type adapterConfig struct {
-	Profile        string            `json:"profile"`
-	AuthLocation   string            `json:"auth_location"`
-	AuthKey        string            `json:"auth_key"`
-	AuthHeader     string            `json:"auth_header"`
-	AuthPrefix     *string           `json:"auth_prefix"`
-	TimeoutSeconds int               `json:"timeout_seconds"`
-	Submit         operationConfig   `json:"submit"`
-	Estimate       operationConfig   `json:"estimate"`
-	Poll           operationConfig   `json:"poll"`
-	Cancel         operationConfig   `json:"cancel"`
-	Request        requestConfig     `json:"request"`
-	Response       responseConfig    `json:"response"`
-	Validation     validationConfig  `json:"validation"`
-	LocalCancel    localCancelConfig `json:"local_cancel"`
+	Profile        string                    `json:"profile"`
+	AuthLocation   string                    `json:"auth_location"`
+	AuthKey        string                    `json:"auth_key"`
+	AuthHeader     string                    `json:"auth_header"`
+	AuthPrefix     *string                   `json:"auth_prefix"`
+	TimeoutSeconds int                       `json:"timeout_seconds"`
+	Submit         operationConfig           `json:"submit"`
+	Estimate       operationConfig           `json:"estimate"`
+	Poll           operationConfig           `json:"poll"`
+	Cancel         operationConfig           `json:"cancel"`
+	Capabilities   capabilityDiscoveryConfig `json:"capabilities"`
+	Request        requestConfig             `json:"request"`
+	Response       responseConfig            `json:"response"`
+	Validation     validationConfig          `json:"validation"`
+	LocalCancel    localCancelConfig         `json:"local_cancel"`
 }
 
 func (c *adapterConfig) defaults() {
@@ -157,10 +180,17 @@ func (c *adapterConfig) defaults() {
 	c.Estimate.Method = normalizeMethod(c.Estimate.Method, http.MethodPost)
 	c.Poll.Method = normalizeMethod(c.Poll.Method, http.MethodGet)
 	c.Cancel.Method = normalizeMethod(c.Cancel.Method, http.MethodPost)
+	c.Capabilities.Method = normalizeMethod(c.Capabilities.Method, http.MethodGet)
 	c.Submit.Path = strings.TrimSpace(c.Submit.Path)
 	c.Estimate.Path = strings.TrimSpace(c.Estimate.Path)
 	c.Poll.Path = strings.TrimSpace(c.Poll.Path)
 	c.Cancel.Path = strings.TrimSpace(c.Cancel.Path)
+	c.Capabilities.Path = strings.TrimSpace(c.Capabilities.Path)
+	c.Capabilities.Root = strings.TrimSpace(c.Capabilities.Root)
+	c.Capabilities.PlatformPath = strings.TrimSpace(c.Capabilities.PlatformPath)
+	c.Capabilities.Fields = normalizeMappings(c.Capabilities.Fields)
+	c.Capabilities.DefaultTaskModes = normalizeStrings(c.Capabilities.DefaultTaskModes)
+	c.Capabilities.TaskModeMap = normalizeStringLists(c.Capabilities.TaskModeMap)
 	c.Submit.TaskIDBodyPath = strings.TrimSpace(c.Submit.TaskIDBodyPath)
 	c.Estimate.TaskIDBodyPath = strings.TrimSpace(c.Estimate.TaskIDBodyPath)
 	c.Poll.TaskIDBodyPath = strings.TrimSpace(c.Poll.TaskIDBodyPath)
@@ -237,6 +267,19 @@ func (c *adapterConfig) defaults() {
 		c.LocalCancel.DisabledModels[index] = strings.TrimSpace(c.LocalCancel.DisabledModels[index])
 	}
 	for modelName, rule := range c.Validation.Models {
+		rule.AvailableUntil = strings.TrimSpace(rule.AvailableUntil)
+		rule.ForbiddenParameters = normalizeStrings(rule.ForbiddenParameters)
+		normalizedModeRules := make(map[string]taskModeValidationRule, len(rule.TaskModeRules))
+		for modeName, modeRule := range rule.TaskModeRules {
+			modeRule.AllowedRoles = normalizeStrings(modeRule.AllowedRoles)
+			normalizedCounts := make(map[string]int, len(modeRule.ExactRoleCounts))
+			for role, count := range modeRule.ExactRoleCounts {
+				normalizedCounts[strings.TrimSpace(role)] = count
+			}
+			modeRule.ExactRoleCounts = normalizedCounts
+			normalizedModeRules[strings.TrimSpace(modeName)] = modeRule
+		}
+		rule.TaskModeRules = normalizedModeRules
 		for index := range rule.Parameters {
 			parameter := &rule.Parameters[index]
 			parameter.Name = strings.TrimSpace(parameter.Name)
@@ -257,6 +300,14 @@ func normalizeMappings(source map[string]string) map[string]string {
 	result := make(map[string]string, len(source))
 	for name, path := range source {
 		result[strings.TrimSpace(name)] = strings.TrimSpace(path)
+	}
+	return result
+}
+
+func normalizeStringLists(source map[string][]string) map[string][]string {
+	result := make(map[string][]string, len(source))
+	for name, values := range source {
+		result[strings.TrimSpace(name)] = normalizeStrings(values)
 	}
 	return result
 }
@@ -359,6 +410,9 @@ func (c adapterConfig) validate(baseURL string) error {
 	if err := validateOperation("cancel", c.Cancel, c.Cancel.Enabled, true); err != nil {
 		return err
 	}
+	if err := validateCapabilityDiscovery(c.Capabilities); err != nil {
+		return err
+	}
 	if err := validateRequestConfig(c.Request); err != nil {
 		return err
 	}
@@ -386,6 +440,51 @@ func (c adapterConfig) validate(baseURL string) error {
 		}
 		if err := validateRule(model, rule); err != nil {
 			return err
+		}
+	}
+	return nil
+}
+
+func validateCapabilityDiscovery(config capabilityDiscoveryConfig) error {
+	if !config.Enabled {
+		return nil
+	}
+	operation := operationConfig{Enabled: true, Method: config.Method, Path: config.Path}
+	if err := validateOperation("capabilities", operation, true, false); err != nil {
+		return err
+	}
+	if err := validateJSONFieldPath(config.Root); err != nil {
+		return fmt.Errorf("generic adapter capabilities root: %w", err)
+	}
+	if config.PlatformPath != "" {
+		if err := validateJSONFieldPath(config.PlatformPath); err != nil {
+			return fmt.Errorf("generic adapter capabilities platform_path: %w", err)
+		}
+	}
+	allowedFields := map[string]bool{
+		"model": true, "platform": true, "resolutions": true, "ratios": true,
+		"supported_modes": true, "duration_options": true, "duration_min": true, "duration_max": true,
+		"supports_smart_duration": true,
+		"allow_generated_audio":   true, "require_visual_media_with_audio": true,
+		"supports_cancel": true, "max_images": true, "max_videos": true,
+		"max_audios": true, "max_media": true, "media_duration_min": true,
+		"media_duration_max": true, "max_video_duration_total": true,
+		"max_audio_duration_total": true,
+	}
+	if err := validateMappings("capabilities.fields", config.Fields, allowedFields); err != nil {
+		return err
+	}
+	if strings.TrimSpace(config.Fields["model"]) == "" {
+		return errors.New("generic adapter capabilities.fields.model is required")
+	}
+	for providerMode, taskModes := range config.TaskModeMap {
+		if providerMode == "" || len(taskModes) == 0 {
+			return errors.New("generic adapter capabilities task_mode_map contains an empty entry")
+		}
+		for _, mode := range taskModes {
+			if mode == "" {
+				return errors.New("generic adapter capabilities task_mode_map contains an empty task mode")
+			}
 		}
 	}
 	return nil
@@ -579,6 +678,32 @@ func validateRule(model string, rule validationRule) error {
 		(rule.MediaDurationMax > 0 && rule.MediaDurationMin > rule.MediaDurationMax) ||
 		rule.MaxVideoDuration < 0 || rule.MaxAudioDuration < 0 {
 		return fmt.Errorf("generic adapter validation for %s has invalid media duration limits", model)
+	}
+	if rule.AvailableUntil != "" {
+		if _, err := time.Parse(time.RFC3339, rule.AvailableUntil); err != nil {
+			return fmt.Errorf("generic adapter validation for %s has invalid available_until", model)
+		}
+	}
+	seenForbidden := make(map[string]struct{}, len(rule.ForbiddenParameters))
+	for _, parameter := range rule.ForbiddenParameters {
+		if !jsonFieldSegment.MatchString(parameter) {
+			return fmt.Errorf("generic adapter validation for %s has invalid forbidden parameter %q", model, parameter)
+		}
+		if _, exists := seenForbidden[parameter]; exists {
+			return fmt.Errorf("generic adapter validation for %s has duplicate forbidden parameter %q", model, parameter)
+		}
+		seenForbidden[parameter] = struct{}{}
+	}
+	for mode, modeRule := range rule.TaskModeRules {
+		if strings.TrimSpace(mode) == "" || modeRule.MinMedia < 0 || modeRule.MaxMedia < 0 ||
+			(modeRule.MaxMedia > 0 && modeRule.MinMedia > modeRule.MaxMedia) {
+			return fmt.Errorf("generic adapter validation for %s has invalid task mode rule %q", model, mode)
+		}
+		for role, count := range modeRule.ExactRoleCounts {
+			if strings.TrimSpace(role) == "" || count < 0 || count > 1000 {
+				return fmt.Errorf("generic adapter validation for %s has invalid task mode role count", model)
+			}
+		}
 	}
 	seenParameters := make(map[string]struct{}, len(rule.Parameters))
 	for _, parameter := range rule.Parameters {

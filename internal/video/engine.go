@@ -270,8 +270,8 @@ func enabledVideoParam(params map[string]any, name string) bool {
 
 func (e *Engine) validateContent(ctx context.Context, tokenID uint, requestedMode string, content []ContentItem) ([]ContentItem, string, RequiredCaps, error) {
 	mode := strings.TrimSpace(requestedMode)
-	if mode != "" && mode != "text" && mode != "references" {
-		return nil, "", RequiredCaps{}, fmt.Errorf("%w: task_mode must be text or references", ErrInvalidTaskRequest)
+	if mode != "" && mode != "text" && mode != "references" && mode != "video_extension" {
+		return nil, "", RequiredCaps{}, fmt.Errorf("%w: unsupported task_mode %q", ErrInvalidTaskRequest, mode)
 	}
 	result := append([]ContentItem(nil), content...)
 	caps := RequiredCaps{}
@@ -348,9 +348,6 @@ func (e *Engine) validateContent(ctx context.Context, tokenID uint, requestedMod
 			caps.LastFrame = true
 		}
 	}
-	if counts["audio"] > 0 && counts["image"] == 0 && counts["video"] == 0 {
-		return nil, "", caps, fmt.Errorf("%w: audio references require at least one image or video reference", ErrInvalidTaskRequest)
-	}
 	if mode == "" {
 		mode = "text"
 		if hasReference {
@@ -362,6 +359,9 @@ func (e *Engine) validateContent(ctx context.Context, tokenID uint, requestedMod
 	}
 	if mode == "references" && !hasReference {
 		return nil, "", caps, fmt.Errorf("%w: references mode requires reference media", ErrInvalidTaskRequest)
+	}
+	if mode == "video_extension" && !hasReference {
+		return nil, "", caps, fmt.Errorf("%w: video_extension mode requires reference media", ErrInvalidTaskRequest)
 	}
 	return result, mode, caps, nil
 }

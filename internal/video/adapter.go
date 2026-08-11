@@ -36,6 +36,33 @@ type LocalCancellationPolicy interface {
 	CanCancelLocal(task *VideoTask) bool
 }
 
+// CapabilityDiscoverer optionally reads the model matrix exposed by an
+// upstream. Static channel rules remain the upper bound for routing safety.
+type CapabilityDiscoverer interface {
+	DiscoverCapabilities(ctx context.Context) (map[string]DiscoveredModelCapabilities, error)
+}
+
+type DiscoveredModelCapabilities struct {
+	Resolutions                 []string
+	Ratios                      []string
+	TaskModes                   []string
+	DurationOptions             []int
+	DurationMin                 int
+	DurationMax                 int
+	SupportsSmartDuration       *bool
+	AllowGeneratedAudio         *bool
+	RequireVisualMediaWithAudio *bool
+	SupportsCancel              *bool
+	MaxImages                   int
+	MaxVideos                   int
+	MaxAudios                   int
+	MaxMedia                    int
+	MediaDurationMin            float64
+	MediaDurationMax            float64
+	MaxVideoDuration            float64
+	MaxAudioDuration            float64
+}
+
 // RequestPathProvider exposes the actual upstream submit path for call logs.
 type RequestPathProvider interface {
 	RequestPath() string
@@ -49,7 +76,7 @@ type GenerateRequest struct {
 	Ratio      string
 	Duration   int
 	Audio      bool
-	TaskMode   string // "text" / "references"
+	TaskMode   string // "text" / "references" / provider-configured modes
 	Content    []ContentItem
 	Params     map[string]any
 

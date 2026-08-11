@@ -318,6 +318,117 @@ func TestGenericAdapterValidatesConfigAndRequestLimits(t *testing.T) {
 	}
 }
 
+func TestGenericAdapterDiscoversConfiguredCapabilitiesForCurrentPlatform(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		if request.Method != http.MethodGet || request.URL.Path != "/capabilities" {
+			http.NotFound(writer, request)
+			return
+		}
+		writer.Header().Set("Content-Type", "application/json")
+		_, _ = writer.Write([]byte(`{"code":0,"data":{"platform":"H","models":[` +
+			`{"platform":"official","model":"seedance-2.0","resolutions":["4k"]},` +
+			`{"platform":"H","model":"seedance-2.5","resolutions":["480p","720p"],"ratios":["16:9"],` +
+			`"supported_modes":["default","video_extension"],"duration_options":[4,5,6],"min_duration_seconds":4,"max_duration_seconds":20,` +
+			`"supports_generate_audio":true,"supports_cancel":true,"audio_requires_visual_reference":false,` +
+			`"max_reference_images":30,"max_reference_videos":10,"max_reference_audios":10,"max_references":50}` +
+			`]}}`))
+	}))
+	defer server.Close()
+
+	config := testAdapterConfig()
+	config.Capabilities = capabilityDiscoveryConfig{
+		Enabled: true, Method: http.MethodGet, Path: "/capabilities", Root: "models", PlatformPath: "platform",
+		Fields: map[string]string{
+			"model": "model", "platform": "platform", "resolutions": "resolutions", "ratios": "ratios",
+			"supported_modes": "supported_modes", "duration_min": "min_duration_seconds", "duration_max": "max_duration_seconds",
+			"duration_options": "duration_options", "supports_smart_duration": "supports_smart_duration",
+			"allow_generated_audio": "supports_generate_audio", "supports_cancel": "supports_cancel",
+			"require_visual_media_with_audio": "audio_requires_visual_reference", "max_images": "max_reference_images",
+			"max_videos": "max_reference_videos", "max_audios": "max_reference_audios", "max_media": "max_references",
+		},
+		DefaultTaskModes: []string{"text", "references"},
+		TaskModeMap:      map[string][]string{"default": {"text", "references"}, "video_extension": {"video_extension"}},
+	}
+	adapter := newTestAdapter(server.URL, "secret", server.Client(), config)
+	discovered, err := adapter.DiscoverCapabilities(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	capability, exists := discovered["seedance-2.5"]
+	if !exists || len(discovered) != 1 || capability.DurationMin != 4 || capability.DurationMax != 20 ||
+		!reflect.DeepEqual(capability.TaskModes, []string{"text", "references", "video_extension"}) ||
+		!reflect.DeepEqual(capability.DurationOptions, []int{4, 5, 6}) ||
+		capability.AllowGeneratedAudio == nil || !*capability.AllowGeneratedAudio || capability.MaxMedia != 50 {
+		t.Fatalf("discovered=%#v", discovered)
+	}
+}
+
+func TestGenericAdapterUsesDefaultTaskModesWhenUpstreamOmitsModes(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		if request.URL.Path != "/capabilities" {
+			http.NotFound(writer, request)
+			return
+		}
+		writer.Header().Set("Content-Type", "application/json")
+		_, _ = writer.Write([]byte(`{"code":0,"data":{"models":[{"model":"seedance-2.0"}]}}`))
+	}))
+	defer server.Close()
+
+	config := testAdapterConfig()
+	config.Capabilities = capabilityDiscoveryConfig{
+		Enabled: true, Method: http.MethodGet, Path: "/capabilities", Root: "models",
+		Fields:           map[string]string{"model": "model", "supported_modes": "supported_modes"},
+		DefaultTaskModes: []string{"text", "references"},
+	}
+	adapter := newTestAdapter(server.URL, "secret", server.Client(), config)
+	discovered, err := adapter.DiscoverCapabilities(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(discovered["seedance-2.0"].TaskModes, []string{"text", "references"}) {
+		t.Fatalf("discovered=%#v", discovered)
+	}
+}
+
+func TestGenericAdapterValidatesModeRulesForbiddenParametersAndExpiry(t *testing.T) {
+	config := testAdapterConfig()
+	config.Validation.Models = map[string]validationRule{
+		"seedance-2.5": {
+			DurationMin: 4, DurationMax: 20, TaskModes: []string{"video_extension"},
+			AvailableUntil: "2999-01-01T00:00:00Z", ForbiddenParameters: []string{"priority"},
+			TaskModeRules: map[string]taskModeValidationRule{
+				"video_extension": {
+					AllowedRoles: []string{"reference_video"}, MinMedia: 1, MaxMedia: 1,
+					ExactRoleCounts: map[string]int{"reference_video": 1},
+				},
+			},
+		},
+	}
+	adapter := newTestAdapter("https://provider.example", "secret", http.DefaultClient, config)
+	valid := &video.GenerateRequest{
+		Model: "seedance-2.5", Duration: 8, TaskMode: "video_extension",
+		Content: []video.ContentItem{{Type: "video_url", Role: "reference_video", DurationSeconds: 8}},
+	}
+	if err := adapter.ValidateRequest(context.Background(), valid); err != nil {
+		t.Fatal(err)
+	}
+	invalidParameter := *valid
+	invalidParameter.Params = map[string]any{"priority": 4}
+	if err := adapter.ValidateRequest(context.Background(), &invalidParameter); err == nil || !strings.Contains(err.Error(), "priority") {
+		t.Fatalf("forbidden parameter error=%v", err)
+	}
+	invalidMedia := *valid
+	invalidMedia.Content = []video.ContentItem{{Type: "image_url", Role: "reference_image"}}
+	if err := adapter.ValidateRequest(context.Background(), &invalidMedia); err == nil || !strings.Contains(err.Error(), "reference_image") {
+		t.Fatalf("task mode media error=%v", err)
+	}
+	config.Validation.Models["seedance-2.5"] = validationRule{AvailableUntil: "2000-01-01T00:00:00Z"}
+	expired := newTestAdapter("https://provider.example", "secret", http.DefaultClient, config)
+	if err := expired.ValidateRequest(context.Background(), valid); err == nil || !strings.Contains(err.Error(), "no longer available") {
+		t.Fatalf("expiry error=%v", err)
+	}
+}
+
 func TestGenericAdapterSupportsOptionalResponseEnvelope(t *testing.T) {
 	config := testAdapterConfig()
 	config.Response.Root = ""

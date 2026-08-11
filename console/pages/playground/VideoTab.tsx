@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
-import { Loader2, AlertCircle, Video, XCircle, CheckCircle2, Clock, Play, Download, Plus, Trash2, Upload, AtSign, Type, Image as ImageIcon, Images, Layers3 } from 'lucide-react';
+import { Loader2, AlertCircle, Video, XCircle, CheckCircle2, Clock, Play, Download, Plus, Trash2, Upload, AtSign, Type, Image as ImageIcon, Images, Layers3, Film } from 'lucide-react';
 import {
   playgroundCreateVideo, playgroundListVideos, playgroundCancelVideo,
   playgroundEstimateVideo, playgroundListVideoModels, playgroundUploadVideoAsset,
@@ -21,7 +21,7 @@ const DURATION_OPTIONS = [
 ];
 
 type FilterType = 'all' | 'active' | 'completed' | 'failed';
-type VideoTaskType = 'text' | 'first_frame' | 'first_last_frame' | 'multimodal';
+type VideoTaskType = 'text' | 'first_frame' | 'first_last_frame' | 'multimodal' | 'video_extension';
 
 type ReferenceKind = 'image' | 'video' | 'audio';
 type ReferenceSource = 'url' | 'asset_id';
@@ -63,11 +63,13 @@ const VIDEO_TASK_TYPE_OPTIONS: Array<{ value: VideoTaskType; label: string; icon
   { value: 'first_frame', label: '首帧生视频', icon: ImageIcon },
   { value: 'first_last_frame', label: '首尾帧视频', icon: Images },
   { value: 'multimodal', label: '多模态视频', icon: Layers3 },
+  { value: 'video_extension', label: '视频拓展', icon: Film },
 ];
 
 const roleForTaskType = (taskType: VideoTaskType, kind: ReferenceKind, index = 0): VideoContentItem['role'] => {
   if (taskType === 'first_frame') return 'first_frame';
   if (taskType === 'first_last_frame') return index === 0 ? 'first_frame' : 'last_frame';
+  if (taskType === 'video_extension') return 'reference_video';
   return kind === 'image' ? 'reference_image' : REFERENCE_ROLES[kind][0].value;
 };
 
@@ -103,6 +105,9 @@ const countReferences = (items: ReferenceInput[]) => items.reduce<Record<Referen
 const parameterValueKey = (value: string | number | boolean) => JSON.stringify(value) as string;
 
 const durationOptionsForModel = (options?: PlaygroundVideoModelOptions) => {
+  if (options?.duration_options?.length) {
+    return options.duration_options.map(value => ({ label: `${value} 秒`, value: String(value) }));
+  }
   const minimum = options?.duration_min || 0;
   const maximum = options?.duration_max || 0;
   const values = DURATION_OPTIONS.filter(option => (
@@ -184,7 +189,9 @@ const VideoTab: React.FC<{ tokenId: string }> = ({ tokenId }) => {
     ? { image: 1, video: 0, audio: 0 }
     : taskType === 'first_last_frame'
       ? { image: 2, video: 0, audio: 0 }
-      : multimodalLimits;
+      : taskType === 'video_extension'
+        ? { image: 0, video: 1, audio: 0 }
+        : multimodalLimits;
   const configuredResolutions = currentModelOptions?.resolutions;
   const resolutionOptions = configuredResolutions?.length
     ? configuredResolutions
@@ -198,6 +205,7 @@ const VideoTab: React.FC<{ tokenId: string }> = ({ tokenId }) => {
       label: index === 0 ? '首帧' : '尾帧',
       value: (index === 0 ? 'first_frame' : 'last_frame') as VideoContentItem['role'],
     }];
+    if (taskType === 'video_extension') return [{ label: '源视频', value: 'reference_video' as VideoContentItem['role'] }];
     return REFERENCE_ROLES[kind].filter(option => option.value.startsWith('reference_') && (
       !allowedRoles?.length || allowedRoles.includes(option.value)
     ));
@@ -222,7 +230,7 @@ const VideoTab: React.FC<{ tokenId: string }> = ({ tokenId }) => {
     return {
       model, prompt: prompt.trim(), ...(channelId !== '0' ? { channel_id: Number(channelId) } : {}), resolution, ratio,
       duration: Number(duration), generate_audio: generateAudio,
-      task_mode: taskType === 'text' ? 'text' : 'references',
+      task_mode: taskType === 'text' ? 'text' : taskType === 'video_extension' ? 'video_extension' : 'references',
       ...(content.length > 0 ? { content } : {}),
       ...(Object.keys(params).length > 0 ? { params } : {}),
     };
@@ -256,6 +264,10 @@ const VideoTab: React.FC<{ tokenId: string }> = ({ tokenId }) => {
           { ...first, kind: 'image', role: 'first_frame', durationSeconds: undefined },
           { ...last, kind: 'image', role: 'last_frame', durationSeconds: undefined },
         ];
+      }
+      if (taskType === 'video_extension') {
+        const source = items[0]?.kind === 'video' ? items[0] : makeReference('video', taskType, 0);
+        return [{ ...source, kind: 'video', role: 'reference_video' }];
       }
       const next = items.length > 0 ? items : [makeReference('image', taskType, 0)];
       return next.map(item => ({ ...item, role: roleForTaskType(taskType, item.kind) }));
@@ -612,7 +624,7 @@ const VideoTab: React.FC<{ tokenId: string }> = ({ tokenId }) => {
               {references.map((item, index) => (
                 <div key={index} className="py-2 first:pt-0 last:pb-0 space-y-2">
                   <div className="grid grid-cols-2 gap-2">
-                    <Select options={taskType === 'multimodal' ? referenceKindOptions : [{ label: '图片', value: 'image' }]} value={item.kind}
+                    <Select options={taskType === 'multimodal' ? referenceKindOptions : [{ label: REFERENCE_LABELS[item.kind], value: item.kind }]} value={item.kind}
                       disabled={taskType !== 'multimodal'} onChange={value => {
                       changeReferenceKind(index, value as ReferenceKind);
                     }} />

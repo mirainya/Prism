@@ -503,7 +503,8 @@ export interface PlaygroundVideoModelOptions {
     ratios?: string[];
     duration_min?: number;
     duration_max?: number;
-    task_types?: Array<'text' | 'first_frame' | 'first_last_frame' | 'multimodal'>;
+    duration_options?: number[];
+    task_types?: Array<'text' | 'first_frame' | 'first_last_frame' | 'multimodal' | 'video_extension'>;
     require_visual_media_with_audio?: boolean;
     allow_generated_audio?: boolean;
     allowed_roles?: VideoContentItem['role'][];

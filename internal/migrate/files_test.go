@@ -12,8 +12,8 @@ func TestLoadIncludesImmutableBaseline(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(migrations) != 33 {
-		t.Fatalf("managed migrations=%d, want 33", len(migrations))
+	if len(migrations) != 34 {
+		t.Fatalf("managed migrations=%d, want 34", len(migrations))
 	}
 	baseline := migrations[0]
 	if baseline.Filename != "20260718_150000_schema_baseline.sql" {
@@ -271,6 +271,19 @@ func TestLoadIncludesImmutableBaseline(t *testing.T) {
 	}
 	if !strings.Contains(migrations[32].SQL, "SET `status` = 0") {
 		t.Fatal("legacy video archive migration does not disable archived models")
+	}
+	if migrations[33].Filename != "20260811_200000_update_sub2_seedance_v23.sql" {
+		t.Fatalf("Sub2 v2.3 migration filename=%q", migrations[33].Filename)
+	}
+	for _, fragment := range []string{
+		"/v1/video-generations/capabilities",
+		"'video_extension'",
+		"'forbidden_parameters'",
+		"2026-08-14T00:00:00+08:00",
+	} {
+		if !strings.Contains(migrations[33].SQL, fragment) {
+			t.Errorf("Sub2 v2.3 migration is missing %q", fragment)
+		}
 	}
 }
 

@@ -194,13 +194,23 @@ func TestValidateContentAllowsSub25ReferenceLimits(t *testing.T) {
 	}
 }
 
-func TestValidateContentRejectsAudioWithoutVisualReference(t *testing.T) {
+func TestValidateContentAllowsAudioWithoutVisualReference(t *testing.T) {
 	engine := &Engine{db: newAssetTestService(t).db}
-	_, _, _, err := engine.validateContent(context.Background(), 7, "", []ContentItem{
+	_, mode, _, err := engine.validateContent(context.Background(), 7, "", []ContentItem{
 		{Type: "audio_url", Role: "reference_audio", URL: "https://1.1.1.1/audio.mp3"},
 	})
-	if !errors.Is(err, ErrInvalidTaskRequest) {
-		t.Fatalf("error = %v, want ErrInvalidTaskRequest", err)
+	if err != nil || mode != "references" {
+		t.Fatalf("mode=%q error=%v", mode, err)
+	}
+}
+
+func TestValidateContentAllowsVideoExtension(t *testing.T) {
+	engine := &Engine{db: newAssetTestService(t).db}
+	_, mode, _, err := engine.validateContent(context.Background(), 7, "video_extension", []ContentItem{
+		{Type: "video_url", Role: "reference_video", URL: "https://1.1.1.1/video.mp4", DurationSeconds: 8},
+	})
+	if err != nil || mode != "video_extension" {
+		t.Fatalf("mode=%q error=%v", mode, err)
 	}
 }
 
