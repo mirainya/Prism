@@ -29,6 +29,27 @@ func TestClientInjectsAuthenticationAndEscapesTaskID(t *testing.T) {
 	}
 }
 
+func TestClientInjectsQueryAuthentication(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		if request.URL.Query().Get("api_key") != "Token secret" {
+			t.Fatalf("query authentication = %q", request.URL.RawQuery)
+		}
+		if request.Header.Get("api_key") != "" {
+			t.Fatalf("query authentication leaked into header")
+		}
+		_, _ = writer.Write([]byte(`{"status":"running"}`))
+	}))
+	defer server.Close()
+
+	client := NewClient(Config{
+		BaseURL: server.URL, APIKey: "secret", AuthLocation: "query",
+		AuthHeader: "api_key", AuthPrefix: "Token ", HTTPClient: server.Client(),
+	})
+	if _, err := client.Do(context.Background(), "poll", Operation{Method: http.MethodGet, Path: "/tasks"}, nil, nil); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestClientClassifiesSubmitAndPollFailures(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
 		http.Error(writer, "unavailable", http.StatusServiceUnavailable)

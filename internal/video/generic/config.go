@@ -23,6 +23,7 @@ type operationConfig struct {
 	Enabled         bool     `json:"enabled"`
 	Method          string   `json:"method"`
 	Path            string   `json:"path"`
+	TaskIDBodyPath  string   `json:"task_id_body_path"`
 	AllowedStatuses []string `json:"allowed_statuses"`
 }
 
@@ -40,12 +41,15 @@ type requestConfig struct {
 // contentProjection selects one content item and writes one of its values to
 // a normal request field. It keeps upstream-specific nesting in channel data.
 type contentProjection struct {
-	Source   string   `json:"source"`
-	Target   string   `json:"target"`
-	Types    []string `json:"types"`
-	Roles    []string `json:"roles"`
-	Index    int      `json:"index"`
-	Required bool     `json:"required"`
+	Source    string   `json:"source"`
+	Target    string   `json:"target"`
+	Output    string   `json:"output"`
+	Separator string   `json:"separator"`
+	Models    []string `json:"models"`
+	Types     []string `json:"types"`
+	Roles     []string `json:"roles"`
+	Index     int      `json:"index"`
+	Required  bool     `json:"required"`
 }
 
 type responseConfig struct {
@@ -97,6 +101,8 @@ type localCancelConfig struct {
 
 type adapterConfig struct {
 	Profile        string            `json:"profile"`
+	AuthLocation   string            `json:"auth_location"`
+	AuthKey        string            `json:"auth_key"`
 	AuthHeader     string            `json:"auth_header"`
 	AuthPrefix     *string           `json:"auth_prefix"`
 	TimeoutSeconds int               `json:"timeout_seconds"`
@@ -112,10 +118,19 @@ type adapterConfig struct {
 
 func (c *adapterConfig) defaults() {
 	c.Profile = strings.TrimSpace(c.Profile)
-	c.AuthHeader = strings.TrimSpace(c.AuthHeader)
-	if c.AuthHeader == "" {
-		c.AuthHeader = "Authorization"
+	c.AuthLocation = strings.ToLower(strings.TrimSpace(c.AuthLocation))
+	if c.AuthLocation == "" {
+		c.AuthLocation = "header"
 	}
+	c.AuthKey = strings.TrimSpace(c.AuthKey)
+	c.AuthHeader = strings.TrimSpace(c.AuthHeader)
+	if c.AuthKey == "" {
+		c.AuthKey = c.AuthHeader
+	}
+	if c.AuthKey == "" {
+		c.AuthKey = "Authorization"
+	}
+	c.AuthHeader = c.AuthKey
 	if c.AuthPrefix == nil {
 		prefix := "Bearer "
 		c.AuthPrefix = &prefix
@@ -131,6 +146,10 @@ func (c *adapterConfig) defaults() {
 	c.Estimate.Path = strings.TrimSpace(c.Estimate.Path)
 	c.Poll.Path = strings.TrimSpace(c.Poll.Path)
 	c.Cancel.Path = strings.TrimSpace(c.Cancel.Path)
+	c.Submit.TaskIDBodyPath = strings.TrimSpace(c.Submit.TaskIDBodyPath)
+	c.Estimate.TaskIDBodyPath = strings.TrimSpace(c.Estimate.TaskIDBodyPath)
+	c.Poll.TaskIDBodyPath = strings.TrimSpace(c.Poll.TaskIDBodyPath)
+	c.Cancel.TaskIDBodyPath = strings.TrimSpace(c.Cancel.TaskIDBodyPath)
 	if c.Request.Fields == nil {
 		c.Request.Fields = map[string]string{
 			"model": "model", "prompt": "prompt", "resolution": "resolution", "ratio": "ratio",
@@ -157,6 +176,11 @@ func (c *adapterConfig) defaults() {
 		projection := &c.Request.ContentProjections[index]
 		projection.Source = strings.TrimSpace(projection.Source)
 		projection.Target = strings.TrimSpace(projection.Target)
+		projection.Output = strings.ToLower(strings.TrimSpace(projection.Output))
+		if projection.Output == "" {
+			projection.Output = "scalar"
+		}
+		projection.Models = normalizeStrings(projection.Models)
 		projection.Types = normalizeStrings(projection.Types)
 		projection.Roles = normalizeStrings(projection.Roles)
 	}
@@ -282,8 +306,16 @@ func (c adapterConfig) validate(baseURL string) error {
 	if c.TimeoutSeconds > 300 {
 		return errors.New("generic adapter timeout_seconds cannot exceed 300")
 	}
-	if strings.ContainsAny(c.AuthHeader, "\r\n") || strings.TrimSpace(c.AuthHeader) == "" {
-		return errors.New("generic adapter auth_header is invalid")
+	if c.AuthLocation != "header" && c.AuthLocation != "body" && c.AuthLocation != "query" {
+		return errors.New("generic adapter auth_location must be header, body, or query")
+	}
+	if strings.ContainsAny(c.AuthKey, "\r\n") || strings.TrimSpace(c.AuthKey) == "" {
+		return errors.New("generic adapter auth_key is invalid")
+	}
+	if c.AuthLocation == "body" {
+		if err := validateJSONFieldPath(c.AuthKey); err != nil {
+			return fmt.Errorf("generic adapter auth_key: %w", err)
+		}
 	}
 	if err := validateOperation("submit", c.Submit, true, false); err != nil {
 		return err
@@ -341,8 +373,16 @@ func validateOperation(name string, operation operationConfig, required, require
 	if err != nil || parsed.IsAbs() || parsed.Host != "" || !strings.HasPrefix(operation.Path, "/") || strings.HasPrefix(operation.Path, "//") {
 		return fmt.Errorf("generic adapter %s path must be an absolute URL path", name)
 	}
-	if requireTaskID && !strings.Contains(operation.Path, taskIDPlaceholder) {
-		return fmt.Errorf("generic adapter %s path must contain %s", name, taskIDPlaceholder)
+	if operation.TaskIDBodyPath != "" {
+		if err := validateJSONFieldPath(operation.TaskIDBodyPath); err != nil {
+			return fmt.Errorf("generic adapter %s task_id_body_path: %w", name, err)
+		}
+		if operation.Method == http.MethodGet {
+			return fmt.Errorf("generic adapter %s task_id_body_path requires a non-GET method", name)
+		}
+	}
+	if requireTaskID && !strings.Contains(operation.Path, taskIDPlaceholder) && operation.TaskIDBodyPath == "" {
+		return fmt.Errorf("generic adapter %s requires %s in path or task_id_body_path", name, taskIDPlaceholder)
 	}
 	for _, status := range operation.AllowedStatuses {
 		if !validTaskStatus(status) {
@@ -401,10 +441,17 @@ func validateContentProjections(projections []contentProjection) error {
 			return fmt.Errorf("generic adapter request.content_projections target %q is duplicated", projection.Target)
 		}
 		seenTargets[projection.Target] = true
+		if projection.Output != "scalar" && projection.Output != "array" && projection.Output != "join" {
+			return fmt.Errorf("generic adapter request.content_projections[%d] output %q is not supported", index, projection.Output)
+		}
+		if projection.Output != "scalar" && projection.Index != 0 {
+			return fmt.Errorf("generic adapter request.content_projections[%d] index requires scalar output", index)
+		}
 		if projection.Index < 0 || projection.Index > 1000 {
 			return fmt.Errorf("generic adapter request.content_projections[%d] index is invalid", index)
 		}
-		for _, value := range append(append([]string{}, projection.Types...), projection.Roles...) {
+		selectors := append(append(append([]string{}, projection.Models...), projection.Types...), projection.Roles...)
+		for _, value := range selectors {
 			if strings.TrimSpace(value) == "" {
 				return fmt.Errorf("generic adapter request.content_projections[%d] selector cannot be empty", index)
 			}

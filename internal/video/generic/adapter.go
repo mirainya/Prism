@@ -20,6 +20,7 @@ import (
 type Adapter struct {
 	client    *taskhttp.Client
 	config    adapterConfig
+	apiKey    string
 	configErr error
 }
 
@@ -35,9 +36,10 @@ func NewAdapter(channel *video.VideoChannel, key *video.VideoChannelKey) video.A
 		return adapter
 	}
 	adapter.config = config
+	adapter.apiKey = key.APIKey
 	adapter.client = taskhttp.NewClient(taskhttp.Config{
 		BaseURL: channel.BaseURL, APIKey: key.APIKey,
-		AuthHeader: config.AuthHeader, AuthPrefix: valueOrEmpty(config.AuthPrefix),
+		AuthLocation: config.AuthLocation, AuthHeader: config.AuthKey, AuthPrefix: valueOrEmpty(config.AuthPrefix),
 		HTTPClient: &http.Client{Timeout: time.Duration(config.TimeoutSeconds) * time.Second},
 	})
 	return adapter
@@ -89,7 +91,7 @@ func (a *Adapter) BuildRequest(_ context.Context, request *video.GenerateRequest
 			return nil, fmt.Errorf("map request content: %w", err)
 		}
 	}
-	if err := a.applyContentProjections(body, request.Content); err != nil {
+	if err := a.applyContentProjections(body, request.Model, request.Content); err != nil {
 		return nil, err
 	}
 	if a.config.Request.ParamsMode == "merge_missing" {
@@ -106,19 +108,15 @@ func (a *Adapter) BuildRequest(_ context.Context, request *video.GenerateRequest
 	return &video.ProviderRequest{Body: body, Headers: headers}, nil
 }
 
-func (a *Adapter) applyContentProjections(body map[string]any, content []video.ContentItem) error {
+func (a *Adapter) applyContentProjections(body map[string]any, model string, content []video.ContentItem) error {
 	for _, projection := range a.config.Request.ContentProjections {
-		item, found := selectContentItem(content, projection)
-		if !found {
-			if projection.Required {
-				return fmt.Errorf("content projection %s requires a matching item", projection.Target)
-			}
+		if !matchesSelector(model, projection.Models) {
 			continue
 		}
-		value, present := contentValue(item, projection.Source)
+		value, present := projectedContentValue(content, projection)
 		if !present {
 			if projection.Required {
-				return fmt.Errorf("content projection %s requires source %s", projection.Target, projection.Source)
+				return fmt.Errorf("content projection %s requires a matching item", projection.Target)
 			}
 			continue
 		}
@@ -129,18 +127,35 @@ func (a *Adapter) applyContentProjections(body map[string]any, content []video.C
 	return nil
 }
 
-func selectContentItem(content []video.ContentItem, projection contentProjection) (video.ContentItem, bool) {
-	matchIndex := 0
+func projectedContentValue(content []video.ContentItem, projection contentProjection) (any, bool) {
+	values := make([]any, 0, len(content))
 	for _, item := range content {
 		if !matchesSelector(item.Type, projection.Types) || !matchesSelector(item.Role, projection.Roles) {
 			continue
 		}
-		if matchIndex == projection.Index {
-			return item, true
+		value, present := contentValue(item, projection.Source)
+		if present {
+			values = append(values, value)
 		}
-		matchIndex++
 	}
-	return video.ContentItem{}, false
+	if len(values) == 0 {
+		return nil, false
+	}
+	switch projection.Output {
+	case "array":
+		return values, true
+	case "join":
+		parts := make([]string, len(values))
+		for index, value := range values {
+			parts[index] = fmt.Sprint(value)
+		}
+		return strings.Join(parts, projection.Separator), true
+	default:
+		if projection.Index >= len(values) {
+			return nil, false
+		}
+		return values[projection.Index], true
+	}
 }
 
 func matchesSelector(value string, allowed []string) bool {
@@ -197,7 +212,7 @@ func (a *Adapter) Submit(ctx context.Context, request *video.ProviderRequest) (*
 	if request == nil {
 		return nil, errors.New("generic provider request is required")
 	}
-	body, err := json.Marshal(request.Body)
+	body, err := a.marshalBody(request.Body)
 	if err != nil {
 		return nil, fmt.Errorf("marshal generic request: %w", err)
 	}
@@ -230,7 +245,7 @@ func (a *Adapter) Estimate(ctx context.Context, request *video.GenerateRequest) 
 	if err != nil {
 		return 0, err
 	}
-	body, err := json.Marshal(providerRequest.Body)
+	body, err := a.marshalBody(providerRequest.Body)
 	if err != nil {
 		return 0, fmt.Errorf("marshal generic estimate request: %w", err)
 	}
@@ -260,7 +275,11 @@ func (a *Adapter) Poll(ctx context.Context, providerTaskID string) (*video.Progr
 	if strings.TrimSpace(providerTaskID) == "" {
 		return nil, errors.New("provider task id is required")
 	}
-	responseBody, err := a.do(ctx, "poll", a.config.Poll, nil, nil, providerTaskID)
+	body, err := a.operationBody(a.config.Poll, providerTaskID)
+	if err != nil {
+		return nil, fmt.Errorf("build generic poll request: %w", err)
+	}
+	responseBody, err := a.do(ctx, "poll", a.config.Poll, body, nil, providerTaskID)
 	if err != nil {
 		return nil, err
 	}
@@ -308,7 +327,11 @@ func (a *Adapter) Cancel(ctx context.Context, providerTaskID string) error {
 	if strings.TrimSpace(providerTaskID) == "" {
 		return errors.New("provider task id is required")
 	}
-	body, err := a.do(ctx, "cancel", a.config.Cancel, nil, nil, providerTaskID)
+	requestBody, err := a.operationBody(a.config.Cancel, providerTaskID)
+	if err != nil {
+		return fmt.Errorf("build generic cancel request: %w", err)
+	}
+	body, err := a.do(ctx, "cancel", a.config.Cancel, requestBody, nil, providerTaskID)
 	if err != nil {
 		return err
 	}
@@ -337,7 +360,39 @@ func (a *Adapter) ready() error {
 	return a.client.Ready()
 }
 
+func (a *Adapter) operationBody(config operationConfig, taskID string) ([]byte, error) {
+	var body map[string]any
+	if config.TaskIDBodyPath != "" {
+		body = make(map[string]any)
+		if err := setField(body, config.TaskIDBodyPath, taskID); err != nil {
+			return nil, err
+		}
+	}
+	return a.marshalBody(body)
+}
+
+func (a *Adapter) marshalBody(body map[string]any) ([]byte, error) {
+	if body == nil && a.config.AuthLocation != "body" {
+		return nil, nil
+	}
+	payload := cloneObject(body)
+	if a.config.AuthLocation == "body" {
+		if err := setField(payload, a.config.AuthKey, valueOrEmpty(a.config.AuthPrefix)+a.apiKey); err != nil {
+			return nil, fmt.Errorf("map body authentication: %w", err)
+		}
+	}
+	return json.Marshal(payload)
+}
+
 func (a *Adapter) do(ctx context.Context, operation string, config operationConfig, body []byte, headers map[string]string, taskID ...string) ([]byte, error) {
+	if body != nil {
+		if headers == nil {
+			headers = make(map[string]string)
+		}
+		if _, exists := headers["Content-Type"]; !exists {
+			headers["Content-Type"] = "application/json"
+		}
+	}
 	return a.client.Do(ctx, operation, taskhttp.Operation{Method: config.Method, Path: config.Path}, body, headers, taskID...)
 }
 

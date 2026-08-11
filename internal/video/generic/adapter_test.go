@@ -17,9 +17,10 @@ func newTestAdapter(baseURL, apiKey string, client *http.Client, config adapterC
 	return &Adapter{
 		client: taskhttp.NewClient(taskhttp.Config{
 			BaseURL: baseURL, APIKey: apiKey,
-			AuthHeader: config.AuthHeader, AuthPrefix: valueOrEmpty(config.AuthPrefix), HTTPClient: client,
+			AuthLocation: config.AuthLocation, AuthHeader: config.AuthKey,
+			AuthPrefix: valueOrEmpty(config.AuthPrefix), HTTPClient: client,
 		}),
-		config: config,
+		config: config, apiKey: apiKey,
 	}
 }
 
@@ -98,6 +99,37 @@ func TestGenericAdapterRejectsUnresolvedProjectedAsset(t *testing.T) {
 	}
 }
 
+func TestGenericAdapterProjectsContentCollections(t *testing.T) {
+	config := testAdapterConfig()
+	config.Request.IncludeContent = boolPointer(false)
+	config.Request.ContentProjections = []contentProjection{
+		{Source: "url", Target: "images", Output: "array", Models: []string{"sora2"}, Types: []string{"image_url"}},
+		{Source: "url", Target: "images_text", Output: "join", Separator: "\n", Models: []string{"sora2"}, Types: []string{"image_url"}},
+		{Source: "url", Target: "ignored", Models: []string{"another-model"}, Required: true},
+	}
+	adapter := newTestAdapter("https://provider.example", "secret", http.DefaultClient, config)
+
+	request, err := adapter.BuildRequest(context.Background(), &video.GenerateRequest{
+		Model: "sora2",
+		Content: []video.ContentItem{
+			{Type: "image_url", Role: "reference_image", URL: "https://cdn.example/one.png"},
+			{Type: "image_url", Role: "reference_image", URL: "https://cdn.example/two.png"},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(request.Body["images"], []any{"https://cdn.example/one.png", "https://cdn.example/two.png"}) {
+		t.Fatalf("images=%#v", request.Body["images"])
+	}
+	if request.Body["images_text"] != "https://cdn.example/one.png\nhttps://cdn.example/two.png" {
+		t.Fatalf("images_text=%#v", request.Body["images_text"])
+	}
+	if _, exists := request.Body["ignored"]; exists {
+		t.Fatalf("model-filtered projection was included")
+	}
+}
+
 func TestGenericAdapterRequiresProjectedContent(t *testing.T) {
 	config := testAdapterConfig()
 	config.Request.ContentProjections = []contentProjection{{
@@ -157,6 +189,37 @@ func TestGenericAdapterSubmitPollAndCancel(t *testing.T) {
 	}
 	if seenBody["model"] != "seedance-2.0" {
 		t.Fatalf("submit body=%#v", seenBody)
+	}
+}
+
+func TestGenericAdapterPostsTaskIDAndAuthenticationInBody(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		if request.Method != http.MethodPost || request.URL.Path != "/tasks/status" {
+			t.Fatalf("request=%s %s", request.Method, request.URL.Path)
+		}
+		if request.Header.Get("Authorization") != "" || request.Header.Get("Content-Type") != "application/json" {
+			t.Fatalf("headers=%#v", request.Header)
+		}
+		var body map[string]any
+		if err := json.NewDecoder(request.Body).Decode(&body); err != nil {
+			t.Fatal(err)
+		}
+		if body["task_id"] != "task-123" || body["token"] != "Bearer secret" {
+			t.Fatalf("body=%#v", body)
+		}
+		_, _ = writer.Write([]byte(`{"code":0,"data":{"id":"task-123","status":"running"}}`))
+	}))
+	defer server.Close()
+
+	config := testAdapterConfig()
+	config.AuthLocation = "body"
+	config.AuthKey = "token"
+	config.Poll = operationConfig{Enabled: true, Method: http.MethodPost, Path: "/tasks/status", TaskIDBodyPath: "task_id"}
+	adapter := newTestAdapter(server.URL, "secret", server.Client(), config)
+
+	progress, err := adapter.Poll(context.Background(), "task-123")
+	if err != nil || progress.Status != video.VideoTaskStatusTracking {
+		t.Fatalf("progress=%#v err=%v", progress, err)
 	}
 }
 

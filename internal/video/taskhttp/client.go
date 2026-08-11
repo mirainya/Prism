@@ -25,6 +25,7 @@ type Operation struct {
 type Config struct {
 	BaseURL          string
 	APIKey           string
+	AuthLocation     string
 	AuthHeader       string
 	AuthPrefix       string
 	HTTPClient       *http.Client
@@ -34,6 +35,7 @@ type Config struct {
 type Client struct {
 	baseURL          string
 	apiKey           string
+	authLocation     string
 	authHeader       string
 	authPrefix       string
 	httpClient       *http.Client
@@ -41,6 +43,10 @@ type Client struct {
 }
 
 func NewClient(config Config) *Client {
+	authLocation := strings.ToLower(strings.TrimSpace(config.AuthLocation))
+	if authLocation == "" {
+		authLocation = "header"
+	}
 	authHeader := strings.TrimSpace(config.AuthHeader)
 	if authHeader == "" {
 		authHeader = "Authorization"
@@ -56,6 +62,7 @@ func NewClient(config Config) *Client {
 	return &Client{
 		baseURL:          strings.TrimRight(strings.TrimSpace(config.BaseURL), "/"),
 		apiKey:           config.APIKey,
+		authLocation:     authLocation,
 		authHeader:       authHeader,
 		authPrefix:       config.AuthPrefix,
 		httpClient:       httpClient,
@@ -86,6 +93,16 @@ func (c *Client) Do(ctx context.Context, operation string, config Operation, bod
 		path = strings.ReplaceAll(path, "{task_id}", url.PathEscape(taskID[0]))
 	}
 	requestURL := c.baseURL + path
+	if c.authLocation == "query" {
+		parsedURL, err := url.Parse(requestURL)
+		if err != nil {
+			return nil, fmt.Errorf("create %s query authentication: %w", operation, err)
+		}
+		query := parsedURL.Query()
+		query.Set(c.authHeader, c.authPrefix+c.apiKey)
+		parsedURL.RawQuery = query.Encode()
+		requestURL = parsedURL.String()
+	}
 	var reader io.Reader
 	if body != nil {
 		reader = bytes.NewReader(body)
@@ -94,7 +111,9 @@ func (c *Client) Do(ctx context.Context, operation string, config Operation, bod
 	if err != nil {
 		return nil, fmt.Errorf("create %s request: %w", operation, err)
 	}
-	request.Header.Set(c.authHeader, c.authPrefix+c.apiKey)
+	if c.authLocation == "header" {
+		request.Header.Set(c.authHeader, c.authPrefix+c.apiKey)
+	}
 	for key, value := range headers {
 		request.Header.Set(key, value)
 	}
