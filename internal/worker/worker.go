@@ -7,8 +7,6 @@ import (
 	"github.com/mirainya/Prism/internal/provider"
 	"github.com/mirainya/Prism/internal/service"
 	"github.com/mirainya/Prism/internal/video"
-	"github.com/mirainya/Prism/internal/video/generic"
-	"github.com/mirainya/Prism/internal/video/seedance"
 	"github.com/mirainya/Prism/pkg/queue"
 )
 
@@ -24,15 +22,15 @@ var (
 	recoverTaskSubmit = queue.RecoverTaskSubmit
 )
 
-func RegisterHandlers(mux *asynq.ServeMux, executionEngine *engine.Engine) {
+func RegisterHandlers(mux *asynq.ServeMux, executionEngine *engine.Engine, sharedVideoEngine *video.Engine) {
 	if executionEngine == nil {
 		panic("Gateway V2 engine is required")
 	}
+	if sharedVideoEngine == nil {
+		panic("video engine is required")
+	}
 	responsePipe = responsepipeline.New(executionEngine)
-	videoEngine = video.NewEngine()
-	videoEngine.RegisterBuiltins()
-	videoEngine.Registry().Register("seedance", seedance.NewAdapter)
-	videoEngine.Registry().Register("generic", generic.NewAdapter)
+	videoEngine = sharedVideoEngine
 	mux.HandleFunc(TypeTaskSubmit, HandleTaskSubmit)
 	mux.HandleFunc(TypeTaskPoll, HandleTaskPoll)
 	mux.HandleFunc(TypeTaskUpload, HandleTaskUpload)

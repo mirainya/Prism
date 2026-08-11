@@ -19,6 +19,8 @@ import (
 	schemamigrate "github.com/mirainya/Prism/internal/migrate"
 	"github.com/mirainya/Prism/internal/model"
 	"github.com/mirainya/Prism/internal/provider"
+	"github.com/mirainya/Prism/internal/video"
+	videobootstrap "github.com/mirainya/Prism/internal/video/bootstrap"
 	"github.com/mirainya/Prism/internal/worker"
 	"github.com/mirainya/Prism/pkg/cache"
 	"github.com/mirainya/Prism/pkg/config"
@@ -115,6 +117,10 @@ func main() {
 	if err != nil {
 		log.Fatalf("failed to initialize Gateway V2: %v", err)
 	}
+	videoEngine := videobootstrap.New()
+	if videoEngine == nil {
+		log.Fatal("failed to initialize video engine")
+	}
 
 	// 启动 Worker 前先恢复数据库中已提交但未完成的工作。数据库保存任务意图，
 	// Redis 队列只负责投递，因此服务异常退出后可以从数据库重建缺失的队列项。
@@ -146,13 +152,13 @@ func main() {
 	if recoveredVideos > 0 {
 		logger.Info(fmt.Sprintf("recovered %d pending video submissions", recoveredVideos))
 	}
-	workerSrv := startWorker(v2Engine)
+	workerSrv := startWorker(v2Engine, videoEngine)
 
 	// 启动 Scheduler
 	scheduler := startScheduler()
 
 	// 设置路由并启动 HTTP 服务
-	r := api.SetupRouter(v2Engine)
+	r := api.SetupRouter(v2Engine, videoEngine)
 	addr := fmt.Sprintf(":%d", config.C.Server.Port)
 	httpSrv := &http.Server{
 		Addr:    addr,
@@ -251,10 +257,10 @@ func closeDatabase(db *gorm.DB) {
 	}
 }
 
-func startWorker(v2Engine *engine.Engine) *asynq.Server {
+func startWorker(v2Engine *engine.Engine, videoEngine *video.Engine) *asynq.Server {
 	srv := queue.NewServer()
 	mux := asynq.NewServeMux()
-	worker.RegisterHandlers(mux, v2Engine)
+	worker.RegisterHandlers(mux, v2Engine, videoEngine)
 
 	go func() {
 		logger.Info("worker starting...")

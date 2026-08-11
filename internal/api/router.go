@@ -18,14 +18,15 @@ import (
 	"github.com/mirainya/Prism/internal/gateway/engine"
 	"github.com/mirainya/Prism/internal/model"
 	"github.com/mirainya/Prism/internal/video"
-	"github.com/mirainya/Prism/internal/video/generic"
-	"github.com/mirainya/Prism/internal/video/seedance"
 	"github.com/mirainya/Prism/pkg/cache"
 	"github.com/mirainya/Prism/pkg/metrics"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 )
 
-func SetupRouter(engines ...*engine.Engine) *gin.Engine {
+func SetupRouter(executionEngine *engine.Engine, videoEngine *video.Engine) *gin.Engine {
+	if executionEngine == nil {
+		panic("Gateway V2 engine is required")
+	}
 	r := gin.New()
 
 	// 全局中间件
@@ -61,17 +62,6 @@ func SetupRouter(engines ...*engine.Engine) *gin.Engine {
 	console.RegisterPublicRoutes(r.Group("/api/public"))
 
 	// 提前构造网关: playground(console) 复用同一 pipeline,故先建再注入 console。
-	var executionEngine *engine.Engine
-	if len(engines) > 0 {
-		executionEngine = engines[0]
-	}
-	if executionEngine == nil {
-		var err error
-		executionEngine, err = gateway.NewV2Engine()
-		if err != nil {
-			panic(err)
-		}
-	}
 	gw := gateway.New(executionEngine)
 	console.SetChatPipeline(gw.Pipeline())
 	console.SetGatewayEngine(executionEngine)
@@ -94,14 +84,8 @@ func SetupRouter(engines ...*engine.Engine) *gin.Engine {
 	gw.RegisterAnthropic(apiV1)
 	gw.RegisterResponses(apiV1)
 	gw.RegisterFiles(apiV1)
-	ve := video.NewEngine()
-	if ve != nil {
-		ve.RegisterBuiltins()
-		ve.Registry().Register("seedance", seedance.NewAdapter)
-		ve.Registry().Register("generic", generic.NewAdapter)
-	}
-	open.InitVideoEngine(ve)
-	console.SetVideoEngine(ve)
+	open.InitVideoEngine(videoEngine)
+	console.SetVideoEngine(videoEngine)
 	open.RegisterRoutes(apiV1)
 
 	// 内部接口 (上游回调)

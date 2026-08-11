@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/gin-gonic/gin"
+	"github.com/mirainya/Prism/internal/gateway"
 	"github.com/mirainya/Prism/pkg/logger"
 	"go.uber.org/zap"
 )
@@ -17,7 +18,7 @@ func TestSetupRouterDoesNotServeSPAForLegacyCallback(t *testing.T) {
 	logger.L = zap.NewNop()
 	t.Cleanup(func() { logger.L = previousLogger })
 
-	router := SetupRouter()
+	router := setupRouterForTest(t)
 	request := httptest.NewRequest(http.MethodPost, "/internal/callback/legacy", strings.NewReader(`{"status":"SUCCESS"}`))
 	request.Header.Set("Content-Type", "application/json")
 	response := httptest.NewRecorder()
@@ -37,7 +38,7 @@ func TestSetupRouterReturnsNotFoundForRetiredV2Chat(t *testing.T) {
 	logger.L = zap.NewNop()
 	t.Cleanup(func() { logger.L = previousLogger })
 
-	router := SetupRouter()
+	router := setupRouterForTest(t)
 	var hasV1Chat, hasV2Chat bool
 	for _, route := range router.Routes() {
 		if route.Method == http.MethodPost && route.Path == "/v1/chat/completions" {
@@ -72,7 +73,7 @@ func TestSetupRouterRegistersResponsesAndFiles(t *testing.T) {
 	previousLogger := logger.L
 	logger.L = zap.NewNop()
 	t.Cleanup(func() { logger.L = previousLogger })
-	router := SetupRouter()
+	router := setupRouterForTest(t)
 	want := map[string]bool{
 		"POST /v1/responses": false, "GET /v1/responses/:id": false, "DELETE /v1/responses/:id": false,
 		"POST /v1/responses/:id/cancel": false, "GET /v1/responses/:id/input_items": false,
@@ -89,4 +90,13 @@ func TestSetupRouterRegistersResponsesAndFiles(t *testing.T) {
 			t.Errorf("route not registered: %s", route)
 		}
 	}
+}
+
+func setupRouterForTest(t *testing.T) *gin.Engine {
+	t.Helper()
+	executionEngine, err := gateway.NewV2Engine()
+	if err != nil {
+		t.Fatal(err)
+	}
+	return SetupRouter(executionEngine, nil)
 }
