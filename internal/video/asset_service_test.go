@@ -1,8 +1,10 @@
 package video
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"io"
 	"testing"
 	"time"
 
@@ -20,9 +22,13 @@ func newAssetTestService(t *testing.T) *AssetService {
 		t.Fatal(err)
 	}
 	service := NewAssetService(db)
-	service.upload = func(context.Context, []byte, string, string) (string, error) {
+	service.upload = func(_ context.Context, reader io.Reader, _, _ string) (string, error) {
+		if _, err := io.Copy(io.Discard, reader); err != nil {
+			return "", err
+		}
 		return "https://cdn.example.test/video-assets/file.png", nil
 	}
+	service.remove = func(context.Context, string) error { return nil }
 	service.validate = func(context.Context, string) error { return nil }
 	service.now = func() time.Time { return time.Date(2026, 8, 5, 12, 0, 0, 0, time.UTC) }
 	return service
@@ -90,6 +96,91 @@ func TestAssetServiceAllowsVideoWithoutDuration(t *testing.T) {
 	}
 	if asset.DurationSeconds != nil {
 		t.Fatalf("duration = %v, want nil", asset.DurationSeconds)
+	}
+}
+
+func TestAssetServiceStreamsUploadAndDeletesManagedFile(t *testing.T) {
+	service := newAssetTestService(t)
+	data := []byte("\x89PNG\r\n\x1a\nstreamed-asset")
+	var uploaded []byte
+	service.upload = func(_ context.Context, reader io.Reader, _, _ string) (string, error) {
+		var err error
+		uploaded, err = io.ReadAll(reader)
+		return "https://cdn.example.test/video-assets/stream.png", err
+	}
+	var deletedURL string
+	service.remove = func(_ context.Context, rawURL string) error {
+		deletedURL = rawURL
+		return nil
+	}
+	asset, err := service.Create(context.Background(), &CreateAssetRequest{
+		TokenID: 11, Kind: "image", ContentType: "image/png",
+		Reader: bytes.NewReader(data), SizeBytes: int64(len(data)),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(uploaded, data) || asset.SizeBytes != int64(len(data)) {
+		t.Fatalf("uploaded=%q size=%d", uploaded, asset.SizeBytes)
+	}
+	if err := service.Delete(context.Background(), 11, asset.ID); err != nil {
+		t.Fatal(err)
+	}
+	if deletedURL != asset.StoragePath {
+		t.Fatalf("deleted URL = %q, want %q", deletedURL, asset.StoragePath)
+	}
+}
+
+func TestAssetServiceDoesNotDeleteExternalURL(t *testing.T) {
+	service := newAssetTestService(t)
+	removed := false
+	service.remove = func(context.Context, string) error {
+		removed = true
+		return nil
+	}
+	asset, err := service.Create(context.Background(), &CreateAssetRequest{
+		TokenID: 12, Kind: "image", ContentType: "image/png", URL: "https://external.example/image.png",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := service.Delete(context.Background(), 12, asset.ID); err != nil {
+		t.Fatal(err)
+	}
+	if removed {
+		t.Fatal("external URL was deleted from managed storage")
+	}
+}
+
+func TestAssetServiceCleansPreviouslyExpiredManagedFile(t *testing.T) {
+	service := newAssetTestService(t)
+	asset, err := service.Create(context.Background(), &CreateAssetRequest{
+		TokenID: 13, Kind: "image", ContentType: "image/png", Data: []byte("\x89PNG\r\n\x1a\nlegacy-expired"),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := service.db.Model(asset).Update("status", VideoAssetStatusExpired).Error; err != nil {
+		t.Fatal(err)
+	}
+	var deletedURL string
+	service.remove = func(_ context.Context, rawURL string) error {
+		deletedURL = rawURL
+		return nil
+	}
+	count, err := service.ExpireReady(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if count != 1 || deletedURL == "" {
+		t.Fatalf("cleanup count=%d deleted URL=%q", count, deletedURL)
+	}
+	var stored VideoAsset
+	if err := service.db.First(&stored, "id = ?", asset.ID).Error; err != nil {
+		t.Fatal(err)
+	}
+	if stored.StoragePath != "" || stored.Status != VideoAssetStatusExpired {
+		t.Fatalf("stored asset = %#v", stored)
 	}
 }
 

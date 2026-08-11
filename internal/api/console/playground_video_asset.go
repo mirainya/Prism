@@ -3,7 +3,6 @@ package console
 import (
 	stderrors "errors"
 	"fmt"
-	"io"
 	"net/http"
 	"strconv"
 	"strings"
@@ -39,17 +38,12 @@ func PlaygroundCreateVideoAsset(c *gin.Context) {
 	}
 	defer opened.Close()
 
-	data, err := io.ReadAll(io.LimitReader(opened, video.MaxAssetUploadBytes()+1))
-	if err != nil {
-		writePlaygroundVideoAssetError(c, err)
-		return
-	}
-
 	request := &video.CreateAssetRequest{
 		TokenID:     token.ID,
 		Kind:        c.PostForm("kind"),
 		ContentType: file.Header.Get("Content-Type"),
-		Data:        data,
+		Reader:      opened,
+		SizeBytes:   file.Size,
 	}
 	if rawDuration := strings.TrimSpace(c.PostForm("duration_seconds")); rawDuration != "" {
 		duration, parseErr := strconv.ParseFloat(rawDuration, 64)

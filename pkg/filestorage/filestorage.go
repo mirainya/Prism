@@ -9,6 +9,7 @@ import (
 	"io"
 	"mime/multipart"
 	"net/http"
+	"net/url"
 	"path/filepath"
 	"strings"
 	"time"
@@ -56,7 +57,7 @@ func TransferURL(ctx context.Context, originURL string, capabilityCode string) (
 	if err != nil {
 		return "", fmt.Errorf("download: %w", err)
 	}
-	return upload(ctx, result.Data, result.ContentType, capabilityCode)
+	return upload(ctx, bytes.NewReader(result.Data), result.ContentType, capabilityCode)
 }
 
 // TransferBase64 解码 base64 数据并上传到 xfilestorage，返回最终 URL
@@ -72,7 +73,7 @@ func TransferBase64(ctx context.Context, b64 string, capabilityCode string) (str
 		return "", fmt.Errorf("decode base64: %w", err)
 	}
 
-	return upload(ctx, decoded, contentType, capabilityCode)
+	return upload(ctx, bytes.NewReader(decoded), contentType, capabilityCode)
 }
 
 // TransferBytes uploads in-memory file data to xfilestorage and returns its public URL.
@@ -84,10 +85,23 @@ func TransferBytes(ctx context.Context, data []byte, contentType string, capabil
 	if len(data) == 0 {
 		return "", fmt.Errorf("file data is empty")
 	}
+	return upload(ctx, bytes.NewReader(data), contentType, capabilityCode)
+}
+
+// TransferReader streams file data to xfilestorage without buffering the
+// multipart request in memory.
+func TransferReader(ctx context.Context, data io.Reader, contentType string, capabilityCode string) (string, error) {
+	cfg := config.C.FileStorage
+	if cfg.BaseURL == "" || cfg.APIKey == "" {
+		return "", fmt.Errorf("file storage not configured")
+	}
+	if data == nil {
+		return "", fmt.Errorf("file data is empty")
+	}
 	return upload(ctx, data, contentType, capabilityCode)
 }
 
-func upload(ctx context.Context, data []byte, contentType string, capabilityCode string) (string, error) {
+func upload(ctx context.Context, data io.Reader, contentType string, capabilityCode string) (string, error) {
 	cfg := config.C.FileStorage
 
 	storagePath := fmt.Sprintf("%s%s/%s/", cfg.UploadPath, capabilityCode, time.Now().Format("2006/01/02"))
@@ -112,32 +126,30 @@ func upload(ctx context.Context, data []byte, contentType string, capabilityCode
 	}
 	filename := uuid.New().String() + ext
 
-	var buf bytes.Buffer
-	writer := multipart.NewWriter(&buf)
-	part, err := writer.CreateFormFile("file", filename)
+	pipeReader, pipeWriter := io.Pipe()
+	writer := multipart.NewWriter(pipeWriter)
+	endpoint := strings.TrimRight(cfg.BaseURL, "/") + "/api/v1/upload"
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, pipeReader)
 	if err != nil {
-		return "", fmt.Errorf("create form file: %w", err)
-	}
-	part.Write(data)
-	writer.WriteField("path", storagePath)
-	writer.Close()
-
-	endpoint := cfg.BaseURL + "/api/v1/upload"
-
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, &buf)
-	if err != nil {
+		_ = pipeReader.Close()
+		_ = pipeWriter.Close()
 		return "", fmt.Errorf("create request: %w", err)
 	}
 	req.Header.Set("Content-Type", writer.FormDataContentType())
 	req.Header.Set("X-Api-Key", cfg.APIKey)
+	go writeMultipartUpload(pipeWriter, writer, data, filename, storagePath)
 
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
+		_ = pipeReader.CloseWithError(err)
 		return "", fmt.Errorf("upload request: %w", err)
 	}
 	defer resp.Body.Close()
 
-	body, _ := io.ReadAll(resp.Body)
+	body, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
+		return "", fmt.Errorf("xfilestorage upload returned HTTP %d", resp.StatusCode)
+	}
 	var xfsResp xfsResponse
 	if err := json.Unmarshal(body, &xfsResp); err != nil {
 		return "", fmt.Errorf("parse response: %w", err)
@@ -153,6 +165,68 @@ func upload(ctx context.Context, data []byte, contentType string, capabilityCode
 
 	result.URL = normalizePublicURL(result.URL)
 	return result.URL, nil
+}
+
+func writeMultipartUpload(pipeWriter *io.PipeWriter, writer *multipart.Writer, data io.Reader, filename, storagePath string) {
+	var writeErr error
+	defer func() {
+		if closeErr := writer.Close(); writeErr == nil {
+			writeErr = closeErr
+		}
+		_ = pipeWriter.CloseWithError(writeErr)
+	}()
+
+	part, err := writer.CreateFormFile("file", filename)
+	if err != nil {
+		writeErr = fmt.Errorf("create form file: %w", err)
+		return
+	}
+	if _, err := io.Copy(part, data); err != nil {
+		writeErr = fmt.Errorf("copy form file: %w", err)
+		return
+	}
+	if err := writer.WriteField("path", storagePath); err != nil {
+		writeErr = fmt.Errorf("write storage path: %w", err)
+	}
+}
+
+// DeleteURL removes a file previously uploaded with the configured API key.
+// A missing file is treated as success so cleanup can be retried safely.
+func DeleteURL(ctx context.Context, rawURL string) error {
+	cfg := config.C.FileStorage
+	if cfg.BaseURL == "" || cfg.APIKey == "" {
+		return fmt.Errorf("file storage not configured")
+	}
+	rawURL = strings.TrimSpace(rawURL)
+	if rawURL == "" {
+		return nil
+	}
+	endpoint := strings.TrimRight(cfg.BaseURL, "/") + "/api/v1/file/delete?url=" + url.QueryEscape(rawURL)
+	req, err := http.NewRequestWithContext(ctx, http.MethodDelete, endpoint, nil)
+	if err != nil {
+		return fmt.Errorf("create delete request: %w", err)
+	}
+	req.Header.Set("X-Api-Key", cfg.APIKey)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return fmt.Errorf("delete request: %w", err)
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	if resp.StatusCode == http.StatusNotFound {
+		return nil
+	}
+	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
+		return fmt.Errorf("xfilestorage delete returned HTTP %d", resp.StatusCode)
+	}
+	var xfsResp xfsResponse
+	if err := json.Unmarshal(body, &xfsResp); err != nil {
+		return fmt.Errorf("parse delete response: %w", err)
+	}
+	if xfsResp.Code != http.StatusOK && xfsResp.Code != http.StatusNotFound {
+		return fmt.Errorf("xfilestorage error: %s", xfsResp.Message)
+	}
+	return nil
 }
 
 func normalizePublicURL(rawURL string) string {

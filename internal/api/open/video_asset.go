@@ -2,7 +2,6 @@ package open
 
 import (
 	"errors"
-	"io"
 	"net/http"
 	"strconv"
 	"strings"
@@ -35,18 +34,18 @@ func CreateVideoAsset(c *gin.Context) {
 			writeVideoAssetError(c, err)
 			return
 		}
+		if file.Size > video.MaxAssetUploadBytes() {
+			writeVideoAssetError(c, video.ErrFileTooLarge)
+			return
+		}
 		opened, err := file.Open()
 		if err != nil {
 			writeVideoAssetError(c, err)
 			return
 		}
 		defer opened.Close()
-		data, err := io.ReadAll(io.LimitReader(opened, video.MaxAssetUploadBytes()+1))
-		if err != nil {
-			writeVideoAssetError(c, err)
-			return
-		}
-		req.Data = data
+		req.Reader = opened
+		req.SizeBytes = file.Size
 		req.Kind = c.PostForm("kind")
 		req.ContentType = file.Header.Get("Content-Type")
 		if duration := strings.TrimSpace(c.PostForm("duration_seconds")); duration != "" {

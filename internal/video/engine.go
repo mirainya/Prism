@@ -440,6 +440,8 @@ func videoPrice(
 		if !ok {
 			return nil, ErrEstimateNotSupported
 		}
+		// Upstream estimates use the same material references as submission.
+		// Resolvers cache provider objects on the asset, so submission reuses them.
 		if err := ResolveGenerateRequestAssets(ctx, db, channel, key, request.TaskID, request.TokenID, request); err != nil {
 			return nil, fmt.Errorf("resolve estimate assets: %w", err)
 		}

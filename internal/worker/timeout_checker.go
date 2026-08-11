@@ -31,7 +31,7 @@ func HandleTaskTimeoutCheck(ctx context.Context, t *asynq.Task) error {
 	}
 	expiredAssets, err := video.NewAssetService(model.DB()).ExpireReady(ctx)
 	if err != nil {
-		return err
+		logger.Error("expire video assets failed", zap.Error(err))
 	}
 	if expiredAssets > 0 {
 		logger.Info("video assets expired", zap.Int64("count", expiredAssets))
