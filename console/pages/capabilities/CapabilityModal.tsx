@@ -98,7 +98,7 @@ const CapabilityModal: React.FC<{
                         <div>
                             <label className="block text-sm font-medium text-[var(--text-primary)] mb-1">类型 *</label>
                             <Select value={form.type} onChange={v => setForm({...form, type: v})}
-                                options={CAPABILITY_TYPES.map(t => ({ label: t.label, value: t.value }))} />
+                                options={CAPABILITY_TYPES.filter(t => t.value !== 'video').map(t => ({ label: t.label, value: t.value }))} />
                         </div>
                         <div>
                             <label className="block text-sm font-medium text-[var(--text-primary)] mb-1">描述</label>

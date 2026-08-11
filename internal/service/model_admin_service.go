@@ -32,9 +32,10 @@ type CreateModelRequest struct {
 }
 
 var (
-	ErrModelCodeRequired   = errors.New("model code is required")
-	ErrModelCodeConflict   = errors.New("model code already exists")
-	ErrModelAliasesInvalid = errors.New("model aliases must be a JSON array of non-empty strings")
+	ErrModelCodeRequired                = errors.New("model code is required")
+	ErrModelCodeConflict                = errors.New("model code already exists")
+	ErrModelAliasesInvalid              = errors.New("model aliases must be a JSON array of non-empty strings")
+	ErrVideoModelManagedByVideoChannels = errors.New("video models are managed by video channels")
 )
 
 func (s *ModelAdminService) ListModels(status string) ([]model.Model, error) {
@@ -76,6 +77,9 @@ func (s *ModelAdminService) GetModel(code string) (*model.Model, error) {
 func (s *ModelAdminService) CreateModel(req *CreateModelRequest) (*model.Model, error) {
 	if req.Code == "" {
 		return nil, ErrModelCodeRequired
+	}
+	if model.ModelType(req.Type) == model.ModelTypeVideo {
+		return nil, ErrVideoModelManagedByVideoChannels
 	}
 	if err := validateModelAliases(req.Aliases); err != nil {
 		return nil, err
@@ -124,6 +128,9 @@ func (s *ModelAdminService) UpdateModel(code string, updates map[string]any) (*m
 		if err := validateModelAliases(aliases); err != nil {
 			return nil, err
 		}
+	}
+	if typ, ok := updates["type"].(string); ok && model.ModelType(typ) == model.ModelTypeVideo {
+		return nil, ErrVideoModelManagedByVideoChannels
 	}
 	if err := model.DB().Model(&m).Updates(updates).Error; err != nil {
 		return nil, err
