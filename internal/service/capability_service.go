@@ -935,11 +935,11 @@ func (s *UnifiedService) findEndpointsForCapability(req *InvokeRequest) ([]model
 			return endpoints, nil
 		}
 
-		// sub2api only accepts gpt-image-* names on its Images API. Keep exact
-		// Prism model names authoritative, then resolve the suffix as a compatibility alias.
-		if alias := openAIImageModelAlias(requestedModel, capability); alias != "" {
-			if err := findRequestedModel(alias); err != nil {
-				return nil, fmt.Errorf("find endpoints for image model alias: %w", err)
+		if aliasTarget, err := findConfiguredModelAlias(requestedModel); err != nil {
+			return nil, fmt.Errorf("find configured model alias: %w", err)
+		} else if aliasTarget != "" {
+			if err := findRequestedModel(aliasTarget); err != nil {
+				return nil, fmt.Errorf("find endpoints for configured model alias: %w", err)
 			}
 			if len(endpoints) > 0 {
 				return endpoints, nil
@@ -1006,12 +1006,32 @@ func endpointImageEditPath(endpoint *model.Endpoint) bool {
 	return path == "/v1/images/edits" || strings.HasSuffix(path, "/images/edits")
 }
 
-func openAIImageModelAlias(requestedModel, capability string) string {
-	const prefix = "gpt-image-"
-	if capability != "text2img" || !strings.HasPrefix(strings.ToLower(requestedModel), prefix) {
-		return ""
+func findConfiguredModelAlias(requestedModel string) (string, error) {
+	requestedModel = strings.TrimSpace(requestedModel)
+	if requestedModel == "" {
+		return "", nil
 	}
-	return strings.TrimSpace(requestedModel[len(prefix):])
+
+	var models []model.Model
+	if err := model.DB().Where("status = 1").Order("sort DESC, code ASC").Find(&models).Error; err != nil {
+		return "", err
+	}
+	matchedCode := ""
+	for _, candidate := range models {
+		var aliases []string
+		if len(candidate.Aliases) == 0 || json.Unmarshal(candidate.Aliases, &aliases) != nil {
+			continue
+		}
+		for _, alias := range aliases {
+			if strings.EqualFold(strings.TrimSpace(alias), requestedModel) {
+				if matchedCode != "" && matchedCode != candidate.Code {
+					return "", fmt.Errorf("model alias %q is configured for multiple models", requestedModel)
+				}
+				matchedCode = candidate.Code
+			}
+		}
+	}
+	return matchedCode, nil
 }
 
 func mapParams(params map[string]any, mapping datatypes.JSON) map[string]any {

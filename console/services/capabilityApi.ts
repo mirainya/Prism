@@ -30,8 +30,9 @@ export const fetchCapabilities = async (): Promise<Capability[]> => {
   return data.map(c => ({
     code: c.code,
     name: c.name,
-      type: c.type || 'image',
+    type: c.type || 'image',
     description: c.description || '',
+    aliases: Array.isArray(c.aliases) ? c.aliases : [],
     standardParams: c.param_schema || c.standard_params || {},
     standardResponse: c.standard_response || {},
     status: c.status,
@@ -46,8 +47,9 @@ export const getCapability = async (code: string): Promise<Capability> => {
   return {
     code: c.code,
     name: c.name,
-      type: c.type || 'image',
+    type: c.type || 'image',
     description: c.description || '',
+    aliases: Array.isArray(c.aliases) ? c.aliases : [],
     standardParams: c.param_schema || c.standard_params || {},
     standardResponse: c.standard_response || {},
     status: c.status,
@@ -60,8 +62,9 @@ export const getCapability = async (code: string): Promise<Capability> => {
 export const createCapability = async (data: {
   code: string;
   name: string;
-    type?: string;
+  type?: string;
   description?: string;
+  aliases?: string[];
   standard_params?: Record<string, any>;
   standard_response?: Record<string, any>;
 }): Promise<Capability> => {
@@ -72,8 +75,9 @@ export const createCapability = async (data: {
   return {
     code: c.code,
     name: c.name,
-      type: c.type || 'image',
+    type: c.type || 'image',
     description: c.description || '',
+    aliases: Array.isArray(c.aliases) ? c.aliases : [],
     standardParams: c.param_schema || c.standard_params || {},
     standardResponse: c.standard_response || {},
     status: c.status,
@@ -86,8 +90,9 @@ export const createCapability = async (data: {
 export const updateCapability = async (code: string, data: {
   code?: string;
   name?: string;
-    type?: string;
+  type?: string;
   description?: string;
+  aliases?: string[];
   standard_params?: Record<string, any>;
   standard_response?: Record<string, any>;
   status?: number;

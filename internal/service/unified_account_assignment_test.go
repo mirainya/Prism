@@ -137,9 +137,19 @@ func TestFindEndpointsDoesNotIgnoreUnknownRequestedChannel(t *testing.T) {
 	}
 }
 
-func TestFindEndpointsResolvesOpenAIImageCompatibilityAlias(t *testing.T) {
+func TestFindEndpointsResolvesConfiguredModelAlias(t *testing.T) {
 	db := setupTestDB(t)
 	if err := db.AutoMigrate(&model.Channel{}, &model.Endpoint{}); err != nil {
+		t.Fatal(err)
+	}
+	capability := &model.Model{
+		Code:    "seedream-v4",
+		Name:    "Seedream v4",
+		Type:    model.ModelTypeImage,
+		Aliases: datatypes.JSON(`["gpt-image-seedream-v4"]`),
+		Status:  1,
+	}
+	if err := db.Create(capability).Error; err != nil {
 		t.Fatal(err)
 	}
 	channel := &model.Channel{Type: "image-alias-channel", Status: 1}
@@ -165,9 +175,19 @@ func TestFindEndpointsResolvesOpenAIImageCompatibilityAlias(t *testing.T) {
 	}
 }
 
-func TestFindEndpointsPrefersExactOpenAIImageModelOverCompatibilityAlias(t *testing.T) {
+func TestFindEndpointsPrefersExactModelOverConfiguredAlias(t *testing.T) {
 	db := setupTestDB(t)
 	if err := db.AutoMigrate(&model.Channel{}, &model.Endpoint{}); err != nil {
+		t.Fatal(err)
+	}
+	capability := &model.Model{
+		Code:    "seedream-v4",
+		Name:    "Seedream v4",
+		Type:    model.ModelTypeImage,
+		Aliases: datatypes.JSON(`["gpt-image-seedream-v4"]`),
+		Status:  1,
+	}
+	if err := db.Create(capability).Error; err != nil {
 		t.Fatal(err)
 	}
 	channel := &model.Channel{Type: "image-exact-channel", Status: 1}

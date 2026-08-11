@@ -23,10 +23,12 @@ const (
 
 // Model 统一模型定义
 type Model struct {
-	Code     string    `gorm:"primaryKey;type:varchar(80);comment:模型标识" json:"code"`
-	Name     string    `gorm:"type:varchar(100);not null;comment:显示名称" json:"name"`
-	Type     ModelType `gorm:"type:varchar(20);not null;default:'chat';comment:模型类型" json:"type"`
-	Provider string    `gorm:"type:varchar(30);default:'';comment:来源标识" json:"provider"`
+	// Aliases contains upstream-facing model names that resolve to this model code.
+	Aliases  datatypes.JSON `gorm:"type:json;comment:model aliases" json:"aliases"`
+	Code     string         `gorm:"primaryKey;type:varchar(80);comment:模型标识" json:"code"`
+	Name     string         `gorm:"type:varchar(100);not null;comment:显示名称" json:"name"`
+	Type     ModelType      `gorm:"type:varchar(20);not null;default:'chat';comment:模型类型" json:"type"`
+	Provider string         `gorm:"type:varchar(30);default:'';comment:来源标识" json:"provider"`
 	// Protocol chat 去端点化后的协议类型(openai/anthropic/google/volcengine)。仅 chat 走合成虚拟端点时使用;空=openai
 	Protocol    Protocol       `gorm:"type:varchar(20);default:'openai';comment:协议类型(chat虚拟端点用)" json:"protocol"`
 	Description string         `gorm:"type:varchar(500);default:'';comment:模型描述" json:"description"`

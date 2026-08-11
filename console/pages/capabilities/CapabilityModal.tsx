@@ -13,6 +13,7 @@ const CapabilityModal: React.FC<{
     onSave: () => void;
 }> = ({isOpen, capability, onClose, onSave}) => {
     const [form, setForm] = useState({ code: '', name: '', type: 'image', description: '', status: 1 });
+    const [aliasesText, setAliasesText] = useState('');
     const [paramJson, setParamJson] = useState('{}');
     const [jsonError, setJsonError] = useState('');
     const [loading, setLoading] = useState(false);
@@ -20,10 +21,12 @@ const CapabilityModal: React.FC<{
     useEffect(() => {
         if (capability) {
             setForm({ code: capability.code, name: capability.name, type: capability.type || 'image', description: capability.description || '', status: capability.status });
+            setAliasesText((capability.aliases || []).join('\n'));
             setParamJson(Object.keys(capability.standardParams || {}).length > 0
                 ? JSON.stringify(capability.standardParams, null, 2) : '{}');
         } else {
             setForm({code: '', name: '', type: 'image', description: '', status: 1});
+            setAliasesText('');
             setParamJson('{}');
         }
         setJsonError('');
@@ -55,10 +58,11 @@ const CapabilityModal: React.FC<{
         setLoading(true);
         try {
             const standard_params = JSON.parse(paramJson);
+            const aliases = Array.from(new Set(aliasesText.split(/[\n,]/).map(alias => alias.trim()).filter(Boolean)));
             if (capability) {
-                await updateCapability(capability.code, { code: form.code.trim(), name: form.name, type: form.type, description: form.description, status: form.status, standard_params });
+                await updateCapability(capability.code, { code: form.code.trim(), name: form.name, type: form.type, description: form.description, status: form.status, aliases, standard_params });
             } else {
-                await createCapability({ code: form.code, name: form.name, type: form.type, description: form.description, standard_params });
+                await createCapability({ code: form.code, name: form.name, type: form.type, description: form.description, aliases, standard_params });
             }
             onSave();
             onClose();
@@ -102,6 +106,14 @@ const CapabilityModal: React.FC<{
                                 className="w-full px-3 py-2 border border-[var(--border-soft)] rounded-lg focus:outline-none focus:ring-2 focus:ring-[var(--primary)]"
                                 placeholder="能力描述" />
                         </div>
+                    </div>
+
+                    <div>
+                        <label className="block text-sm font-medium text-[var(--text-primary)] mb-1">模型别名</label>
+                        <textarea value={aliasesText} onChange={e => setAliasesText(e.target.value)} rows={3}
+                            className="w-full px-3 py-2 border border-[var(--border-soft)] rounded-lg focus:outline-none focus:ring-2 focus:ring-[var(--primary)]"
+                            placeholder="每行一个上游模型名" />
+                        <p className="mt-1 text-xs text-[var(--text-secondary)]">请求中的模型名会按精确匹配后，再查找这里配置的别名。</p>
                     </div>
 
                     <div>

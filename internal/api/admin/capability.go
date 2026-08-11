@@ -66,6 +66,7 @@ func UpdateCapability(c *gin.Context) {
 		ParamSchema    datatypes.JSON `json:"param_schema"`
 		StandardParams datatypes.JSON `json:"standard_params"`
 		Features       datatypes.JSON `json:"features"`
+		Aliases        datatypes.JSON `json:"aliases"`
 		Status         *int8          `json:"status"`
 	}
 
@@ -94,6 +95,9 @@ func UpdateCapability(c *gin.Context) {
 	}
 	if len(req.Features) > 0 {
 		updates["features"] = req.Features
+	}
+	if len(req.Aliases) > 0 {
+		updates["aliases"] = req.Aliases
 	}
 	if req.Status != nil {
 		updates["status"] = *req.Status

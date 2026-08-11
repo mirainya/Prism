@@ -12,8 +12,8 @@ func TestLoadIncludesImmutableBaseline(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(migrations) != 31 {
-		t.Fatalf("managed migrations=%d, want 31", len(migrations))
+	if len(migrations) != 32 {
+		t.Fatalf("managed migrations=%d, want 32", len(migrations))
 	}
 	baseline := migrations[0]
 	if baseline.Filename != "20260718_150000_schema_baseline.sql" {
@@ -259,6 +259,12 @@ func TestLoadIncludesImmutableBaseline(t *testing.T) {
 		if !strings.Contains(migrations[30].SQL, fragment) {
 			t.Errorf("video playground options migration is missing %q", fragment)
 		}
+	}
+	if migrations[31].Filename != "20260811_180000_add_model_aliases.sql" {
+		t.Fatalf("model aliases migration filename=%q", migrations[31].Filename)
+	}
+	if !strings.Contains(migrations[31].SQL, "ADD COLUMN `aliases` JSON") {
+		t.Fatal("model aliases migration does not add the aliases column")
 	}
 }
 

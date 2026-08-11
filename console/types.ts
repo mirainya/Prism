@@ -95,6 +95,7 @@ export interface Capability {
   name: string;
     type: 'image' | 'video' | 'chat' | 'other';
   description: string;
+  aliases: string[];
   standardParams: CapabilityStandardParams;
   standardResponse: Record<string, any>;
   status: number;

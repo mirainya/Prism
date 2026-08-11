@@ -1,7 +1,9 @@
 package service
 
 import (
+	"encoding/json"
 	"errors"
+	"strings"
 
 	"github.com/mirainya/Prism/internal/model"
 	"gorm.io/datatypes"
@@ -21,6 +23,7 @@ type CreateModelRequest struct {
 	Provider    string         `json:"provider"`
 	Description string         `json:"description"`
 	Features    datatypes.JSON `json:"features"`
+	Aliases     datatypes.JSON `json:"aliases"`
 	ParamSchema datatypes.JSON `json:"param_schema"`
 	MaxTokens   int            `json:"max_tokens"`
 	Status      int8           `json:"status"`
@@ -29,8 +32,9 @@ type CreateModelRequest struct {
 }
 
 var (
-	ErrModelCodeRequired = errors.New("model code is required")
-	ErrModelCodeConflict = errors.New("model code already exists")
+	ErrModelCodeRequired   = errors.New("model code is required")
+	ErrModelCodeConflict   = errors.New("model code already exists")
+	ErrModelAliasesInvalid = errors.New("model aliases must be a JSON array of non-empty strings")
 )
 
 func (s *ModelAdminService) ListModels(status string) ([]model.Model, error) {
@@ -73,6 +77,9 @@ func (s *ModelAdminService) CreateModel(req *CreateModelRequest) (*model.Model, 
 	if req.Code == "" {
 		return nil, ErrModelCodeRequired
 	}
+	if err := validateModelAliases(req.Aliases); err != nil {
+		return nil, err
+	}
 	m := &model.Model{
 		Code:        req.Code,
 		Name:        req.Name,
@@ -80,6 +87,7 @@ func (s *ModelAdminService) CreateModel(req *CreateModelRequest) (*model.Model, 
 		Provider:    req.Provider,
 		Description: req.Description,
 		Features:    req.Features,
+		Aliases:     req.Aliases,
 		ParamSchema: req.ParamSchema,
 		MaxTokens:   req.MaxTokens,
 		Status:      req.Status,
@@ -112,10 +120,31 @@ func (s *ModelAdminService) UpdateModel(code string, updates map[string]any) (*m
 			return nil, ErrModelCodeConflict
 		}
 	}
+	if aliases, ok := updates["aliases"].(datatypes.JSON); ok {
+		if err := validateModelAliases(aliases); err != nil {
+			return nil, err
+		}
+	}
 	if err := model.DB().Model(&m).Updates(updates).Error; err != nil {
 		return nil, err
 	}
 	return &m, nil
+}
+
+func validateModelAliases(raw datatypes.JSON) error {
+	if len(raw) == 0 {
+		return nil
+	}
+	var aliases []string
+	if err := json.Unmarshal(raw, &aliases); err != nil {
+		return ErrModelAliasesInvalid
+	}
+	for _, alias := range aliases {
+		if strings.TrimSpace(alias) == "" {
+			return ErrModelAliasesInvalid
+		}
+	}
+	return nil
 }
 
 func (s *ModelAdminService) DeleteModel(code string) (int64, error) {
