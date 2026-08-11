@@ -51,6 +51,69 @@ func TestGenericAdapterBuildsConfiguredRequest(t *testing.T) {
 	}
 }
 
+func TestGenericAdapterProjectsSelectedContentIntoRequestFields(t *testing.T) {
+	config := testAdapterConfig()
+	config.Request.IncludeContent = boolPointer(false)
+	config.Request.ContentProjections = []contentProjection{
+		{Source: "url", Target: "image_url", Types: []string{"image_url"}, Roles: []string{"first_frame"}, Required: true},
+		{Source: "url", Target: "input.backup_image_url", Roles: []string{"reference_image"}, Index: 1},
+	}
+	adapter := newTestAdapter("https://provider.example", "secret", http.DefaultClient, config)
+
+	request, err := adapter.BuildRequest(context.Background(), &video.GenerateRequest{
+		Model: "grok-imagine-video-1.5",
+		Content: []video.ContentItem{
+			{Type: "image_url", Role: "reference_image", URL: "https://cdn.example/reference-1.png"},
+			{Type: "image_url", Role: "first_frame", URL: "https://cdn.example/first.png"},
+			{Type: "image_url", Role: "reference_image", URL: "https://cdn.example/reference-2.png"},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	expected := map[string]any{
+		"model":          "grok-imagine-video-1.5",
+		"generate_audio": false,
+		"image_url":      "https://cdn.example/first.png",
+		"input": map[string]any{
+			"backup_image_url": "https://cdn.example/reference-2.png",
+		},
+	}
+	if !reflect.DeepEqual(request.Body, expected) {
+		t.Fatalf("body=%#v, want %#v", request.Body, expected)
+	}
+}
+
+func TestGenericAdapterRejectsUnresolvedProjectedAsset(t *testing.T) {
+	config := testAdapterConfig()
+	config.Request.IncludeContent = boolPointer(false)
+	config.Request.ContentProjections = []contentProjection{{Source: "url", Target: "image_url"}}
+	adapter := newTestAdapter("https://provider.example", "secret", http.DefaultClient, config)
+
+	_, err := adapter.BuildRequest(context.Background(), &video.GenerateRequest{
+		Content: []video.ContentItem{{AssetID: "asset-unresolved"}},
+	})
+	if err == nil || !strings.Contains(err.Error(), "was not resolved") {
+		t.Fatalf("unresolved asset error=%v", err)
+	}
+}
+
+func TestGenericAdapterRequiresProjectedContent(t *testing.T) {
+	config := testAdapterConfig()
+	config.Request.ContentProjections = []contentProjection{{
+		Source: "url", Target: "image_url", Roles: []string{"first_frame"}, Required: true,
+	}}
+	adapter := newTestAdapter("https://provider.example", "secret", http.DefaultClient, config)
+
+	_, err := adapter.BuildRequest(context.Background(), &video.GenerateRequest{
+		Model:   "grok-imagine-video-1.5",
+		Content: []video.ContentItem{{Type: "image_url", Role: "reference_image", URL: "https://cdn.example/reference.png"}},
+	})
+	if err == nil || !strings.Contains(err.Error(), "requires a matching item") {
+		t.Fatalf("required projection error=%v", err)
+	}
+}
+
 func TestGenericAdapterSubmitPollAndCancel(t *testing.T) {
 	var seenBody map[string]any
 	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
@@ -150,6 +213,13 @@ func TestGenericAdapterValidatesConfigAndRequestLimits(t *testing.T) {
 	}
 	if err := ValidateChannelConfig(missingEstimate); err == nil || !strings.Contains(err.Error(), "estimate operation") {
 		t.Fatalf("missing estimate error=%v", err)
+	}
+	invalidProjection := &video.VideoChannel{
+		BaseURL:     "https://provider.example",
+		ExtraConfig: []byte(`{"adapter":{"profile":"json_task_v1","submit":{"path":"/tasks"},"poll":{"path":"/tasks/{task_id}"},"request":{"content_projections":[{"source":"asset","target":"image_url"}]},"response":{"task_id_paths":["id"],"status_paths":["status"]}}}`),
+	}
+	if err := ValidateChannelConfig(invalidProjection); err == nil || !strings.Contains(err.Error(), "source \"asset\" is not supported") {
+		t.Fatalf("invalid projection error=%v", err)
 	}
 	config := testAdapterConfig()
 	config.Validation.Models = map[string]validationRule{

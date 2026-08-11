@@ -27,12 +27,25 @@ type operationConfig struct {
 }
 
 type requestConfig struct {
-	Fields          map[string]string `json:"fields"`
-	ContentPath     string            `json:"content_path"`
-	ContentFields   map[string]string `json:"content_fields"`
-	FixedBody       map[string]any    `json:"fixed_body"`
-	ParamsMode      string            `json:"params_mode"`
-	RequestIDHeader string            `json:"request_id_header"`
+	Fields             map[string]string   `json:"fields"`
+	ContentPath        string              `json:"content_path"`
+	ContentFields      map[string]string   `json:"content_fields"`
+	ContentProjections []contentProjection `json:"content_projections"`
+	IncludeContent     *bool               `json:"include_content"`
+	FixedBody          map[string]any      `json:"fixed_body"`
+	ParamsMode         string              `json:"params_mode"`
+	RequestIDHeader    string              `json:"request_id_header"`
+}
+
+// contentProjection selects one content item and writes one of its values to
+// a normal request field. It keeps upstream-specific nesting in channel data.
+type contentProjection struct {
+	Source   string   `json:"source"`
+	Target   string   `json:"target"`
+	Types    []string `json:"types"`
+	Roles    []string `json:"roles"`
+	Index    int      `json:"index"`
+	Required bool     `json:"required"`
 }
 
 type responseConfig struct {
@@ -135,6 +148,17 @@ func (c *adapterConfig) defaults() {
 	c.Request.ContentPath = strings.TrimSpace(c.Request.ContentPath)
 	if c.Request.ContentPath == "" {
 		c.Request.ContentPath = "content"
+	}
+	if c.Request.IncludeContent == nil {
+		include := true
+		c.Request.IncludeContent = &include
+	}
+	for index := range c.Request.ContentProjections {
+		projection := &c.Request.ContentProjections[index]
+		projection.Source = strings.TrimSpace(projection.Source)
+		projection.Target = strings.TrimSpace(projection.Target)
+		projection.Types = normalizeStrings(projection.Types)
+		projection.Roles = normalizeStrings(projection.Roles)
 	}
 	c.Request.ParamsMode = strings.ToLower(strings.TrimSpace(c.Request.ParamsMode))
 	if c.Request.ParamsMode == "" {
@@ -345,6 +369,12 @@ func validateRequestConfig(config requestConfig) error {
 	if err := validateJSONFieldPath(config.ContentPath); err != nil {
 		return fmt.Errorf("generic adapter request.content_path: %w", err)
 	}
+	if config.IncludeContent == nil {
+		return errors.New("generic adapter request.include_content must be specified after defaults")
+	}
+	if err := validateContentProjections(config.ContentProjections); err != nil {
+		return err
+	}
 	if config.ParamsMode != "merge_missing" && config.ParamsMode != "ignore" {
 		return errors.New("generic adapter request.params_mode must be merge_missing or ignore")
 	}
@@ -352,6 +382,43 @@ func validateRequestConfig(config requestConfig) error {
 		return errors.New("generic adapter request_id_header is invalid")
 	}
 	return nil
+}
+
+func validateContentProjections(projections []contentProjection) error {
+	allowedSources := map[string]bool{
+		"type": true, "role": true, "text": true, "url": true,
+		"provider_object": true, "duration": true,
+	}
+	seenTargets := make(map[string]bool, len(projections))
+	for index, projection := range projections {
+		if !allowedSources[projection.Source] {
+			return fmt.Errorf("generic adapter request.content_projections[%d] source %q is not supported", index, projection.Source)
+		}
+		if err := validateJSONFieldPath(projection.Target); err != nil {
+			return fmt.Errorf("generic adapter request.content_projections[%d] target: %w", index, err)
+		}
+		if seenTargets[projection.Target] {
+			return fmt.Errorf("generic adapter request.content_projections target %q is duplicated", projection.Target)
+		}
+		seenTargets[projection.Target] = true
+		if projection.Index < 0 || projection.Index > 1000 {
+			return fmt.Errorf("generic adapter request.content_projections[%d] index is invalid", index)
+		}
+		for _, value := range append(append([]string{}, projection.Types...), projection.Roles...) {
+			if strings.TrimSpace(value) == "" {
+				return fmt.Errorf("generic adapter request.content_projections[%d] selector cannot be empty", index)
+			}
+		}
+	}
+	return nil
+}
+
+func normalizeStrings(values []string) []string {
+	result := make([]string, len(values))
+	for index, value := range values {
+		result[index] = strings.TrimSpace(value)
+	}
+	return result
 }
 
 func validateMappings(name string, mappings map[string]string, allowed map[string]bool) error {

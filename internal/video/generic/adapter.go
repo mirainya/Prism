@@ -71,12 +71,14 @@ func (a *Adapter) BuildRequest(_ context.Context, request *video.GenerateRequest
 			}
 		}
 	}
-	if len(request.Content) > 0 {
+	for _, item := range request.Content {
+		if item.AssetID != "" {
+			return nil, fmt.Errorf("content asset %s was not resolved", item.AssetID)
+		}
+	}
+	if len(request.Content) > 0 && *a.config.Request.IncludeContent {
 		content := make([]map[string]any, 0, len(request.Content))
 		for _, item := range request.Content {
-			if item.AssetID != "" {
-				return nil, fmt.Errorf("content asset %s was not resolved", item.AssetID)
-			}
 			mapped, err := a.mapContent(item)
 			if err != nil {
 				return nil, err
@@ -86,6 +88,9 @@ func (a *Adapter) BuildRequest(_ context.Context, request *video.GenerateRequest
 		if err := setField(body, a.config.Request.ContentPath, content); err != nil {
 			return nil, fmt.Errorf("map request content: %w", err)
 		}
+	}
+	if err := a.applyContentProjections(body, request.Content); err != nil {
+		return nil, err
 	}
 	if a.config.Request.ParamsMode == "merge_missing" {
 		for key, value := range request.Params {
@@ -101,23 +106,80 @@ func (a *Adapter) BuildRequest(_ context.Context, request *video.GenerateRequest
 	return &video.ProviderRequest{Body: body, Headers: headers}, nil
 }
 
-func (a *Adapter) mapContent(item video.ContentItem) (map[string]any, error) {
-	sources := map[string]struct {
-		value   any
-		present bool
-	}{
-		"type":            {value: item.Type, present: item.Type != ""},
-		"role":            {value: item.Role, present: item.Role != ""},
-		"text":            {value: item.Text, present: item.Text != ""},
-		"url":             {value: item.URL, present: item.URL != ""},
-		"provider_object": {value: item.StorageObjectID, present: item.StorageObjectID != ""},
-		"duration":        {value: item.DurationSeconds, present: item.DurationSeconds > 0},
+func (a *Adapter) applyContentProjections(body map[string]any, content []video.ContentItem) error {
+	for _, projection := range a.config.Request.ContentProjections {
+		item, found := selectContentItem(content, projection)
+		if !found {
+			if projection.Required {
+				return fmt.Errorf("content projection %s requires a matching item", projection.Target)
+			}
+			continue
+		}
+		value, present := contentValue(item, projection.Source)
+		if !present {
+			if projection.Required {
+				return fmt.Errorf("content projection %s requires source %s", projection.Target, projection.Source)
+			}
+			continue
+		}
+		if err := setField(body, projection.Target, value); err != nil {
+			return fmt.Errorf("map content projection %s: %w", projection.Target, err)
+		}
 	}
+	return nil
+}
+
+func selectContentItem(content []video.ContentItem, projection contentProjection) (video.ContentItem, bool) {
+	matchIndex := 0
+	for _, item := range content {
+		if !matchesSelector(item.Type, projection.Types) || !matchesSelector(item.Role, projection.Roles) {
+			continue
+		}
+		if matchIndex == projection.Index {
+			return item, true
+		}
+		matchIndex++
+	}
+	return video.ContentItem{}, false
+}
+
+func matchesSelector(value string, allowed []string) bool {
+	if len(allowed) == 0 {
+		return true
+	}
+	for _, candidate := range allowed {
+		if value == candidate {
+			return true
+		}
+	}
+	return false
+}
+
+func contentValue(item video.ContentItem, source string) (any, bool) {
+	switch source {
+	case "type":
+		return item.Type, item.Type != ""
+	case "role":
+		return item.Role, item.Role != ""
+	case "text":
+		return item.Text, item.Text != ""
+	case "url":
+		return item.URL, item.URL != ""
+	case "provider_object":
+		return item.StorageObjectID, item.StorageObjectID != ""
+	case "duration":
+		return item.DurationSeconds, item.DurationSeconds > 0
+	default:
+		return nil, false
+	}
+}
+
+func (a *Adapter) mapContent(item video.ContentItem) (map[string]any, error) {
 	mapped := make(map[string]any)
 	for source, target := range a.config.Request.ContentFields {
-		value := sources[source]
-		if value.present {
-			if err := setField(mapped, target, value.value); err != nil {
+		value, present := contentValue(item, source)
+		if present {
+			if err := setField(mapped, target, value); err != nil {
 				return nil, fmt.Errorf("map content field %s: %w", source, err)
 			}
 		}
