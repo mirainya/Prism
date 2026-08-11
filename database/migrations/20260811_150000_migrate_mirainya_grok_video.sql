@@ -97,7 +97,8 @@ WHERE e.model_code = 'grok-imagine-video'
   AND e.status = 1
   AND NOT EXISTS (
       SELECT 1 FROM video_channels vc
-      WHERE vc.name = 'MiraiNya Grok Video' AND vc.base_url = c.base_url
+      WHERE vc.name = 'MiraiNya Grok Video'
+        AND vc.base_url COLLATE utf8mb4_unicode_ci = c.base_url COLLATE utf8mb4_unicode_ci
   )
 LIMIT 1;
 
@@ -119,9 +120,11 @@ FROM video_channels vc
 JOIN endpoints e ON e.model_code = 'grok-imagine-video'
 JOIN endpoint_accounts ea ON ea.endpoint_id = e.id AND ea.status = 1
 JOIN channel_accounts ca ON ca.id = ea.account_id AND ca.channel_id = e.channel_id
-JOIN channels c ON c.id = e.channel_id AND c.base_url = vc.base_url
+JOIN channels c ON c.id = e.channel_id
+  AND c.base_url COLLATE utf8mb4_unicode_ci = vc.base_url COLLATE utf8mb4_unicode_ci
 WHERE vc.name = 'MiraiNya Grok Video'
   AND NOT EXISTS (
       SELECT 1 FROM video_channel_keys existing
-      WHERE existing.channel_id = vc.id AND existing.api_key = ca.api_key
+      WHERE existing.channel_id = vc.id
+        AND existing.api_key COLLATE utf8mb4_unicode_ci = ca.api_key COLLATE utf8mb4_unicode_ci
   );
