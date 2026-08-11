@@ -17,6 +17,6 @@ func New() *video.Engine {
 }
 
 func registerAdapters(registry *video.Registry) {
-	registry.Register("seedance", seedance.NewAdapter)
-	registry.Register("generic", generic.NewAdapter)
+	registry.Register(video.AdapterTypeSeedance, seedance.NewAdapter)
+	registry.Register(video.AdapterTypeGeneric, generic.NewAdapter)
 }

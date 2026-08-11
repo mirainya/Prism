@@ -44,7 +44,6 @@ type VideoChannel struct {
 	Capabilities  datatypes.JSON `gorm:"type:json;comment:能力声明" json:"capabilities"`
 	Pricing       datatypes.JSON `gorm:"type:json;comment:计费配置" json:"pricing"`
 	AssetResolver string         `gorm:"type:varchar(32);default:'direct_url';comment:素材解析器类型" json:"asset_resolver"`
-	Passthrough   datatypes.JSON `gorm:"type:json;comment:透传服务配置" json:"passthrough"`
 	ExtraConfig   datatypes.JSON `gorm:"type:json;comment:适配器附加配置" json:"extra_config"`
 	CreatedAt     time.Time      `gorm:"comment:创建时间" json:"created_at"`
 	UpdatedAt     time.Time      `gorm:"comment:更新时间" json:"updated_at"`

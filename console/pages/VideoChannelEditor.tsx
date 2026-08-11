@@ -25,17 +25,16 @@ interface ChannelForm {
   markupRatio: string;
   assetResolver: string;
   extraConfig: string;
-  passthrough: string;
 }
 
-const SECTION_IDS = [
+const BASE_SECTION_IDS = [
   { id: 'basic', label: '基础配置' },
   { id: 'models', label: '模型与能力' },
   { id: 'pricing', label: '计费' },
-  { id: 'assets', label: '素材解析' },
-  { id: 'adapter', label: 'Adapter' },
-  { id: 'passthrough', label: '透传' },
+  { id: 'assets', label: '素材交付' },
 ];
+
+const ADAPTER_SECTION = { id: 'adapter', label: '协议映射' };
 
 const CAPABILITY_OPTIONS: Array<{ key: CapabilityKey; label: string }> = [
   { key: 'first_frame', label: '首帧' },
@@ -50,7 +49,7 @@ const labelClass = 'block text-xs font-semibold text-[var(--text-secondary)] mb-
 
 const emptyForm = (): ChannelForm => ({
   name: '',
-  adapterType: 'seedance',
+  adapterType: '',
   baseURL: '',
   status: 'active',
   priority: 0,
@@ -61,7 +60,6 @@ const emptyForm = (): ChannelForm => ({
   markupRatio: '1',
   assetResolver: 'direct_url',
   extraConfig: '{}',
-  passthrough: '{}',
 });
 
 const asObject = (value: unknown): Record<string, any> => {
@@ -85,7 +83,7 @@ const channelToForm = (channel: VideoChannel): ChannelForm => {
   const pricing = asObject(channel.pricing);
   return {
     name: channel.name || '',
-    adapterType: channel.adapter_type || 'seedance',
+    adapterType: channel.adapter_type || '',
     baseURL: channel.base_url || '',
     status: channel.status || 'active',
     priority: channel.priority || 0,
@@ -96,7 +94,6 @@ const channelToForm = (channel: VideoChannel): ChannelForm => {
     markupRatio: String(pricing.markup_ratio ?? 1),
     assetResolver: channel.asset_resolver || 'direct_url',
     extraConfig: prettyObject(channel.extra_config),
-    passthrough: prettyObject(channel.passthrough),
   };
 };
 
@@ -154,6 +151,10 @@ const VideoChannelEditor: React.FC = () => {
   const [discardDialogOpen, setDiscardDialogOpen] = useState(false);
   const [error, setError] = useState('');
   const [fieldErrors, setFieldErrors] = useState<Record<string, string>>({});
+  const sectionIds = useMemo(
+    () => form.adapterType === 'generic' ? [...BASE_SECTION_IDS, ADAPTER_SECTION] : BASE_SECTION_IDS,
+    [form.adapterType],
+  );
 
   const dirty = useMemo(() => formFingerprint(form) !== initialFingerprint, [form, initialFingerprint]);
   const estimatedPrice = useMemo(() => {
@@ -198,7 +199,7 @@ const VideoChannelEditor: React.FC = () => {
   }, [dirty]);
 
   useEffect(() => {
-    const sections = SECTION_IDS
+    const sections = sectionIds
       .map(section => document.getElementById(section.id))
       .filter((section): section is HTMLElement => Boolean(section));
     const observer = new IntersectionObserver(entries => {
@@ -209,7 +210,7 @@ const VideoChannelEditor: React.FC = () => {
     }, { rootMargin: '-15% 0px -70% 0px', threshold: 0 });
     sections.forEach(section => observer.observe(section));
     return () => observer.disconnect();
-  }, [loading]);
+  }, [loading, sectionIds]);
 
   const updateForm = <K extends keyof ChannelForm>(key: K, value: ChannelForm[K]) => {
     setForm(current => ({ ...current, [key]: value }));
@@ -246,15 +247,16 @@ const VideoChannelEditor: React.FC = () => {
     setError('');
     const nextErrors: Record<string, string> = {};
     let extraConfig: Record<string, any> = {};
-    let passthrough: Record<string, any> = {};
-    try { extraConfig = parseJSONObject('Adapter 配置', form.extraConfig); } catch (err: any) { nextErrors.extraConfig = err.message; }
-    try { passthrough = parseJSONObject('透传配置', form.passthrough); } catch (err: any) { nextErrors.passthrough = err.message; }
+    if (form.adapterType === 'generic') {
+      try { extraConfig = parseJSONObject('协议配置', form.extraConfig); } catch (err: any) { nextErrors.extraConfig = err.message; }
+    }
     if (!form.models.length) nextErrors.models = '至少添加一个模型';
     if (!form.name.trim()) nextErrors.name = '请输入渠道名称';
     if (!form.baseURL.trim()) nextErrors.baseURL = '请输入 Base URL';
+    if (!form.adapterType) nextErrors.adapterType = '请选择上游协议';
     setFieldErrors(nextErrors);
     if (Object.keys(nextErrors).length) {
-      const first = nextErrors.name || nextErrors.baseURL ? 'basic' : nextErrors.models ? 'models' : nextErrors.extraConfig ? 'adapter' : 'passthrough';
+      const first = nextErrors.name || nextErrors.baseURL || nextErrors.adapterType ? 'basic' : nextErrors.models ? 'models' : 'adapter';
       scrollTo(first);
       return;
     }
@@ -274,7 +276,6 @@ const VideoChannelEditor: React.FC = () => {
       },
       asset_resolver: form.assetResolver,
       extra_config: extraConfig,
-      passthrough,
     };
 
     setSaving(true);
@@ -323,7 +324,7 @@ const VideoChannelEditor: React.FC = () => {
 
       <div className="mt-5 grid grid-cols-1 lg:grid-cols-[180px_minmax(0,1fr)] gap-5 items-start">
         <nav className="lg:sticky lg:top-20 flex lg:flex-col gap-1 overflow-x-auto p-1 rounded-lg border border-[var(--border-soft)] bg-[var(--surface-card)]">
-          {SECTION_IDS.map(section => (
+          {sectionIds.map(section => (
             <button key={section.id} type="button" onClick={() => scrollTo(section.id)}
               className={`h-9 px-3 rounded-md text-sm font-semibold text-left whitespace-nowrap transition-colors ${activeSection === section.id ? 'bg-[var(--primary-lighter)] text-[var(--primary)]' : 'text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[var(--surface)]'}`}>
               {section.label}
@@ -340,14 +341,19 @@ const VideoChannelEditor: React.FC = () => {
                 {fieldErrors.name && <p className="mt-1.5 text-xs text-red-500">{fieldErrors.name}</p>}
               </div>
               <div>
-                <label className={labelClass}>协议实现</label>
-                <Select value={form.adapterType} onChange={value => setForm(current => ({
-                  ...current, adapterType: value,
-                  pricingMode: value === 'generic' ? current.pricingMode : 'fixed',
-                }))} options={[
+                <label className={labelClass}>上游协议</label>
+                <Select value={form.adapterType} onChange={value => {
+                  setForm(current => ({
+                    ...current, adapterType: value,
+                    pricingMode: value === 'generic' ? current.pricingMode : 'fixed',
+                  }));
+                  setFieldErrors(current => ({ ...current, adapterType: '' }));
+                  setError('');
+                }} options={[
+                  { value: 'generic', label: '通用 JSON 任务协议' },
                   { value: 'seedance', label: 'Seedance 官方协议' },
-                  { value: 'generic', label: '声明式 JSON 协议' },
-                ]} />
+                ]} placeholder="选择协议" />
+                {fieldErrors.adapterType && <p className="mt-1.5 text-xs text-red-500">{fieldErrors.adapterType}</p>}
               </div>
               <div className="md:col-span-2">
                 <label className={labelClass}>Base URL</label>
@@ -444,23 +450,21 @@ const VideoChannelEditor: React.FC = () => {
             </div>
           </Section>
 
-          <Section id="assets" title="素材解析">
+          <Section id="assets" title="素材交付">
             <div className="max-w-md">
-              <label className={labelClass}>解析器</label>
+              <label className={labelClass}>交付方式</label>
               <Select value={form.assetResolver} onChange={value => updateForm('assetResolver', value)} options={[
-                { value: 'direct_url', label: '公网 URL' },
-                { value: 'presigned_upload', label: '预签名上传' },
+                { value: 'direct_url', label: '直接使用素材 URL' },
+                { value: 'presigned_upload', label: '上传至上游存储' },
               ]} />
             </div>
           </Section>
 
-          <Section id="adapter" title="Adapter">
-            <JsonField label="Adapter 附加配置" value={form.extraConfig} onChange={value => updateForm('extraConfig', value)} height="420px" error={fieldErrors.extraConfig} />
-          </Section>
-
-          <Section id="passthrough" title="透传">
-            <JsonField label="透传配置" value={form.passthrough} onChange={value => updateForm('passthrough', value)} height="300px" error={fieldErrors.passthrough} />
-          </Section>
+          {form.adapterType === 'generic' && (
+            <Section id="adapter" title="协议映射">
+              <JsonField label="协议配置" value={form.extraConfig} onChange={value => updateForm('extraConfig', value)} height="420px" error={fieldErrors.extraConfig} />
+            </Section>
+          )}
         </div>
       </div>
 

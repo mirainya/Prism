@@ -50,7 +50,6 @@ type createVideoChannelRequest struct {
 	Capabilities  datatypes.JSON `json:"capabilities"`
 	Pricing       datatypes.JSON `json:"pricing"`
 	AssetResolver string         `json:"asset_resolver"`
-	Passthrough   datatypes.JSON `json:"passthrough"`
 	ExtraConfig   datatypes.JSON `json:"extra_config"`
 }
 
@@ -65,7 +64,7 @@ func validateVideoChannelRequest(req *createVideoChannelRequest) error {
 	req.BaseURL = parsed.String()
 	req.Name = strings.TrimSpace(req.Name)
 	req.AdapterType = strings.TrimSpace(req.AdapterType)
-	if req.AdapterType != "seedance" && req.AdapterType != "generic" {
+	if req.AdapterType != video.AdapterTypeSeedance && req.AdapterType != video.AdapterTypeGeneric {
 		return fmt.Errorf("unsupported video adapter type %q", req.AdapterType)
 	}
 	var models []string
@@ -82,7 +81,7 @@ func validateVideoChannelRequest(req *createVideoChannelRequest) error {
 	}
 	resolver := strings.TrimSpace(req.AssetResolver)
 	if resolver == "" {
-		resolver = "direct_url"
+		resolver = video.AssetResolverDirectURL
 	}
 	req.AssetResolver = resolver
 	if len(req.Capabilities) > 0 && string(req.Capabilities) != "null" {
@@ -93,7 +92,7 @@ func validateVideoChannelRequest(req *createVideoChannelRequest) error {
 	}
 	for name, raw := range map[string]datatypes.JSON{
 		"capabilities": req.Capabilities, "pricing": req.Pricing,
-		"passthrough": req.Passthrough, "extra_config": req.ExtraConfig,
+		"extra_config": req.ExtraConfig,
 	} {
 		if len(raw) == 0 || string(raw) == "null" {
 			continue
@@ -110,15 +109,25 @@ func validateVideoChannelRequest(req *createVideoChannelRequest) error {
 		BaseURL: req.BaseURL, Pricing: req.Pricing,
 		AssetResolver: req.AssetResolver, ExtraConfig: req.ExtraConfig,
 	}
-	if req.AdapterType == "generic" {
+	if req.AdapterType == video.AdapterTypeGeneric {
 		if err := generic.ValidateChannelConfig(resolverChannel); err != nil {
 			return err
 		}
+	} else if !emptyJSONObject(req.ExtraConfig) {
+		return fmt.Errorf("seedance adapter does not accept extra_config")
 	}
 	if _, err := video.NewAssetResolver(resolver, video.AssetResolverOptions{Channel: resolverChannel}); err != nil {
 		return err
 	}
 	return nil
+}
+
+func emptyJSONObject(raw datatypes.JSON) bool {
+	if len(raw) == 0 || string(raw) == "null" {
+		return true
+	}
+	var object map[string]any
+	return json.Unmarshal(raw, &object) == nil && len(object) == 0
 }
 
 func validateVideoPricing(raw datatypes.JSON, adapterType string) error {
@@ -141,7 +150,7 @@ func validateVideoPricing(raw datatypes.JSON, adapterType string) error {
 	if pricing.FixedPrice < 0 || pricing.MarkupRatio < 0 {
 		return fmt.Errorf("video pricing cannot contain negative values")
 	}
-	if pricing.Mode == "upstream_estimate" && adapterType != "generic" {
+	if pricing.Mode == "upstream_estimate" && adapterType != video.AdapterTypeGeneric {
 		return fmt.Errorf("upstream_estimate pricing requires the generic adapter")
 	}
 	return nil
@@ -167,14 +176,13 @@ func CreateVideoChannel(c *gin.Context) {
 		Capabilities:  req.Capabilities,
 		Pricing:       req.Pricing,
 		AssetResolver: req.AssetResolver,
-		Passthrough:   req.Passthrough,
 		ExtraConfig:   req.ExtraConfig,
 	}
 	if ch.Status == "" {
 		ch.Status = "active"
 	}
 	if ch.AssetResolver == "" {
-		ch.AssetResolver = "direct_url"
+		ch.AssetResolver = video.AssetResolverDirectURL
 	}
 	if err := model.DB().Create(&ch).Error; err != nil {
 		resp.InternalError(c, pkgErrors.ErrInternalError)
@@ -212,7 +220,6 @@ func UpdateVideoChannel(c *gin.Context) {
 		"capabilities":   req.Capabilities,
 		"pricing":        req.Pricing,
 		"asset_resolver": req.AssetResolver,
-		"passthrough":    req.Passthrough,
 		"extra_config":   req.ExtraConfig,
 	}
 	if err := model.DB().Model(&ch).Updates(updates).Error; err != nil {

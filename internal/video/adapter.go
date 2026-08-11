@@ -2,6 +2,11 @@ package video
 
 import "context"
 
+const (
+	AdapterTypeSeedance = "seedance"
+	AdapterTypeGeneric  = "generic"
+)
+
 // Adapter 视频生成适配器接口
 type Adapter interface {
 	BuildRequest(ctx context.Context, req *GenerateRequest) (*ProviderRequest, error)

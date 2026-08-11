@@ -14,6 +14,11 @@ const STATUS_BADGE: Record<string, string> = {
   inactive: 'bg-gray-100 text-gray-500',
 };
 
+const ADAPTER_LABELS: Record<string, string> = {
+  generic: '通用 JSON 任务协议',
+  seedance: 'Seedance 官方协议',
+};
+
 const ChannelKeys: React.FC<{ channelId: number; onAddKey: () => void; onEditKey: (k: VideoChannelKey) => void }> = ({ channelId, onAddKey, onEditKey }) => {
   const [keys, setKeys] = useState<VideoChannelKey[]>([]);
   const [loading, setLoading] = useState(true);
@@ -197,7 +202,9 @@ const VideoChannels: React.FC = () => {
                         <div className="text-xs text-[var(--text-secondary)] font-mono mt-0.5 truncate max-w-xs">{ch.base_url}</div>
                       </td>
                       <td className="px-3 md:px-6 py-3 md:py-4">
-                        <span className="px-2 py-1 rounded-md text-xs font-bold bg-blue-100 text-blue-700">{ch.adapter_type}</span>
+                        <span className="px-2 py-1 rounded-md text-xs font-bold bg-blue-100 text-blue-700">
+                          {ADAPTER_LABELS[ch.adapter_type] || ch.adapter_type}
+                        </span>
                       </td>
                       <td className="px-3 md:px-6 py-3 md:py-4">
                         <span className={`px-2 py-1 rounded-md text-xs font-bold ${STATUS_BADGE[ch.status] || STATUS_BADGE.inactive}`}>

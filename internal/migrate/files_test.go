@@ -12,8 +12,8 @@ func TestLoadIncludesImmutableBaseline(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(migrations) != 29 {
-		t.Fatalf("managed migrations=%d, want 29", len(migrations))
+	if len(migrations) != 30 {
+		t.Fatalf("managed migrations=%d, want 30", len(migrations))
 	}
 	baseline := migrations[0]
 	if baseline.Filename != "20260718_150000_schema_baseline.sql" {
@@ -240,6 +240,12 @@ func TestLoadIncludesImmutableBaseline(t *testing.T) {
 		if !strings.Contains(migrations[28].SQL, modelCode) {
 			t.Errorf("legacy video disable migration is missing %q", modelCode)
 		}
+	}
+	if migrations[29].Filename != "20260811_160000_drop_unused_video_passthrough.sql" {
+		t.Fatalf("video passthrough cleanup migration filename=%q", migrations[29].Filename)
+	}
+	if !strings.Contains(migrations[29].SQL, "DROP COLUMN passthrough") {
+		t.Fatal("video passthrough cleanup migration does not drop the unused column")
 	}
 }
 

@@ -1,4 +1,6 @@
-# 视频生成引擎设计文档
+# 视频生成引擎设计文档（历史方案）
+
+> 当前实现以 [`docs/VIDEO_ARCHITECTURE.md`](../VIDEO_ARCHITECTURE.md) 为准。本文仅保留早期设计过程，不作为现行配置说明。
 
 ## 概述
 

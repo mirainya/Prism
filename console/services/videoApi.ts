@@ -13,7 +13,6 @@ export interface VideoChannel {
   capabilities: any;
   pricing: any;
   asset_resolver: string;
-  passthrough: any;
   extra_config: any;
   created_at?: string;
   updated_at?: string;

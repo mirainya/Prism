@@ -14,6 +14,8 @@ import (
 const (
 	ResolvedAssetRefURL            = "url"
 	ResolvedAssetRefProviderObject = "provider_object"
+	AssetResolverDirectURL         = "direct_url"
+	AssetResolverPresignedUpload   = "presigned_upload"
 )
 
 type ResolvedAsset struct {
@@ -69,7 +71,7 @@ func (r *AssetResolverRegistry) Register(kind string, factory AssetResolverFacto
 func (r *AssetResolverRegistry) New(kind string, option AssetResolverOptions) (AssetResolver, error) {
 	kind = strings.TrimSpace(kind)
 	if kind == "" {
-		kind = "direct_url"
+		kind = AssetResolverDirectURL
 	}
 	r.mu.RLock()
 	factory := r.factories[kind]
@@ -82,10 +84,10 @@ func (r *AssetResolverRegistry) New(kind string, option AssetResolverOptions) (A
 
 var assetResolvers = func() *AssetResolverRegistry {
 	registry := NewAssetResolverRegistry()
-	registry.Register("direct_url", func(AssetResolverOptions) (AssetResolver, error) {
+	registry.Register(AssetResolverDirectURL, func(AssetResolverOptions) (AssetResolver, error) {
 		return DirectURLResolver{}, nil
 	})
-	registry.Register("presigned_upload", newPresignedUploadResolver)
+	registry.Register(AssetResolverPresignedUpload, newPresignedUploadResolver)
 	return registry
 }()
 
