@@ -158,6 +158,7 @@ func PlaygroundInvokeCapability(c *gin.Context) {
 	var body struct {
 		Channel         string         `json:"channel"`
 		Model           string         `json:"model"`
+		Operation       string         `json:"operation"`
 		InteractionMode string         `json:"interaction_mode"`
 		CallbackURL     string         `json:"callback_url"`
 		Params          map[string]any `json:"params"`
@@ -172,6 +173,7 @@ func PlaygroundInvokeCapability(c *gin.Context) {
 		UserID:          userID,
 		TokenID:         token.ID,
 		Capability:      capability,
+		RouteOperation:  body.Operation,
 		Channel:         body.Channel,
 		Model:           body.Model,
 		InteractionMode: body.InteractionMode,

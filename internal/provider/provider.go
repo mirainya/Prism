@@ -28,6 +28,10 @@ type SubmitRequest struct {
 	TaskNo      string
 	Params      map[string]any
 	CallbackURL string
+	// EventSink 是可选的 SSE 事件旁路：当上游走 text/event-stream 时，
+	// parseImageSSEStream 会把每个事件的原始 JSON payload 写进此通道；
+	// nil 表示不需要旁路（非流式请求路径）。
+	EventSink chan<- []byte
 }
 
 // RequestMetadata describes the concrete HTTP request executed by a provider.

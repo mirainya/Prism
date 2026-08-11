@@ -1,5 +1,5 @@
 import React from 'react';
-import { History, Plus, Loader2 } from 'lucide-react';
+import { History, Plus, Loader2, X } from 'lucide-react';
 import { PlaygroundConversation } from '../../types';
 import StatusBadge from './StatusBadge';
 import { formatTime } from './utils';
@@ -11,21 +11,21 @@ const HistoryPanel: React.FC<{
   currentModel?: string;
   onSelect: (conversation: PlaygroundConversation) => void;
   onCreateNew: () => void;
+  onClose?: () => void;
   loading: boolean;
-}> = ({ items, selectedConversationId, loadingConversationId, currentModel, onSelect, onCreateNew, loading }) => {
+}> = ({ items, selectedConversationId, loadingConversationId, currentModel, onSelect, onCreateNew, onClose, loading }) => {
   return (
-    <div className="w-72 flex-shrink-0 bg-[var(--surface-card)] rounded-xl border border-[var(--border-soft)] overflow-hidden flex flex-col">
+    <div className="h-full w-72 flex-shrink-0 bg-[var(--surface-card)] rounded-lg border border-[var(--border-soft)] overflow-hidden flex flex-col">
       <div className="px-4 py-3 border-b border-[var(--border-soft)] flex items-center justify-between gap-2">
         <div className="flex items-center gap-2 text-sm font-semibold text-[var(--text-primary)]">
           <History size={16} /> 历史会话
         </div>
-        <button
-          type="button"
-          onClick={onCreateNew}
-          className="inline-flex items-center gap-1 rounded-lg border border-indigo-200 bg-[var(--primary-lighter)] px-2 py-1 text-xs font-medium text-[var(--primary)] hover:bg-indigo-100"
-        >
-          <Plus size={12} /> 新会话
-        </button>
+        <div className="flex items-center gap-1">
+          <button type="button" onClick={onCreateNew} className="inline-flex items-center gap-1 rounded-lg border border-indigo-200 bg-[var(--primary-lighter)] px-2 py-1 text-xs font-medium text-[var(--primary)] hover:bg-indigo-100">
+            <Plus size={12} /> 新会话
+          </button>
+          {onClose && <button type="button" onClick={onClose} title="关闭" aria-label="关闭" className="rounded-lg p-1.5 text-[var(--text-secondary)] hover:bg-[var(--surface)]"><X size={15} /></button>}
+        </div>
       </div>
       <div className="flex-1 overflow-y-auto">
         {loading ? (

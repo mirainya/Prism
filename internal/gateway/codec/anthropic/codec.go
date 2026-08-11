@@ -127,6 +127,24 @@ func decodeMessages(messages []messageWire) ([]canonical.Item, error) {
 	result := make([]canonical.Item, 0, len(messages))
 	for messageIndex, message := range messages {
 		if message.Role != "user" && message.Role != "assistant" {
+			// OpenAI-compatible clients may place system prompts in the messages array.
+			// Treat "system" role as canonical RoleSystem to avoid hard failure.
+			if message.Role == "system" {
+				blocks, err := contentBlocks(message.Content)
+				if err != nil {
+					return nil, fmt.Errorf("messages[%d].content: %w", messageIndex, err)
+				}
+				parts := make([]canonical.Content, 0, len(blocks))
+				for _, raw := range blocks {
+					part, err := decodeContentBlock(raw, false)
+					if err != nil {
+						return nil, err
+					}
+					parts = append(parts, part)
+				}
+				result = append(result, canonical.Item{Type: "message", Role: canonical.RoleSystem, Content: parts})
+				continue
+			}
 			return nil, fmt.Errorf("unsupported Anthropic role %q", message.Role)
 		}
 		blocks, err := contentBlocks(message.Content)
@@ -1341,7 +1359,7 @@ func requestExtras(data []byte) (map[string]json.RawMessage, error) {
 	}
 	for _, key := range []string{
 		"model", "max_tokens", "messages", "system", "tools", "tool_choice", "temperature", "top_p",
-		"stop_sequences", "stream", "thinking",
+		"stop_sequences", "stream", "thinking", "metadata",
 	} {
 		delete(fields, key)
 	}

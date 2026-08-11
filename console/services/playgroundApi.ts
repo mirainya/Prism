@@ -1,4 +1,5 @@
 import {
+    ChannelOption,
     PlaygroundCapability,
     PlaygroundModelInfo,
     PlaygroundConversation,
@@ -11,28 +12,78 @@ import {
 } from '../types';
 import { request, getAuthHeader, API_BASE } from './request';
 
+const normalizePlaygroundChannels = (channels: any[]): ChannelOption[] => {
+    const seen = new Set<string>();
+    const result: ChannelOption[] = [];
+
+    for (const rawChannel of channels || []) {
+        const channel: ChannelOption = {
+            channelId: rawChannel.channel_id || 0,
+            channelType: rawChannel.channel_type || '',
+            channelName: rawChannel.channel_name || '',
+            model: rawChannel.model || '',
+            routeOperation: rawChannel.route_operation || '',
+            price: rawChannel.price || 0,
+            interactionMode: rawChannel.interaction_mode || '',
+            paramSchema: rawChannel.param_schema || null,
+        };
+        const selectionId = `${channel.channelType}::${channel.model}::${channel.interactionMode || 'sync'}::${channel.routeOperation || ''}`;
+        if (seen.has(selectionId)) continue;
+        seen.add(selectionId);
+        result.push(channel);
+    }
+
+    return result;
+};
+
+const normalizeModelOperations = (capability: any) => {
+    const operations = (capability.operations || []).map((operation: any) => ({
+        id: operation.id,
+        path: operation.path || '',
+        supportsStream: Boolean(operation.supports_stream),
+        paramSchema: operation.param_schema || null,
+    }));
+    if (operations.length > 0) return operations;
+
+    const fallbackOperation = capability.type === 'image'
+        ? 'images.generate'
+        : capability.type === 'video'
+            ? 'videos.generate'
+            : capability.type === 'chat'
+                ? 'chat.completions'
+                : '';
+    return fallbackOperation ? [{ id: fallbackOperation, path: '', supportsStream: false, paramSchema: null }] : [];
+};
+
 export const playgroundListModels = async (tokenId: string): Promise<PlaygroundModelInfo[]> => {
-    const data = await request<{object: string; data: PlaygroundModelInfo[]}>(`/playground/${tokenId}/models`);
-    return (data as any).data || data || [];
+    const data = await request<any[]>(`/playground/${tokenId}/capabilities`);
+    return (data || [])
+        .filter(model => (model.operations || []).some((operation: any) => operation.id === 'chat.completions'))
+        .map(model => ({
+            id: model.id || model.code,
+            owned_by: 'prism',
+            max_tokens: model.max_tokens,
+            group: model.group,
+            supports_stream: model.supports_stream,
+            default_stream: model.default_stream,
+            supports_tools: model.supports_tools,
+            supports_response_format: model.supports_response_format,
+            supports_multimodal: model.supports_multimodal,
+            thinking: model.thinking,
+        }));
 };
 
 export const playgroundListCapabilities = async (tokenId: string): Promise<PlaygroundCapability[]> => {
     const json = await request<any[]>(`/playground/${tokenId}/capabilities`);
     return (json || []).map(cap => ({
+        id: cap.id || cap.code,
         code: cap.code,
         name: cap.name,
         type: cap.type || 'other',
         description: cap.description || '',
         standardParams: cap.param_schema || cap.standard_params || {},
-        channels: (cap.channels || []).map((ch: any) => ({
-            channelId: ch.channel_id || 0,
-            channelType: ch.channel_type || '',
-            channelName: ch.channel_name || '',
-            model: ch.model || '',
-            price: ch.price || 0,
-            interactionMode: ch.interaction_mode || '',
-            paramSchema: ch.param_schema || null,
-        })),
+        operations: normalizeModelOperations(cap),
+        channels: normalizePlaygroundChannels(cap.channels || []),
     }));
 };
 
@@ -389,4 +440,143 @@ export const playgroundGetTask = async (tokenId: string, taskNo: string): Promis
 
 export const playgroundCancelTask = async (tokenId: string, taskNo: string): Promise<void> => {
     await request(`/playground/${tokenId}/tasks/${taskNo}/cancel`, { method: 'POST' });
+};
+
+// --- Video Playground API ---
+
+export interface VideoCreateParams {
+    model: string;
+    prompt: string;
+    channel_id?: number;
+    resolution?: string;
+    ratio?: string;
+    duration?: number;
+    generate_audio?: boolean;
+    task_mode?: string;
+    content?: VideoContentItem[];
+    priority?: number;
+}
+
+export interface VideoEstimate {
+    estimated_cost: string;
+    base_cost: string;
+    markup_ratio: string;
+    pricing_mode: 'fixed' | 'upstream_estimate';
+}
+
+export interface VideoContentItem {
+    type: 'image_url' | 'video_url' | 'audio_url';
+    role: 'first_frame' | 'last_frame' | 'reference_image' | 'reference_video' | 'reference_audio';
+    url?: string;
+    asset_id?: string;
+    duration_seconds?: number;
+}
+
+export interface VideoAsset {
+    id: string;
+    kind: 'image' | 'video' | 'audio';
+    content_type: string;
+    size_bytes: number;
+    status: string;
+    storage_path: string;
+    expires_at: string;
+}
+
+export interface VideoTask {
+    id: string;
+    model: string;
+    status: string;
+    progress: number;
+    prompt: string;
+    resolution?: string;
+    ratio?: string;
+    duration?: number;
+    result?: { video_url?: string; thumbnail_url?: string; duration?: number };
+    error_message?: string;
+    created_at: string;
+    completed_at?: string;
+}
+
+export interface PlaygroundVideoModelOptions {
+    resolutions?: string[];
+    task_types?: Array<'text' | 'first_frame' | 'first_last_frame' | 'multimodal'>;
+}
+
+export interface PlaygroundVideoChannelOption {
+    id: number;
+    name: string;
+    models: string[];
+    model_options: Record<string, PlaygroundVideoModelOptions>;
+}
+
+export interface PlaygroundVideoModelsResponse {
+    models: string[];
+    model_options?: Record<string, PlaygroundVideoModelOptions>;
+    channels?: PlaygroundVideoChannelOption[];
+}
+
+export const playgroundListVideoModels = async (tokenId: string): Promise<PlaygroundVideoModelsResponse> => {
+    const data = await request<PlaygroundVideoModelsResponse>(`/playground/${tokenId}/videos/models`);
+    return {
+        models: data.models || [],
+        model_options: data.model_options || {},
+        channels: data.channels || [],
+    };
+};
+
+export const playgroundCreateVideo = async (tokenId: string, params: VideoCreateParams): Promise<{ id: string; status: string }> => {
+    return await request<{ id: string; status: string }>(`/playground/${tokenId}/videos/generations`, {
+        method: 'POST',
+        body: JSON.stringify(params),
+    });
+};
+
+export const playgroundEstimateVideo = async (
+    tokenId: string,
+    params: VideoCreateParams,
+    signal?: AbortSignal,
+): Promise<VideoEstimate> => {
+    return await request<VideoEstimate>(`/playground/${tokenId}/videos/estimate`, {
+        method: 'POST',
+        body: JSON.stringify(params),
+        signal,
+    });
+};
+
+export const playgroundUploadVideoAsset = async (
+    tokenId: string,
+    file: File,
+    kind: VideoAsset['kind'],
+    durationSeconds?: number,
+): Promise<VideoAsset> => {
+    const formData = new FormData();
+    formData.append('file', file);
+    formData.append('kind', kind);
+    if (durationSeconds && durationSeconds > 0) {
+        formData.append('duration_seconds', String(durationSeconds));
+    }
+
+    const response = await fetch(`${API_BASE}/playground/${tokenId}/videos/assets`, {
+        method: 'POST',
+        headers: getAuthHeader(),
+        body: formData,
+    });
+    const payload = await response.json();
+    if (!response.ok || payload.code !== 0) {
+        throw new Error(payload.message || '素材上传失败');
+    }
+    return payload.data;
+};
+
+export const playgroundListVideos = async (tokenId: string): Promise<{ items: VideoTask[]; total: number }> => {
+    const data = await request<{ items: VideoTask[]; total: number }>(`/playground/${tokenId}/videos/generations`);
+    return { items: data.items || [], total: data.total || 0 };
+};
+
+export const playgroundGetVideo = async (tokenId: string, taskId: string): Promise<VideoTask> => {
+    return await request<VideoTask>(`/playground/${tokenId}/videos/generations/${taskId}`);
+};
+
+export const playgroundCancelVideo = async (tokenId: string, taskId: string): Promise<void> => {
+    await request(`/playground/${tokenId}/videos/generations/${taskId}/cancel`, { method: 'POST' });
 };

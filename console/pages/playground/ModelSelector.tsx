@@ -2,6 +2,7 @@ import React, { useState, useRef, useEffect, useMemo } from 'react';
 import { ChevronDown, Check, Search } from 'lucide-react';
 
 const PROVIDER_LABELS: Record<string, string> = {
+  prism: 'Prism',
   anthropic: 'Anthropic',
   openai: 'OpenAI',
   google: 'Google',
@@ -62,7 +63,7 @@ const ModelSelector: React.FC<{
       <button
         type="button"
         onClick={() => setOpen(!open)}
-        className="inline-flex items-center gap-2 px-3 py-1.5 border border-[var(--border-soft)] rounded-lg text-sm bg-[var(--surface-card)] hover:bg-[var(--surface)] focus:outline-none focus:ring-2 focus:ring-[var(--primary)] w-full"
+        className="inline-flex items-center gap-2 h-10 px-3 border border-[var(--border-soft)] rounded-lg text-sm bg-[var(--surface-card)] hover:bg-[var(--surface)] focus:outline-none focus:ring-2 focus:ring-[var(--primary)] w-full"
       >
         <span className={`truncate flex-1 text-left ${!selected && !allOption ? 'text-[var(--text-tertiary)]' : ''}`}>{displayText}</span>
         <ChevronDown size={14} className="text-[var(--text-tertiary)] flex-shrink-0" />

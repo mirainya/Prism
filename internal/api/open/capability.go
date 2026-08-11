@@ -30,12 +30,13 @@ func InvokeCapability(c *gin.Context) {
 
 	channel, _ := raw["channel"].(string)
 	model, _ := raw["model"].(string)
+	operation, _ := raw["operation"].(string)
 	interactionMode, _ := raw["interaction_mode"].(string)
 	callbackURL, _ := raw["callback_url"].(string)
 
 	params := make(map[string]any, len(raw))
 	for k, v := range raw {
-		if k == "channel" || k == "interaction_mode" || k == "callback_url" || k == "params" {
+		if k == "channel" || k == "operation" || k == "interaction_mode" || k == "callback_url" || k == "params" {
 			continue
 		}
 		params[k] = v
@@ -63,6 +64,7 @@ func InvokeCapability(c *gin.Context) {
 		UserID:          token.UserID,
 		TokenID:         token.ID,
 		Capability:      capability,
+		RouteOperation:  operation,
 		Channel:         channel,
 		Model:           model,
 		InteractionMode: interactionMode,

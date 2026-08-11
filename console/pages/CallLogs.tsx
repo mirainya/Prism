@@ -18,7 +18,6 @@ import {
   RotateCcw,
   Route as RouteIcon,
   Search,
-  X,
   XCircle,
   type LucideIcon,
 } from 'lucide-react';
@@ -38,6 +37,7 @@ import {
   fetchUsers,
 } from '../services';
 import { fetchGwChannels, GW_TRANSPORTS, GwChannel } from '../services/gatewayApi';
+import { Drawer, Select } from '../components/ui';
 import { ChannelAccount, ChannelCapability, User, UserRole } from '../types';
 
 const PAGE_SIZE = 20;
@@ -292,11 +292,10 @@ const CallLogs: React.FC = () => {
           <label className="text-xs font-semibold text-[var(--text-secondary)]">模型
             <input value={draft.model} onChange={e => updateDraft('model', e.target.value)} onKeyDown={e => e.key === 'Enter' && search()} placeholder="模型名称" className={`${INPUT_CLASS} mt-1`} />
           </label>
-          <label className="text-xs font-semibold text-[var(--text-secondary)]">状态
-            <select value={draft.status} onChange={e => updateDraft('status', e.target.value)} className={`${INPUT_CLASS} mt-1`}>
-              <option value="">全部状态</option><option value="received">已接收</option><option value="in_progress">处理中</option><option value="completed">成功</option><option value="failed">失败</option><option value="cancelled">已取消</option>
-            </select>
-          </label>
+          <div className="text-xs font-semibold text-[var(--text-secondary)]">状态
+            <Select value={draft.status} onChange={v => updateDraft('status', v)} className="mt-1"
+              options={[{ label: '全部状态', value: '' }, { label: '已接收', value: 'received' }, { label: '处理中', value: 'in_progress' }, { label: '成功', value: 'completed' }, { label: '失败', value: 'failed' }, { label: '已取消', value: 'cancelled' }]} />
+          </div>
           <label className="text-xs font-semibold text-[var(--text-secondary)]">端点
             <input value={draft.endpoint} onChange={e => updateDraft('endpoint', e.target.value)} onKeyDown={e => e.key === 'Enter' && search()} placeholder="/v1/capabilities/image-generation" className={`${INPUT_CLASS} mt-1 font-mono`} />
           </label>
@@ -307,29 +306,25 @@ const CallLogs: React.FC = () => {
             <input type="date" value={draft.end_date} onChange={e => updateDraft('end_date', e.target.value)} className={`${INPUT_CLASS} mt-1`} />
           </label>
           {isAdmin && <>
-            <label className="text-xs font-semibold text-[var(--text-secondary)]">用户 ID
-              <select value={draft.user_id} onChange={e => updateDraft('user_id', e.target.value)} className={`${INPUT_CLASS} mt-1`}>
-                <option value="">全部用户</option>{users.map(user => <option key={user.id} value={user.id}>{user.username} (#{user.id})</option>)}
-              </select>
-            </label>
+            <div className="text-xs font-semibold text-[var(--text-secondary)]">用户 ID
+              <Select value={draft.user_id} onChange={v => updateDraft('user_id', v)} className="mt-1"
+                options={[{ label: '全部用户', value: '' }, ...users.map(user => ({ label: `${user.username} (#${user.id})`, value: String(user.id) }))]} />
+            </div>
             <label className="text-xs font-semibold text-[var(--text-secondary)]">Token ID
               <input type="number" min="1" value={draft.token_id} onChange={e => updateDraft('token_id', e.target.value)} placeholder="Token ID" className={`${INPUT_CLASS} mt-1`} />
             </label>
-            <label className="text-xs font-semibold text-[var(--text-secondary)]">路由类型
-              <select value={draft.route_kind} onChange={e => updateRouteKind(e.target.value as APICallRouteKind | '')} className={`${INPUT_CLASS} mt-1`}>
-                <option value="">全部路由</option><option value="gateway_v2">Gateway</option><option value="capability">能力任务</option>
-              </select>
-            </label>
-            <label className="text-xs font-semibold text-[var(--text-secondary)]">渠道
-              <select disabled={!draft.route_kind} value={draft.channel_id} onChange={e => updateDraft('channel_id', e.target.value)} className={`${INPUT_CLASS} mt-1 disabled:cursor-not-allowed disabled:opacity-60`}>
-                <option value="">{draft.route_kind ? '全部渠道' : '先选择路由类型'}</option>{filterChannels.map(channel => <option key={channel.id} value={channel.id}>{channel.name} (#{channel.id})</option>)}
-              </select>
-            </label>
-            <label className="text-xs font-semibold text-[var(--text-secondary)]">Transport
-              <select value={draft.transport} onChange={e => updateDraft('transport', e.target.value)} className={`${INPUT_CLASS} mt-1`}>
-                <option value="">全部 Transport</option>{GW_TRANSPORTS.map(item => <option key={item} value={item}>{TRANSPORT_LABELS[item]}</option>)}
-              </select>
-            </label>
+            <div className="text-xs font-semibold text-[var(--text-secondary)]">路由类型
+              <Select value={draft.route_kind} onChange={v => updateRouteKind(v as APICallRouteKind | '')} className="mt-1"
+                options={[{ label: '全部路由', value: '' }, { label: 'Gateway', value: 'gateway_v2' }, { label: '能力任务', value: 'capability' }]} />
+            </div>
+            <div className="text-xs font-semibold text-[var(--text-secondary)]">渠道
+              <Select value={draft.channel_id} onChange={v => updateDraft('channel_id', v)} disabled={!draft.route_kind} className="mt-1"
+                options={[{ label: draft.route_kind ? '全部渠道' : '先选择路由类型', value: '' }, ...filterChannels.map(channel => ({ label: `${channel.name} (#${channel.id})`, value: String(channel.id) }))]} />
+            </div>
+            <div className="text-xs font-semibold text-[var(--text-secondary)]">Transport
+              <Select value={draft.transport} onChange={v => updateDraft('transport', v)} className="mt-1"
+                options={[{ label: '全部 Transport', value: '' }, ...GW_TRANSPORTS.map(item => ({ label: TRANSPORT_LABELS[item], value: item }))]} />
+            </div>
           </>}
         </div>
         <div className="mt-4 flex justify-end gap-2">
@@ -367,12 +362,12 @@ const CallLogs: React.FC = () => {
         </div>
       </section>
 
-      {(detailLoading || detail || detailError) && <div className="fixed inset-0 z-50 flex justify-end bg-black/40" onClick={closeDetail}>
-        <aside className="flex h-full w-full max-w-4xl flex-col bg-[var(--surface-card)] shadow-2xl backdrop-blur-xl" onClick={e => e.stopPropagation()}>
-          <div className="flex items-start justify-between border-b border-[var(--border-soft)] px-5 py-4">
-            <div className="min-w-0"><h2 className="text-lg font-bold text-[var(--text-primary)]">调用详情</h2><p className="mt-1 truncate font-mono text-xs text-[var(--text-secondary)]">{detail?.call.id || '加载中'}</p></div>
-            <button title="关闭" onClick={closeDetail} className="rounded-lg p-2 text-[var(--text-secondary)] hover:bg-[var(--surface)]"><X size={20} /></button>
-          </div>
+      <Drawer
+        open={detailLoading || Boolean(detail) || Boolean(detailError)}
+        onClose={closeDetail}
+        title="调用详情"
+        subtitle={<span className="font-mono">{detail?.call.id || '加载中'}</span>}
+      >
           {detail && <div className="flex overflow-x-auto border-b border-[var(--border-soft)] px-4">
             {([
               ['overview', '概览', LayoutList], ['attempts', '上游尝试', RouteIcon], ['billing', '计费', ReceiptText], ['payloads', '内容', FileJson],
@@ -386,8 +381,7 @@ const CallLogs: React.FC = () => {
               detail && activeTab === 'billing' ? <Billing call={detail.call} logs={detail.billing_logs || []} /> :
               detail && <Payloads payloads={detail.payloads || []} />}
           </div>
-        </aside>
-      </div>}
+      </Drawer>
     </div>
   );
 };

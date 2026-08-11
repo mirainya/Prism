@@ -28,6 +28,7 @@ type fakeOpenAIImageService struct {
 	cancelTaskNo  string
 	cancelUserID  uint
 	cancelTokenID uint
+	events        [][]byte
 }
 
 func (f *fakeOpenAIImageService) InvokeAndWait(
@@ -37,7 +38,30 @@ func (f *fakeOpenAIImageService) InvokeAndWait(
 ) (*service.ImageResult, error) {
 	f.invokeCount++
 	f.invokeReq = req
+	if req.EventSink != nil {
+		for _, event := range f.events {
+			req.EventSink <- event
+		}
+	}
 	return f.result, f.err
+}
+
+func TestCreateImageGenerationOpenAIStreamReportsFailureAfterUpstreamCompleted(t *testing.T) {
+	fake := &fakeOpenAIImageService{
+		err:    errors.New("persist completed image: storage failed"),
+		events: [][]byte{[]byte(`{"type":"image_generation.completed","b64_json":"aW1hZ2U="}`)},
+	}
+	recorder := serveOpenAIImageRequest(t, fake, nil, `{
+		"model":"gpt-image-prism","prompt":"draw","stream":true
+	}`)
+
+	body := recorder.Body.String()
+	if recorder.Code != http.StatusOK || !strings.Contains(body, "storage failed") || !strings.Contains(body, "data: [DONE]") {
+		t.Fatalf("status = %d, body = %s", recorder.Code, body)
+	}
+	if strings.Contains(body, "image_generation.completed") {
+		t.Fatalf("unprocessed upstream completed event was forwarded: %s", body)
+	}
 }
 
 func (f *fakeOpenAIImageService) CancelTaskForToken(
@@ -74,8 +98,24 @@ func TestCreateImageGenerationOpenAIReturnsURLResponse(t *testing.T) {
 	}
 	if fake.invokeReq == nil || fake.invokeReq.Capability != "text2img" ||
 		fake.invokeReq.Model != "gpt-image-prism" || fake.invokeReq.Operation != "images.generate" ||
+		fake.invokeReq.RouteOperation != service.RouteOperationImagesGenerate ||
 		fake.invokeReq.UserID != 41 || fake.invokeReq.TokenID != 52 {
 		t.Fatalf("invoke request = %#v", fake.invokeReq)
+	}
+}
+
+func TestCreateImageGenerationOpenAIStreamPassesStreamingOptionsUpstream(t *testing.T) {
+	fake := &fakeOpenAIImageService{result: &service.ImageResult{
+		Done: true, Success: true, URLs: []string{"https://images.example/one.png"},
+	}}
+	recorder := serveOpenAIImageRequest(t, fake, nil, `{
+		"model":"gpt-image-prism","prompt":"draw","stream":true,"partial_images":3
+	}`)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", recorder.Code, recorder.Body.String())
+	}
+	if fake.invokeReq == nil || fake.invokeReq.Params["stream"] != true || fake.invokeReq.Params["partial_images"] != 3 {
+		t.Fatalf("upstream streaming params = %#v", fake.invokeReq.Params)
 	}
 }
 
@@ -93,7 +133,8 @@ func TestCreateImageGenerationOpenAIForwardsReferenceURLsAsEdit(t *testing.T) {
 	if recorder.Code != http.StatusOK {
 		t.Fatalf("status = %d, body = %s", recorder.Code, recorder.Body.String())
 	}
-	if fake.invokeReq == nil || fake.invokeReq.Operation != "images.edit" {
+	if fake.invokeReq == nil || fake.invokeReq.Operation != "images.edit" ||
+		fake.invokeReq.RouteOperation != service.RouteOperationImagesEdit {
 		t.Fatalf("invoke request = %#v", fake.invokeReq)
 	}
 	images, ok := fake.invokeReq.Params["image_urls"].([]any)
@@ -319,7 +360,8 @@ func TestCreateImageEditOpenAIInvokesExistingImageCapability(t *testing.T) {
 		t.Fatalf("status = %d, body = %s", recorder.Code, recorder.Body.String())
 	}
 	if fake.invokeReq == nil || fake.invokeReq.Capability != "text2img" ||
-		fake.invokeReq.Model != "gpt-image-prism" || fake.invokeReq.Operation != "images.edit" {
+		fake.invokeReq.Model != "gpt-image-prism" || fake.invokeReq.Operation != "images.edit" ||
+		fake.invokeReq.RouteOperation != service.RouteOperationImagesEdit {
 		t.Fatalf("invoke request = %#v", fake.invokeReq)
 	}
 	if fake.invokeReq.Params["prompt"] != "make it blue" || fake.invokeReq.Params["size"] != "1024x1024" ||

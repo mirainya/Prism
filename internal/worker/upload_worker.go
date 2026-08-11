@@ -8,6 +8,7 @@ import (
 
 	"github.com/hibiken/asynq"
 	"github.com/mirainya/Prism/internal/model"
+	"github.com/mirainya/Prism/internal/service"
 	"github.com/mirainya/Prism/pkg/filestorage"
 	"github.com/mirainya/Prism/pkg/logger"
 	"github.com/mirainya/Prism/pkg/queue"
@@ -47,6 +48,9 @@ func HandleTaskUpload(ctx context.Context, t *asynq.Task) error {
 	var ep model.Endpoint
 	if err := model.DB().First(&ep, task.EndpointID).Error; err != nil {
 		return fmt.Errorf("get endpoint: %w", err)
+	}
+	if err := service.ApplyTaskEndpointSnapshot(task, &ep); err != nil {
+		return fmt.Errorf("apply endpoint snapshot: %w", err)
 	}
 
 	originURLs := payload.URLs

@@ -37,7 +37,7 @@ const MetaModal: React.FC<{
     }
   }, [isOpen, model]);
 
-  if (!isOpen || !model) return null;
+  if (!model) return null;
 
   const handleSave = async () => {
     setSaving(true);
@@ -58,7 +58,7 @@ const MetaModal: React.FC<{
   };
 
   return (
-    <Modal open={true} onClose={onClose} title="编辑模型元数据" width="max-w-md">
+    <Modal open={isOpen} onClose={onClose} title="编辑模型元数据" width="max-w-md">
       <div className="space-y-4">
         <div>
           <label className="block text-sm font-medium text-[var(--text-primary)] mb-1">模型 <code className="text-xs px-1.5 py-0.5 bg-[var(--primary-lighter)] rounded">{model.model_name}</code></label>
@@ -354,8 +354,8 @@ const GatewayModels: React.FC = () => {
       )}
 
       <MetaModal model={metaModal.model} isOpen={metaModal.open}
-        onClose={() => setMetaModal({ open: false, model: null })}
-        onSaved={() => { setMetaModal({ open: false, model: null }); load(); }} />
+        onClose={() => setMetaModal(current => ({ ...current, open: false }))}
+        onSaved={() => { setMetaModal(current => ({ ...current, open: false })); load(); }} />
 
       <Modal open={confirmModal.open} onClose={() => setConfirmModal({ open: false, modelName: '' })} title="删除模型" width="max-w-sm">
         <p className="text-sm text-[var(--text-secondary)] mb-6">

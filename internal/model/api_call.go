@@ -38,6 +38,7 @@ const (
 
 	APICallRouteGatewayV2  = "gateway_v2"
 	APICallRouteCapability = "capability"
+	APICallRouteVideo      = "video"
 	APICallStageSubmit     = "submit"
 	APICallStagePoll       = "poll"
 )

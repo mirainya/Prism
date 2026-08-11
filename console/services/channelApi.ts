@@ -171,3 +171,39 @@ export const updateChannelAccount = async (id: string, data: {
 export const deleteChannelAccount = async (id: string): Promise<void> => {
   await request(`/admin/channel-accounts/${id}`, { method: 'DELETE' });
 };
+
+export interface AccountDiscoveredModel {
+  id: string;
+  object?: string;
+  owned_by?: string;
+  model_code: string;
+  imported: boolean;
+}
+
+export interface AccountModelDiscoveryResult {
+  channel_id: number;
+  account_id: number;
+  adapter: string;
+  operations: string[];
+  models: AccountDiscoveredModel[];
+  checked_at: string;
+}
+
+export interface AccountModelImportItem {
+  id: string;
+  model_code?: string;
+  name?: string;
+  operations?: string[];
+}
+
+export const discoverChannelAccountModels = async (accountId: string): Promise<AccountModelDiscoveryResult> =>
+  request<AccountModelDiscoveryResult>(`/admin/channel-accounts/${accountId}/discover`);
+
+export const importChannelAccountModels = async (
+  accountId: string,
+  models: AccountModelImportItem[],
+): Promise<{ models_created: number; endpoints_created: number; bindings_added: number }> =>
+  request(`/admin/channel-accounts/${accountId}/import`, {
+    method: 'POST',
+    body: JSON.stringify({ models }),
+  });

@@ -68,7 +68,7 @@ var requiredApplicationTables = []string{
 
 var requiredBaselineColumns = map[string][]string{
 	"api_calls":                      {"project_conversation"},
-	"conversations":                  {"canonical_item_count", "canonical_bytes", "canonical_match_hash", "canonical_state_version"},
+	"conversations":                  {"call_id", "canonical_item_count", "canonical_bytes", "canonical_match_hash", "canonical_state_version"},
 	"conversation_projection_outbox": {"input_prepared", "context_mode"},
 	"conversation_turns":             {"context_mode"},
 }

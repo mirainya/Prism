@@ -403,6 +403,9 @@ func loadTaskSubmitConfiguration(task *model.Task) (*model.Channel, *model.Chann
 	if err := model.DB().First(&endpoint, task.EndpointID).Error; err != nil {
 		return nil, nil, nil, fmt.Errorf("get endpoint: %w", err)
 	}
+	if err := service.ApplyTaskEndpointSnapshot(task, &endpoint); err != nil {
+		return nil, nil, nil, fmt.Errorf("apply endpoint snapshot: %w", err)
+	}
 	return &channel, &account, &endpoint, nil
 }
 

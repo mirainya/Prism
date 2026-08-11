@@ -2,6 +2,7 @@ package provider
 
 import (
 	"bufio"
+	"encoding/json"
 	"fmt"
 	"io"
 	"strings"
@@ -17,10 +18,13 @@ import (
 //   - image_generation.partial_image / *.partial_image  → 记为兜底
 //
 // 多个 data: 行按 SSE 规范用 \n 拼成完整 JSON 再解析;遇 [DONE] 结束。
-func parseImageSSEStream(r io.Reader) (SubmitResult, error) {
+// parseImageSSEStream 边读边解析图像生成的 SSE 流。
+// sink 非 nil 时，每个有效 JSON 事件的原始 payload 都会发送到 sink（非阻塞，满则丢弃）。
+func parseImageSSEStream(r io.Reader, sink chan<- []byte) (SubmitResult, error) {
 	reader := bufio.NewReader(r)
 	var dataLines []string
 	var lastPartial imageOutput
+	eventName := ""
 
 	// flush 处理一个完整事件块(空行触发)。done=true 表示遇到 [DONE] 应停止。
 	flush := func() (res SubmitResult, matched bool, done bool, err error) {
@@ -30,10 +34,21 @@ func parseImageSSEStream(r io.Reader) (SubmitResult, error) {
 		payload := strings.Join(dataLines, "\n")
 		dataLines = dataLines[:0]
 		if payload == "[DONE]" {
+			eventName = ""
 			return SubmitResult{}, false, true, nil
 		}
 		if !gjson.Valid(payload) {
+			eventName = ""
 			return // 无效 JSON,跳过继续
+		}
+		// 有效事件：旁路写入 sink（非阻塞，消费方来不及处理时丢弃而非阻塞上游解析）。
+		payload = normalizeImageSSEEvent(payload, eventName)
+		eventName = ""
+		if sink != nil {
+			select {
+			case sink <- []byte(payload):
+			default:
+			}
 		}
 
 		// 两种上游 SSE 格式:
@@ -113,6 +128,8 @@ func parseImageSSEStream(r io.Reader) (SubmitResult, error) {
 			if done {
 				break
 			}
+		} else if event, ok := strings.CutPrefix(trimmed, "event:"); ok {
+			eventName = strings.TrimSpace(event)
 		} else if data, ok := strings.CutPrefix(trimmed, "data:"); ok {
 			dataLines = append(dataLines, strings.TrimPrefix(data, " "))
 		}
@@ -143,6 +160,38 @@ func parseImageSSEStream(r io.Reader) (SubmitResult, error) {
 
 // imageOutput 是单个 SSE 事件里解出的图像产物。
 // 上游按 response_format 二选一给出 b64_json 或 url,两者都要能接。
+// normalizeImageSSEEvent fills the type omitted by a few image gateways.
+// Prefer the SSE event name, then infer a terminal/partial image from its payload.
+func normalizeImageSSEEvent(payload, eventName string) string {
+	if gjson.Get(payload, "type").Exists() || gjson.Get(payload, "object").Exists() {
+		return payload
+	}
+	typ := ""
+	if strings.Contains(strings.ToLower(eventName), "image") {
+		typ = eventName
+	}
+	if typ == "" {
+		if gjson.Get(payload, "partial_image_index").Exists() {
+			typ = "image_generation.partial_image"
+		} else if !extractImageOutput(payload, "").empty() || !extractImageOutput(payload, "data.0.").empty() {
+			typ = "image_generation.completed"
+		}
+	}
+	if typ == "" {
+		return payload
+	}
+	var object map[string]any
+	if err := json.Unmarshal([]byte(payload), &object); err != nil {
+		return payload
+	}
+	object["type"] = typ
+	normalized, err := json.Marshal(object)
+	if err != nil {
+		return payload
+	}
+	return string(normalized)
+}
+
 type imageOutput struct {
 	b64     string
 	url     string

@@ -17,12 +17,12 @@ import {
   RotateCcw,
   Route as RouteIcon,
   Search,
-  X,
   XCircle,
   type LucideIcon,
 } from 'lucide-react';
 import { fetchCapabilities, fetchTaskDetail, fetchTaskLogs, TaskListParams } from '../services/api';
 import { Capability, TaskDetail, TaskLog, UserRole } from '../types';
+import { Drawer, Select } from '../components/ui';
 
 const PAGE_SIZE = 20;
 const INPUT_CLASS = 'w-full min-w-0 rounded-lg border border-[var(--border-soft)] bg-[var(--surface-card)] px-3 py-2 text-sm text-[var(--text-primary)] outline-none transition focus:border-[var(--primary)] focus:ring-2 focus:ring-[var(--primary)]/20';
@@ -336,8 +336,6 @@ const Logs: React.FC = () => {
   const listRequest = useRef(0);
   const detailRequest = useRef(0);
   const snapshotAt = useRef('');
-  const dialogRef = useRef<HTMLElement | null>(null);
-  const returnFocusRef = useRef<HTMLElement | null>(null);
 
   useEffect(() => {
     let active = true;
@@ -413,7 +411,6 @@ const Logs: React.FC = () => {
   const openDetails = async (task: TaskLog) => {
     const requestNo = ++detailRequest.current;
     // 关闭抽屉或切换任务会递增序号，迟到的详情响应不得覆盖当前选择。
-    returnFocusRef.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
     setIsDrawerOpen(true);
     setSelectedTask(null);
     setDetailError('');
@@ -437,27 +434,6 @@ const Logs: React.FC = () => {
     setSelectedTask(null);
     setDetailError('');
     setLoadingDetail(false);
-    window.setTimeout(() => returnFocusRef.current?.focus(), 0);
-  };
-
-  const handleDialogKeyDown = (event: React.KeyboardEvent<HTMLElement>) => {
-    if (event.key === 'Escape') {
-      event.preventDefault();
-      closeDetails();
-      return;
-    }
-    if (event.key !== 'Tab' || !dialogRef.current) return;
-    const focusable = Array.from(dialogRef.current.querySelectorAll<HTMLElement>('button:not([disabled]), a[href], input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])'));
-    if (focusable.length === 0) return;
-    const first = focusable[0];
-    const last = focusable[focusable.length - 1];
-    if (event.shiftKey && document.activeElement === first) {
-      event.preventDefault();
-      last.focus();
-    } else if (!event.shiftKey && document.activeElement === last) {
-      event.preventDefault();
-      first.focus();
-    }
   };
 
   const openCall = (callID: string) => {
@@ -480,22 +456,12 @@ const Logs: React.FC = () => {
             <label className="text-xs font-semibold text-[var(--text-secondary)]">任务 ID
               <input value={draft.task_no} onChange={event => updateDraft('task_no', event.target.value)} placeholder="task_..." className={`${INPUT_CLASS} mt-1 font-mono`} />
             </label>
-            <label className="text-xs font-semibold text-[var(--text-secondary)]">能力
-              <select value={draft.capability} onChange={event => updateDraft('capability', event.target.value)} className={`${INPUT_CLASS} mt-1`}>
-                <option value="">全部能力</option>
-                {capabilities.map(capability => <option key={capability.code} value={capability.code}>{capability.name}</option>)}
-              </select>
-            </label>
-            <label className="text-xs font-semibold text-[var(--text-secondary)]">状态
-              <select value={draft.status} onChange={event => updateDraft('status', event.target.value)} className={`${INPUT_CLASS} mt-1`}>
-                <option value="">全部状态</option>
-                <option value="pending">等待中</option>
-                <option value="processing">处理中</option>
-                <option value="success">成功</option>
-                <option value="failed">失败</option>
-                <option value="cancelled">已取消</option>
-              </select>
-            </label>
+            <div className="text-xs font-semibold text-[var(--text-secondary)]">能力
+              <Select value={draft.capability} onChange={v => updateDraft('capability', v)} className="mt-1" options={[{ label: '全部能力', value: '' }, ...capabilities.map(capability => ({ label: capability.name, value: capability.code }))]} />
+            </div>
+            <div className="text-xs font-semibold text-[var(--text-secondary)]">状态
+              <Select value={draft.status} onChange={v => updateDraft('status', v)} className="mt-1" options={[{ label: '全部状态', value: '' }, { label: '等待中', value: 'pending' }, { label: '处理中', value: 'processing' }, { label: '成功', value: 'success' }, { label: '失败', value: 'failed' }, { label: '已取消', value: 'cancelled' }]} />
+            </div>
             {admin && (
               <label className="text-xs font-semibold text-[var(--text-secondary)]">Token ID
                 <input type="number" min="1" value={draft.token_id} onChange={event => updateDraft('token_id', event.target.value)} placeholder="Token ID" className={`${INPUT_CLASS} mt-1`} />
@@ -577,16 +543,7 @@ const Logs: React.FC = () => {
         </footer>
       </section>
 
-      {isDrawerOpen && (
-        <div className="fixed inset-0 z-50 flex justify-end bg-black/40" onClick={closeDetails}>
-          <aside ref={dialogRef} role="dialog" aria-modal="true" aria-labelledby="task-detail-title" onKeyDown={handleDialogKeyDown} className="flex h-full w-full max-w-4xl flex-col bg-[var(--surface)] shadow-2xl" onClick={event => event.stopPropagation()}>
-            <div className="flex items-start justify-between border-b border-[var(--border-soft)] px-5 py-4">
-              <div className="min-w-0">
-                <h2 id="task-detail-title" className="text-lg font-bold text-[var(--text-primary)]">异步任务详情</h2>
-                <p className="mt-1 truncate font-mono text-xs text-[var(--text-secondary)]">{selectedTask?.task_no || '加载中'}</p>
-              </div>
-              <button type="button" autoFocus title="关闭" aria-label="关闭" onClick={closeDetails} className="shrink-0 rounded-lg border border-[var(--border-soft)] bg-[var(--surface-card)] p-2 text-[var(--text-primary)] hover:bg-[var(--primary-lighter)]"><X size={18} /></button>
-            </div>
+      <Drawer open={isDrawerOpen} onClose={closeDetails} title="异步任务详情" subtitle={<span className="font-mono">{selectedTask?.task_no || '加载中'}</span>} panelClassName="bg-[var(--surface)]">
             {selectedTask && (
               <div role="tablist" className="flex overflow-x-auto border-b border-[var(--border-soft)] px-4">
                 {DETAIL_TABS.filter(tab => !tab.adminOnly || admin).map(tab => {
@@ -616,9 +573,7 @@ const Logs: React.FC = () => {
                 <div className="py-16 text-center text-sm text-[var(--text-secondary)]">任务详情不可用</div>
               )}
             </div>
-          </aside>
-        </div>
-      )}
+      </Drawer>
     </div>
   );
 };

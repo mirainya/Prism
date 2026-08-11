@@ -41,7 +41,9 @@ func DecodeRequest(source chat.ChatRequest) (canonical.Request, error) {
 	tools := make([]canonical.Tool, 0, len(source.Tools))
 	for _, tool := range source.Tools {
 		if tool.Type != "function" {
-			return canonical.Request{}, fmt.Errorf("unsupported OpenAI Chat tool type %q", tool.Type)
+			// 非 function 类型工具（如 web_search_preview）：保留原始 JSON 作为 Options，由上游 transport 按需透传。
+			tools = append(tools, canonical.Tool{Type: tool.Type, Options: append(json.RawMessage(nil), tool.Raw...)})
+			continue
 		}
 		tools = append(tools, canonical.Tool{
 			Type: "function", Name: tool.Function.Name, Description: tool.Function.Description,

@@ -1,9 +1,11 @@
-import React, { useEffect, useMemo } from 'react';
-import { CircleAlert, CircleCheck, KeyRound, Route, X } from 'lucide-react';
+import React, { useMemo } from 'react';
+import { CircleAlert, KeyRound, Layers3, Route } from 'lucide-react';
 import { Capability, Channel, ChannelCapability } from '../../types';
-import CapabilityEndpointList, { getEndpointRouteState } from './CapabilityEndpointList';
+import CapabilityEndpointList, { summarizeEndpointModelRoutes } from './CapabilityEndpointList';
+import { Drawer } from '../../components/ui';
 
 const CapabilityDetailDrawer: React.FC<{
+    open: boolean;
     capability: Capability;
     endpoints: ChannelCapability[];
     channelMap: Map<string, Channel>;
@@ -16,48 +18,23 @@ const CapabilityDetailDrawer: React.FC<{
     onToggleStatus: (endpoint: ChannelCapability) => void;
     onDelete: (id: string) => void;
 }> = ({
-    capability, endpoints, channelMap, expandedEndpointId, onClose,
+    open, capability, endpoints, channelMap, expandedEndpointId, onClose,
     onToggleExpanded, onAdd, onEdit, onManageKeys, onToggleStatus, onDelete,
 }) => {
-    useEffect(() => {
-        const previousOverflow = document.body.style.overflow;
-        const handleKeyDown = (event: KeyboardEvent) => {
-            if (event.key === 'Escape') onClose();
-        };
-        document.body.style.overflow = 'hidden';
-        window.addEventListener('keydown', handleKeyDown);
-        return () => {
-            document.body.style.overflow = previousOverflow;
-            window.removeEventListener('keydown', handleKeyDown);
-        };
-    }, [onClose]);
-
-    const summary = useMemo(() => {
-        const states = endpoints.map(endpoint => getEndpointRouteState(
-            endpoint,
-            capability.status,
-            channelMap.get(endpoint.channelId)?.status ?? 0,
-        ));
-        return {
-            endpointCount: endpoints.length,
-            keyCount: new Set(endpoints.flatMap(endpoint => endpoint.accountBindings.map(binding => binding.accountId))).size,
-            activeRouteCount: states.reduce((total, state) => total + (state.available ? state.activeBindings.length : 0), 0),
-            unavailableCount: states.filter(state => !state.available).length,
-        };
-    }, [capability.status, channelMap, endpoints]);
+    const summary = useMemo(
+        () => summarizeEndpointModelRoutes(endpoints, capability.status, channelMap),
+        [capability.status, channelMap, endpoints],
+    );
 
     const items = [
-        {label: '端点', value: summary.endpointCount, icon: Route, className: 'text-blue-600'},
+        {label: '模型线路', value: summary.modelRouteCount, icon: Layers3, className: 'text-blue-600'},
+        {label: '操作', value: summary.operationCount, icon: Route, className: 'text-emerald-600'},
         {label: '绑定 Key', value: summary.keyCount, icon: KeyRound, className: 'text-violet-600'},
-        {label: '有效线路', value: summary.activeRouteCount, icon: CircleCheck, className: 'text-green-600'},
-        {label: '不可用', value: summary.unavailableCount, icon: CircleAlert, className: summary.unavailableCount ? 'text-red-600' : 'text-[var(--text-secondary)]'},
+        {label: '不可用操作', value: summary.unavailableCount, icon: CircleAlert, className: summary.unavailableCount ? 'text-red-600' : 'text-[var(--text-secondary)]'},
     ];
 
     return (
-        <div className="fixed inset-0 z-40 bg-black/30" onClick={onClose}>
-            <aside role="dialog" aria-modal="true" aria-labelledby="capability-detail-title"
-                className="ml-auto flex h-full w-full max-w-5xl flex-col border-l border-[var(--border-soft)] bg-[var(--surface-card)] shadow-2xl animate-slide-in-right"
-                onClick={event => event.stopPropagation()}>
+        <Drawer open={open} title="能力详情" subtitle={<span className="font-mono">{capability.code}</span>} onClose={onClose} width="max-w-5xl">
                 <header className="border-b border-[var(--border-soft)] bg-[var(--surface-card)] px-4 py-4 md:px-6">
                     <div className="flex items-start gap-3">
                         <div className="min-w-0 flex-1">
@@ -71,11 +48,6 @@ const CapabilityDetailDrawer: React.FC<{
                             </div>
                             <div className="mt-1 truncate text-xs text-[var(--text-secondary)]" title={capability.code}>{capability.code}</div>
                         </div>
-                        <button type="button" onClick={onClose}
-                            className="rounded-lg p-2 text-[var(--text-secondary)] hover:bg-[var(--surface)] hover:text-[var(--text-primary)]"
-                            title="关闭">
-                            <X size={18} />
-                        </button>
                     </div>
                     <div className="mt-4 grid grid-cols-4 overflow-hidden rounded-lg border border-[var(--border-soft)] bg-[var(--surface)]">
                         {items.map(({label, value, icon: Icon, className}, index) => (
@@ -103,8 +75,7 @@ const CapabilityDetailDrawer: React.FC<{
                         onDelete={onDelete}
                     />
                 </div>
-            </aside>
-        </div>
+        </Drawer>
     );
 };
 

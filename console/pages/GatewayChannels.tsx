@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react';
-import { Plus, RefreshCw, Edit3, Trash2, ChevronDown, ChevronRight, Key, Power, Download, MessageSquare, X, GripVertical, Server, Search, Check, Activity, Loader2 } from 'lucide-react';
+import { Plus, RefreshCw, Edit3, Trash2, ChevronDown, ChevronRight, Key, Power, Download, MessageSquare, GripVertical, Server, Search, Check, Activity, Loader2 } from 'lucide-react';
 import { DndContext, PointerSensor, closestCenter, useSensor, useSensors, DragEndEvent } from '@dnd-kit/core';
 import { SortableContext, arrayMove, useSortable, verticalListSortingStrategy } from '@dnd-kit/sortable';
 import { CSS } from '@dnd-kit/utilities';
@@ -10,6 +10,7 @@ import {
   fetchGwAbilities, deleteGwAbility, updateGwAbility, fetchGwAbilityTransports, upsertGwAbilityTransport, probeGwAbilityTransport,
 } from '../services/gatewayApi';
 import { GwChannelModal, GwKeyModal, GwPullModal } from './gateway_channels/GwChannelModals';
+import { Modal, useAppDialog } from '../components/ui';
 
 const PROTOCOL_COLORS: Record<string, string> = {
   openai: 'bg-emerald-100 text-emerald-700',
@@ -98,12 +99,14 @@ const ChannelDetail: React.FC<{
   onPullKey: (k: GwChannelKey) => void;
   reloadSignal: number;
 }> = ({ channel, onAddKey, onEditKey, onPullKey, reloadSignal }) => {
+  const { askConfirmation } = useAppDialog();
   const [keys, setKeys] = useState<GwChannelKey[]>([]);
   const [selectedKeyId, setSelectedKeyId] = useState<number | null>(null);
   const [abilities, setAbilities] = useState<GwAbility[]>([]);
   const [abLoading, setAbLoading] = useState(false);
   const [abSearch, setAbSearch] = useState('');
   const [editingAb, setEditingAb] = useState<GwAbility | null>(null);
+  const [editingAbOpen, setEditingAbOpen] = useState(false);
 
   const loadKeys = async () => setKeys(await fetchGwKeys(channel.id));
   const loadAbilities = async (keyId: number) => {
@@ -132,14 +135,26 @@ const ChannelDetail: React.FC<{
   };
 
   const handleDeleteKey = async (id: string | number) => {
-    if (!confirm('确定删除此 Key？其路由能力(abilities)一并删除。')) return;
+    const confirmed = await askConfirmation({
+      title: '删除 Key？',
+      description: '该 Key 的全部路由能力也会一并删除。',
+      confirmLabel: '删除 Key',
+      tone: 'danger',
+    });
+    if (!confirmed) return;
     await deleteGwKey(Number(id));
     if (selectedKeyId === Number(id)) { setSelectedKeyId(null); setAbilities([]); }
     await loadKeys();
   };
 
   const handleDeleteAbility = async (id: number) => {
-    if (!confirm('确定移除此模型能力？(仅删路由索引,可重新拉取导入)')) return;
+    const confirmed = await askConfirmation({
+      title: '移除模型能力？',
+      description: '仅删除当前路由索引，后续仍可重新拉取并导入。',
+      confirmLabel: '移除能力',
+      tone: 'warning',
+    });
+    if (!confirmed) return;
     await deleteGwAbility(id);
     if (selectedKeyId) loadAbilities(selectedKeyId);
   };
@@ -254,7 +269,7 @@ const ChannelDetail: React.FC<{
                       </span>
                     </span>
                     <div className="w-14 flex items-center justify-end gap-0.5 md:opacity-0 md:group-hover/ab:opacity-100 transition-opacity">
-                      <button onClick={() => setEditingAb(ab)} className="p-1 text-[var(--text-secondary)] hover:text-[var(--primary)] hover:bg-[var(--primary-lighter)] rounded" title="编辑"><Edit3 size={12} /></button>
+                      <button onClick={() => { setEditingAb(ab); setEditingAbOpen(true); }} className="p-1 text-[var(--text-secondary)] hover:text-[var(--primary)] hover:bg-[var(--primary-lighter)] rounded" title="编辑"><Edit3 size={12} /></button>
                       <button onClick={() => handleDeleteAbility(ab.id)} className="p-1 text-[var(--text-secondary)] hover:text-red-500 hover:bg-red-50 rounded" title="移除"><Trash2 size={12} /></button>
                     </div>
                   </div>
@@ -265,7 +280,7 @@ const ChannelDetail: React.FC<{
         })()}
       </div>
       {editingAb && (
-        <AbilityEditModal ability={editingAb} onClose={() => setEditingAb(null)} onSave={handleSaveAbility} />
+        <AbilityEditModal key={editingAb.id} isOpen={editingAbOpen} ability={editingAb} onClose={() => setEditingAbOpen(false)} onSave={handleSaveAbility} />
       )}
     </div>
   );
@@ -273,10 +288,11 @@ const ChannelDetail: React.FC<{
 
 // 能力编辑弹窗: 编辑 vendor_model/priority/status/price/capabilities
 const AbilityEditModal: React.FC<{
+  isOpen: boolean;
   ability: GwAbility;
   onClose: () => void;
   onSave: (id: number, data: Record<string, any>) => Promise<void>;
-}> = ({ ability, onClose, onSave }) => {
+}> = ({ isOpen, ability, onClose, onSave }) => {
   const [modelName, setModelName] = useState(ability.model_name || '');
   const [vendorModel, setVendorModel] = useState(ability.vendor_model || '');
   const [priority, setPriority] = useState(String(ability.priority ?? 0));
@@ -355,13 +371,8 @@ const AbilityEditModal: React.FC<{
   };
 
   return (
-    <div className="fixed inset-0 bg-black/40 flex items-center justify-center z-50 p-4" onClick={onClose}>
-      <div className="bg-[var(--surface-card)] rounded-2xl shadow-xl w-full max-w-md max-h-[90vh] overflow-y-auto" onClick={e => e.stopPropagation()}>
-        <div className="flex items-center justify-between px-5 py-4 border-b border-[var(--border-soft)]">
-          <h3 className="text-base font-bold text-[var(--text-primary)]">编辑模型能力</h3>
-          <button onClick={onClose} className="p-1 text-[var(--text-secondary)] hover:text-[var(--text-primary)] rounded"><X size={18} /></button>
-        </div>
-        <div className="p-5 space-y-4">
+    <Modal open={isOpen} onClose={onClose} title="编辑模型能力" width="max-w-md">
+        <div className="space-y-4">
           <div>
             <label className="block text-xs font-bold text-[var(--text-secondary)] mb-1">对外模型名(model_name,路由标识)</label>
             <input value={modelName} onChange={e => setModelName(e.target.value)}
@@ -452,16 +463,15 @@ const AbilityEditModal: React.FC<{
             </div>
           </div>
         </div>
-		{error && <div className="px-5 pb-2 text-xs text-red-600">{error}</div>}
-        <div className="flex justify-end gap-2 px-5 py-4 border-t border-[var(--border-soft)]">
+		{error && <div className="pt-2 text-xs text-red-600">{error}</div>}
+        <div className="flex justify-end gap-2 border-t border-[var(--border-soft)] pt-4">
           <button onClick={onClose} className="px-4 py-2 text-sm font-semibold text-[var(--text-secondary)] hover:text-[var(--text-primary)]">取消</button>
 		  <button onClick={handleSubmit} disabled={saving || transportLoading}
             className="flex items-center gap-1.5 px-5 py-2 bg-[var(--primary)] text-white rounded-lg text-sm font-bold hover:opacity-90 disabled:opacity-50">
             <Check size={16} /> {saving ? '保存中...' : '保存'}
           </button>
         </div>
-      </div>
-    </div>
+    </Modal>
   );
 };
 
@@ -539,6 +549,7 @@ const ChannelRow: React.FC<{
 };
 
 const GatewayChannels: React.FC = () => {
+  const { askConfirmation } = useAppDialog();
   const [channels, setChannels] = useState<GwChannel[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [expanded, setExpanded] = useState<Set<number>>(new Set());
@@ -579,7 +590,13 @@ const GatewayChannels: React.FC = () => {
   };
 
   const handleDeleteChannel = async (id: number) => {
-    if (!confirm('确定删除此渠道？其下所有 Key 与路由能力一并删除。')) return;
+    const confirmed = await askConfirmation({
+      title: '删除网关渠道？',
+      description: '该渠道下的全部 Key 与路由能力也会一并删除。',
+      confirmLabel: '删除渠道',
+      tone: 'danger',
+    });
+    if (!confirmed) return;
     await deleteGwChannel(id);
     await load(false);
   };

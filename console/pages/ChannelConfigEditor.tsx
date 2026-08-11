@@ -1,5 +1,6 @@
 import React from 'react';
 import { ChevronUp, ChevronDown, X } from 'lucide-react';
+import { Select } from '../components/ui';
 import { ChannelPriorityItem, CapabilityWithChannels, ChannelOption } from '../types';
 
 export const ChannelConfigEditor: React.FC<{
@@ -100,20 +101,11 @@ export const ChannelConfigEditor: React.FC<{
                             </div>
                         ))}
                         {getAvailable(cap.code).length > 0 && (
-                            <select
-                                className="w-full text-sm border border-[var(--border-soft)] rounded-lg px-3 py-2 focus:outline-none focus:ring-2 focus:ring-[var(--primary)]"
+                            <Select
                                 value=""
-                                onChange={e => {
-                                    if (e.target.value) addChannel(cap.code, Number(e.target.value));
-                                }}
-                            >
-                                <option value="">+ 添加渠道</option>
-                                {getAvailable(cap.code).map(ch => (
-                                    <option key={ch.channelId} value={ch.channelId}>
-                                        {ch.channelName}{ch.model ? ` (${ch.model})` : ''} - ¥{ch.price}
-                                    </option>
-                                ))}
-                            </select>
+                                onChange={v => { if (v) addChannel(cap.code, Number(v)); }}
+                                options={[{ label: '+ 添加渠道', value: '' }, ...getAvailable(cap.code).map(ch => ({ label: `${ch.channelName}${ch.model ? ` (${ch.model})` : ''} - ¥${ch.price}`, value: String(ch.channelId) }))]}
+                            />
                         )}
                     </div>
                 </div>

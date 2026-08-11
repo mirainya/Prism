@@ -19,6 +19,7 @@ const (
 	UpstreamTransportAnthropic       UpstreamTransport = "anthropic_messages"
 	UpstreamTransportGoogle          UpstreamTransport = "google_generate_content"
 	UpstreamTransportVolcengineV3    UpstreamTransport = "volcengine_responses_v3"
+	UpstreamTransportVideoGeneration UpstreamTransport = "video_generation"
 )
 
 // 聊天网关路由模型(gw_ 前缀)。与老表(channels/channel_accounts/account_models)并存,

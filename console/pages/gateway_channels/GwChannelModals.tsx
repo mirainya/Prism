@@ -1,6 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import { RefreshCw, Download, CheckSquare, Square, AlertCircle } from 'lucide-react';
 import { Modal } from '../../components/ui/Modal';
+import { Select } from '../../components/ui';
 import {
   GwChannel, GwChannelKey,
   discoverGwKeyModels, importGwKeyModels, GwUpstreamModel, GwImportItem,
@@ -37,8 +38,6 @@ export const GwChannelModal: React.FC<{
     }
   }, [isOpen, channel]);
 
-  if (!isOpen) return null;
-
   const handleSave = async () => {
     if (!name.trim() || !baseUrl.trim()) { setError('名称与 BaseURL 必填'); return; }
     let headers: Record<string, any> | null = null;
@@ -57,7 +56,7 @@ export const GwChannelModal: React.FC<{
   };
 
   return (
-    <Modal open={true} onClose={onClose} title={channel ? '编辑渠道' : '新建渠道'} width="max-w-lg">
+    <Modal open={isOpen} onClose={onClose} title={channel ? '编辑渠道' : '新建渠道'} width="max-w-lg">
       <div className="space-y-3">
         {error && <div className="flex items-start gap-2 p-2 bg-red-50 text-red-700 rounded-lg text-xs"><AlertCircle size={14} className="mt-0.5 shrink-0" />{error}</div>}
         <div>
@@ -66,9 +65,7 @@ export const GwChannelModal: React.FC<{
         </div>
         <div>
           <label className="block text-xs font-medium text-[var(--text-secondary)] mb-1">协议 (一渠道一协议)</label>
-          <select value={protocol} onChange={e => setProtocol(e.target.value)} className="w-full px-3 py-2 border border-[var(--border-soft)] rounded-lg text-sm bg-[var(--surface-card)] focus:outline-none focus:ring-2 focus:ring-[var(--primary)]">
-            {PROTOCOL_OPTIONS.map(p => <option key={p.value} value={p.value}>{p.label}</option>)}
-          </select>
+          <Select value={protocol} onChange={setProtocol} options={PROTOCOL_OPTIONS} />
         </div>
         <div>
           <label className="block text-xs font-medium text-[var(--text-secondary)] mb-1">BaseURL (不带尾斜杠)</label>
@@ -111,8 +108,6 @@ export const GwKeyModal: React.FC<{
     }
   }, [isOpen, channelKey]);
 
-  if (!isOpen) return null;
-
   const handleSave = async () => {
     if (!apiKey.trim()) { setError('API Key 必填'); return; }
     setSaving(true); setError('');
@@ -126,7 +121,7 @@ export const GwKeyModal: React.FC<{
   };
 
   return (
-    <Modal open={true} onClose={onClose} title={channelKey ? '编辑 Key' : '添加 Key'} width="max-w-lg">
+    <Modal open={isOpen} onClose={onClose} title={channelKey ? '编辑 Key' : '添加 Key'} width="max-w-lg">
       <div className="space-y-3">
         {error && <div className="flex items-start gap-2 p-2 bg-red-50 text-red-700 rounded-lg text-xs"><AlertCircle size={14} className="mt-0.5 shrink-0" />{error}</div>}
         <div>
@@ -194,8 +189,6 @@ export const GwPullModal: React.FC<{
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isOpen, keyId]);
 
-  if (!isOpen) return null;
-
   const toggle = (id: string) => setChecked(prev => {
     const next = new Set(prev);
     next.has(id) ? next.delete(id) : next.add(id);
@@ -228,7 +221,7 @@ export const GwPullModal: React.FC<{
   const allChecked = items.length > 0 && checked.size === items.length;
 
   return (
-    <Modal open={true} onClose={onClose} title={`拉取上游模型${keyName ? ` · ${keyName}` : ''}`} width="max-w-2xl">
+    <Modal open={isOpen} onClose={onClose} title={`拉取上游模型${keyName ? ` · ${keyName}` : ''}`} width="max-w-2xl">
       <div className="space-y-3">
         <div className="flex items-center justify-between">
           <p className="text-xs text-[var(--text-secondary)]">用该 Key 调上游 <code className="px-1 bg-[var(--surface)] rounded">/v1/models</code>，勾选后写入路由能力(gw_abilities)</p>

@@ -33,14 +33,18 @@ func (s TaskStatus) Public() TaskStatus {
 // Task 任务记录
 type Task struct {
 	BaseModel
-	TaskNo     string `gorm:"type:varchar(32);uniqueIndex;not null;comment:任务编号" json:"task_no"`
-	CallID     string `gorm:"type:varchar(64);not null;default:'';index;comment:关联调用ID" json:"call_id"`
-	UserID     uint   `gorm:"index;comment:用户ID" json:"user_id"`
-	TokenID    uint   `gorm:"index;comment:令牌ID" json:"token_id"`
-	ModelCode  string `gorm:"type:varchar(80);index;comment:模型标识" json:"model_code"`
-	ChannelID  uint   `gorm:"index;comment:渠道ID" json:"channel_id"`
-	EndpointID uint   `gorm:"comment:端点配置ID" json:"endpoint_id"`
-	AccountID  uint   `gorm:"comment:渠道账号ID" json:"account_id"`
+	AdapterID         uint           `gorm:"index;comment:Endpoint Adapter ID" json:"-"`
+	AdapterRevisionID uint           `gorm:"index;comment:Endpoint Adapter Revision ID" json:"-"`
+	EndpointSnapshot  datatypes.JSON `gorm:"type:json;comment:Endpoint execution snapshot" json:"-"`
+	TaskNo            string         `gorm:"type:varchar(32);uniqueIndex;not null;comment:任务编号" json:"task_no"`
+	CallID            string         `gorm:"type:varchar(64);not null;default:'';index;comment:关联调用ID" json:"call_id"`
+	UserID            uint           `gorm:"index;comment:用户ID" json:"user_id"`
+	TokenID           uint           `gorm:"index;comment:令牌ID" json:"token_id"`
+	ModelCode         string         `gorm:"type:varchar(80);index;comment:模型标识" json:"model_code"`
+	RouteOperation    string         `gorm:"type:varchar(40);index;default:'';comment:路由操作" json:"route_operation"`
+	ChannelID         uint           `gorm:"index;comment:渠道ID" json:"channel_id"`
+	EndpointID        uint           `gorm:"comment:端点配置ID" json:"endpoint_id"`
+	AccountID         uint           `gorm:"comment:渠道账号ID" json:"account_id"`
 
 	VendorTaskID string `gorm:"type:varchar(100);index;comment:供应商任务ID" json:"vendor_task_id"`
 

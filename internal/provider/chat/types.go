@@ -25,8 +25,18 @@ type FileURL struct {
 }
 
 type ToolDefinition struct {
-	Type     string      `json:"type"`
-	Function FunctionDef `json:"function"`
+	Type     string          `json:"type"`
+	Function FunctionDef     `json:"function"`
+	Raw      json.RawMessage `json:"-"` // 完整原始 JSON，供非 function 类型工具透传
+}
+
+func (t *ToolDefinition) UnmarshalJSON(data []byte) error {
+	type Alias ToolDefinition
+	if err := json.Unmarshal(data, (*Alias)(t)); err != nil {
+		return err
+	}
+	t.Raw = append(json.RawMessage(nil), data...)
+	return nil
 }
 
 type FunctionDef struct {

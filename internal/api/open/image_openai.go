@@ -15,6 +15,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/mirainya/Prism/internal/api/middleware"
+	"github.com/mirainya/Prism/internal/model"
 	"github.com/mirainya/Prism/internal/service"
 	"github.com/mirainya/Prism/pkg/filestorage"
 )
@@ -22,6 +23,7 @@ import (
 // OpenAIImageRequest OpenAI 标准图像生成请求
 // 参考 https://platform.openai.com/docs/api-reference/images/create
 type OpenAIImageRequest struct {
+	PartialImages     *int     `json:"partial_images"`
 	Model             string   `json:"model"`
 	Prompt            string   `json:"prompt"`
 	ImageURLs         []string `json:"image_urls"`
@@ -35,6 +37,7 @@ type OpenAIImageRequest struct {
 	Moderation        string   `json:"moderation"`
 	Style             string   `json:"style"`
 	User              string   `json:"user"`
+	Stream            bool     `json:"stream"` // true=SSE 流式输出（OpenAI 标准）
 }
 
 // OpenAIImageData 单张图片结果
@@ -149,6 +152,10 @@ func CreateImageGenerationOpenAI(c *gin.Context) {
 		openAIError(c, http.StatusBadRequest, "response_format must be url or b64_json", "invalid_request_error")
 		return
 	}
+	if req.PartialImages != nil && *req.PartialImages < 0 {
+		openAIError(c, http.StatusBadRequest, "partial_images must be non-negative", "invalid_request_error")
+		return
+	}
 
 	// 组装 params: prompt 之外的 OpenAI 字段透传给渠道映射层
 	params := map[string]any{"prompt": req.Prompt}
@@ -184,11 +191,14 @@ func CreateImageGenerationOpenAI(c *gin.Context) {
 	if req.Style != "" {
 		params["style"] = req.Style
 	}
+	if req.PartialImages != nil {
+		params["partial_images"] = *req.PartialImages
+	}
 	operation := "images.generate"
 	if len(imageURLs) > 0 {
 		operation = "images.edit"
 	}
-	invokeOpenAIImage(c, req.Model, params, responseFormat, operation)
+	invokeOpenAIImage(c, req.Model, params, responseFormat, operation, req.Stream)
 }
 
 func storeOpenAIImageGenerationInputs(ctx context.Context, values []string) ([]string, error) {
@@ -318,7 +328,7 @@ func CreateImageEditOpenAI(c *gin.Context) {
 		params["mask"] = openAIImageFileParam(masks)
 	}
 
-	invokeOpenAIImage(c, modelName, params, responseFormat, "images.edit")
+	invokeOpenAIImage(c, modelName, params, responseFormat, "images.edit", false)
 }
 
 func openAIImageFileError(c *gin.Context, err error) {
@@ -397,6 +407,7 @@ func invokeOpenAIImage(
 	params map[string]any,
 	responseFormat string,
 	operation string,
+	stream bool,
 ) {
 	token := middleware.GetToken(c)
 	if token == nil {
@@ -404,12 +415,18 @@ func invokeOpenAIImage(
 		return
 	}
 
+	if stream {
+		invokeOpenAIImageStream(c, token, modelName, params, responseFormat, operation)
+		return
+	}
+
 	invokeReq := &service.InvokeRequest{
-		UserID:     token.UserID,
-		TokenID:    token.ID,
-		Capability: "text2img",
-		Model:      modelName,
-		Params:     params,
+		UserID:         token.UserID,
+		TokenID:        token.ID,
+		Capability:     "text2img",
+		RouteOperation: operation,
+		Model:          modelName,
+		Params:         params,
 	}
 	attachCapabilityCallIdentity(c, invokeReq, operation)
 	result, err := openAIImageService.InvokeAndWait(c.Request.Context(), invokeReq, 0)
@@ -461,4 +478,102 @@ func invokeOpenAIImage(
 		Created: time.Now().Unix(),
 		Data:    data,
 	})
+}
+
+// invokeOpenAIImageStream 流式路径：设置 SSE 响应头，透传上游进度事件，最终发
+// image_generation.completed 帧后发 [DONE]。
+// 上游为 SSE 渠道时 partial_image 事件实时推送；同步/异步渠道则等结果后直发 completed。
+func invokeOpenAIImageStream(
+	c *gin.Context,
+	token *model.Token,
+	modelName string,
+	params map[string]any,
+	responseFormat string,
+	operation string,
+) {
+	// events 缓冲 64 帧——SSE 上游连续推 partial 时不阻塞 Submit 的 SSE 读取循环。
+	events := make(chan []byte, 64)
+	streamParams := make(map[string]any, len(params)+1)
+	for key, value := range params {
+		streamParams[key] = value
+	}
+	// The downstream stream flag must reach the provider so it requests upstream SSE.
+	streamParams["stream"] = true
+	invokeReq := &service.InvokeRequest{
+		UserID:         token.UserID,
+		TokenID:        token.ID,
+		Capability:     "text2img",
+		RouteOperation: operation,
+		Model:          modelName,
+		Params:         streamParams,
+		EventSink:      events,
+	}
+	attachCapabilityCallIdentity(c, invokeReq, operation)
+
+	type invokeOutcome struct {
+		result *service.ImageResult
+		err    error
+	}
+	outcomeCh := make(chan invokeOutcome, 1)
+	go func() {
+		result, err := openAIImageService.InvokeAndWait(c.Request.Context(), invokeReq, 0)
+		close(events) // 通知读端 SSE 事件已全部写完
+		outcomeCh <- invokeOutcome{result, err}
+	}()
+
+	// 一旦写出首帧 HTTP 就已提交响应，不能再改 status code，所以先锁定 SSE 头。
+	c.Header("Content-Type", "text/event-stream")
+	c.Header("Cache-Control", "no-cache")
+	c.Header("Connection", "keep-alive")
+	c.Header("X-Accel-Buffering", "no")
+	c.Status(http.StatusOK)
+	w := c.Writer
+
+	// 转发上游 partial_image 等事件；函数返回后 events channel 已关闭。
+	errorForwarded := forwardImageSSEEvents(w, events)
+	flushImageSSE(w)
+
+	// 等待 InvokeAndWait 最终结果。
+	outcome := <-outcomeCh
+	if outcome.err != nil {
+		if !errorForwarded {
+			msg := outcome.err.Error()
+			if errors.Is(outcome.err, service.ErrInsufficientTokenBalance) ||
+				errors.Is(outcome.err, service.ErrInsufficientUserBalance) {
+				msg = outcome.err.Error()
+			}
+			writeImageSSEError(w, msg, "api_error")
+		}
+		writeImageSSEDone(w)
+		flushImageSSE(w)
+		return
+	}
+
+	result := outcome.result
+	if result != nil && result.Done && !result.Success {
+		if !errorForwarded {
+			statusMsg := result.Error
+			if statusMsg == "" {
+				statusMsg = "image generation failed"
+			}
+			writeImageSSEError(w, statusMsg, "api_error")
+		}
+		writeImageSSEDone(w)
+		flushImageSSE(w)
+		return
+	}
+
+	if result != nil && !result.Done {
+		// 超时降级：取消内部任务，告知客户端超时。
+		_ = openAIImageService.CancelTaskForToken(c.Request.Context(), result.TaskNo, token.UserID, token.ID)
+		writeImageSSEError(w, "image generation timed out", "api_error")
+		writeImageSSEDone(w)
+		flushImageSSE(w)
+		return
+	}
+
+	// 发最终 completed 帧（含已解析 URL 或 b64，格式对齐 responseFormat）。
+	_ = writeImageCompletedSSE(c.Request.Context(), w, result, responseFormat, openAIImageBase64Encoder)
+	writeImageSSEDone(w)
+	flushImageSSE(w)
 }

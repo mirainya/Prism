@@ -1,6 +1,7 @@
 package service
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"math"
@@ -40,12 +41,20 @@ func (s *EndpointAdminService) ListEndpoints(channelID, modelCode, status string
 	}
 	var endpoints []model.Endpoint
 	err := query.Order("created_at DESC").Find(&endpoints).Error
+	for i := range endpoints {
+		if endpoints[i].Model != nil && endpoints[i].Model.Type == model.ModelTypeImage {
+			endpoints[i].ParamSchema = normalizeImageEndpointParamSchema(endpoints[i].ParamSchema)
+		}
+	}
 	return endpoints, err
 }
 
 func (s *EndpointAdminService) GetEndpoint(id uint) (*model.Endpoint, error) {
 	var ep model.Endpoint
 	err := model.DB().Preload("Channel").Preload("Model").Preload("AccountBindings.Account").First(&ep, id).Error
+	if ep.Model != nil && ep.Model.Type == model.ModelTypeImage {
+		ep.ParamSchema = normalizeImageEndpointParamSchema(ep.ParamSchema)
+	}
 	return &ep, err
 }
 
@@ -58,37 +67,41 @@ type EndpointAccountBindingInput struct {
 }
 
 type CreateEndpointRequest struct {
-	ModelCode       string                        `json:"model_code" binding:"required"`
-	ChannelID       uint                          `json:"channel_id" binding:"required"`
-	AccountID       uint                          `json:"account_id"`
-	AccountBindings []EndpointAccountBindingInput `json:"account_bindings"`
-	Protocol        string                        `json:"protocol"`
-	RequestPath     string                        `json:"request_path"`
-	RequestMethod   string                        `json:"request_method"`
-	ContentType     string                        `json:"content_type"`
-	AuthLocation    string                        `json:"auth_location"`
-	AuthKey         string                        `json:"auth_key"`
-	AuthValuePrefix string                        `json:"auth_value_prefix"`
-	VendorModel     string                        `json:"vendor_model"`
-	InteractionMode string                        `json:"interaction_mode"`
-	SupportsStream  bool                          `json:"supports_stream"`
-	DefaultStream   bool                          `json:"default_stream"`
-	PriceMode       string                        `json:"price_mode"`
-	InputPrice      decimal.Decimal               `json:"input_price"`
-	OutputPrice     decimal.Decimal               `json:"output_price"`
-	ParamSchema     datatypes.JSON                `json:"param_schema"`
-	ParamMapping    datatypes.JSON                `json:"param_mapping"`
-	ResponseMapping datatypes.JSON                `json:"response_mapping"`
-	PollPath        string                        `json:"poll_path"`
-	PollMethod      string                        `json:"poll_method"`
-	PollInterval    int                           `json:"poll_interval"`
-	PollMaxAttempts int                           `json:"poll_max_attempts"`
-	CallbackMapping datatypes.JSON                `json:"callback_mapping"`
-	ExtraHeaders    datatypes.JSON                `json:"extra_headers"`
-	ExtraConfig     datatypes.JSON                `json:"extra_config"`
-	Timeout         int                           `json:"timeout"`
-	Priority        int                           `json:"priority"`
-	Status          int8                          `json:"status"`
+	ModelCode           string                        `json:"model_code" binding:"required"`
+	RouteOperation      string                        `json:"route_operation"`
+	SupportedOperations datatypes.JSON                `json:"supported_operations"`
+	ChannelID           uint                          `json:"channel_id" binding:"required"`
+	AccountID           uint                          `json:"account_id"`
+	AccountBindings     []EndpointAccountBindingInput `json:"account_bindings"`
+	Protocol            string                        `json:"protocol"`
+	RequestPath         string                        `json:"request_path"`
+	RequestMethod       string                        `json:"request_method"`
+	ContentType         string                        `json:"content_type"`
+	AuthLocation        string                        `json:"auth_location"`
+	AuthKey             string                        `json:"auth_key"`
+	AuthValuePrefix     string                        `json:"auth_value_prefix"`
+	VendorModel         string                        `json:"vendor_model"`
+	InteractionMode     string                        `json:"interaction_mode"`
+	SupportsStream      bool                          `json:"supports_stream"`
+	DefaultStream       bool                          `json:"default_stream"`
+	PriceMode           string                        `json:"price_mode"`
+	InputPrice          decimal.Decimal               `json:"input_price"`
+	OutputPrice         decimal.Decimal               `json:"output_price"`
+	ParamSchema         datatypes.JSON                `json:"param_schema"`
+	ParamMapping        datatypes.JSON                `json:"param_mapping"`
+	ResponseMapping     datatypes.JSON                `json:"response_mapping"`
+	PollPath            string                        `json:"poll_path"`
+	PollMethod          string                        `json:"poll_method"`
+	PollInterval        int                           `json:"poll_interval"`
+	PollMaxAttempts     int                           `json:"poll_max_attempts"`
+	PollParamMapping    datatypes.JSON                `json:"poll_param_mapping"`
+	PollResponseMapping datatypes.JSON                `json:"poll_response_mapping"`
+	CallbackMapping     datatypes.JSON                `json:"callback_mapping"`
+	ExtraHeaders        datatypes.JSON                `json:"extra_headers"`
+	ExtraConfig         datatypes.JSON                `json:"extra_config"`
+	Timeout             int                           `json:"timeout"`
+	Priority            int                           `json:"priority"`
+	Status              int8                          `json:"status"`
 }
 
 func (s *EndpointAdminService) CreateEndpoint(req *CreateEndpointRequest) (*model.Endpoint, error) {
@@ -101,6 +114,11 @@ func (s *EndpointAdminService) CreateEndpoint(req *CreateEndpointRequest) (*mode
 		return nil, ErrEndpointModelNotFound
 	}
 	bindings := req.AccountBindings
+	supportedOperations := req.SupportedOperations
+	if len(supportedOperations) == 0 && req.RouteOperation != "" {
+		encoded, _ := json.Marshal([]string{req.RouteOperation})
+		supportedOperations = datatypes.JSON(encoded)
+	}
 	// 接受旧客户端的单 Key 字段，但新数据立即写入关联表。
 	if len(bindings) == 0 && req.AccountID != 0 {
 		bindings = []EndpointAccountBindingInput{{AccountID: req.AccountID}}
@@ -109,36 +127,42 @@ func (s *EndpointAdminService) CreateEndpoint(req *CreateEndpointRequest) (*mode
 	var endpointID uint
 	err := model.DB().Transaction(func(tx *gorm.DB) error {
 		ep := &model.Endpoint{
-			ModelCode:       req.ModelCode,
-			ChannelID:       req.ChannelID,
-			AccountID:       req.AccountID,
-			Protocol:        model.Protocol(req.Protocol),
-			RequestPath:     req.RequestPath,
-			RequestMethod:   req.RequestMethod,
-			ContentType:     req.ContentType,
-			AuthLocation:    req.AuthLocation,
-			AuthKey:         req.AuthKey,
-			AuthValuePrefix: req.AuthValuePrefix,
-			VendorModel:     req.VendorModel,
-			InteractionMode: model.InteractionMode(req.InteractionMode),
-			SupportsStream:  req.SupportsStream,
-			DefaultStream:   req.DefaultStream,
-			PriceMode:       model.PriceMode(req.PriceMode),
-			InputPrice:      req.InputPrice,
-			OutputPrice:     req.OutputPrice,
-			ParamSchema:     req.ParamSchema,
-			ParamMapping:    req.ParamMapping,
-			ResponseMapping: req.ResponseMapping,
-			PollPath:        req.PollPath,
-			PollMethod:      req.PollMethod,
-			PollInterval:    req.PollInterval,
-			PollMaxAttempts: req.PollMaxAttempts,
-			CallbackMapping: req.CallbackMapping,
-			ExtraHeaders:    req.ExtraHeaders,
-			ExtraConfig:     req.ExtraConfig,
-			Timeout:         req.Timeout,
-			Priority:        req.Priority,
-			Status:          req.Status,
+			ModelCode:           req.ModelCode,
+			RouteOperation:      req.RouteOperation,
+			SupportedOperations: supportedOperations,
+			ChannelID:           req.ChannelID,
+			AccountID:           req.AccountID,
+			OriginType:          model.EndpointOriginManual,
+			OriginSnapshot:      buildEndpointOriginSnapshot(&ch, nil, req.VendorModel, "", 0),
+			Protocol:            model.Protocol(req.Protocol),
+			RequestPath:         req.RequestPath,
+			RequestMethod:       req.RequestMethod,
+			ContentType:         req.ContentType,
+			AuthLocation:        req.AuthLocation,
+			AuthKey:             req.AuthKey,
+			AuthValuePrefix:     req.AuthValuePrefix,
+			VendorModel:         req.VendorModel,
+			InteractionMode:     model.InteractionMode(req.InteractionMode),
+			SupportsStream:      req.SupportsStream,
+			DefaultStream:       req.DefaultStream,
+			PriceMode:           model.PriceMode(req.PriceMode),
+			InputPrice:          req.InputPrice,
+			OutputPrice:         req.OutputPrice,
+			ParamSchema:         req.ParamSchema,
+			ParamMapping:        req.ParamMapping,
+			ResponseMapping:     req.ResponseMapping,
+			PollPath:            req.PollPath,
+			PollMethod:          req.PollMethod,
+			PollInterval:        req.PollInterval,
+			PollMaxAttempts:     req.PollMaxAttempts,
+			PollParamMapping:    req.PollParamMapping,
+			PollResponseMapping: req.PollResponseMapping,
+			CallbackMapping:     req.CallbackMapping,
+			ExtraHeaders:        req.ExtraHeaders,
+			ExtraConfig:         req.ExtraConfig,
+			Timeout:             req.Timeout,
+			Priority:            req.Priority,
+			Status:              req.Status,
 		}
 		if ep.Status == 0 {
 			ep.Status = 1
@@ -162,6 +186,26 @@ func (s *EndpointAdminService) UpdateEndpoint(id uint, updates map[string]any, b
 	var bindingSpec *[]EndpointAccountBindingInput
 	if len(bindingUpdates) > 0 {
 		bindingSpec = bindingUpdates[0]
+	}
+	immutableOriginFields := map[string]struct{}{
+		"origin_type": {}, "origin_account_id": {}, "origin_snapshot": {}, "discovered_at": {},
+	}
+	sanitizedUpdates := make(map[string]any, len(updates))
+	for field, value := range updates {
+		if _, immutable := immutableOriginFields[field]; !immutable {
+			sanitizedUpdates[field] = value
+		}
+	}
+	updates = sanitizedUpdates
+	if _, hasSupportedOperations := updates["supported_operations"]; !hasSupportedOperations {
+		if rawOperation, hasRouteOperation := updates["route_operation"]; hasRouteOperation {
+			operations := []string{}
+			if operation := fmt.Sprint(rawOperation); operation != "" {
+				operations = append(operations, operation)
+			}
+			encoded, _ := json.Marshal(operations)
+			updates["supported_operations"] = datatypes.JSON(encoded)
+		}
 	}
 
 	err := model.DB().Transaction(func(tx *gorm.DB) error {

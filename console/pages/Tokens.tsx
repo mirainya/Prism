@@ -12,7 +12,7 @@ import {
     ChevronUp,
     ChevronDown,
 } from 'lucide-react';
-import { Modal } from '../components/ui/Modal';
+import { Modal, useAppDialog } from '../components/ui';
 import {
     fetchTokens,
     createToken,
@@ -26,6 +26,7 @@ import { ChannelConfigEditor } from './ChannelConfigEditor';
 import { STATUS_COLORS, STATUS_LABELS } from '../constants';
 
 const Tokens: React.FC = () => {
+  const { askConfirmation, showAlert } = useAppDialog();
   const [tokens, setTokens] = useState<ApiToken[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [copiedId, setCopiedId] = useState<string | null>(null);
@@ -90,19 +91,25 @@ const Tokens: React.FC = () => {
       setNewTokenKey(result.key);
       loadTokens();
     } catch (err: any) {
-      alert(err.message || '创建失败');
+      await showAlert({ title: '创建失败', description: err.message || '令牌创建失败，请稍后重试。', tone: 'danger' });
     } finally {
       setIsCreating(false);
     }
   };
 
   const handleDelete = async (id: string, name: string) => {
-    if (!confirm(`确定要删除令牌 "${name}" 吗? 此操作不可恢复。`)) return;
+    const confirmed = await askConfirmation({
+      title: '删除 API 令牌？',
+      description: `删除“${name}”后，使用该令牌的请求将立即失效。`,
+      confirmLabel: '删除令牌',
+      tone: 'danger',
+    });
+    if (!confirmed) return;
     try {
       await deleteToken(id);
       loadTokens();
     } catch (err: any) {
-      alert(err.message || '删除失败');
+      await showAlert({ title: '删除失败', description: err.message || '令牌删除失败，请稍后重试。', tone: 'danger' });
     }
   };
 
@@ -116,7 +123,7 @@ const Tokens: React.FC = () => {
     const handleRecharge = async () => {
         const amount = parseFloat(rechargeAmount);
         if (!amount || amount <= 0) {
-            alert('请输入有效的充值金额');
+            await showAlert({ title: '金额无效', description: '请输入大于 0 的充值金额。', tone: 'warning' });
             return;
         }
         setIsRecharging(true);
@@ -125,7 +132,7 @@ const Tokens: React.FC = () => {
             loadTokens();
             setShowRechargeModal(false);
         } catch (err: any) {
-            alert(err.message || '充值失败');
+            await showAlert({ title: '充值失败', description: err.message || '充值失败，请稍后重试。', tone: 'danger' });
         } finally {
             setIsRecharging(false);
         }
@@ -161,7 +168,7 @@ const Tokens: React.FC = () => {
             loadTokens();
             setShowEditModal(false);
         } catch (err: any) {
-            alert(err.message || '保存失败');
+            await showAlert({ title: '保存失败', description: err.message || '令牌保存失败，请稍后重试。', tone: 'danger' });
         } finally {
             setIsEditing(false);
         }
@@ -279,8 +286,7 @@ const Tokens: React.FC = () => {
       </div>
 
         {/* 创建令牌弹窗 */}
-      {showCreateModal && (
-        <Modal open={true} onClose={closeModal} title="创建新令牌">
+        <Modal open={showCreateModal} onClose={closeModal} title="创建新令牌">
             {newTokenKey ? (
               <div className="space-y-4">
                 <div className="p-4 bg-amber-50 border border-amber-300 rounded-xl">
@@ -399,11 +405,9 @@ const Tokens: React.FC = () => {
               </div>
             )}
         </Modal>
-      )}
 
         {/* 充值弹窗 */}
-        {showRechargeModal && (
-            <Modal open={true} onClose={() => setShowRechargeModal(false)} title="充值余额" width="max-w-md">
+            <Modal open={showRechargeModal} onClose={() => setShowRechargeModal(false)} title="充值余额" width="max-w-md">
                     <div className="space-y-4">
                         <div className="p-4 bg-[var(--surface)] rounded-xl">
                             <p className="text-sm text-[var(--text-secondary)]">为令牌充值</p>
@@ -438,11 +442,9 @@ const Tokens: React.FC = () => {
                         </button>
                     </div>
             </Modal>
-      )}
 
         {/* 编辑令牌弹窗 */}
-        {showEditModal && (
-            <Modal open={true} onClose={() => setShowEditModal(false)} title="编辑令牌">
+            <Modal open={showEditModal} onClose={() => setShowEditModal(false)} title="编辑令牌">
                     <div className="space-y-4">
                         <div>
                             <label className="block text-sm font-medium text-[var(--text-primary)] mb-1">令牌名称</label>
@@ -482,7 +484,6 @@ const Tokens: React.FC = () => {
                         </button>
                     </div>
             </Modal>
-        )}
     </div>
   );
 };

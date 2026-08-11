@@ -1,10 +1,11 @@
 import React, { useEffect, useState } from 'react';
 import {Users as UsersIcon, Search, Calendar, Shield, Plus} from 'lucide-react';
-import { Modal } from '../components/ui/Modal';
+import { Modal, useAppDialog } from '../components/ui';
 import {fetchUsers, updateUserRole, rechargeUser} from '../services/api';
 import { User, UserRole } from '../types';
 
 const Users: React.FC = () => {
+  const { askConfirmation, showAlert } = useAppDialog();
   const [users, setUsers] = useState<User[]>([]);
   const [isLoading, setIsLoading] = useState(true);
     const [rechargeTarget, setRechargeTarget] = useState<User | null>(null);
@@ -24,14 +25,19 @@ const Users: React.FC = () => {
 
   const handleRoleChange = async (user: User) => {
     const newRole = user.role === UserRole.ADMIN ? UserRole.USER : UserRole.ADMIN;
-    if (!confirm(`确定要将 ${user.username} 的角色改为 ${newRole === UserRole.ADMIN ? '管理员' : '普通用户'} 吗?`)) {
-      return;
-    }
+    const roleLabel = newRole === UserRole.ADMIN ? '管理员' : '普通用户';
+    const confirmed = await askConfirmation({
+      title: '修改用户角色？',
+      description: `将“${user.username}”的角色修改为${roleLabel}。`,
+      confirmLabel: '修改角色',
+      tone: 'warning',
+    });
+    if (!confirmed) return;
     try {
       await updateUserRole(user.id, newRole);
       loadUsers();
     } catch (err: any) {
-      alert(err.message || '操作失败');
+      await showAlert({ title: '操作失败', description: err.message || '角色修改失败，请稍后重试。', tone: 'danger' });
     }
   };
 
@@ -39,7 +45,7 @@ const Users: React.FC = () => {
         if (!rechargeTarget) return;
         const amount = Number(rechargeAmount);
         if (!amount || amount <= 0) {
-            alert('请输入有效的充值金额');
+            await showAlert({ title: '金额无效', description: '请输入大于 0 的充值金额。', tone: 'warning' });
             return;
         }
         setIsRecharging(true);
@@ -49,7 +55,7 @@ const Users: React.FC = () => {
             setRechargeAmount('');
             loadUsers();
         } catch (err: any) {
-            alert(err.message || '充值失败');
+            await showAlert({ title: '充值失败', description: err.message || '用户充值失败，请稍后重试。', tone: 'danger' });
         } finally {
             setIsRecharging(false);
         }
@@ -156,14 +162,13 @@ const Users: React.FC = () => {
         </div>
       </div>
 
-        {rechargeTarget && (
-            <Modal open={true} onClose={() => setRechargeTarget(null)} title="用户充值" width="max-w-sm">
+            <Modal open={Boolean(rechargeTarget)} onClose={() => setRechargeTarget(null)} title="用户充值" width="max-w-sm">
                     <div className="space-y-4">
                     <p className="text-sm text-[var(--text-secondary)]">
-                        为用户 <span className="font-bold text-[var(--text-primary)]">{rechargeTarget.username}</span> 充值额度
+                        为用户 <span className="font-bold text-[var(--text-primary)]">{rechargeTarget?.username}</span> 充值额度
                     </p>
                     <p className="text-sm text-[var(--text-secondary)]">
-                        当前余额: <span className="font-bold text-[var(--text-primary)]">{rechargeTarget.balance}</span>
+                        当前余额: <span className="font-bold text-[var(--text-primary)]">{rechargeTarget?.balance}</span>
                     </p>
                     <input
                         type="number"
@@ -192,7 +197,6 @@ const Users: React.FC = () => {
                     </div>
                     </div>
             </Modal>
-        )}
     </div>
   );
 };

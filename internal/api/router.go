@@ -17,6 +17,9 @@ import (
 	"github.com/mirainya/Prism/internal/gateway"
 	"github.com/mirainya/Prism/internal/gateway/engine"
 	"github.com/mirainya/Prism/internal/model"
+	"github.com/mirainya/Prism/internal/video"
+	"github.com/mirainya/Prism/internal/video/generic"
+	"github.com/mirainya/Prism/internal/video/seedance"
 	"github.com/mirainya/Prism/pkg/cache"
 	"github.com/mirainya/Prism/pkg/metrics"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
@@ -91,6 +94,14 @@ func SetupRouter(engines ...*engine.Engine) *gin.Engine {
 	gw.RegisterAnthropic(apiV1)
 	gw.RegisterResponses(apiV1)
 	gw.RegisterFiles(apiV1)
+	ve := video.NewEngine()
+	if ve != nil {
+		ve.RegisterBuiltins()
+		ve.Registry().Register("seedance", seedance.NewAdapter)
+		ve.Registry().Register("generic", generic.NewAdapter)
+	}
+	open.InitVideoEngine(ve)
+	console.SetVideoEngine(ve)
 	open.RegisterRoutes(apiV1)
 
 	// 内部接口 (上游回调)

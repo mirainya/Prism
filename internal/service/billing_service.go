@@ -160,6 +160,18 @@ func (s *BillingService) deductWithBillingContextTx(
 	return nil
 }
 
+// DeductWithBillingContextTx applies a reservation inside the caller's transaction.
+func (s *BillingService) DeductWithBillingContextTx(
+	tx *gorm.DB,
+	tokenID uint,
+	userID uint,
+	amount decimal.Decimal,
+	idempotentKey string,
+	billingContext BillingContext,
+) error {
+	return s.deductWithBillingContextTx(tx, tokenID, userID, amount, idempotentKey, billingContext)
+}
+
 // Refund 退款（无幂等键，兼容旧调用）
 func (s *BillingService) Refund(tokenID uint, userID uint, amount decimal.Decimal) error {
 	return s.RefundWithKey(tokenID, userID, amount, "")
@@ -267,6 +279,18 @@ func (s *BillingService) refundWithBillingContextTx(
 	}
 
 	return nil
+}
+
+// RefundWithBillingContextTx applies a refund inside the caller's transaction.
+func (s *BillingService) RefundWithBillingContextTx(
+	tx *gorm.DB,
+	tokenID uint,
+	userID uint,
+	amount decimal.Decimal,
+	idempotentKey string,
+	billingContext BillingContext,
+) error {
+	return s.refundWithBillingContextTx(tx, tokenID, userID, amount, idempotentKey, billingContext)
 }
 
 // SettleReservation adjusts an earlier deduction to the final charge.
@@ -415,6 +439,21 @@ func (s *BillingService) settleReservationWithBillingContextTx(
 	}
 
 	return updateCallForSettlement(tx, billingContext, reserved, actual)
+}
+
+// SettleReservationWithBillingContextTx settles a reservation inside the caller's transaction.
+func (s *BillingService) SettleReservationWithBillingContextTx(
+	tx *gorm.DB,
+	tokenID uint,
+	userID uint,
+	reserved decimal.Decimal,
+	actual decimal.Decimal,
+	idempotentKey string,
+	billingContext BillingContext,
+) error {
+	return s.settleReservationWithBillingContextTx(
+		tx, tokenID, userID, reserved, actual, idempotentKey, billingContext,
+	)
 }
 
 func updateCallForDeduction(tx *gorm.DB, billingContext BillingContext, amount decimal.Decimal) error {

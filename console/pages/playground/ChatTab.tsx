@@ -27,6 +27,7 @@ import {
   PLAYGROUND_PROTOCOLS, buildProtocolPayload, consumeProtocolStreamEvent,
   createProtocolStreamState, parseProtocolResponse,
 } from './protocol';
+import { Dialog } from '../../components/ui';
 
 const ChatTab: React.FC<{ tokenId: string }> = ({ tokenId }) => {
   const [models, setModels] = useState<PlaygroundModelInfo[]>([]);
@@ -576,21 +577,15 @@ const ChatTab: React.FC<{ tokenId: string }> = ({ tokenId }) => {
   };
   return (
     <div className="relative h-[calc(100dvh-180px)] md:h-[calc(100dvh-220px)] overflow-hidden">
-      {(showHistoryDrawer || showAdvancedDrawer || showDebugDrawer) && (
-        <div className="absolute inset-0 z-20 bg-black/20" onClick={() => { setShowHistoryDrawer(false); setShowAdvancedDrawer(false); setShowDebugDrawer(false); }} />
-      )}
-      {showHistoryDrawer && (
-        <div className="absolute inset-y-0 left-0 z-30">
+      <Dialog open={showHistoryDrawer} onClose={() => setShowHistoryDrawer(false)} motion="left" ariaLabel="历史会话" containerClassName="items-stretch justify-start p-2" panelClassName="h-full w-72">
           <HistoryPanel items={historyItems} selectedConversationId={selectedConversationId} currentModel={selectedModel}
             loadingConversationId={loadingConversationId}
-            onSelect={applyConversationMessages} onCreateNew={handleCreateNewConversation} loading={historyLoading} />
-        </div>
-      )}
-      {showAdvancedDrawer && (
-        <div className="absolute inset-y-0 right-0 z-30 w-[24rem] bg-[var(--surface-card)] rounded-xl border border-[var(--border-soft)] overflow-y-auto p-4 space-y-4 shadow-2xl">
+            onSelect={applyConversationMessages} onCreateNew={handleCreateNewConversation} onClose={() => setShowHistoryDrawer(false)} loading={historyLoading} />
+      </Dialog>
+      <Dialog open={showAdvancedDrawer} onClose={() => setShowAdvancedDrawer(false)} motion="right" ariaLabel="参数设置" containerClassName="items-stretch justify-end p-2" panelClassName="h-full w-full max-w-[24rem] bg-[var(--surface-card)] rounded-lg border border-[var(--border-soft)] overflow-y-auto p-4 space-y-4 shadow-2xl">
           <div className="flex items-center justify-between">
             <div className="flex items-center gap-2 text-sm font-semibold text-[var(--text-primary)]"><SlidersHorizontal size={16} /> 参数设置</div>
-            <button type="button" onClick={() => setShowAdvancedDrawer(false)} className="text-xs text-[var(--text-secondary)] hover:text-[var(--text-secondary)]">关闭</button>
+            <button type="button" onClick={() => setShowAdvancedDrawer(false)} title="关闭" aria-label="关闭" className="rounded-lg p-1.5 text-[var(--text-secondary)] hover:bg-[var(--surface)]"><X size={16} /></button>
           </div>
           <div><label className="block text-xs font-medium text-[var(--text-secondary)] mb-1">Temperature: {temperature}</label><input type="range" min="0" max="2" step="0.1" value={temperature} onChange={e => setTemperature(Number(e.target.value))} className="w-full accent-indigo-600" /></div>
           <div><label className="block text-xs font-medium text-[var(--text-secondary)] mb-1">{protocol === 'chat' ? 'Max Tokens' : 'Max Output Tokens'}</label><input type="number" min={1} max={selectedModelInfo?.max_tokens && selectedModelInfo.max_tokens > 0 ? selectedModelInfo.max_tokens : 131072} value={maxTokens} onChange={e => setMaxTokens(Number(e.target.value))} className="w-full px-3 py-2 border border-[var(--border-soft)] rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-[var(--primary)]" /></div>
@@ -609,19 +604,13 @@ const ChatTab: React.FC<{ tokenId: string }> = ({ tokenId }) => {
               <div><label className="block text-xs font-medium text-[var(--text-secondary)] mb-1">tool_choice</label><textarea value={toolChoiceText} onChange={e => setToolChoiceText(e.target.value)} rows={2} placeholder='"auto"' className="w-full px-3 py-2 border border-[var(--border-soft)] rounded-lg text-xs font-mono resize-none focus:outline-none focus:ring-2 focus:ring-[var(--primary)]" /></div>
             </div>
           </div>
-        </div>
-      )}
-      {showDebugDrawer && (
-        <>
-          <div className="absolute inset-0 z-20 bg-black/20 xl:hidden" onClick={() => setShowDebugDrawer(false)} />
-          <div className="absolute inset-y-0 right-0 z-30 w-full max-w-[28rem] p-2 xl:hidden">
+      </Dialog>
+      <Dialog open={showDebugDrawer} onClose={() => setShowDebugDrawer(false)} motion="right" ariaLabel="调试信息" containerClassName="items-stretch justify-end p-2" panelClassName="h-full w-full max-w-[28rem]">
             <div className="relative h-full">
-              <button type="button" onClick={() => setShowDebugDrawer(false)} className="absolute right-3 top-3 z-10 px-2 py-1 rounded-md bg-[var(--surface-card)]/90 border border-[var(--border-soft)] text-xs text-[var(--text-secondary)] hover:text-[var(--text-primary)]">关闭</button>
+              <button type="button" onClick={() => setShowDebugDrawer(false)} title="关闭" aria-label="关闭" className="absolute right-3 top-3 z-10 rounded-lg border border-[var(--border-soft)] bg-[var(--surface-card)]/90 p-1.5 text-[var(--text-secondary)] hover:text-[var(--text-primary)]"><X size={16} /></button>
               <DebugPanel debugDetail={debugDetail} lastPayload={lastPayload} compact showAllDetails={showFullDebug} onExpandFull={() => setShowFullDebug(true)} currentConversationMeta={currentConversationMeta} />
             </div>
-          </div>
-        </>
-      )}
+      </Dialog>
       <div className="h-full flex gap-4">
         <div className="flex-1 flex flex-col bg-[var(--surface-card)] rounded-xl border border-[var(--border-soft)] overflow-hidden min-w-0">
           {/* Mobile: 极简顶栏 */}
@@ -633,10 +622,15 @@ const ChatTab: React.FC<{ tokenId: string }> = ({ tokenId }) => {
             {renderProtocolSwitch(true)}
           </div>
           {/* Mobile: 底部菜单 */}
-          {showMobileMenu && (
-            <>
-              <div className="fixed inset-0 z-50 bg-black/30 md:hidden" onClick={() => setShowMobileMenu(false)} />
-              <div className="fixed bottom-0 left-0 right-0 z-50 bg-[var(--surface-card)] rounded-t-2xl border-t border-[var(--border-soft)] p-4 space-y-1 md:hidden animate-slide-in-right">
+          <Dialog
+            open={showMobileMenu}
+            onClose={() => setShowMobileMenu(false)}
+            motion="bottom"
+            ariaLabel="聊天操作"
+            containerClassName="items-end justify-center md:hidden"
+            panelClassName="w-full rounded-t-lg border-t border-[var(--border-soft)] bg-[var(--surface-card)] p-4 shadow-2xl"
+          >
+              <div className="space-y-1">
                 <div className="w-10 h-1 bg-gray-300 rounded-full mx-auto mb-3" />
                 <button type="button" onClick={() => { setShowMobileMenu(false); setShowHistoryDrawer(true); }} className="w-full flex items-center gap-3 px-4 py-3 rounded-xl hover:bg-[var(--surface)] text-sm text-[var(--text-primary)]"><Plus size={16} className="text-[var(--text-secondary)]" /> 历史会话</button>
                 <button type="button" onClick={() => { setShowMobileMenu(false); setShowSystemPrompt(prev => !prev); }} className="w-full flex items-center gap-3 px-4 py-3 rounded-xl hover:bg-[var(--surface)] text-sm text-[var(--text-primary)]"><FileJson size={16} className="text-[var(--text-secondary)]" /> {protocol === 'responses' ? 'Instructions' : 'System Prompt'}</button>
@@ -651,8 +645,7 @@ const ChatTab: React.FC<{ tokenId: string }> = ({ tokenId }) => {
                 </div>
                 <button type="button" onClick={() => { setShowMobileMenu(false); handleClear(); }} className="w-full flex items-center gap-3 px-4 py-3 rounded-xl hover:bg-red-50 text-sm text-red-500"><Trash2 size={16} /> 清空对话</button>
               </div>
-            </>
-          )}
+          </Dialog>
           {/* Desktop: 完整工具栏 */}
           <div className="hidden md:flex px-4 py-2 border-b border-[var(--border-soft)] items-center gap-2 flex-wrap">
             <div className="flex items-center gap-2 min-w-0 flex-1 basis-[21rem]">

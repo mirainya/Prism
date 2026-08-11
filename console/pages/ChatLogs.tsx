@@ -6,7 +6,6 @@ import {
     CircleUserRound,
     Search,
     ChevronRight,
-    X,
     RefreshCw,
     ChevronLeft,
     MessageSquare,
@@ -24,6 +23,7 @@ import {
 } from 'lucide-react';
 import {fetchConversations, fetchConversationMessages, fetchConversationTurns, fetchUsers, ConversationListParams} from '../services/api';
 import {Conversation, ChatMessage, ConversationCanonicalItem, ConversationTurnRecord, User as PrismUser, UserRole} from '../types';
+import {Dialog, Drawer, Select} from '../components/ui';
 
 const PAGE_SIZE = 20;
 const DETAIL_PAGE_SIZE = 200;
@@ -68,6 +68,10 @@ interface Attachment {
     type: string;
     image_url?: string | { url: string; detail?: string };
     file_url?: string | { url: string; content_type?: string };
+    url?: string;
+    data?: string;
+    media_type?: string;
+    detail?: string;
     filename?: string;
     file_id?: string;
     [key: string]: unknown;
@@ -166,6 +170,27 @@ const normalizeMediaURL = (value?: string) => {
     }
 };
 
+const IMAGE_ATTACHMENT_TYPES = new Set(['image_url', 'input_image', 'output_image', 'image']);
+
+const readMediaURL = (value: unknown) => {
+    if (typeof value === 'string') return value;
+    if (value && typeof value === 'object' && typeof (value as {url?: unknown}).url === 'string') {
+        return (value as {url: string}).url;
+    }
+    return '';
+};
+
+const dataURL = (data: unknown, mediaType: unknown) => {
+    if (typeof data !== 'string' || !data) return '';
+    if (data.startsWith('data:')) return data;
+    return `data:${typeof mediaType === 'string' && mediaType ? mediaType : 'application/octet-stream'};base64,${data}`;
+};
+
+const attachmentImageURL = (attachment: Attachment) =>
+    readMediaURL(attachment.image_url)
+    || readMediaURL(attachment.url)
+    || dataURL(attachment.data, attachment.media_type);
+
 const normalizeLinkURL = (value?: string) => {
     if (!value) return '';
     if (value.startsWith('blob:')) return value;
@@ -196,9 +221,10 @@ const AttachmentRenderer: React.FC<{ attachments: Attachment[] }> = ({attachment
         <>
             <div className="flex flex-wrap gap-2 mt-2">
                 {attachments.map((att, i) => {
-                    const rawImageURL = typeof att.image_url === 'string' ? att.image_url : att.image_url?.url;
-                    const imageURL = normalizeMediaURL(rawImageURL);
-                    if ((att.type === 'image_url' || att.type === 'input_image') && imageURL) {
+                    const imageURL = IMAGE_ATTACHMENT_TYPES.has(att.type)
+                        ? normalizeMediaURL(attachmentImageURL(att))
+                        : '';
+                    if (imageURL) {
                         const loaded = canAutoLoadMedia(imageURL) || loadedImages.has(i);
                         if (!loaded) {
                             return (
@@ -233,11 +259,9 @@ const AttachmentRenderer: React.FC<{ attachments: Attachment[] }> = ({attachment
                     );
                 })}
             </div>
-            {preview && (
-                <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/70 backdrop-blur-sm" onClick={() => setPreview(null)}>
-                    <img src={preview} alt="preview" className="max-w-[90vw] max-h-[90vh] rounded-xl shadow-2xl"/>
-                </div>
-            )}
+            <Dialog open={Boolean(preview)} onClose={() => setPreview(null)} motion="fade" ariaLabel="图片预览" containerClassName="items-center justify-center p-4" panelClassName="max-w-[95vw] max-h-[95vh]">
+                {preview && <img src={preview} alt="preview" className="max-h-[90vh] max-w-[90vw] rounded-xl shadow-2xl"/>}
+            </Dialog>
         </>
     );
 };
@@ -276,11 +300,12 @@ const CanonicalItemRenderer: React.FC<{item: ConversationCanonicalItem}> = ({ite
             .map((part: any) => String(part.text || ''))
             .join('');
         const attachments: Attachment[] = content.flatMap((part: any): Attachment[] => {
-            const embeddedURL = part?.data
-                ? `data:${part.media_type || 'application/octet-stream'};base64,${part.data}`
-                : '';
-            if (['input_image', 'image_url'].includes(part?.type) && (part.url || embeddedURL)) {
-                return [{type: 'input_image', image_url: {url: part.url || embeddedURL, detail: part.detail}}];
+            const embeddedURL = dataURL(part?.data, part?.media_type);
+            if (IMAGE_ATTACHMENT_TYPES.has(part?.type)) {
+                const imageURL = readMediaURL(part.url) || readMediaURL(part.image_url) || dataURL(part.data, part.media_type);
+                if (imageURL) {
+                    return [{type: part.type, image_url: {url: imageURL, detail: part.detail}}];
+                }
             }
             if (['input_file', 'file'].includes(part?.type) && (part.url || embeddedURL)) {
                 return [{type: 'file_url', file_url: {url: part.url || embeddedURL, content_type: part.media_type}, filename: part.filename}];
@@ -295,7 +320,7 @@ const CanonicalItemRenderer: React.FC<{item: ConversationCanonicalItem}> = ({ite
             ? canonical.extra['openai_chat.reasoning_content']
             : '';
         const unknownParts = content.filter((part: any) => ![
-            'input_text', 'output_text', 'text', 'input_image', 'image_url', 'input_file', 'file', 'input_audio', 'audio',
+            'input_text', 'output_text', 'text', 'input_image', 'output_image', 'image', 'image_url', 'input_file', 'file', 'input_audio', 'audio',
         ].includes(part?.type));
         const isUser = role === 'user';
         return (
@@ -666,8 +691,6 @@ const ChatLogs: React.FC = () => {
     const [activeTab, setActiveTab] = useState<'overview' | 'conversation' | 'turns'>('overview');
     const listRequest = useRef(0);
     const detailRequest = useRef(0);
-    const dialogRef = useRef<HTMLElement | null>(null);
-    const returnFocusRef = useRef<HTMLElement | null>(null);
     const turns = useMemo(() => buildTurns(messages, turnRecords), [messages, turnRecords]);
 
     useEffect(() => {
@@ -713,7 +736,6 @@ const ChatLogs: React.FC = () => {
 
     const openDetails = async (conv: Conversation) => {
         const requestNo = ++detailRequest.current;
-        returnFocusRef.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
         setIsDrawerOpen(true);
         setSelectedConversation(conv);
         setActiveTab('overview');
@@ -777,27 +799,6 @@ const ChatLogs: React.FC = () => {
         setDetailWarning('');
         setLoadingMessages(false);
         setLoadingMore(false);
-        window.setTimeout(() => returnFocusRef.current?.focus(), 0);
-    };
-
-    const handleDialogKeyDown = (event: React.KeyboardEvent<HTMLElement>) => {
-        if (event.key === 'Escape') {
-            event.preventDefault();
-            closeDetails();
-            return;
-        }
-        if (event.key !== 'Tab' || !dialogRef.current) return;
-        const focusable = Array.from(dialogRef.current.querySelectorAll<HTMLElement>('button:not([disabled]), a[href], input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])'));
-        if (focusable.length === 0) return;
-        const first = focusable[0];
-        const last = focusable[focusable.length - 1];
-        if (event.shiftKey && document.activeElement === first) {
-            event.preventDefault();
-            last.focus();
-        } else if (!event.shiftKey && document.activeElement === last) {
-            event.preventDefault();
-            first.focus();
-        }
     };
 
     const loadMoreDetails = async (scope: 'all' | 'turns' = 'all') => {
@@ -890,12 +891,9 @@ const ChatLogs: React.FC = () => {
                         <input value={draft.model} onChange={event => updateDraft('model', event.target.value)} placeholder="模型名称" className={`${INPUT_CLASS} mt-1`}/>
                     </label>
                     {admin && (
-                        <label className="text-xs font-semibold text-[var(--text-secondary)]">用户
-                            <select value={draft.user_id} onChange={event => updateDraft('user_id', event.target.value)} className={`${INPUT_CLASS} mt-1`}>
-                                <option value="">全部用户</option>
-                                {users.map(user => <option key={user.id} value={user.id}>{user.username} (#{user.id})</option>)}
-                            </select>
-                        </label>
+                        <div className="text-xs font-semibold text-[var(--text-secondary)]">用户
+                            <Select value={draft.user_id} onChange={v => updateDraft('user_id', v)} className="mt-1" options={[{ label: '全部用户', value: '' }, ...users.map(user => ({ label: `${user.username} (#${user.id})`, value: String(user.id) }))]} />
+                        </div>
                     )}
                     {admin && (
                         <label className="text-xs font-semibold text-[var(--text-secondary)]">Token ID
@@ -968,17 +966,9 @@ const ChatLogs: React.FC = () => {
                 </footer>
             </section>
 
-            {isDrawerOpen && selectedConversation && (
-                <div className="fixed inset-0 z-50 flex justify-end bg-black/40" onClick={closeDetails}>
-                    <aside ref={dialogRef} role="dialog" aria-modal="true" aria-labelledby="conversation-detail-title" onKeyDown={handleDialogKeyDown} className="flex h-full w-full max-w-5xl flex-col bg-[var(--surface)] shadow-2xl" onClick={event => event.stopPropagation()}>
-                        <div className="flex items-start justify-between border-b border-[var(--border-soft)] px-5 py-4">
-                            <div className="min-w-0">
-                                <h2 id="conversation-detail-title" className="text-lg font-bold text-[var(--text-primary)]">对话详情</h2>
-                                <p className="mt-1 max-w-[70vw] truncate text-xs text-[var(--text-secondary)]">{selectedConversation.title || `会话 #${selectedConversation.id}`}</p>
-                            </div>
-                            <button type="button" autoFocus title="关闭" aria-label="关闭" onClick={closeDetails} className="shrink-0 rounded-lg border border-[var(--border-soft)] bg-[var(--surface-card)] p-2 text-[var(--text-primary)] hover:bg-[var(--primary-lighter)]"><X size={18}/></button>
-                        </div>
-
+            <Drawer open={isDrawerOpen && Boolean(selectedConversation)} onClose={closeDetails} title="对话详情" subtitle={selectedConversation ? (selectedConversation.title || `会话 #${selectedConversation.id}`) : '加载中'} width="max-w-5xl" panelClassName="bg-[var(--surface)]">
+                {selectedConversation && (
+                    <>
                         <div role="tablist" className="flex overflow-x-auto border-b border-[var(--border-soft)] px-4">
                             {([
                                 ['overview', '概览', LayoutList],
@@ -1073,9 +1063,9 @@ const ChatLogs: React.FC = () => {
                                 </div>
                             )}
                         </div>
-                    </aside>
-                </div>
-            )}
+                    </>
+                )}
+            </Drawer>
         </div>
     );
 };

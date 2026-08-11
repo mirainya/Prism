@@ -99,7 +99,7 @@ func TestParseImageSSEStream(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			res, err := parseImageSSEStream(strings.NewReader(tt.input))
+			res, err := parseImageSSEStream(strings.NewReader(tt.input), nil)
 			if tt.wantErr {
 				if err == nil {
 					t.Fatalf("expected error, got nil (result=%+v)", res)
@@ -125,12 +125,38 @@ func TestParseImageSSEStream(t *testing.T) {
 func TestParseImageSSEStream_RevisedPromptFromPartial(t *testing.T) {
 	input := "data: {\"type\":\"image_generation.partial_image\",\"b64_json\":\"cA==\",\"revised_prompt\":\"cat\"}\n\n" +
 		"data: [DONE]\n\n"
-	res, err := parseImageSSEStream(strings.NewReader(input))
+	res, err := parseImageSSEStream(strings.NewReader(input), nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if res.RevisedPrompt != "cat" {
 		t.Fatalf("RevisedPrompt = %q, want cat", res.RevisedPrompt)
+	}
+}
+
+func TestParseImageSSEStreamInfersMissingType(t *testing.T) {
+	input := "data: {\"data\":[{\"b64_json\":\"aW1hZ2U=\"}]}\n\n" +
+		"data: [DONE]\n\n"
+	res, err := parseImageSSEStream(strings.NewReader(input), nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(res.B64Data) != 1 || res.B64Data[0] != "aW1hZ2U=" {
+		t.Fatalf("B64Data = %v", res.B64Data)
+	}
+}
+
+func TestParseImageSSEStreamUsesEventNameForMissingType(t *testing.T) {
+	input := "event: image_generation.partial_image\n" +
+		"data: {\"b64_json\":\"cA==\",\"partial_image_index\":0}\n\n" +
+		"event: image_generation.completed\n" +
+		"data: {\"b64_json\":\"aW1hZ2U=\"}\n\n"
+	res, err := parseImageSSEStream(strings.NewReader(input), nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(res.B64Data) != 1 || res.B64Data[0] != "aW1hZ2U=" {
+		t.Fatalf("B64Data = %v", res.B64Data)
 	}
 }
 
@@ -180,7 +206,7 @@ func TestParseImageSSEStream_URLOutput(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			res, err := parseImageSSEStream(strings.NewReader(tt.input))
+			res, err := parseImageSSEStream(strings.NewReader(tt.input), nil)
 			if err != nil {
 				t.Fatalf("unexpected error: %v", err)
 			}

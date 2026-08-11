@@ -1,6 +1,7 @@
 package service
 
 import (
+	"strings"
 	"testing"
 	"time"
 
@@ -8,6 +9,23 @@ import (
 	"github.com/shopspring/decimal"
 	"gorm.io/gorm"
 )
+
+func TestPendingConversationProjectionPredicateUsesMySQL57CompatibleCorrelation(t *testing.T) {
+	predicate := pendingConversationProjectionPredicate("")
+	if strings.Contains(predicate, "JOIN api_calls AS latest_call ON") {
+		t.Fatal("latest conversation call must not reference an outer query from JOIN ON")
+	}
+	for _, fragment := range []string{
+		"OR EXISTS (",
+		"FROM api_calls AS latest_call",
+		"WHERE latest_call.id = conversations.call_id",
+		"projection.previous_response_id = latest_call.resource_id",
+	} {
+		if !strings.Contains(predicate, fragment) {
+			t.Fatalf("predicate is missing %q", fragment)
+		}
+	}
+}
 
 func TestRetentionServiceKeepsPendingProjectionCallUntilProjectionCompletes(t *testing.T) {
 	db := setupTestDB(t)

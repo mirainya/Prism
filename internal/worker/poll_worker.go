@@ -90,6 +90,12 @@ func HandleTaskPoll(ctx context.Context, t *asynq.Task) error {
 		}
 		return nil
 	}
+	if err := service.ApplyTaskEndpointSnapshot(task, &endpoint); err != nil {
+		if _, failErr := taskService.UpdateTaskFail(task.ID, "poll: invalid endpoint snapshot"); failErr != nil {
+			return fmt.Errorf("apply endpoint snapshot: %v; record task failure: %w", err, failErr)
+		}
+		return nil
+	}
 
 	maxPollCount := endpoint.PollMaxAttempts
 	if maxPollCount <= 0 {

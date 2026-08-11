@@ -77,6 +77,18 @@ export interface EndpointAccountBinding {
   accountStatus: number;
 }
 
+export interface EndpointOriginSnapshot {
+  channelId?: number;
+  channelName?: string;
+  channelType?: string;
+  accountId?: number;
+  accountName?: string;
+  vendorModel?: string;
+  adapter?: string;
+  sourceEndpointId?: number;
+  inferred?: boolean;
+}
+
 // 能力定义
 export interface Capability {
   code: string;
@@ -97,6 +109,8 @@ export interface ChannelCapability {
   channelId: string;
   accountId: string;
   capabilityCode: string;
+  routeOperation?: string;
+  supportedOperations?: string[];
   model: string;
   name: string;
   modelType?: string;
@@ -123,6 +137,10 @@ export interface ChannelCapability {
   responseMapping: Record<string, any>;
   callbackMapping: Record<string, any>;
   extraConfig: Record<string, any>;
+  originType: 'manual' | 'key_discovery' | 'endpoint_import' | 'legacy_inferred' | 'legacy_unknown';
+  originAccountId: string;
+  originSnapshot: EndpointOriginSnapshot;
+  discoveredAt?: string;
   accountBindings: EndpointAccountBinding[];
   status: number;
   createdAt: string;
@@ -150,12 +168,21 @@ export interface ChannelPriorityItem {
 
 // 能力及其可用渠道
 export interface CapabilityWithChannels {
+  id?: string;
   code: string;
   name: string;
   type: string;
   description: string;
   standardParams?: CapabilityStandardParams;
+  operations: ModelOperation[];
   channels: ChannelOption[];
+}
+
+export interface ModelOperation {
+  id: string;
+  path: string;
+  supportsStream: boolean;
+  paramSchema?: CapabilityStandardParams | null;
 }
 
 export interface PlaygroundCapability extends CapabilityWithChannels {
@@ -168,6 +195,7 @@ export interface ChannelOption {
   channelType: string;
   channelName: string;
   model: string;
+  routeOperation?: string;
   price: number;
   interactionMode: string;
   paramSchema?: CapabilityStandardParams | null;

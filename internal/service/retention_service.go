@@ -124,11 +124,14 @@ func excludePendingConversationProjections(query *gorm.DB) *gorm.DB {
 							AND response.token_id = conversations.token_id
 					)`
 	}
-	return query.Where(`NOT EXISTS (
+	return query.Where(pendingConversationProjectionPredicate(publicResponseMatch))
+}
+
+func pendingConversationProjectionPredicate(publicResponseMatch string) string {
+	return `NOT EXISTS (
 		SELECT 1
 		FROM conversation_projection_outbox AS projection
 		LEFT JOIN api_calls AS projection_call ON projection_call.id = projection.call_id
-		LEFT JOIN api_calls AS latest_call ON latest_call.id = conversations.call_id
 		WHERE projection.conversation_id = conversations.id
 			OR (
 				projection.conversation_id = 0
@@ -138,11 +141,17 @@ func excludePendingConversationProjections(query *gorm.DB) *gorm.DB {
 				AND projection_call.token_id = conversations.token_id
 				AND (
 					(conversations.provider_response_id <> '' AND projection.previous_response_id = conversations.provider_response_id)
-					OR (latest_call.resource_id <> '' AND projection.previous_response_id = latest_call.resource_id)
+					OR EXISTS (
+						SELECT 1
+						FROM api_calls AS latest_call
+						WHERE latest_call.id = conversations.call_id
+							AND latest_call.resource_id <> ''
+							AND projection.previous_response_id = latest_call.resource_id
+					)
 					` + publicResponseMatch + `
 				)
 			)
-	)`)
+	)`
 }
 
 func (s *RetentionService) DeleteExpiredCallMetadata(cutoff time.Time, limit int) (int64, error) {

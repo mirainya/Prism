@@ -3,13 +3,13 @@ import {
     Search,
     Clock,
     ChevronRight,
-    X,
     Code,
     RefreshCw,
     ChevronLeft,
     AlertCircle,
     CheckCircle
 } from 'lucide-react';
+import { Drawer, Select } from '../components/ui';
 import {
     fetchRequestLogs,
     fetchRequestLogDetail,
@@ -148,49 +148,39 @@ const RequestLogs: React.FC = () => {
               className="w-full pl-9 pr-4 py-2 bg-[var(--surface-card)] border border-[var(--border-soft)] rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-[var(--primary)]"
             />
           </div>
-          <select
-            value={filters.channel_id || ''}
-            onChange={e => {
+          <Select
+            value={String(filters.channel_id || '')}
+            onChange={v => {
               snapshotId.current = undefined;
-              setFilters(current => ({ ...current, channel_id: e.target.value ? Number(e.target.value) : undefined }));
+              setFilters(current => ({ ...current, channel_id: v ? Number(v) : undefined }));
               setPage(1);
             }}
-            className="bg-[var(--surface-card)] border border-[var(--border-soft)] rounded-lg px-3 py-2 text-sm text-[var(--text-secondary)] focus:outline-none focus:ring-2 focus:ring-[var(--primary)]"
-          >
-            <option value="">所有渠道</option>
-            {channels.map(ch => (
-              <option key={ch.id} value={ch.id}>{ch.name}</option>
-            ))}
-          </select>
-          <select
+            options={[{ label: '所有渠道', value: '' }, ...channels.map(ch => ({ label: ch.name, value: String(ch.id) }))]}
+          />
+          <Select
             value={filters.capability_code || ''}
-            onChange={e => {
+            onChange={v => {
               snapshotId.current = undefined;
-              setFilters(current => ({ ...current, capability_code: e.target.value || undefined }));
+              setFilters(current => ({ ...current, capability_code: v || undefined }));
               setPage(1);
             }}
-            className="bg-[var(--surface-card)] border border-[var(--border-soft)] rounded-lg px-3 py-2 text-sm text-[var(--text-secondary)] focus:outline-none focus:ring-2 focus:ring-[var(--primary)]"
-          >
-            <option value="">所有能力</option>
-            {capabilities.map(c => (
-              <option key={c.code} value={c.code}>{c.name}</option>
-            ))}
-          </select>
-          <select
+            options={[{ label: '所有能力', value: '' }, ...capabilities.map(c => ({ label: c.name, value: c.code }))]}
+          />
+          <Select
             value={filters.request_type || ''}
-            onChange={e => {
+            onChange={v => {
               snapshotId.current = undefined;
-              setFilters(current => ({ ...current, request_type: e.target.value || undefined }));
+              setFilters(current => ({ ...current, request_type: v || undefined }));
               setPage(1);
             }}
-            className="bg-[var(--surface-card)] border border-[var(--border-soft)] rounded-lg px-3 py-2 text-sm text-[var(--text-secondary)] focus:outline-none focus:ring-2 focus:ring-[var(--primary)]"
-          >
-            <option value="">所有类型</option>
-            <option value="submit">提交</option>
-            <option value="poll">轮询</option>
-            <option value="callback">回调</option>
-              <option value="chat">Chat</option>
-          </select>
+            options={[
+              { label: '所有类型', value: '' },
+              { label: '提交', value: 'submit' },
+              { label: '轮询', value: 'poll' },
+              { label: '回调', value: 'callback' },
+              { label: 'Chat', value: 'chat' },
+            ]}
+          />
         </div>
 
         <div className="overflow-x-auto">
@@ -294,23 +284,8 @@ const RequestLogs: React.FC = () => {
         )}
       </div>
 
-      {/* Details Drawer */}
-      {isDrawerOpen && selectedLog && (
-        <div className="fixed inset-0 z-50 flex justify-end bg-black/50 backdrop-blur-sm" onClick={closeDetails}>
-          <div className="w-full md:max-w-3xl bg-[var(--surface-card)] shadow-2xl h-full flex flex-col" onClick={e => e.stopPropagation()}>
-            <div className="p-4 md:p-6 border-b border-[var(--border-soft)] flex items-center justify-between">
-              <div>
-                <h2 className="text-lg md:text-xl font-bold text-[var(--text-primary)]">请求详情</h2>
-                <p className="text-xs text-indigo-500 font-mono mt-1">{selectedLog.task_no}</p>
-              </div>
-                <div className="flex items-center gap-3">
-                    <button onClick={closeDetails}
-                            className="p-2 hover:bg-[var(--primary-lighter)] rounded-full text-[var(--text-secondary)]">
-                        <X size={24}/>
-                    </button>
-                </div>
-            </div>
-
+      <Drawer open={isDrawerOpen && Boolean(selectedLog)} onClose={closeDetails} title="请求详情" subtitle={<span className="font-mono text-indigo-500">{selectedLog?.task_no}</span>} width="md:max-w-3xl">
+          {selectedLog && (
             <div className="flex-1 overflow-y-auto p-6 space-y-6">
               {detailLoading && (
                 <div className="flex items-center gap-2 rounded-lg border border-[var(--border-soft)] bg-[var(--surface)] px-4 py-3 text-sm text-[var(--text-secondary)]">
@@ -405,9 +380,8 @@ const RequestLogs: React.FC = () => {
                 </div>
               )}
             </div>
-          </div>
-        </div>
-      )}
+          )}
+      </Drawer>
 
     </div>
   );

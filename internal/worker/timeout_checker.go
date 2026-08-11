@@ -6,6 +6,7 @@ import (
 
 	"github.com/hibiken/asynq"
 	"github.com/mirainya/Prism/internal/model"
+	"github.com/mirainya/Prism/internal/video"
 	"github.com/mirainya/Prism/pkg/logger"
 	"go.uber.org/zap"
 )
@@ -20,6 +21,20 @@ func HandleTaskTimeoutCheck(ctx context.Context, t *asynq.Task) error {
 	}
 	if recovered > 0 {
 		logger.Info("task submit intents recovered", zap.Int("count", recovered))
+	}
+	recoveredVideos, err := RecoverPendingVideoSubmissions(ctx)
+	if err != nil {
+		return err
+	}
+	if recoveredVideos > 0 {
+		logger.Info("video submit intents recovered", zap.Int("count", recoveredVideos))
+	}
+	expiredAssets, err := video.NewAssetService(model.DB()).ExpireReady(ctx)
+	if err != nil {
+		return err
+	}
+	if expiredAssets > 0 {
+		logger.Info("video assets expired", zap.Int64("count", expiredAssets))
 	}
 
 	// 查找 30 分钟前提交但仍在处理中的任务

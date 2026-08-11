@@ -3,8 +3,10 @@ package service
 import (
 	"errors"
 	"testing"
+	"time"
 
 	"github.com/mirainya/Prism/internal/model"
+	"gorm.io/datatypes"
 )
 
 func endpointBindingStatus(value int8) *int8 {
@@ -35,9 +37,11 @@ func TestEndpointAdminServicePersistsManyToManyAccountBindings(t *testing.T) {
 
 	service := NewEndpointAdminService()
 	endpoint, err := service.CreateEndpoint(&CreateEndpointRequest{
-		ModelCode: capability.Code,
-		ChannelID: channel.ID,
-		Status:    1,
+		ModelCode:           capability.Code,
+		ChannelID:           channel.ID,
+		Status:              1,
+		PollParamMapping:    datatypes.JSON(`{"field_mapping":{"task_id":"id"}}`),
+		PollResponseMapping: datatypes.JSON(`{"field_mapping":{"status":"state"}}`),
 		AccountBindings: []EndpointAccountBindingInput{
 			{AccountID: first.ID, Status: endpointBindingStatus(1), Priority: 100, Weight: 20},
 			{AccountID: second.ID, Status: endpointBindingStatus(0), Priority: 50, Weight: 5},
@@ -48,6 +52,13 @@ func TestEndpointAdminServicePersistsManyToManyAccountBindings(t *testing.T) {
 	}
 	if len(endpoint.AccountBindings) != 2 {
 		t.Fatalf("account bindings = %d, want 2", len(endpoint.AccountBindings))
+	}
+	if endpoint.OriginType != model.EndpointOriginManual || endpoint.OriginAccountID != 0 || len(endpoint.OriginSnapshot) == 0 {
+		t.Fatalf("manual endpoint origin = type %q account %d snapshot %s", endpoint.OriginType, endpoint.OriginAccountID, endpoint.OriginSnapshot)
+	}
+	if string(endpoint.PollParamMapping) != `{"field_mapping":{"task_id":"id"}}` ||
+		string(endpoint.PollResponseMapping) != `{"field_mapping":{"status":"state"}}` {
+		t.Fatalf("poll mappings = params %s response %s", endpoint.PollParamMapping, endpoint.PollResponseMapping)
 	}
 	for _, binding := range endpoint.AccountBindings {
 		if binding.Account == nil || binding.Account.ChannelID != channel.ID {
@@ -61,12 +72,24 @@ func TestEndpointAdminServicePersistsManyToManyAccountBindings(t *testing.T) {
 	replacement := []EndpointAccountBindingInput{
 		{AccountID: first.ID, Status: endpointBindingStatus(1), Priority: 7, Weight: 3},
 	}
-	updated, err := service.UpdateEndpoint(endpoint.ID, map[string]any{"priority": 9}, &replacement)
+	attemptedDiscoveredAt := time.Now()
+	updated, err := service.UpdateEndpoint(endpoint.ID, map[string]any{
+		"priority":          9,
+		"origin_type":       model.EndpointOriginLegacyUnknown,
+		"origin_account_id": second.ID,
+		"origin_snapshot":   datatypes.JSON(`{"changed":true}`),
+		"discovered_at":     &attemptedDiscoveredAt,
+	}, &replacement)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if updated.Priority != 9 || len(updated.AccountBindings) != 1 {
 		t.Fatalf("updated endpoint = priority %d bindings %#v", updated.Priority, updated.AccountBindings)
+	}
+	if updated.OriginType != model.EndpointOriginManual || updated.OriginAccountID != 0 ||
+		string(updated.OriginSnapshot) != string(endpoint.OriginSnapshot) || updated.DiscoveredAt != nil {
+		t.Fatalf("endpoint origin changed during update: type %q account %d snapshot %s discovered %v",
+			updated.OriginType, updated.OriginAccountID, updated.OriginSnapshot, updated.DiscoveredAt)
 	}
 	binding := updated.AccountBindings[0]
 	if binding.AccountID != first.ID || binding.Priority != 7 || binding.Weight != 3 {

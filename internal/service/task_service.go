@@ -25,18 +25,22 @@ var (
 )
 
 type CreateTaskRequest struct {
-	TaskNo        string
-	CallID        string
-	UserID        uint
-	TokenID       uint
-	ModelCode     string
-	ChannelID     uint
-	EndpointID    uint
-	AccountID     uint
-	RequestParams map[string]any
-	MappedParams  map[string]any
-	CallbackURL   string
-	Cost          decimal.Decimal
+	AdapterID         uint
+	AdapterRevisionID uint
+	EndpointSnapshot  datatypes.JSON
+	TaskNo            string
+	CallID            string
+	UserID            uint
+	TokenID           uint
+	ModelCode         string
+	RouteOperation    string
+	ChannelID         uint
+	EndpointID        uint
+	AccountID         uint
+	RequestParams     map[string]any
+	MappedParams      map[string]any
+	CallbackURL       string
+	Cost              decimal.Decimal
 }
 
 type TaskService struct{}
@@ -78,20 +82,24 @@ func (s *TaskService) createTask(db *gorm.DB, req *CreateTaskRequest) (*model.Ta
 		callbackStatus = model.CallbackStatusPending
 	}
 	task := &model.Task{
-		TaskNo:         taskNo,
-		CallID:         req.CallID,
-		UserID:         req.UserID,
-		TokenID:        req.TokenID,
-		ModelCode:      req.ModelCode,
-		ChannelID:      req.ChannelID,
-		EndpointID:     req.EndpointID,
-		AccountID:      req.AccountID,
-		RequestParams:  requestParamsJSON,
-		MappedParams:   mappedParamsJSON,
-		Status:         model.TaskStatusPending,
-		CallbackURL:    req.CallbackURL,
-		CallbackStatus: callbackStatus,
-		Cost:           req.Cost,
+		TaskNo:            taskNo,
+		AdapterID:         req.AdapterID,
+		AdapterRevisionID: req.AdapterRevisionID,
+		EndpointSnapshot:  req.EndpointSnapshot,
+		CallID:            req.CallID,
+		UserID:            req.UserID,
+		TokenID:           req.TokenID,
+		ModelCode:         req.ModelCode,
+		RouteOperation:    req.RouteOperation,
+		ChannelID:         req.ChannelID,
+		EndpointID:        req.EndpointID,
+		AccountID:         req.AccountID,
+		RequestParams:     requestParamsJSON,
+		MappedParams:      mappedParamsJSON,
+		Status:            model.TaskStatusPending,
+		CallbackURL:       req.CallbackURL,
+		CallbackStatus:    callbackStatus,
+		Cost:              req.Cost,
 	}
 
 	if err := db.Create(task).Error; err != nil {
@@ -684,9 +692,13 @@ func taskPricingSnapshotTx(tx *gorm.DB, task *model.Task, cost decimal.Decimal) 
 	if err := tx.First(&endpoint, task.EndpointID).Error; err != nil {
 		return nil
 	}
+	if err := ApplyTaskEndpointSnapshot(task, &endpoint); err != nil {
+		return nil
+	}
 	return capabilityPricingSnapshot(&InvokeRequest{
-		Capability: task.ModelCode,
-		Model:      task.ModelCode,
+		Capability:     task.ModelCode,
+		Model:          task.ModelCode,
+		RouteOperation: task.RouteOperation,
 	}, &endpoint, cost)
 }
 

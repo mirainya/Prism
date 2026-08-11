@@ -77,13 +77,31 @@ const (
 	PriceModeRequest PriceMode = "request"
 )
 
+type EndpointOriginType string
+
+const (
+	EndpointOriginManual         EndpointOriginType = "manual"
+	EndpointOriginKeyDiscovery   EndpointOriginType = "key_discovery"
+	EndpointOriginEndpointImport EndpointOriginType = "endpoint_import"
+	EndpointOriginLegacyInferred EndpointOriginType = "legacy_inferred"
+	EndpointOriginLegacyUnknown  EndpointOriginType = "legacy_unknown"
+)
+
 // Endpoint 统一端点配置（替代 ChatModelChannel + ChannelCapability）
 type Endpoint struct {
 	BaseModel
-	ModelCode string `gorm:"type:varchar(80);not null;index;comment:模型标识" json:"model_code"`
-	ChannelID uint   `gorm:"not null;index;comment:渠道ID" json:"channel_id"`
+	ModelCode      string `gorm:"type:varchar(80);not null;index;comment:模型标识" json:"model_code"`
+	RouteOperation string `gorm:"type:varchar(40);not null;default:'';index;comment:路由操作" json:"route_operation"`
+	// SupportedOperations lists all public operations handled by this physical endpoint.
+	// RouteOperation remains the legacy/default operation for older rows.
+	SupportedOperations datatypes.JSON `gorm:"type:json;comment:支持的能力操作列表" json:"supported_operations"`
+	ChannelID           uint           `gorm:"not null;index;comment:渠道ID" json:"channel_id"`
 	// AccountID 是旧版单 Key 绑定字段。能力路由改用 EndpointAccounts 后仅保留用于版本回退。
-	AccountID uint `gorm:"index;default:0;comment:所属账号(key)ID,0=渠道级兼容" json:"account_id"`
+	AccountID       uint               `gorm:"index;default:0;comment:所属账号(key)ID,0=渠道级兼容" json:"account_id"`
+	OriginType      EndpointOriginType `gorm:"type:varchar(32);not null;default:'legacy_unknown';index;comment:端点创建来源" json:"origin_type"`
+	OriginAccountID uint               `gorm:"not null;default:0;index;comment:创建来源Key ID" json:"origin_account_id"`
+	OriginSnapshot  datatypes.JSON     `gorm:"type:json;comment:创建来源快照" json:"origin_snapshot"`
+	DiscoveredAt    *time.Time         `gorm:"comment:自动发现时间" json:"discovered_at"`
 
 	// 协议
 	Protocol      Protocol `gorm:"type:varchar(20);not null;default:'openai';comment:协议类型" json:"protocol"`
@@ -178,15 +196,18 @@ const (
 // ImageEdit 从 ExtraConfig 解析图生图配置,未配置或未启用返回 nil
 func (e *Endpoint) ImageEdit() *ImageEditConfig {
 	if len(e.ExtraConfig) == 0 {
-		return nil
+		return e.inferredImageEdit()
 	}
 	var cfg struct {
 		ImageEdit *ImageEditConfig `json:"image_edit"`
 	}
 	if err := json.Unmarshal(e.ExtraConfig, &cfg); err != nil {
-		return nil
+		return e.inferredImageEdit()
 	}
-	if cfg.ImageEdit == nil || !cfg.ImageEdit.Enabled {
+	if cfg.ImageEdit == nil {
+		return e.inferredImageEdit()
+	}
+	if !cfg.ImageEdit.Enabled {
 		return nil
 	}
 	cfg.ImageEdit.InputMode = strings.ToLower(strings.TrimSpace(cfg.ImageEdit.InputMode))
@@ -209,4 +230,24 @@ func (e *Endpoint) ImageEdit() *ImageEditConfig {
 		}
 	}
 	return cfg.ImageEdit
+}
+
+// inferredImageEdit preserves compatibility with legacy multipart edit endpoints
+// that declared /images/edits directly without an extra_config.image_edit block.
+func (e *Endpoint) inferredImageEdit() *ImageEditConfig {
+	path := strings.TrimSpace(e.RequestPath)
+	if index := strings.IndexByte(path, '?'); index >= 0 {
+		path = path[:index]
+	}
+	path = strings.TrimRight(strings.ToLower(path), "/")
+	if (path != "/v1/images/edits" && !strings.HasSuffix(path, "/images/edits")) ||
+		!strings.Contains(strings.ToLower(strings.TrimSpace(e.ContentType)), "multipart/form-data") {
+		return nil
+	}
+	return &ImageEditConfig{
+		Enabled:   true,
+		InputMode: ImageInputModeMultipart,
+		EditPath:  path,
+		FileField: "image",
+	}
 }

@@ -59,11 +59,6 @@ func chatPlan(operation transport.Operation, request canonical.Request, features
 	if field := transport.UnsupportedProviderCallIDState(request); field != "" {
 		return transport.Unsupported(operation, "OpenAI Chat cannot preserve "+field)
 	}
-	for _, tool := range request.Tools {
-		if tool.Type != "" && tool.Type != "function" {
-			return transport.Unsupported(operation, "OpenAI Chat only supports function tools")
-		}
-	}
 	if request.Reasoning != nil && (request.Reasoning.Summary != "" || !transport.RawObjectHasOnlyFields(request.Reasoning.Raw, "effort")) {
 		return transport.Unsupported(operation, "OpenAI Chat cannot preserve these reasoning controls")
 	}
@@ -76,6 +71,8 @@ func chatPlan(operation transport.Operation, request canonical.Request, features
 			chatAnnotations: true, chatAudio: true,
 		},
 		Content: map[string]bool{transport.ExtensionChatRawContent: true},
+		// 上游内置工具(如 xAI web_search_preview)的原始 JSON 存在 Tool.Options 里，chatTools 会原样透传。
+		PreserveToolOptions: true,
 	}
 	if extension := transport.UnsupportedRequestExtension(request, policy); extension != "" {
 		return transport.Unsupported(operation, "OpenAI Chat cannot preserve "+extension)
@@ -676,8 +673,21 @@ func responseReasoningSummary(content []canonical.Content) []any {
 func chatTools(tools []canonical.Tool) ([]any, error) {
 	result := make([]any, 0, len(tools))
 	for _, tool := range tools {
-		if tool.Type != "" && tool.Type != "function" {
-			return nil, fmt.Errorf("OpenAI Chat cannot encode tool %q", tool.Type)
+		typeName := tool.Type
+		if typeName != "" && typeName != "function" {
+			// 非 function 类型工具（如 xAI web_search_preview）：Options 存储原始 JSON，直接透传，不包 function 外层。
+			value := map[string]any{}
+			if len(tool.Options) > 0 {
+				if err := json.Unmarshal(tool.Options, &value); err != nil {
+					return nil, fmt.Errorf("tool %q options: %w", typeName, err)
+				}
+			}
+			value["type"] = typeName
+			if tool.Name != "" {
+				value["name"] = tool.Name
+			}
+			result = append(result, value)
+			continue
 		}
 		function := map[string]any{"name": tool.Name}
 		if tool.Description != "" {

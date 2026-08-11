@@ -67,7 +67,7 @@ func UpdateChannelCapability(c *gin.Context) {
 	}
 
 	allowedFields := map[string]bool{
-		"model_code": true, "channel_id": true,
+		"model_code": true, "route_operation": true, "supported_operations": true, "channel_id": true,
 		"protocol": true, "request_path": true, "request_method": true, "content_type": true,
 		"auth_location": true, "auth_key": true, "auth_value_prefix": true,
 		"vendor_model":     true,
@@ -88,7 +88,7 @@ func UpdateChannelCapability(c *gin.Context) {
 		}
 	}
 
-	jsonFields := []string{"param_schema", "param_mapping", "response_mapping", "callback_mapping", "extra_config", "extra_headers", "poll_param_mapping", "poll_response_mapping"}
+	jsonFields := []string{"supported_operations", "param_schema", "param_mapping", "response_mapping", "callback_mapping", "extra_config", "extra_headers", "poll_param_mapping", "poll_response_mapping"}
 	for _, field := range jsonFields {
 		if v, ok := req[field]; ok {
 			if v == nil {

@@ -1,4 +1,5 @@
 import React, { useState } from 'react';
+import { Select } from '../../components/ui';
 import { ThinkingConfig, ThinkingOption } from '../../types';
 
 // 各 provider 预设模板:body 已按协议标准写法填好,一键套用后可再改
@@ -107,11 +108,8 @@ const ThinkingConfigEditor: React.FC<Props> = ({ value, onChange, provider }) =>
             {enabled && value && (
                 <div className="space-y-3 border border-[var(--border-soft)] rounded-lg p-3 bg-[var(--surface)]">
                     <div className="flex items-center gap-3 flex-wrap">
-                        <select onChange={e => e.target.value && applyPreset(e.target.value)} value=""
-                            className="px-2 py-1 text-sm border border-[var(--border-soft)] rounded bg-[var(--surface)]">
-                            <option value="">套用预设模板...</option>
-                            {Object.keys(PRESETS).map(p => <option key={p} value={p}>{p}</option>)}
-                        </select>
+                        <Select onChange={v => v && applyPreset(v)} value=""
+                            options={[{ label: '套用预设模板...', value: '' }, ...Object.keys(PRESETS).map(p => ({ label: p, value: p }))]} />
                         <label className="inline-flex items-center gap-1.5 text-sm cursor-pointer">
                             <input type="checkbox" checked={!!value.locked}
                                 onChange={e => patch({ locked: e.target.checked })}
@@ -120,10 +118,8 @@ const ThinkingConfigEditor: React.FC<Props> = ({ value, onChange, provider }) =>
                         </label>
                         <label className="inline-flex items-center gap-1.5 text-sm">
                             默认档位
-                            <select value={value.default || ''} onChange={e => patch({ default: e.target.value })}
-                                className="px-2 py-1 text-sm border border-[var(--border-soft)] rounded bg-[var(--surface)]">
-                                {value.options.map((o, i) => <option key={i} value={o.value}>{o.label || o.value}</option>)}
-                            </select>
+                            <Select value={value.default || ''} onChange={v => patch({ default: v })}
+                                options={value.options.map(o => ({ label: o.label || o.value, value: o.value }))} />
                         </label>
                     </div>
 

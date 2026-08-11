@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react';
-import { Plus, Search, RefreshCw, Edit3, Trash2, Shield, ChevronDown, ChevronRight, Key, Cpu, X, Power, Copy, GripVertical } from 'lucide-react';
+import { Plus, Search, RefreshCw, Edit3, Trash2, Shield, ChevronDown, ChevronRight, Key, Cpu, X, Power, Copy, GripVertical, ScanSearch } from 'lucide-react';
 import { DndContext, PointerSensor, closestCenter, useSensor, useSensors, DragStartEvent, DragEndEvent } from '@dnd-kit/core';
 import { SortableContext, arrayMove, useSortable, verticalListSortingStrategy } from '@dnd-kit/sortable';
 import { CSS } from '@dnd-kit/utilities';
@@ -22,6 +22,9 @@ import {
 import {Channel, ChannelAccount, ChannelCapability, Capability} from '../types';
 import { ChannelModal, AccountModal } from './ChannelModals';
 import ChannelCapabilityModal from './capabilities/ChannelCapabilityModal';
+import AccountEndpointModelImportModal from './capabilities/AccountEndpointModelImportModal';
+import { getEndpointOperationLabel } from './capabilities/CapabilityEndpointList';
+import { useAppDialog } from '../components/ui';
 
 const STATUS_MAP: Record<number, { label: string; color: string }> = {
   1: { label: '已启用', color: 'bg-green-100 text-green-700' },
@@ -54,6 +57,7 @@ const ChannelRow: React.FC<{
   onEditAccount: (acc: ChannelAccount) => void;
   onDeleteAccount: (id: string) => void;
   onToggleAccountStatus: (acc: ChannelAccount) => void;
+  onDiscoverAccount: (acc: ChannelAccount) => void;
     onAddCapability: (acc: ChannelAccount) => void;
     onEditCapability: (c: ChannelCapability) => void;
     onDeleteCapability: (id: string) => void;
@@ -62,9 +66,10 @@ const ChannelRow: React.FC<{
 }> = ({
   channel, canDrag, expanded, onToggle, onEdit, onDelete, onToggleStatus,
           accounts, capabilities, onAddAccount, onEditAccount, onDeleteAccount, onToggleAccountStatus,
-          onAddCapability, onEditCapability, onDeleteCapability, onToggleCapabilityStatus, onClearCircuit
+          onAddCapability, onEditCapability, onDeleteCapability, onToggleCapabilityStatus, onClearCircuit, onDiscoverAccount
 }) => {
   const status = STATUS_MAP[channel.status] || STATUS_MAP[0];
+  const discoveryEnabled = channel.config?.endpoint_discovery?.enabled === true;
   const [copiedAccountId, setCopiedAccountId] = useState<string | null>(null);
   // 选中的 key: 选中后右侧「能力端点」区只展示该 key 的端点
   const [selectedAccountId, setSelectedAccountId] = useState<string | null>(null);
@@ -160,6 +165,9 @@ const ChannelRow: React.FC<{
                 <div className="flex items-center justify-between mb-3">
                   <h4 className="text-sm font-bold text-[var(--text-primary)] flex items-center gap-2">
                     <Key size={14} /> 账号 (Key)
+                    <span className={`rounded px-1.5 py-0.5 text-[10px] font-medium ${discoveryEnabled ? 'bg-sky-50 text-sky-700' : 'bg-gray-100 text-gray-600'}`}>
+                      {discoveryEnabled ? '模型发现' : '手动配置'}
+                    </span>
                   </h4>
                   <button onClick={onAddAccount} className="text-xs text-[var(--primary)] hover:text-[var(--primary)] flex items-center gap-1">
                     <Plus size={14} /> 添加
@@ -197,12 +205,15 @@ const ChannelRow: React.FC<{
                             </div>
                           )}
                         </div>
-                        <div className="flex items-center gap-1 md:opacity-0 md:group-hover/acc:opacity-100 shrink-0">
+                        <div className="flex items-center gap-1 shrink-0">
+                          {discoveryEnabled && <button type="button" disabled={acc.status !== 1} onClick={e => { e.stopPropagation(); onDiscoverAccount(acc); }} className="inline-flex items-center gap-1 rounded px-2 py-1 text-xs font-medium text-sky-700 hover:bg-sky-50 disabled:cursor-not-allowed disabled:opacity-40" title="发现上游模型"><ScanSearch size={12} /><span className="hidden lg:inline">发现模型</span></button>}
+                          <div className="flex items-center gap-1 md:opacity-0 md:group-hover/acc:opacity-100">
                           <button onClick={e => { e.stopPropagation(); handleCopyApiKey(acc.id, acc.apiKey || acc.maskedKey || ''); }} className="p-1 hover:bg-gray-200 rounded" title="复制 API Key"><Copy size={12} /></button>
                           {copiedAccountId === acc.id && <span className="text-[10px] font-medium text-green-600 px-1">已复制</span>}
                           <button onClick={e => { e.stopPropagation(); onToggleAccountStatus(acc); }} className="p-1 hover:bg-gray-200 rounded"><Power size={12} /></button>
                           <button onClick={e => { e.stopPropagation(); onEditAccount(acc); }} className="p-1 hover:bg-gray-200 rounded"><Edit3 size={12} /></button>
                           <button onClick={e => { e.stopPropagation(); onDeleteAccount(acc.id); }} className="p-1 hover:bg-red-100 text-red-500 rounded"><Trash2 size={12} /></button>
+                          </div>
                         </div>
                       </div>
                       );
@@ -223,7 +234,7 @@ const ChannelRow: React.FC<{
                       {selectedAccount && (
                         <button onClick={() => onAddCapability(selectedAccount)}
                                 className="text-xs text-[var(--primary)] hover:text-[var(--primary)] flex items-center gap-1">
-                          <Plus size={14} /> 添加
+                          <Plus size={14} /> 手动添加
                         </button>
                       )}
                   </div>
@@ -250,6 +261,9 @@ const ChannelRow: React.FC<{
                                           'bg-gray-100 text-gray-600'
                                       }`}>{c.modelType}</span>
                                   )}
+                                  <span className={`rounded px-1.5 py-0.5 text-[10px] font-medium ${c.routeOperation ? 'bg-emerald-50 text-emerald-700' : 'bg-amber-50 text-amber-700'}`}>
+                                    {getEndpointOperationLabel(c)}
+                                  </span>
                               </div>
                             <div className="text-xs text-[var(--text-secondary)]">
                                 {c.capabilityCode}{c.model ? ` → ${c.model}` : ''} | ¥{c.price}
@@ -279,6 +293,7 @@ const ChannelRow: React.FC<{
 };
 
 const Channels: React.FC = () => {
+  const { askConfirmation } = useAppDialog();
   const [channels, setChannels] = useState<Channel[]>([]);
   const [accounts, setAccounts] = useState<Record<string, ChannelAccount[]>>({});
     const [capabilities, setCapabilities] = useState<Record<string, ChannelCapability[]>>({});
@@ -291,6 +306,7 @@ const Channels: React.FC = () => {
   const [channelModal, setChannelModal] = useState<{ open: boolean; channel: Channel | null }>({ open: false, channel: null });
   const [accountModal, setAccountModal] = useState<{ open: boolean; channelId: string; account: ChannelAccount | null }>({ open: false, channelId: '', account: null });
   const [ccModal, setCcModal] = useState<{ open: boolean; channelId: string; accountId: string; cc: ChannelCapability | null }>({ open: false, channelId: '', accountId: '', cc: null });
+  const [accountDiscovery, setAccountDiscovery] = useState<{ accountId: string | null; name?: string }>({ accountId: null });
 
   // showSkeleton=false: 静默刷新(不显示骨架屏),避免编辑/保存后表格整体重渲染导致滚动跳顶
   const loadData = async (showSkeleton = true) => {
@@ -340,7 +356,13 @@ const Channels: React.FC = () => {
   };
 
   const handleDeleteChannel = async (id: string) => {
-    if (!confirm('确定删除此渠道？')) return;
+    const confirmed = await askConfirmation({
+      title: '删除渠道？',
+      description: '该渠道及其关联配置将被删除，此操作无法撤销。',
+      confirmLabel: '删除渠道',
+      tone: 'danger',
+    });
+    if (!confirmed) return;
     await deleteChannel(id);
     await loadData(false);
   };
@@ -362,7 +384,13 @@ const Channels: React.FC = () => {
   };
 
   const handleDeleteAccount = async (channelId: string, accountId: string) => {
-    if (!confirm('确定删除此账号？')) return;
+    const confirmed = await askConfirmation({
+      title: '删除账号？',
+      description: '该账号及其关联路由配置将被删除。',
+      confirmLabel: '删除账号',
+      tone: 'danger',
+    });
+    if (!confirmed) return;
     await deleteChannelAccount(accountId);
     await loadChannelDetails(channelId);
     await loadData(false);
@@ -374,7 +402,13 @@ const Channels: React.FC = () => {
   };
 
     const handleDeleteCapability = async (channelId: string, capabilityId: string) => {
-        if (!confirm('确定删除此能力配置？')) return;
+      const confirmed = await askConfirmation({
+        title: '删除能力配置？',
+        description: '删除后，该账号将不能再通过此配置提供对应能力。',
+        confirmLabel: '删除配置',
+        tone: 'danger',
+      });
+      if (!confirmed) return;
         await deleteChannelCapability(capabilityId);
     await loadChannelDetails(channelId);
     await loadData(false);
@@ -506,6 +540,7 @@ const Channels: React.FC = () => {
                     onEditAccount={acc => setAccountModal({ open: true, channelId: channel.id, account: acc })}
                     onDeleteAccount={id => handleDeleteAccount(channel.id, id)}
                     onToggleAccountStatus={acc => handleToggleAccountStatus(channel.id, acc)}
+                    onDiscoverAccount={acc => setAccountDiscovery({ accountId: acc.id, name: acc.name })}
                     onAddCapability={acc => setCcModal({ open: true, channelId: channel.id, accountId: acc.id, cc: null })}
                     onEditCapability={c => setCcModal({ open: true, channelId: channel.id, accountId: c.accountId, cc: c })}
                     onDeleteCapability={id => handleDeleteCapability(channel.id, id)}
@@ -550,6 +585,18 @@ const Channels: React.FC = () => {
           setCcModal({ open: false, channelId: '', accountId: '', cc: null });
           if (cid) await loadChannelDetails(cid);
           await loadData(false);
+        }}
+      />
+      <AccountEndpointModelImportModal
+        accountId={accountDiscovery.accountId}
+        accountName={accountDiscovery.name}
+        onClose={() => setAccountDiscovery({ accountId: null })}
+        onImported={async () => {
+          const current = accountDiscovery.accountId;
+          if (current) {
+            const channel = channels.find(item => (accounts[item.id] || []).some(account => account.id === current));
+            if (channel) await loadChannelDetails(channel.id);
+          }
         }}
       />
     </div>

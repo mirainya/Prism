@@ -1,5 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import { Modal } from '../../components/ui/Modal';
+import { Select } from '../../components/ui';
 import JsonEditor from '../../components/ui/JsonEditor';
 import { createCapability, updateCapability } from '../../services/api';
 import { Capability } from '../../types';
@@ -27,8 +28,6 @@ const CapabilityModal: React.FC<{
         }
         setJsonError('');
     }, [capability, isOpen]);
-
-    if (!isOpen) return null;
 
     const validateJson = (text: string) => {
         try { JSON.parse(text); setJsonError(''); return true; }
@@ -75,7 +74,7 @@ const CapabilityModal: React.FC<{
     }, {});
 
     return (
-        <Modal open={true} onClose={onClose} title={capability ? '编辑能力' : '新建能力'} width="max-w-2xl">
+        <Modal open={isOpen} onClose={onClose} title={capability ? '编辑能力' : '新建能力'} width="max-w-2xl">
                 <form onSubmit={handleSubmit} className="space-y-4 max-h-[70vh] overflow-y-auto">
                     <div className="grid grid-cols-2 gap-4">
                         <div>
@@ -94,10 +93,8 @@ const CapabilityModal: React.FC<{
                     <div className="grid grid-cols-2 gap-4">
                         <div>
                             <label className="block text-sm font-medium text-[var(--text-primary)] mb-1">类型 *</label>
-                            <select value={form.type} onChange={e => setForm({...form, type: e.target.value})}
-                                className="w-full px-3 py-2 border border-[var(--border-soft)] rounded-lg focus:outline-none focus:ring-2 focus:ring-[var(--primary)]">
-                                {CAPABILITY_TYPES.map(t => (<option key={t.value} value={t.value}>{t.label}</option>))}
-                            </select>
+                            <Select value={form.type} onChange={v => setForm({...form, type: v})}
+                                options={CAPABILITY_TYPES.map(t => ({ label: t.label, value: t.value }))} />
                         </div>
                         <div>
                             <label className="block text-sm font-medium text-[var(--text-primary)] mb-1">描述</label>

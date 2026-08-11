@@ -1,5 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import { Modal } from '../components/ui/Modal';
+import { Select } from '../components/ui';
 import { Channel, ChannelAccount } from '../types';
 
 // 新建/编辑渠道弹窗
@@ -9,31 +10,48 @@ export const ChannelModal: React.FC<{
   onClose: () => void;
   onSave: (data: any) => Promise<void>;
 }> = ({ isOpen, channel, onClose, onSave }) => {
-  const [form, setForm] = useState({ type: '', name: '', base_url: '', config: '{}', image_to_base64: false });
+  const [form, setForm] = useState({ type: '', name: '', base_url: '', config: '{}', image_to_base64: false,
+    discoveryEnabled: false, discoveryPath: '/v1/models', generationPath: '/v1/images/generations', editPath: '/v1/images/edits',
+    authLocation: 'header', authKey: 'Authorization', authValuePrefix: 'Bearer ', generate: true, edit: true });
   const [loading, setLoading] = useState(false);
   const [jsonError, setJsonError] = useState('');
+  const [discoveryError, setDiscoveryError] = useState('');
 
   useEffect(() => {
     if (channel) {
       const cfg = channel.config || {};
-      const { image_to_base64, ...restConfig } = cfg as any;
+      const { image_to_base64, endpoint_discovery, ...restConfig } = cfg as any;
+      const discovery = endpoint_discovery || {};
       setForm({
         type: channel.type,
         name: channel.name,
         base_url: channel.baseUrl,
         config: JSON.stringify(restConfig, null, 2),
         image_to_base64: !!image_to_base64,
+        discoveryEnabled: !!discovery.enabled,
+        discoveryPath: discovery.discovery_path || '/v1/models',
+        generationPath: discovery.generation_path || '/v1/images/generations',
+        editPath: discovery.edit_path || '/v1/images/edits',
+        authLocation: discovery.auth_location || 'header',
+        authKey: discovery.auth_key || 'Authorization',
+        authValuePrefix: discovery.auth_value_prefix ?? 'Bearer ',
+        generate: (discovery.operations || ['images.generate', 'images.edit']).includes('images.generate'),
+        edit: (discovery.operations || ['images.generate', 'images.edit']).includes('images.edit'),
       });
     } else {
-      setForm({ type: '', name: '', base_url: '', config: '{}', image_to_base64: false });
+      setForm({ type: '', name: '', base_url: '', config: '{}', image_to_base64: false, discoveryEnabled: false, discoveryPath: '/v1/models', generationPath: '/v1/images/generations', editPath: '/v1/images/edits', authLocation: 'header', authKey: 'Authorization', authValuePrefix: 'Bearer ', generate: true, edit: true });
     }
     setJsonError('');
+    setDiscoveryError('');
   }, [channel, isOpen]);
-
-  if (!isOpen) return null;
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (form.discoveryEnabled && !form.generate && !form.edit) {
+      setDiscoveryError('至少选择一个可导入操作');
+      return;
+    }
+    setDiscoveryError('');
     try {
       JSON.parse(form.config);
       setJsonError('');
@@ -43,11 +61,22 @@ export const ChannelModal: React.FC<{
     }
     setLoading(true);
     try {
+      const config = JSON.parse(form.config);
+      if (form.discoveryEnabled) {
+        config.endpoint_discovery = {
+          enabled: true, adapter: 'openai.images', discovery_path: form.discoveryPath,
+          generation_path: form.generationPath, edit_path: form.editPath,
+          operations: [form.generate ? 'images.generate' : '', form.edit ? 'images.edit' : ''].filter(Boolean),
+          auth_location: form.authLocation, auth_key: form.authKey, auth_value_prefix: form.authValuePrefix,
+        };
+      } else {
+        delete config.endpoint_discovery;
+      }
       await onSave({
         type: form.type,
         name: form.name,
         base_url: form.base_url,
-        config: { ...JSON.parse(form.config), ...(form.image_to_base64 ? { image_to_base64: true } : {}) }
+        config: { ...config, ...(form.image_to_base64 ? { image_to_base64: true } : {}) }
       });
       onClose();
     } finally {
@@ -56,7 +85,7 @@ export const ChannelModal: React.FC<{
   };
 
   return (
-    <Modal open={true} onClose={onClose} title={channel ? '编辑渠道' : '新建渠道'}>
+    <Modal open={isOpen} onClose={onClose} title={channel ? '编辑渠道' : '新建渠道'}>
         <form onSubmit={handleSubmit} className="space-y-4">
           <div>
             <label className="block text-sm font-medium text-[var(--text-primary)] mb-1">渠道标识</label>
@@ -102,6 +131,19 @@ export const ChannelModal: React.FC<{
             />
             <label htmlFor="image_to_base64" className="text-sm text-[var(--text-primary)]">图片转 Base64</label>
             <span className="text-xs text-[var(--text-tertiary)]">上游无法访问图片 URL 时启用</span>
+          </div>
+          <div className="rounded-lg border border-[var(--border-soft)] p-3 space-y-3">
+            <label className="flex items-center gap-2 text-sm font-medium text-[var(--text-primary)]"><input type="checkbox" checked={form.discoveryEnabled} onChange={e => { setForm({ ...form, discoveryEnabled: e.target.checked }); setDiscoveryError(''); }} />启用 Key 级模型发现</label>
+            {form.discoveryEnabled && <div className="grid gap-2 md:grid-cols-2">
+              <label className="text-xs text-[var(--text-secondary)]">模型列表路径<input value={form.discoveryPath} onChange={e => setForm({ ...form, discoveryPath: e.target.value })} className="mt-1 w-full rounded border border-[var(--border-soft)] px-2 py-1.5 text-sm" /></label>
+              <label className="text-xs text-[var(--text-secondary)]">生成路径<input value={form.generationPath} onChange={e => setForm({ ...form, generationPath: e.target.value })} className="mt-1 w-full rounded border border-[var(--border-soft)] px-2 py-1.5 text-sm" /></label>
+              <label className="text-xs text-[var(--text-secondary)]">编辑路径<input value={form.editPath} onChange={e => setForm({ ...form, editPath: e.target.value })} className="mt-1 w-full rounded border border-[var(--border-soft)] px-2 py-1.5 text-sm" /></label>
+              <div className="text-xs text-[var(--text-secondary)]"><span className="block mb-1">认证位置</span><Select value={form.authLocation} onChange={v => setForm({ ...form, authLocation: v })} options={[{ label: 'Header', value: 'header' }, { label: 'Query', value: 'query' }]} /></div>
+              <label className="text-xs text-[var(--text-secondary)]">认证字段<input value={form.authKey} onChange={e => setForm({ ...form, authKey: e.target.value })} className="mt-1 w-full rounded border border-[var(--border-soft)] px-2 py-1.5 text-sm" /></label>
+              <label className="text-xs text-[var(--text-secondary)]">认证前缀<input value={form.authValuePrefix} onChange={e => setForm({ ...form, authValuePrefix: e.target.value })} className="mt-1 w-full rounded border border-[var(--border-soft)] px-2 py-1.5 text-sm" /></label>
+              <div className="flex items-center gap-4 text-xs text-[var(--text-primary)] md:col-span-2"><span>可导入操作</span><label className="inline-flex items-center gap-1"><input type="checkbox" checked={form.generate} onChange={e => { setForm({ ...form, generate: e.target.checked }); setDiscoveryError(''); }} />生成</label><label className="inline-flex items-center gap-1"><input type="checkbox" checked={form.edit} onChange={e => { setForm({ ...form, edit: e.target.checked }); setDiscoveryError(''); }} />编辑</label></div>
+              {discoveryError && <p className="text-xs text-red-500 md:col-span-2">{discoveryError}</p>}
+            </div>}
           </div>
           <div>
             <label className="block text-sm font-medium text-[var(--text-primary)] mb-1">渠道配置 (JSON)</label>
@@ -153,8 +195,6 @@ export const AccountModal: React.FC<{
     setJsonError('');
   }, [account, isOpen]);
 
-  if (!isOpen) return null;
-
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     try {
@@ -182,7 +222,7 @@ export const AccountModal: React.FC<{
   };
 
   return (
-    <Modal open={true} onClose={onClose} title={account ? '编辑账号' : '新建账号'}>
+    <Modal open={isOpen} onClose={onClose} title={account ? '编辑账号' : '新建账号'}>
         <form onSubmit={handleSubmit} className="space-y-4">
           <div>
             <label className="block text-sm font-medium text-[var(--text-primary)] mb-1">账号名称</label>

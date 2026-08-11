@@ -63,4 +63,13 @@ func RegisterRoutes(group *gin.RouterGroup) {
 	group.GET("/playground/:token_id/tasks", PlaygroundListTasks)
 	group.GET("/playground/:token_id/tasks/:task_no", PlaygroundGetTask)
 	group.POST("/playground/:token_id/tasks/:task_no/cancel", PlaygroundCancelTask)
+
+	// Video playground
+	group.GET("/playground/:token_id/videos/models", PlaygroundListVideoModels)
+	group.POST("/playground/:token_id/videos/assets", PlaygroundCreateVideoAsset)
+	group.POST("/playground/:token_id/videos/estimate", PlaygroundEstimateVideo)
+	group.POST("/playground/:token_id/videos/generations", PlaygroundCreateVideo)
+	group.GET("/playground/:token_id/videos/generations", PlaygroundListVideos)
+	group.GET("/playground/:token_id/videos/generations/:id", PlaygroundGetVideo)
+	group.POST("/playground/:token_id/videos/generations/:id/cancel", PlaygroundCancelVideo)
 }

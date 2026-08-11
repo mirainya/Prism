@@ -26,6 +26,8 @@ func RegisterRoutes(group *gin.RouterGroup) {
 	group.DELETE("/channel-accounts/:id", DeleteChannelAccount)
 	group.GET("/channel-accounts/:id/circuit-states", ListAccountCircuitStates)
 	group.DELETE("/channel-accounts/:id/circuit-states/:model_code", ClearAccountCircuitState)
+	group.GET("/channel-accounts/:id/discover", DiscoverChannelAccountModels)
+	group.POST("/channel-accounts/:id/import", ImportChannelAccountModels)
 
 	// 能力管理
 	group.GET("/capabilities", ListCapabilities)
@@ -41,6 +43,17 @@ func RegisterRoutes(group *gin.RouterGroup) {
 	group.POST("/channel-capabilities", CreateChannelCapability)
 	group.PUT("/channel-capabilities/:id", UpdateChannelCapability)
 	group.DELETE("/channel-capabilities/:id", DeleteChannelCapability)
+	group.GET("/channel-capabilities/:id/discover", DiscoverEndpointModels)
+	group.POST("/channel-capabilities/:id/import", ImportEndpointModels)
+
+	// Endpoint-native aliases. The legacy channel-capabilities paths remain valid.
+	group.GET("/endpoints", ListChannelCapabilities)
+	group.GET("/endpoints/:id", GetChannelCapability)
+	group.POST("/endpoints", CreateChannelCapability)
+	group.PUT("/endpoints/:id", UpdateChannelCapability)
+	group.DELETE("/endpoints/:id", DeleteChannelCapability)
+	group.GET("/endpoints/:id/discover", DiscoverEndpointModels)
+	group.POST("/endpoints/:id/import", ImportEndpointModels)
 
 	// 渠道请求日志
 	group.GET("/request-logs", ListRequestLogs)
@@ -77,5 +90,22 @@ func RegisterRoutes(group *gin.RouterGroup) {
 		gw.GET("/model-meta", ListGwModelMeta)
 		gw.PUT("/model-meta/:model_name", UpsertGwModelMeta)
 		gw.DELETE("/model-meta/:model_name", DeleteGwModelMeta)
+	}
+
+	// 视频引擎管理
+	vid := group.Group("/video")
+	{
+		vid.GET("/channels", ListVideoChannels)
+		vid.POST("/channels", CreateVideoChannel)
+		vid.GET("/channels/:id", GetVideoChannel)
+		vid.PUT("/channels/:id", UpdateVideoChannel)
+		vid.DELETE("/channels/:id", DeleteVideoChannel)
+		vid.GET("/channels/:id/keys", ListVideoChannelKeys)
+		vid.POST("/channels/:id/keys", CreateVideoChannelKey)
+		vid.PUT("/keys/:id", UpdateVideoKey)
+		vid.DELETE("/keys/:id", DeleteVideoKey)
+		vid.GET("/tasks", ListVideoTasks)
+		vid.GET("/tasks/:id", GetVideoTask)
+		vid.GET("/stats", GetVideoStats)
 	}
 }

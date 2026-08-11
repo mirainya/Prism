@@ -143,6 +143,10 @@ func (s *UnifiedService) selectAndAssignAccountForEndpoint(
 		if err != nil {
 			return err
 		}
+		adapterID, adapterRevisionID, endpointSnapshot, snapshotErr := snapshotEndpointExecutionTx(tx, ep)
+		if snapshotErr != nil {
+			return snapshotErr
+		}
 
 		result := tx.Model(&model.Task{}).
 			Where("id = ? AND status IN ? AND account_slot_released = ?", taskID,
@@ -151,6 +155,9 @@ func (s *UnifiedService) selectAndAssignAccountForEndpoint(
 				"endpoint_id":           ep.ID,
 				"channel_id":            ep.ChannelID,
 				"account_id":            selected.ID,
+				"adapter_id":            adapterID,
+				"adapter_revision_id":   adapterRevisionID,
+				"endpoint_snapshot":     endpointSnapshot,
 				"account_slot_released": false,
 			})
 		if result.Error != nil {

@@ -27,6 +27,7 @@ type InvokeRequest struct {
 	RequestID       string
 	Endpoint        string
 	Operation       string
+	RouteOperation  string
 	Capability      string
 	Channel         string
 	Model           string
@@ -37,6 +38,9 @@ type InvokeRequest struct {
 	// 立即返回 task_no，由前端轮询取终态。
 	// 仅 playground 置 true;对外 OpenAI 等接口须同步返图,保持 false。
 	Async bool
+	// EventSink 非 nil 时，SSE 上游的每个事件原始 payload 会写入此通道。
+	// 用于 stream=true 的图像接口把进度事件透传给客户端。
+	EventSink chan<- []byte
 }
 
 // InvokeResponse 能力调用响应
@@ -163,6 +167,7 @@ func capabilityPricingSnapshot(req *InvokeRequest, endpoint *model.Endpoint, cos
 	value, err := json.Marshal(map[string]any{
 		"capability":       strings.TrimSpace(req.Capability),
 		"model":            strings.TrimSpace(req.Model),
+		"route_operation":  strings.TrimSpace(req.RouteOperation),
 		"endpoint_id":      endpoint.ID,
 		"model_code":       endpoint.ModelCode,
 		"vendor_model":     endpoint.VendorModel,
@@ -264,6 +269,10 @@ func (s *UnifiedService) reserveInitialCapabilityTask(
 			return err
 		}
 		cost := chosen.InputPrice
+		adapterID, adapterRevisionID, endpointSnapshot, err := snapshotEndpointExecutionTx(tx, chosen)
+		if err != nil {
+			return fmt.Errorf("snapshot endpoint execution: %w", err)
+		}
 		if err := s.billingService.deductWithBillingContextTx(
 			tx, req.TokenID, req.UserID, cost, taskNo+":reserve", BillingContext{
 				CallID:          req.CallID,
@@ -274,20 +283,23 @@ func (s *UnifiedService) reserveInitialCapabilityTask(
 			return err
 		}
 
-		var err error
 		task, err = NewTaskService().createTask(tx, &CreateTaskRequest{
-			TaskNo:        taskNo,
-			CallID:        req.CallID,
-			UserID:        req.UserID,
-			TokenID:       req.TokenID,
-			ModelCode:     req.Capability,
-			ChannelID:     channel.ID,
-			EndpointID:    chosen.ID,
-			AccountID:     account.ID,
-			RequestParams: req.Params,
-			MappedParams:  mapParams(req.Params, chosen.ParamMapping),
-			CallbackURL:   req.CallbackURL,
-			Cost:          cost,
+			TaskNo:            taskNo,
+			CallID:            req.CallID,
+			UserID:            req.UserID,
+			TokenID:           req.TokenID,
+			ModelCode:         req.Capability,
+			RouteOperation:    req.RouteOperation,
+			ChannelID:         channel.ID,
+			EndpointID:        chosen.ID,
+			AccountID:         account.ID,
+			AdapterID:         adapterID,
+			AdapterRevisionID: adapterRevisionID,
+			EndpointSnapshot:  endpointSnapshot,
+			RequestParams:     req.Params,
+			MappedParams:      mapParams(req.Params, chosen.ParamMapping),
+			CallbackURL:       req.CallbackURL,
+			Cost:              cost,
 		})
 		return err
 	})
@@ -416,7 +428,7 @@ func (s *UnifiedService) executeSyncWithFallback(ctx context.Context, task *mode
 			}
 
 			result, callAttempt, inFlightCheckpoint, submitErr := s.doSubmit(
-				ctx, lease, task, ep, &channel, account, mappedParams,
+				ctx, lease, task, ep, &channel, account, mappedParams, req.EventSink,
 			)
 			if inFlightCheckpoint != nil {
 				if leaseErr := lease.Check(); leaseErr != nil {
@@ -661,7 +673,7 @@ func recoverSynchronousSubmit(taskID uint, lease **TaskWorkerLease, cause error)
 }
 
 // doSubmit executes one upstream submit without changing task state or account counters.
-func (s *UnifiedService) doSubmit(ctx context.Context, lease *TaskWorkerLease, task *model.Task, endpoint *model.Endpoint, channel *model.Channel, account *model.ChannelAccount, mappedParams map[string]any) (provider.SubmitResult, *model.APICallAttempt, *TaskSubmitCheckpoint, error) {
+func (s *UnifiedService) doSubmit(ctx context.Context, lease *TaskWorkerLease, task *model.Task, endpoint *model.Endpoint, channel *model.Channel, account *model.ChannelAccount, mappedParams map[string]any, eventSink chan<- []byte) (provider.SubmitResult, *model.APICallAttempt, *TaskSubmitCheckpoint, error) {
 	// multipart 端点：将参数中的文件 URL 下载并转为 @base64:filename:data 格式
 	resolvedParams, err := resolveFileParams(ctx, mappedParams, endpoint, endpoint.ModelCode)
 	if err != nil {
@@ -688,8 +700,9 @@ func (s *UnifiedService) doSubmit(ctx context.Context, lease *TaskWorkerLease, t
 		return provider.SubmitResult{}, attempt, checkpoint, fmt.Errorf("verify submit lease: %w", err)
 	}
 	result, submitErr := prov.Submit(ctx, provider.SubmitRequest{
-		TaskNo: task.TaskNo,
-		Params: resolvedParams,
+		TaskNo:    task.TaskNo,
+		Params:    resolvedParams,
+		EventSink: eventSink,
 	})
 	return result, attempt, checkpoint, submitErr
 }
@@ -737,6 +750,9 @@ func (s *UnifiedService) HandleCallback(ctx context.Context, authenticatedTask *
 
 	var endpoint model.Endpoint
 	if err := model.DB().First(&endpoint, task.EndpointID).Error; err != nil {
+		return err
+	}
+	if err := ApplyTaskEndpointSnapshot(task, &endpoint); err != nil {
 		return err
 	}
 	if endpoint.ChannelID != task.ChannelID {
@@ -857,10 +873,15 @@ func (s *UnifiedService) findEndpointsForCapability(req *InvokeRequest) ([]model
 	if requestedModel != "" && requestedModel != capability {
 		findRequestedModel := func(modelName string) error {
 			endpoints = nil
-			return buildQuery().
+			err := buildQuery().
 				Where("(model_code = ? OR vendor_model = ?)", modelName, modelName).
 				Order("priority DESC, id ASC").
 				Find(&endpoints).Error
+			if err != nil {
+				return err
+			}
+			endpoints = filterEndpointsByRouteOperation(endpoints, req.RouteOperation)
+			return nil
 		}
 		if err := findRequestedModel(requestedModel); err != nil {
 			return nil, fmt.Errorf("find endpoints for requested model: %w", err)
@@ -884,6 +905,7 @@ func (s *UnifiedService) findEndpointsForCapability(req *InvokeRequest) ([]model
 	if err := buildQuery().Where("model_code = ?", capability).Order("priority DESC, id ASC").Find(&endpoints).Error; err != nil {
 		return nil, fmt.Errorf("find endpoints for capability: %w", err)
 	}
+	endpoints = filterEndpointsByRouteOperation(endpoints, req.RouteOperation)
 	if len(endpoints) == 0 {
 		if requestedModel != "" {
 			return nil, fmt.Errorf("no available endpoint for model: %s", requestedModel)
@@ -891,6 +913,52 @@ func (s *UnifiedService) findEndpointsForCapability(req *InvokeRequest) ([]model
 		return nil, fmt.Errorf("no available endpoint for capability: %s", capability)
 	}
 	return endpoints, nil
+}
+
+func filterEndpointsByRouteOperation(endpoints []model.Endpoint, routeOperation string) []model.Endpoint {
+	routeOperation = strings.TrimSpace(routeOperation)
+	if routeOperation == "" {
+		return endpoints
+	}
+	filtered := make([]model.Endpoint, 0, len(endpoints))
+	for i := range endpoints {
+		if endpointSupportsRouteOperation(&endpoints[i], routeOperation) {
+			filtered = append(filtered, endpoints[i])
+		}
+	}
+	return filtered
+}
+
+func endpointSupportsRouteOperation(endpoint *model.Endpoint, routeOperation string) bool {
+	if endpoint == nil {
+		return false
+	}
+	routeOperation = strings.TrimSpace(routeOperation)
+	if declared := endpointDeclaredRouteOperations(endpoint); len(declared) > 0 {
+		for _, operation := range declared {
+			if operation == routeOperation {
+				return true
+			}
+		}
+		return false
+	}
+	switch routeOperation {
+	case RouteOperationImagesEdit:
+		return endpointImageEditPath(endpoint) || endpoint.ImageEdit() != nil
+	case RouteOperationImagesGenerate:
+		return !endpointImageEditPath(endpoint)
+	default:
+		return true
+	}
+}
+
+func endpointImageEditPath(endpoint *model.Endpoint) bool {
+	path := strings.TrimSpace(endpoint.RequestPath)
+	if index := strings.IndexByte(path, '?'); index >= 0 {
+		path = path[:index]
+	}
+	path = strings.TrimRight(strings.ToLower(path), "/")
+	return path == "/v1/images/edits" || strings.HasSuffix(path, "/images/edits")
 }
 
 func openAIImageModelAlias(requestedModel, capability string) string {

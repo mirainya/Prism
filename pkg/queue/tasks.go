@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"time"
 
 	"github.com/hibiken/asynq"
 )
@@ -16,8 +17,13 @@ const (
 	TypeTaskTimeoutCheck    = "task:timeout_check"
 	TypeResponseBackground  = "response:background"
 	TypeResponseRecovery    = "response:recovery"
+	TypeVideoSubmit         = "video:submit"
+	TypeVideoPoll           = "video:poll"
+	TypeVideoNotify         = "video:notify"
 	responseBackgroundQueue = "default"
 	taskSubmitQueue         = "critical"
+	videoSubmitQueue        = "critical"
+	videoPollQueue          = "default"
 )
 
 type TaskSubmitPayload struct {
@@ -201,6 +207,157 @@ func EnqueueTaskUpload(taskID uint, originURL string, urls []string, revisedProm
 	_, err = Client.Enqueue(task,
 		asynq.Queue("default"),
 		asynq.TaskID(fmt.Sprintf("task-upload-%d", taskID)),
+	)
+	if errors.Is(err, asynq.ErrTaskIDConflict) {
+		return nil
+	}
+	return err
+}
+
+// --- Video Engine Queue ---
+
+type VideoSubmitPayload struct {
+	TaskID string `json:"task_id"`
+}
+
+type VideoPollPayload struct {
+	TaskID    string `json:"task_id"`
+	PollCount int    `json:"poll_count"`
+}
+
+type VideoNotifyPayload struct {
+	TaskID string `json:"task_id"`
+}
+
+func EnqueueVideoSubmit(taskID string) error {
+	if Client == nil {
+		return errors.New("queue client is not initialized")
+	}
+	payloadBytes, err := json.Marshal(VideoSubmitPayload{TaskID: taskID})
+	if err != nil {
+		return err
+	}
+	task := asynq.NewTask(TypeVideoSubmit, payloadBytes)
+	_, err = Client.Enqueue(task,
+		asynq.Queue(videoSubmitQueue),
+		asynq.TaskID(videoSubmitTaskID(taskID)),
+		asynq.MaxRetry(DefaultMaxRetry()),
+	)
+	if errors.Is(err, asynq.ErrTaskIDConflict) {
+		return nil
+	}
+	return err
+}
+
+// RecoverVideoSubmit recreates a missing or stale queue entry from video_tasks.
+func RecoverVideoSubmit(taskID string) error {
+	if Client == nil {
+		return errors.New("queue client is not initialized")
+	}
+	inspector := asynq.NewInspector(redisClientOpt())
+	defer inspector.Close()
+	queueTaskID := videoSubmitTaskID(taskID)
+	info, err := inspector.GetTaskInfo(videoSubmitQueue, queueTaskID)
+	if err != nil {
+		if errors.Is(err, asynq.ErrTaskNotFound) || errors.Is(err, asynq.ErrQueueNotFound) {
+			return EnqueueVideoSubmit(taskID)
+		}
+		return fmt.Errorf("inspect video submit %s: %w", taskID, err)
+	}
+	if info.Type != TypeVideoSubmit {
+		return fmt.Errorf("video submit ID %s belongs to type %s", queueTaskID, info.Type)
+	}
+	switch info.State {
+	case asynq.TaskStateActive, asynq.TaskStatePending, asynq.TaskStateScheduled,
+		asynq.TaskStateRetry, asynq.TaskStateAggregating:
+		return nil
+	case asynq.TaskStateArchived, asynq.TaskStateCompleted:
+		if err := inspector.DeleteTask(videoSubmitQueue, queueTaskID); err != nil {
+			return fmt.Errorf("delete stale video submit %s: %w", taskID, err)
+		}
+		return EnqueueVideoSubmit(taskID)
+	default:
+		return fmt.Errorf("video submit %s has unsupported state %s", taskID, info.State)
+	}
+}
+
+func videoSubmitTaskID(taskID string) string {
+	return "video-submit-" + taskID
+}
+
+func EnqueueVideoPoll(taskID string, pollCount int, delay ...int) error {
+	if Client == nil {
+		return errors.New("queue client is not initialized")
+	}
+	payloadBytes, err := json.Marshal(VideoPollPayload{TaskID: taskID, PollCount: pollCount})
+	if err != nil {
+		return err
+	}
+	task := asynq.NewTask(TypeVideoPoll, payloadBytes)
+	opts := []asynq.Option{
+		asynq.Queue(videoPollQueue),
+		asynq.TaskID(videoPollTaskID(taskID, pollCount)),
+		asynq.MaxRetry(DefaultMaxRetry()),
+	}
+	if len(delay) > 0 && delay[0] > 0 {
+		opts = append(opts, asynq.ProcessIn(time.Duration(delay[0])*time.Second))
+	}
+	_, err = Client.Enqueue(task, opts...)
+	if errors.Is(err, asynq.ErrTaskIDConflict) {
+		return nil
+	}
+	return err
+}
+
+// RecoverVideoPoll recreates a missing or stale poll task using its persisted poll count.
+func RecoverVideoPoll(taskID string, pollCount int) error {
+	if Client == nil {
+		return errors.New("queue client is not initialized")
+	}
+	inspector := asynq.NewInspector(redisClientOpt())
+	defer inspector.Close()
+	queueTaskID := videoPollTaskID(taskID, pollCount)
+	info, err := inspector.GetTaskInfo(videoPollQueue, queueTaskID)
+	if err != nil {
+		if errors.Is(err, asynq.ErrTaskNotFound) || errors.Is(err, asynq.ErrQueueNotFound) {
+			return EnqueueVideoPoll(taskID, pollCount)
+		}
+		return fmt.Errorf("inspect video poll %s: %w", taskID, err)
+	}
+	if info.Type != TypeVideoPoll {
+		return fmt.Errorf("video poll ID %s belongs to type %s", queueTaskID, info.Type)
+	}
+	switch info.State {
+	case asynq.TaskStateActive, asynq.TaskStatePending, asynq.TaskStateScheduled,
+		asynq.TaskStateRetry, asynq.TaskStateAggregating:
+		return nil
+	case asynq.TaskStateArchived, asynq.TaskStateCompleted:
+		if err := inspector.DeleteTask(videoPollQueue, queueTaskID); err != nil {
+			return fmt.Errorf("delete stale video poll %s: %w", taskID, err)
+		}
+		return EnqueueVideoPoll(taskID, pollCount)
+	default:
+		return fmt.Errorf("video poll %s has unsupported state %s", taskID, info.State)
+	}
+}
+
+func videoPollTaskID(taskID string, pollCount int) string {
+	return fmt.Sprintf("video-poll-%s-%d", taskID, pollCount)
+}
+
+func EnqueueVideoNotify(taskID string) error {
+	if Client == nil {
+		return errors.New("queue client is not initialized")
+	}
+	payloadBytes, err := json.Marshal(VideoNotifyPayload{TaskID: taskID})
+	if err != nil {
+		return err
+	}
+	task := asynq.NewTask(TypeVideoNotify, payloadBytes)
+	_, err = Client.Enqueue(task,
+		asynq.Queue("default"),
+		asynq.TaskID(fmt.Sprintf("video-notify-%s", taskID)),
+		asynq.MaxRetry(DefaultMaxRetry()),
 	)
 	if errors.Is(err, asynq.ErrTaskIDConflict) {
 		return nil

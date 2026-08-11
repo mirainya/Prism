@@ -98,6 +98,17 @@ func upload(ctx context.Context, data []byte, contentType string, capabilityCode
 		ext = ".webp"
 	} else if strings.Contains(contentType, "mp4") || strings.Contains(contentType, "video") {
 		ext = ".mp4"
+	} else if strings.HasPrefix(contentType, "audio/") {
+		switch {
+		case strings.Contains(contentType, "mpeg"), strings.Contains(contentType, "mp3"):
+			ext = ".mp3"
+		case strings.Contains(contentType, "wav"), strings.Contains(contentType, "wave"):
+			ext = ".wav"
+		case strings.Contains(contentType, "ogg"):
+			ext = ".ogg"
+		case strings.Contains(contentType, "aac"):
+			ext = ".aac"
+		}
 	}
 	filename := uuid.New().String() + ext
 

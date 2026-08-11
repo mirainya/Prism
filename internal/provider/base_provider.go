@@ -325,7 +325,7 @@ func (p *BaseProvider) Submit(ctx context.Context, req SubmitRequest) (result Su
 			respBody, _ := io.ReadAll(resp.Body)
 			return SubmitResult{}, &domain.UpstreamError{StatusCode: resp.StatusCode, Body: extractUpstreamErrorMessage(respBody)}
 		}
-		return parseImageSSEStream(resp.Body)
+		return parseImageSSEStream(resp.Body, req.EventSink)
 	}
 
 	respBody, err := io.ReadAll(resp.Body)

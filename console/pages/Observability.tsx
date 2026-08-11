@@ -19,6 +19,7 @@ import {
   fetchUsers,
 } from '../services';
 import { User, UserRole } from '../types';
+import { Select } from '../components/ui';
 
 const PAGE_SIZE = 20;
 const INPUT_CLASS = 'min-w-0 rounded-lg border border-[var(--border-soft)] bg-[var(--surface-card)] px-3 py-2 text-sm text-[var(--text-primary)] outline-none transition focus:border-[var(--primary)] focus:ring-2 focus:ring-[var(--primary)]/20';
@@ -417,10 +418,11 @@ const Observability: React.FC = () => {
         <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
           {isAdmin && (
             <>
-              <select value={draft.user_id} onChange={event => updateDraft('user_id', event.target.value)} className={INPUT_CLASS} aria-label="用户">
-                <option value="">所有用户</option>
-                {users.map(user => <option key={user.id} value={user.id}>{user.username} (#{user.id})</option>)}
-              </select>
+              <Select
+                value={draft.user_id}
+                onChange={v => updateDraft('user_id', v)}
+                options={[{ label: '所有用户', value: '' }, ...users.map(user => ({ label: `${user.username} (#${user.id})`, value: String(user.id) }))]}
+              />
               <input type="number" min="1" value={draft.token_id} onChange={event => updateDraft('token_id', event.target.value)} className={INPUT_CLASS} placeholder="Token ID" aria-label="Token ID" />
             </>
           )}
@@ -433,10 +435,11 @@ const Observability: React.FC = () => {
               <input value={draft.call_id} onChange={event => updateDraft('call_id', event.target.value)} className={INPUT_CLASS} placeholder="调用 ID" aria-label="调用 ID" />
               <input value={draft.error_code} onChange={event => updateDraft('error_code', event.target.value)} className={INPUT_CLASS} placeholder="错误码" aria-label="错误码" />
               <input value={draft.path} onChange={event => updateDraft('path', event.target.value)} className={INPUT_CLASS} placeholder="请求路径" aria-label="请求路径" />
-              <select value={draft.method} onChange={event => updateDraft('method', event.target.value)} className={INPUT_CLASS} aria-label="请求方法">
-                <option value="">所有方法</option>
-                {['GET', 'POST', 'PUT', 'DELETE', 'PATCH'].map(method => <option key={method} value={method}>{method}</option>)}
-              </select>
+              <Select
+                value={draft.method}
+                onChange={v => updateDraft('method', v)}
+                options={[{ label: '所有方法', value: '' }, ...['GET', 'POST', 'PUT', 'DELETE', 'PATCH'].map(method => ({ label: method, value: method }))]}
+              />
               <input type="number" min="100" max="599" value={draft.status_code} onChange={event => updateDraft('status_code', event.target.value)} className={INPUT_CLASS} placeholder="HTTP 状态码" aria-label="HTTP 状态码" />
             </>
           )}
@@ -445,30 +448,31 @@ const Observability: React.FC = () => {
               <input value={draft.request_id} onChange={event => updateDraft('request_id', event.target.value)} className={INPUT_CLASS} placeholder="请求 ID" aria-label="请求 ID" />
               <input value={draft.action} onChange={event => updateDraft('action', event.target.value)} className={INPUT_CLASS} placeholder="操作" aria-label="操作" />
               <input value={draft.resource_type} onChange={event => updateDraft('resource_type', event.target.value)} className={INPUT_CLASS} placeholder="资源类型" aria-label="资源类型" />
-              <select value={draft.outcome} onChange={event => updateDraft('outcome', event.target.value)} className={INPUT_CLASS} aria-label="结果">
-                <option value="">所有结果</option>
-                <option value="success">成功</option>
-                <option value="failed">失败</option>
-              </select>
+              <Select
+                value={draft.outcome}
+                onChange={v => updateDraft('outcome', v)}
+                options={[{ label: '所有结果', value: '' }, { label: '成功', value: 'success' }, { label: '失败', value: 'failed' }]}
+              />
             </>
           )}
           {activeTab === 'balance' && (
             <>
               <input value={draft.call_id} onChange={event => updateDraft('call_id', event.target.value)} className={INPUT_CLASS} placeholder="调用 ID" aria-label="调用 ID" />
-              <select value={draft.account_type} onChange={event => updateDraft('account_type', event.target.value)} className={INPUT_CLASS} aria-label="账户类型">
-                <option value="">所有账户</option>
-                <option value="user">用户账户</option>
-                <option value="token">Token 账户</option>
-              </select>
-              <select value={draft.direction} onChange={event => updateDraft('direction', event.target.value)} className={INPUT_CLASS} aria-label="变动方向">
-                <option value="">所有方向</option>
-                <option value="credit">入账</option>
-                <option value="debit">出账</option>
-              </select>
-              <select value={draft.category} onChange={event => updateDraft('category', event.target.value)} className={INPUT_CLASS} aria-label="类别">
-                <option value="">所有类别</option>
-                {Object.entries(CATEGORY_LABELS).map(([value, label]) => <option key={value} value={value}>{label}</option>)}
-              </select>
+              <Select
+                value={draft.account_type}
+                onChange={v => updateDraft('account_type', v)}
+                options={[{ label: '所有账户', value: '' }, { label: '用户账户', value: 'user' }, { label: 'Token 账户', value: 'token' }]}
+              />
+              <Select
+                value={draft.direction}
+                onChange={v => updateDraft('direction', v)}
+                options={[{ label: '所有方向', value: '' }, { label: '入账', value: 'credit' }, { label: '出账', value: 'debit' }]}
+              />
+              <Select
+                value={draft.category}
+                onChange={v => updateDraft('category', v)}
+                options={[{ label: '所有类别', value: '' }, ...Object.entries(CATEGORY_LABELS).map(([value, label]) => ({ label, value }))]}
+              />
             </>
           )}
         </div>

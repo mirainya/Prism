@@ -1,7 +1,7 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
     Plus, Cpu, Edit2, Trash2, PanelRightOpen, Power, RefreshCw, Search,
-    GripVertical, Route, KeyRound, CircleCheck, CircleAlert,
+    GripVertical, Route, KeyRound, Layers3, CircleAlert,
 } from 'lucide-react';
 import { DndContext, PointerSensor, closestCenter, useSensor, useSensors, DragStartEvent, DragEndEvent } from '@dnd-kit/core';
 import { SortableContext, arrayMove, useSortable, rectSortingStrategy } from '@dnd-kit/sortable';
@@ -18,9 +18,9 @@ import {
 } from './capabilities/constants';
 import CapabilityModal from './capabilities/CapabilityModal';
 import ChannelCapabilityModal from './capabilities/ChannelCapabilityModal';
-import { getEndpointRouteState } from './capabilities/CapabilityEndpointList';
+import { getEndpointRouteState, summarizeEndpointModelRoutes } from './capabilities/CapabilityEndpointList';
 import CapabilityDetailDrawer from './capabilities/CapabilityDetailDrawer';
-import { Select } from '../components/ui';
+import { Select, useAppDialog } from '../components/ui';
 
 // 可拖拽能力卡外壳:useSortable 作用于外层卡片,通过 render-prop 把拖拽手柄注入卡头
 const SortableCapabilityCard: React.FC<{
@@ -47,6 +47,7 @@ const SortableCapabilityCard: React.FC<{
 };
 
 const Capabilities: React.FC = () => {
+  const { askConfirmation } = useAppDialog();
   const [capabilities, setCapabilities] = useState<Capability[]>([]);
   const [channelCapabilities, setChannelCapabilities] = useState<ChannelCapability[]>([]);
   const [channels, setChannels] = useState<Channel[]>([]);
@@ -139,9 +140,7 @@ const Capabilities: React.FC = () => {
     const stats = useMemo(() => ({
         totalCapabilities: capabilities.length,
         enabledCapabilities: capabilities.filter(cap => cap.status === 1).length,
-        totalChannelCapabilities: channelCapabilities.length,
-        enabledChannelCapabilities: channelCapabilities.filter(cc => cc.status === 1).length,
-    }), [capabilities, channelCapabilities]);
+    }), [capabilities]);
 
     const filteredCapabilities = useMemo(() => {
         const keyword = searchTerm.trim().toLowerCase();
@@ -157,7 +156,7 @@ const Capabilities: React.FC = () => {
             const matchesKeyword = !keyword || [
                 cap.name, cap.code, cap.description, normalizedType,
                 ...relatedCCs.flatMap(cc => [
-                    cc.name, cc.model, cc.requestPath, cc.resultMode, channelNameMap.get(cc.channelId),
+                    cc.name, cc.model, cc.routeOperation, cc.requestPath, cc.resultMode, channelNameMap.get(cc.channelId),
                     ...cc.accountBindings.flatMap(binding => [binding.accountName, binding.accountId]),
                 ]),
             ].some(field => normalizeText(field).includes(keyword));
@@ -206,13 +205,25 @@ const Capabilities: React.FC = () => {
   };
 
   const handleDeleteCapability = async (code: string) => {
-      if (!confirm('确定删除该能力定义? 相关的渠道配置也会被删除。')) return;
+    const confirmed = await askConfirmation({
+      title: '删除能力定义？',
+      description: '相关的渠道能力配置也会一并删除，此操作无法撤销。',
+      confirmLabel: '删除能力',
+      tone: 'danger',
+    });
+    if (!confirmed) return;
     await deleteCapability(code);
     loadData(true);
   };
 
   const handleDeleteChannelCapability = async (id: string) => {
-    if (!confirm('确定删除该渠道能力配置?')) return;
+    const confirmed = await askConfirmation({
+      title: '删除渠道能力配置？',
+      description: '删除后，该渠道将不能再通过此配置提供对应能力。',
+      confirmLabel: '删除配置',
+      tone: 'danger',
+    });
+    if (!confirmed) return;
     await deleteChannelCapability(id);
     loadData(true);
   };
@@ -264,6 +275,8 @@ const Capabilities: React.FC = () => {
     const selectedCapability = expandedCapability
         ? capabilities.find(capability => capability.code === expandedCapability) || null
         : null;
+    const detailCapabilityRef = useRef<Capability | null>(null);
+    if (selectedCapability) detailCapabilityRef.current = selectedCapability;
     const endpointFilterActive = !!filterChannel || !!filterAccount || !!filterAvailability || !!filterResultMode;
     const selectedEndpoints = selectedCapability
         ? ((endpointFilterActive
@@ -381,19 +394,12 @@ const Capabilities: React.FC = () => {
                   const isExpanded = expandedCapability === cap.code;
                   const ccFilterActive = !!filterChannel || !!filterAccount || !!filterAvailability || !!filterResultMode;
                   const relatedCCs = (ccFilterActive ? visibleCCsByCodeMap.get(cap.code) : channelCapabilitiesByCodeMap.get(cap.code)) || [];
-                  const endpointStates = relatedCCs.map(endpoint => getEndpointRouteState(
-                    endpoint,
-                    cap.status,
-                    channelMap.get(endpoint.channelId)?.status ?? 0,
-                  ));
-                  const uniqueKeyCount = new Set(relatedCCs.flatMap(endpoint => endpoint.accountBindings.map(binding => binding.accountId))).size;
-                  const activeRouteCount = endpointStates.reduce((total, state) => total + (state.available ? state.activeBindings.length : 0), 0);
-                  const unavailableEndpointCount = endpointStates.filter(state => !state.available).length;
+                  const routeSummary = summarizeEndpointModelRoutes(relatedCCs, cap.status, channelMap);
                   const summaryItems = [
-                    {label: '端点', value: relatedCCs.length, icon: Route, className: 'text-blue-600'},
-                    {label: '绑定 Key', value: uniqueKeyCount, icon: KeyRound, className: 'text-violet-600'},
-                    {label: '有效线路', value: activeRouteCount, icon: CircleCheck, className: 'text-green-600'},
-                    {label: '不可用', value: unavailableEndpointCount, icon: CircleAlert, className: unavailableEndpointCount > 0 ? 'text-red-600' : 'text-[var(--text-secondary)]'},
+                    {label: '模型线路', value: routeSummary.modelRouteCount, icon: Layers3, className: 'text-blue-600'},
+                    {label: '操作', value: routeSummary.operationCount, icon: Route, className: 'text-emerald-600'},
+                    {label: '绑定 Key', value: routeSummary.keyCount, icon: KeyRound, className: 'text-violet-600'},
+                    {label: '不可用操作', value: routeSummary.unavailableCount, icon: CircleAlert, className: routeSummary.unavailableCount > 0 ? 'text-red-600' : 'text-[var(--text-secondary)]'},
                   ];
 
                   return (
@@ -490,17 +496,18 @@ const Capabilities: React.FC = () => {
             onClose={() => setCcModal({open: false, capabilityCode: '', cc: null, initialTab: 'basic'})}
             onSave={() => loadData(true)}
         />
-        {selectedCapability && (
+        {detailCapabilityRef.current && (
             <CapabilityDetailDrawer
-                capability={selectedCapability}
+                open={Boolean(selectedCapability)}
+                capability={detailCapabilityRef.current}
                 endpoints={selectedEndpoints}
                 channelMap={channelMap}
                 expandedEndpointId={expandedEndpointId}
                 onClose={() => { setExpandedCapability(null); setExpandedEndpointId(null); }}
                 onToggleExpanded={id => setExpandedEndpointId(current => current === id ? null : id)}
-                onAdd={() => setCcModal({open: true, capabilityCode: selectedCapability.code, cc: null, initialTab: 'basic'})}
-                onEdit={cc => setCcModal({open: true, capabilityCode: selectedCapability.code, cc, initialTab: 'basic'})}
-                onManageKeys={cc => setCcModal({open: true, capabilityCode: selectedCapability.code, cc, initialTab: 'accounts'})}
+                onAdd={() => setCcModal({open: true, capabilityCode: detailCapabilityRef.current!.code, cc: null, initialTab: 'basic'})}
+                onEdit={cc => setCcModal({open: true, capabilityCode: detailCapabilityRef.current!.code, cc, initialTab: 'basic'})}
+                onManageKeys={cc => setCcModal({open: true, capabilityCode: detailCapabilityRef.current!.code, cc, initialTab: 'accounts'})}
                 onToggleStatus={handleToggleCcStatus}
                 onDelete={handleDeleteChannelCapability}
             />

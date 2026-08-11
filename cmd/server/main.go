@@ -139,6 +139,13 @@ func main() {
 	if recoveredTasks > 0 {
 		logger.Info(fmt.Sprintf("recovered %d pending task submissions", recoveredTasks))
 	}
+	recoveredVideos, err := worker.RecoverPendingVideoSubmissions(context.Background())
+	if err != nil {
+		log.Fatalf("failed to recover pending video submissions: %v", err)
+	}
+	if recoveredVideos > 0 {
+		logger.Info(fmt.Sprintf("recovered %d pending video submissions", recoveredVideos))
+	}
 	workerSrv := startWorker(v2Engine)
 
 	// 启动 Scheduler

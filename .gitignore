@@ -6,6 +6,10 @@
 *.dylib
 prism
 prism-linux
+prism.linux
+prism.linux.gz
+prism.new
+prism.deploy
 prism-windows.exe
 
 # Test binary
@@ -56,3 +60,4 @@ nul
 
 # Plan
 plan.md
+.plan

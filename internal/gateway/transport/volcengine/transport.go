@@ -14,6 +14,7 @@ import (
 	"github.com/mirainya/Prism/internal/gateway/canonical"
 	gatewaytransport "github.com/mirainya/Prism/internal/gateway/transport"
 	protocol "github.com/mirainya/Prism/internal/provider/responses"
+	"github.com/mirainya/Prism/pkg/logger"
 )
 
 const (
@@ -26,39 +27,51 @@ type Transport struct{ Client gatewaytransport.HTTPClient }
 func New(client gatewaytransport.HTTPClient) *Transport { return &Transport{Client: client} }
 func (*Transport) ID() gatewaytransport.ID              { return gatewaytransport.VolcengineResponsesV3 }
 
+func volcengineUnsupported(operation gatewaytransport.Operation, reason string) gatewaytransport.Plan {
+	if operation == gatewaytransport.OperationMessages || operation == gatewaytransport.OperationChat {
+		logger.Warn("volcengine plan rejected: " + reason)
+	}
+	return gatewaytransport.Unsupported(operation, reason)
+}
+
 func (*Transport) Plan(operation gatewaytransport.Operation, request canonical.Request, features canonical.FeatureSet) gatewaytransport.Plan {
 	// Ark v3 接近 Responses，但扩展集合并不相同；Plan 明确拒绝无法原样传递的字段。
 	if operation != gatewaytransport.OperationResponses && operation != gatewaytransport.OperationChat && operation != gatewaytransport.OperationMessages {
-		return gatewaytransport.Unsupported(operation, "unsupported Volcengine operation")
+		return volcengineUnsupported(operation, "unsupported Volcengine operation")
 	}
 	if len(request.Stop) > 0 {
-		return gatewaytransport.Unsupported(operation, "Volcengine Responses v3 cannot preserve stop sequences")
+		return volcengineUnsupported(operation, "Volcengine Responses v3 cannot preserve stop sequences")
 	}
-	if len(request.Metadata) > 0 {
-		return gatewaytransport.Unsupported(operation, "Volcengine Responses v3 does not support metadata")
-	}
-	if request.User != "" {
-		return gatewaytransport.Unsupported(operation, "Volcengine Responses v3 does not support user")
+	if operation == gatewaytransport.OperationResponses {
+		if len(request.Metadata) > 0 {
+			return volcengineUnsupported(operation, "Volcengine Responses v3 does not support metadata")
+		}
+		if request.User != "" {
+			return volcengineUnsupported(operation, "Volcengine Responses v3 does not support user")
+		}
 	}
 	for index, item := range request.Items {
 		if item.Proof != nil {
-			return gatewaytransport.Unsupported(operation, fmt.Sprintf("Volcengine Responses v3 cannot replay provider proof on item %d", index))
+			return volcengineUnsupported(operation, fmt.Sprintf("Volcengine Responses v3 cannot replay provider proof on item %d", index))
 		}
 	}
 	if field := gatewaytransport.UnsupportedNamespace(request); field != "" {
-		return gatewaytransport.Unsupported(operation, "Volcengine Responses v3 cannot preserve "+field)
+		return volcengineUnsupported(operation, "Volcengine Responses v3 cannot preserve "+field)
 	}
 	if field := gatewaytransport.UnsupportedProviderCallIDState(request); field != "" {
-		return gatewaytransport.Unsupported(operation, "Volcengine Responses v3 cannot preserve "+field)
+		return volcengineUnsupported(operation, "Volcengine Responses v3 cannot preserve "+field)
 	}
 	for _, tool := range request.Tools {
 		if tool.Type == "file_search" {
-			return gatewaytransport.Unsupported(operation, "Volcengine Responses v3 does not support file_search")
+			return volcengineUnsupported(operation, "Volcengine Responses v3 does not support file_search")
 		}
 	}
 	clientExtensions := map[string]bool{}
 	if operation == gatewaytransport.OperationResponses {
 		clientExtensions["openai_responses.request_extras"] = true
+	} else {
+		clientExtensions["anthropic.messages.request_extras"] = true
+		clientExtensions["openai_chat.request_extras"] = true
 	}
 	policy := gatewaytransport.ExtensionPolicy{
 		Client: clientExtensions,
@@ -66,23 +79,26 @@ func (*Transport) Plan(operation gatewaytransport.Operation, request canonical.R
 			gatewaytransport.ExtensionChatChoiceIndex: true, gatewaytransport.ExtensionChatContentMode: true,
 			gatewaytransport.ExtensionChatFinishReason: true,
 		},
-		PreserveGenericItemFields: true, PreserveGenericContentFields: true, PreserveToolOptions: true,
+		PreserveGenericItemFields:    true,
+		PreserveGenericContentFields: true,
+		PreserveToolOptions:          true,
+		PreserveAnthropicRawBlocks:   operation != gatewaytransport.OperationResponses,
 	}
 	if extension := gatewaytransport.UnsupportedRequestExtension(request, policy); extension != "" {
-		return gatewaytransport.Unsupported(operation, "Volcengine Responses v3 cannot preserve "+extension)
+		return volcengineUnsupported(operation, "Volcengine Responses v3 cannot preserve "+extension)
 	}
 	if field := unsupportedRequestExtra(request); field != "" {
-		return gatewaytransport.Unsupported(operation, "Volcengine Responses v3 does not support request field "+field)
+		return volcengineUnsupported(operation, "Volcengine Responses v3 does not support request field "+field)
 	}
 	if operation != gatewaytransport.OperationResponses && gatewaytransport.ToolChoiceRawHasExtensions(request.ToolChoice, operation) {
-		return gatewaytransport.Unsupported(operation, "Volcengine Responses v3 cannot preserve tool_choice extensions during conversion")
+		return volcengineUnsupported(operation, "Volcengine Responses v3 cannot preserve tool_choice extensions during conversion")
 	}
-	if operation != gatewaytransport.OperationResponses && request.Reasoning != nil && !gatewaytransport.RawObjectHasOnlyFields(request.Reasoning.Raw, "effort", "summary") {
-		return gatewaytransport.Unsupported(operation, "Volcengine Responses v3 cannot preserve foreign reasoning extensions")
+	if operation == gatewaytransport.OperationResponses && request.Reasoning != nil && !gatewaytransport.RawObjectHasOnlyFields(request.Reasoning.Raw, "effort", "summary") {
+		return volcengineUnsupported(operation, "Volcengine Responses v3 cannot preserve foreign reasoning extensions")
 	}
 	required := request.RequiredFeatures()
 	if !features.Contains(required) {
-		return gatewaytransport.Unsupported(operation, "route does not support all requested features")
+		return volcengineUnsupported(operation, "route does not support all requested features")
 	}
 	if operation == gatewaytransport.OperationResponses {
 		return gatewaytransport.Exact(operation, required)
@@ -249,22 +265,39 @@ func encodeRequest(request canonical.Request, vendorModel string, preserveRespon
 	if len(request.Include) > 0 {
 		body["include"] = request.Include
 	}
-	if len(request.Metadata) > 0 {
-		body["metadata"] = request.Metadata
-	}
-	if request.User != "" {
-		body["user"] = request.User
+	if preserveResponsesExtensions {
+		if len(request.Metadata) > 0 {
+			body["metadata"] = request.Metadata
+		}
+		if request.User != "" {
+			body["user"] = request.User
+		}
 	}
 	if len(request.Modalities) > 0 {
 		body["modalities"] = request.Modalities
 	}
 	if request.Reasoning != nil {
-		reasoning, err := encodeReasoning(request.Reasoning)
-		if err != nil {
-			return nil, err
-		}
-		if len(reasoning) > 0 {
-			body["reasoning"] = reasoning
+		if preserveResponsesExtensions {
+			reasoning, err := encodeReasoning(request.Reasoning)
+			if err != nil {
+				return nil, err
+			}
+			if len(reasoning) > 0 {
+				body["reasoning"] = reasoning
+			}
+		} else {
+			// For converted operations only forward effort/summary; drop Anthropic-specific
+			// fields like "type" and "budget_tokens" that Volcengine does not understand.
+			converted := map[string]any{}
+			if request.Reasoning.Effort != "" {
+				converted["effort"] = request.Reasoning.Effort
+			}
+			if request.Reasoning.Summary != "" {
+				converted["summary"] = request.Reasoning.Summary
+			}
+			if len(converted) > 0 {
+				body["reasoning"] = converted
+			}
 		}
 	}
 	if request.ResponseFormat != nil {
@@ -697,6 +730,7 @@ func (s *eventStream) Close() error {
 	}
 	return s.body.Close()
 }
+
 // knownEventTypes 是 canonical 承认的流事件类型集合，用于把 Ark 私有事件挡在 EventRaw 之外。
 var knownEventTypes = map[canonical.EventType]bool{
 	canonical.EventResponseCreated: true, canonical.EventResponseQueued: true, canonical.EventResponseInProgress: true,

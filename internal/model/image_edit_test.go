@@ -49,3 +49,15 @@ func TestEndpointImageEditRejectsUnknownMode(t *testing.T) {
 		t.Fatalf("image edit config = %#v, want nil", config)
 	}
 }
+
+func TestEndpointImageEditInfersLegacyMultipartEditPath(t *testing.T) {
+	endpoint := &Endpoint{
+		RequestPath: "/v1/images/edits",
+		ContentType: "multipart/form-data",
+	}
+	config := endpoint.ImageEdit()
+	if config == nil || config.InputMode != ImageInputModeMultipart ||
+		config.EditPath != "/v1/images/edits" || config.FileField != "image" {
+		t.Fatalf("inferred image edit config = %#v", config)
+	}
+}

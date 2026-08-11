@@ -321,13 +321,15 @@ curl "$BASE_URL/v1/files" \
 
 ### GET /v1/capabilities
 
-列出可用能力（含参数 schema）。Query: `channel=string&type=string` (可选)
+列出当前可调用的模型及其操作。只有存在启用端点并绑定有效 Key 的模型才会返回。Query: `channel=string&type=string` (可选)
 
 ```json
 // Response.data
 [
   {
+    "id": "gpt_image2",
     "code": "text2img",
+    "object": "model_capability",
     "name": "文生图",
     "type": "image",
     "description": "文本生成图片",
@@ -335,12 +337,15 @@ curl "$BASE_URL/v1/files" \
       "prompt": {"type": "string", "required": true},
       "size": {"type": "string", "enum": ["1024x1024", "512x512"], "default": "1024x1024"}
     },
-    "channels": [
-      {"channel_type": "midjourney", "channel_name": "MJ", "model": "mj-v6", "price": "0.10"}
+    "operations": [
+      {"id": "images.generate", "path": "/v1/images/generations", "supports_stream": true},
+      {"id": "images.edit", "path": "/v1/images/edits", "supports_stream": false}
     ]
   }
 ]
 ```
+
+`code` 是 `id` 的兼容别名。`channels` 字段暂时为旧客户端保留，新客户端不得依赖渠道或上游模型进行调用。
 
 ### POST /v1/capabilities/:capability
 
@@ -351,8 +356,7 @@ curl "$BASE_URL/v1/files" \
 ```json
 // Request
 {
-  "model": "string",
-  "channel": "string?",
+  "operation": "images.generate|images.edit|videos.generate",
   "callback_url": "string?",
   "...params": "any"
 }
@@ -436,9 +440,58 @@ curl -X POST "https://prism.example/v1/images/edits" \
 - 上游接收文件：选择“Multipart 文件”，填写图片字段及编辑路径。Prism 会按 multipart/form-data 调用上游。
 - 旧端点未设置 `input_mode` 时按 Multipart 模式处理。
 
+### POST /v1/videos/estimate
+
+按视频创建参数估算费用。请求体与 `POST /v1/videos/generations` 相同；动态计价渠道会调用其 Generic Adapter `estimate` 操作，固定计价渠道直接读取渠道价格。
+
+```json
+// Response.data
+{
+  "estimated_cost": "1.5",
+  "base_cost": "1.25",
+  "markup_ratio": "1.2",
+  "pricing_mode": "upstream_estimate"
+}
+```
+
 ### POST /v1/videos/generations
 
-视频生成（异步，调用 capabilities/text2video，返回 task_id）。
+视频生成。存在匹配的 `video_channels` 时使用专用视频引擎，否则调用 `capabilities/text2video`。动态计价渠道会在创建时重新估价、固化价格快照并预扣费用。
+
+任务类型不是独立的 `task_mode` 枚举，而是由 `task_mode` 与 `content[].role` 组合表达：
+
+| 产品任务类型 | 请求表达 | 素材要求 |
+|-------------|----------|----------|
+| 文生视频 | `task_mode=text` | 不提交媒体素材 |
+| 首帧生视频 | `task_mode=references` | 一张 `image_url`，`role=first_frame` |
+| 首尾帧视频 | `task_mode=references` | 两张图片，分别为 `first_frame`、`last_frame` |
+| 多模态视频 | `task_mode=references` | `reference_image`、`reference_video` 或 `reference_audio` |
+
+实际可用类型由渠道能力决定：官满血可支持四种，H 渠道通常支持文生和多模态，Seedance 2.5 仅支持多模态。控制台试用接口 `GET /api/playground/:token_id/videos/models` 会返回自动选路使用的 `model_options`，以及每个可用渠道的 `channels[].id/name/models/model_options`。控制台创建与估价请求可提交 `channel_id` 强制使用指定渠道；省略或传 `0` 时自动选路。指定渠道不兼容请求参数时会直接报错，不会改投其他渠道。
+
+专用引擎支持 `content[].asset_id` 或公网 `url`（二选一），并自动推断 `task_mode`。`prompt` 与媒体素材至少提供一种，音频必须与图片或视频同时使用。Seedance 2.0 最多接收 9 个图片、3 个视频和 3 个音频；Seedance 2.5 最多接收 30 个图片、10 个视频和 10 个音频，总数不超过 50。官方 Seedance 提示词可使用 `图片1`、`视频1`、`音频1` 引用素材；Sub2API 不要求该写法。调用写入统一 `api_calls`，响应头包含 `X-Prism-Call-ID`。
+
+### POST /v1/videos/assets
+
+创建视频素材。支持 `multipart/form-data`（`file`、`kind`、`duration_seconds`）或 JSON 公网 URL 注册（`url`、`kind`、`content_type`、`duration_seconds`）。图片可省略时长；视频和音频接入要求时长的渠道时必须提供时长。选择 `presigned_upload` 素材解析器后，Prism 会按渠道配置申请预签名上传、等待或复用已有对象，并生成 `provider_object` 引用。同一 Token 下按 SHA-256 去重。
+
+`POST /v1/videos/uploads` 是兼容别名。
+
+### GET /v1/videos/assets/:asset_id
+
+查询当前 Token 所属素材。素材默认有效期为 7 天。
+
+### DELETE /v1/videos/assets/:asset_id
+
+将当前 Token 所属素材标记为 `expired`。
+
+### GET /v1/videos/generations/:id
+
+查询专用视频引擎任务。
+
+### POST /v1/videos/generations/:id/cancel
+
+取消专用视频引擎任务；支持时同步取消上游，并执行统一退款与调用状态更新。Sub2API H 渠道只允许取消尚未取得上游任务号的本地排队任务，Seedance 2.5 不支持取消。
 
 ### GET /v1/tasks/:task_no
 

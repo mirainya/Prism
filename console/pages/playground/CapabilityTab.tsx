@@ -27,6 +27,8 @@ import {
 const CapabilityTab: React.FC<{ tokenId: string }> = ({ tokenId }) => {
   const [capabilities, setCapabilities] = useState<PlaygroundCapability[]>([]);
   const [selectedCap, setSelectedCap] = useState('');
+  const [selectedOperation, setSelectedOperation] = useState('');
+  const [selectedChannel, setSelectedChannel] = useState('');
   const [showCapabilityPicker, setShowCapabilityPicker] = useState(false);
   const [capabilitySearch, setCapabilitySearch] = useState('');
   const [capabilityTypeFilter, setCapabilityTypeFilter] = useState('');
@@ -118,7 +120,7 @@ const CapabilityTab: React.FC<{ tokenId: string }> = ({ tokenId }) => {
     if (!tokenId) return;
     clearCapabilityAttachments();
     playgroundListCapabilities(tokenId).then(rawCaps => {
-      const caps = rawCaps.filter(c => c.type !== 'chat');
+      const caps = rawCaps.filter(c => c.operations.some(operation => !['chat.completions', 'responses.create', 'messages.create'].includes(operation.id)));
       setCapabilities(caps);
       setSelectedCap(prev => prev && caps.some((cap: PlaygroundCapability) => cap.code === prev) ? prev : (caps[0]?.code || ''));
     }).catch(() => setCapabilities([]));
@@ -130,17 +132,40 @@ const CapabilityTab: React.FC<{ tokenId: string }> = ({ tokenId }) => {
   }, []);
 
   const currentCap = capabilities.find(c => c.code === selectedCap);
-  const selectedChannel = useMemo(() => {
-    if (!params.channel || !currentCap?.channels) return null;
-    return currentCap.channels.find(ch => `${ch.channelType}::${ch.model}::${ch.interactionMode || 'sync'}` === params.channel) || null;
-  }, [params.channel, currentCap]);
+  const currentOperations = useMemo(
+    () => (currentCap?.operations || []).filter(operation => !['chat.completions', 'responses.create', 'messages.create'].includes(operation.id)),
+    [currentCap],
+  );
+  const currentChannelOptions = useMemo(
+    () => (currentCap?.channels || []).filter(channel => !channel.routeOperation || channel.routeOperation === selectedOperation),
+    [currentCap, selectedOperation],
+  );
+  const selectedChannelOption = currentChannelOptions.find(channel => {
+    const identity = `${channel.channelType}::${channel.model}::${channel.interactionMode || 'sync'}::${channel.routeOperation || ''}`;
+    return identity === selectedChannel;
+  }) || null;
+  const currentOperation = currentOperations.find(operation => operation.id === selectedOperation) || null;
+  const operationOptions = useMemo(() => currentOperations.map(operation => ({
+    id: operation.id,
+    provider: 'prism',
+    label: operation.id === 'images.generate'
+      ? '图片生成'
+      : operation.id === 'images.edit'
+        ? '图片编辑'
+        : operation.id === 'videos.generate'
+          ? '视频生成'
+          : operation.id,
+  })), [currentOperations]);
   const currentSchemaEntries = useMemo(() => {
-    if (selectedChannel?.paramSchema && Object.keys(selectedChannel.paramSchema).length > 0) {
-      return extractCapabilitySchema({ ...currentCap!, standardParams: selectedChannel.paramSchema });
+    if (selectedChannelOption?.paramSchema && Object.keys(selectedChannelOption.paramSchema).length > 0) {
+      return extractCapabilitySchema({ ...currentCap!, standardParams: selectedChannelOption.paramSchema });
+    }
+    if (currentOperation?.paramSchema && Object.keys(currentOperation.paramSchema).length > 0) {
+      return extractCapabilitySchema({ ...currentCap!, standardParams: currentOperation.paramSchema });
     }
     return extractCapabilitySchema(currentCap);
-  }, [currentCap, selectedChannel]);
-  const hasExplicitSchema = Boolean((selectedChannel?.paramSchema && Object.keys(selectedChannel.paramSchema).length > 0) || (currentCap?.standardParams && Object.keys(currentCap.standardParams).length > 0));
+  }, [currentCap, currentOperation, selectedChannelOption]);
+  const hasExplicitSchema = Boolean((selectedChannelOption?.paramSchema && Object.keys(selectedChannelOption.paramSchema).length > 0) || (currentOperation?.paramSchema && Object.keys(currentOperation.paramSchema).length > 0) || (currentCap?.standardParams && Object.keys(currentCap.standardParams).length > 0));
 
   const capabilityTypes = useMemo(() => {
     const types = new Set<string>(capabilities.map(cap => cap.type || 'other'));
@@ -152,7 +177,7 @@ const CapabilityTab: React.FC<{ tokenId: string }> = ({ tokenId }) => {
   const filteredCapabilities = useMemo(() => {
     const keyword = capabilitySearch.trim().toLowerCase();
     return capabilities.filter(cap => {
-      if (cap.type === 'chat') return false;
+      if (!cap.operations.some(operation => !['chat.completions', 'responses.create', 'messages.create'].includes(operation.id))) return false;
       const matchesType = !capabilityTypeFilter || (cap.type || 'other') === capabilityTypeFilter;
       const matchesKeyword = !keyword || [cap.name, cap.code, cap.description].some(field => String(field || '').toLowerCase().includes(keyword));
       return matchesType && matchesKeyword;
@@ -179,7 +204,21 @@ const CapabilityTab: React.FC<{ tokenId: string }> = ({ tokenId }) => {
   const requiredSchemaEntries = useMemo(() => currentSchemaEntries.filter(([, schema]) => schema.required), [currentSchemaEntries]);
   const completedRequiredCount = useMemo(() => requiredSchemaEntries.filter(([key]) => String(params[key] || '').trim()).length, [params, requiredSchemaEntries]);
   const missingRequiredFields = useMemo(() => requiredSchemaEntries.filter(([key]) => !String(params[key] || '').trim()).map(([, schema]) => schema.name), [requiredSchemaEntries, params]);
-  const isSubmitDisabled = isSubmitting || !selectedCap || missingRequiredFields.length > 0;
+  const isSubmitDisabled = isSubmitting || !selectedCap || !selectedOperation || missingRequiredFields.length > 0;
+
+  useEffect(() => {
+    const preferred = currentOperations.find(operation => operation.id === 'images.generate')
+      || currentOperations.find(operation => operation.id === 'videos.generate')
+      || currentOperations[0];
+    setSelectedOperation(previous => currentOperations.some(operation => operation.id === previous) ? previous : (preferred?.id || ''));
+  }, [selectedCap, currentOperations]);
+
+  useEffect(() => {
+    setSelectedChannel(previous => currentChannelOptions.some(channel => {
+      const identity = `${channel.channelType}::${channel.model}::${channel.interactionMode || 'sync'}::${channel.routeOperation || ''}`;
+      return identity === previous;
+    }) ? previous : '');
+  }, [currentCap, selectedOperation, currentChannelOptions]);
 
   const hydrateTask = async (taskNo: string) => {
     const detail = await playgroundGetTask(tokenId, taskNo);
@@ -269,12 +308,11 @@ const CapabilityTab: React.FC<{ tokenId: string }> = ({ tokenId }) => {
     setCapabilitySearch(''); setCapabilityTypeFilter('');
     setParams(prev => {
       const next: Record<string, string> = {};
-      if (prev.channel) next.channel = prev.channel;
       currentSchemaEntries.forEach(([key]) => { if (typeof prev[key] === 'string') next[key] = prev[key]; });
       if (!currentSchemaEntries.some(([key]) => key === 'prompt') && !next.prompt) next.prompt = '';
       return next;
     });
-  }, [selectedCap, currentSchemaEntries, currentCap?.type]);
+  }, [selectedCap, selectedOperation, currentSchemaEntries, currentCap?.type]);
 
   useEffect(() => {
     if (hasTouchedParamPanel) return;
@@ -284,6 +322,7 @@ const CapabilityTab: React.FC<{ tokenId: string }> = ({ tokenId }) => {
   const handleSelectCapability = (capabilityCode: string) => {
     clearCapabilityAttachments();
     setSelectedCap(capabilityCode);
+    setSelectedChannel('');
     setShowCapabilityPicker(false);
     const cap = capabilities.find(c => c.code === capabilityCode);
     const defaults: Record<string, string> = { prompt: '' };
@@ -302,26 +341,7 @@ const CapabilityTab: React.FC<{ tokenId: string }> = ({ tokenId }) => {
     setError(''); setIsSubmitting(true);
     try {
       const requestParams = Object.entries(params).reduce<Record<string, any>>((acc, [key, value]) => {
-        if (key === 'channel') {
-          if (value) {
-            const parts = String(value).split('::');
-            if (parts.length === 3) {
-              // 新格式: channelType::vendorModel::interactionMode
-              acc.channel = parts[0];
-              acc.model = parts[1];
-              acc.interaction_mode = parts[2];
-            } else if (parts.length === 2) {
-              // 旧格式: channelType::interactionMode (向后兼容)
-              acc.channel = parts[0];
-              acc.interaction_mode = parts[1];
-            } else {
-              // 仅channelType
-              acc.channel = parts[0];
-            }
-          }
-          return acc;
-        }
-        const schema = (selectedChannel?.paramSchema && selectedChannel.paramSchema[key]) || currentCap?.standardParams?.[key] || FALLBACK_STANDARD_PARAMS[key];
+        const schema = selectedChannelOption?.paramSchema?.[key] || currentOperation?.paramSchema?.[key] || currentCap?.standardParams?.[key] || FALLBACK_STANDARD_PARAMS[key];
         const stringValue = String(value || '');
         if (!schema) { const trimmed = stringValue.trim(); if (trimmed) acc[key] = trimmed; return acc; }
         const normalized = normalizeCapabilityValue(schema, stringValue);
@@ -335,7 +355,7 @@ const CapabilityTab: React.FC<{ tokenId: string }> = ({ tokenId }) => {
         const cap = capabilities.find(c => c.code === selectedCap);
         // 端点级 schema 优先(与渲染逻辑 line 325 一致): 图生图的 image 数组字段
         // 常只在端点级声明,能力级(model 表)没有,这里必须同源否则多图被降级成单图。
-        const schema = selectedChannel?.paramSchema?.[key] || cap?.standardParams?.[key] || FALLBACK_STANDARD_PARAMS[key];
+        const schema = selectedChannelOption?.paramSchema?.[key] || currentOperation?.paramSchema?.[key] || cap?.standardParams?.[key] || FALLBACK_STANDARD_PARAMS[key];
         if (schema?.type === 'array' || key === 'image_urls') {
           const existing = Array.isArray(requestParams[key]) ? requestParams[key] as string[] : [];
           requestParams[key] = [...existing, ...urls];
@@ -344,8 +364,12 @@ const CapabilityTab: React.FC<{ tokenId: string }> = ({ tokenId }) => {
         }
       }
 
-      const { channel, interaction_mode, model, ...invokeParams } = requestParams;
-      const res = await playgroundInvokeCapability(tokenId, selectedCap, { channel, interaction_mode, model, params: invokeParams });
+      const route = selectedChannelOption ? {
+        channel: selectedChannelOption.channelType,
+        model: selectedChannelOption.model,
+        interaction_mode: selectedChannelOption.interactionMode,
+      } : {};
+      const res = await playgroundInvokeCapability(tokenId, selectedCap, { operation: selectedOperation, ...route, params: requestParams });
       const taskNo = res.data?.task_id || res.data?.task_no || res.task_id || '';
       if (taskNo) {
         const newTask: TaskResult = {
@@ -434,7 +458,7 @@ const CapabilityTab: React.FC<{ tokenId: string }> = ({ tokenId }) => {
           </div>
 
           <div className="px-3 md:px-4 py-1.5 border-b border-[var(--border-soft)] space-y-3">
-            <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-[minmax(0,1.2fr)_220px_minmax(0,1fr)] gap-2 md:gap-3 items-start">
+            <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-[minmax(0,1.45fr)_220px_minmax(0,1.15fr)_minmax(0,1.35fr)] gap-2 md:gap-3 items-start">
               <div>
                 <label className="block text-[11px] font-medium text-[var(--text-secondary)] mb-1">能力</label>
                 <div ref={capabilityPickerRef} className="relative">
@@ -484,15 +508,30 @@ const CapabilityTab: React.FC<{ tokenId: string }> = ({ tokenId }) => {
                 </div>
               </div>
               <div>
-                <label className="block text-[11px] font-medium text-[var(--text-secondary)] mb-1">渠道</label>
+                <label className="block text-[11px] font-medium text-[var(--text-secondary)] mb-1">操作</label>
                 <ModelSelector
-                  options={currentCap?.channels?.map((ch: any) => ({ id: `${ch.channelType}::${ch.model}::${ch.interactionMode || 'sync'}`, label: `${ch.model}${ch.interactionMode && ch.interactionMode !== 'sync' ? ` · ${ch.interactionMode}` : ''}`, provider: ch.channelName })) || []}
-                  value={params.channel || ''}
-                  onChange={v => setParams(prev => ({ ...prev, channel: v }))}
-                  placeholder="选择渠道"
-                  allOption="自动选择"
+                  options={operationOptions}
+                  value={selectedOperation}
+                  onChange={setSelectedOperation}
+                  placeholder="选择操作"
                 />
               </div>
+              {currentChannelOptions.length > 0 && (
+                <div>
+                  <label className="block text-[11px] font-medium text-[var(--text-secondary)] mb-1">渠道</label>
+                  <ModelSelector
+                    options={currentChannelOptions.map(channel => ({
+                      id: `${channel.channelType}::${channel.model}::${channel.interactionMode || 'sync'}::${channel.routeOperation || ''}`,
+                      label: channel.model,
+                      provider: channel.channelName || channel.channelType,
+                    }))}
+                    value={selectedChannel}
+                    onChange={setSelectedChannel}
+                    placeholder="自动选择"
+                    allOption="自动选择"
+                  />
+                </div>
+              )}
               <div>
                 <label className="block text-[11px] font-medium text-[var(--text-secondary)] mb-1">搜索任务</label>
                 <div className="relative">

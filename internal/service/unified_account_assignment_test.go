@@ -167,6 +167,82 @@ func TestFindEndpointsPrefersExactOpenAIImageModelOverCompatibilityAlias(t *test
 	}
 }
 
+func TestFindEndpointsFiltersImageRouteOperations(t *testing.T) {
+	db := setupTestDB(t)
+	if err := db.AutoMigrate(&model.Channel{}, &model.Endpoint{}); err != nil {
+		t.Fatal(err)
+	}
+	channel := &model.Channel{Type: "image-route-operation-channel", Status: 1}
+	if err := db.Create(channel).Error; err != nil {
+		t.Fatal(err)
+	}
+	generateOnly := &model.Endpoint{
+		ChannelID: channel.ID, ModelCode: "route-image-model", RequestPath: "/v1/images/generations", Priority: 10, Status: 1,
+	}
+	editOnly := &model.Endpoint{
+		ChannelID: channel.ID, ModelCode: "route-image-model", RequestPath: "/v1/images/edits", Priority: 30, Status: 1,
+	}
+	shared := &model.Endpoint{
+		ChannelID: channel.ID, ModelCode: "route-image-model", RequestPath: "/v1/images/generations", Priority: 20, Status: 1,
+		ExtraConfig: datatypes.JSON(`{"image_edit":{"enabled":true,"input_mode":"url"}}`),
+	}
+	multiOperation := &model.Endpoint{
+		ChannelID: channel.ID, ModelCode: "route-image-model", RequestPath: "/custom/images", Priority: 40, Status: 1,
+		RouteOperation:      RouteOperationImagesGenerate,
+		SupportedOperations: datatypes.JSON(`["images.generate","images.edit"]`),
+	}
+	for _, endpoint := range []*model.Endpoint{generateOnly, editOnly, shared, multiOperation} {
+		if err := db.Create(endpoint).Error; err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	find := func(routeOperation string) []model.Endpoint {
+		endpoints, err := NewUnifiedService().findEndpointsForCapability(&InvokeRequest{
+			Capability: "text2img", Model: "route-image-model", RouteOperation: routeOperation,
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return endpoints
+	}
+	generate := find(RouteOperationImagesGenerate)
+	if len(generate) != 3 || generate[0].ID != multiOperation.ID || generate[1].ID != shared.ID || generate[2].ID != generateOnly.ID {
+		t.Fatalf("generate endpoints = %#v, want multi-operation, shared and generation endpoints", generate)
+	}
+	edit := find(RouteOperationImagesEdit)
+	if len(edit) != 3 || edit[0].ID != multiOperation.ID || edit[1].ID != editOnly.ID || edit[2].ID != shared.ID {
+		t.Fatalf("edit endpoints = %#v, want multi-operation, edit and shared endpoints", edit)
+	}
+	all := find("")
+	if len(all) != 4 {
+		t.Fatalf("legacy endpoints = %d, want 4", len(all))
+	}
+}
+
+func TestExplicitEndpointRouteOperationOverridesPathInference(t *testing.T) {
+	db := setupTestDB(t)
+	if err := db.AutoMigrate(&model.Channel{}, &model.Endpoint{}); err != nil {
+		t.Fatal(err)
+	}
+	channel := &model.Channel{Type: "explicit-route-operation-channel", Status: 1}
+	if err := db.Create(channel).Error; err != nil {
+		t.Fatal(err)
+	}
+	endpoint := &model.Endpoint{ChannelID: channel.ID, ModelCode: "explicit-image", VendorModel: "vendor", RequestPath: "/custom/edit", RouteOperation: RouteOperationImagesGenerate, Status: 1}
+	if err := db.Create(endpoint).Error; err != nil {
+		t.Fatal(err)
+	}
+	endpoints, err := NewUnifiedService().findEndpointsForCapability(&InvokeRequest{Capability: "text2img", Model: "explicit-image", RouteOperation: RouteOperationImagesGenerate})
+	if err != nil || len(endpoints) != 1 || endpoints[0].ID != endpoint.ID {
+		t.Fatalf("explicit generate endpoints = %#v, err=%v", endpoints, err)
+	}
+	endpoints, err = NewUnifiedService().findEndpointsForCapability(&InvokeRequest{Capability: "text2img", Model: "explicit-image", RouteOperation: RouteOperationImagesEdit})
+	if err == nil || len(endpoints) != 0 {
+		t.Fatalf("explicit edit endpoints = %#v, err=%v", endpoints, err)
+	}
+}
+
 func TestReserveInitialCapabilityTaskCommitsBillingAccountAndTaskTogether(t *testing.T) {
 	db := setupTestDB(t)
 	if err := db.AutoMigrate(&model.Channel{}); err != nil {
@@ -190,15 +266,16 @@ func TestReserveInitialCapabilityTaskCommitsBillingAccountAndTaskTogether(t *tes
 	bindEndpointAccountForTest(t, endpoint.ID, account.ID)
 	cost := decimal.NewFromInt(2)
 	invokeReq := &InvokeRequest{
-		UserID:     user.ID,
-		TokenID:    token.ID,
-		CallID:     "call_capability_reservation",
-		RequestID:  "request-capability-reservation",
-		Endpoint:   "/v1/images/generations",
-		Operation:  "images.generate",
-		Capability: "image-test",
-		Model:      "image-model",
-		Params:     map[string]any{"prompt": "test"},
+		UserID:         user.ID,
+		TokenID:        token.ID,
+		CallID:         "call_capability_reservation",
+		RequestID:      "request-capability-reservation",
+		Endpoint:       "/v1/images/generations",
+		Operation:      "images.generate",
+		RouteOperation: RouteOperationImagesGenerate,
+		Capability:     "image-test",
+		Model:          "image-model",
+		Params:         map[string]any{"prompt": "test"},
 	}
 
 	task, chosen, gotChannel, selected, err := NewUnifiedService().reserveInitialCapabilityTask(
@@ -216,6 +293,9 @@ func TestReserveInitialCapabilityTaskCommitsBillingAccountAndTaskTogether(t *tes
 	}
 	if task.CallID != invokeReq.CallID {
 		t.Fatalf("task call_id = %q, want %q", task.CallID, invokeReq.CallID)
+	}
+	if task.RouteOperation != invokeReq.RouteOperation {
+		t.Fatalf("task route_operation = %q, want %q", task.RouteOperation, invokeReq.RouteOperation)
 	}
 	var call model.APICall
 	if err := db.First(&call, "id = ?", invokeReq.CallID).Error; err != nil {
@@ -238,6 +318,17 @@ func TestReserveInitialCapabilityTaskCommitsBillingAccountAndTaskTogether(t *tes
 	assertBillingBalances(t, user.ID, token.ID, decimal.NewFromInt(8), decimal.NewFromInt(8), cost)
 	assertBillingLogCount(t, task.TaskNo+":reserve", 1)
 	assertCapabilityBillingContext(t, task.TaskNo+":reserve", task.CallID, model.BillingPhaseReserve)
+	var reserveLog model.BillingLog
+	if err := db.Where("idempotent_key = ?", task.TaskNo+":reserve").First(&reserveLog).Error; err != nil {
+		t.Fatal(err)
+	}
+	var pricingSnapshot map[string]any
+	if err := json.Unmarshal(reserveLog.PricingSnapshot, &pricingSnapshot); err != nil {
+		t.Fatal(err)
+	}
+	if pricingSnapshot["route_operation"] != RouteOperationImagesGenerate {
+		t.Fatalf("pricing route_operation = %#v", pricingSnapshot["route_operation"])
+	}
 
 	committed, err := NewTaskService().UpdateTaskFail(task.ID, "test failure")
 	if err != nil {
@@ -1259,6 +1350,16 @@ func TestSelectAndAssignAccountForEndpointReacquiresReleasedAccountOnce(t *testi
 	}
 	if gotTask.EndpointID != ep.ID || gotTask.ChannelID != ep.ChannelID || gotTask.AccountID != account.ID {
 		t.Fatalf("task assignment = endpoint %d channel %d account %d", gotTask.EndpointID, gotTask.ChannelID, gotTask.AccountID)
+	}
+	if len(gotTask.EndpointSnapshot) == 0 {
+		t.Fatal("fallback endpoint snapshot is empty")
+	}
+	var applied model.Endpoint
+	if err := ApplyTaskEndpointSnapshot(&gotTask, &applied); err != nil {
+		t.Fatal(err)
+	}
+	if applied.ID != ep.ID || applied.ChannelID != ep.ChannelID {
+		t.Fatalf("fallback endpoint snapshot = endpoint %d channel %d", applied.ID, applied.ChannelID)
 	}
 
 	var gotAccount model.ChannelAccount

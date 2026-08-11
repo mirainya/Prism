@@ -6,6 +6,9 @@ import (
 	responsepipeline "github.com/mirainya/Prism/internal/gateway/responses"
 	"github.com/mirainya/Prism/internal/provider"
 	"github.com/mirainya/Prism/internal/service"
+	"github.com/mirainya/Prism/internal/video"
+	"github.com/mirainya/Prism/internal/video/generic"
+	"github.com/mirainya/Prism/internal/video/seedance"
 	"github.com/mirainya/Prism/pkg/queue"
 )
 
@@ -26,6 +29,10 @@ func RegisterHandlers(mux *asynq.ServeMux, executionEngine *engine.Engine) {
 		panic("Gateway V2 engine is required")
 	}
 	responsePipe = responsepipeline.New(executionEngine)
+	videoEngine = video.NewEngine()
+	videoEngine.RegisterBuiltins()
+	videoEngine.Registry().Register("seedance", seedance.NewAdapter)
+	videoEngine.Registry().Register("generic", generic.NewAdapter)
 	mux.HandleFunc(TypeTaskSubmit, HandleTaskSubmit)
 	mux.HandleFunc(TypeTaskPoll, HandleTaskPoll)
 	mux.HandleFunc(TypeTaskUpload, HandleTaskUpload)
@@ -35,4 +42,7 @@ func RegisterHandlers(mux *asynq.ServeMux, executionEngine *engine.Engine) {
 	mux.HandleFunc(TypeResponseBackground, HandleResponseBackground)
 	mux.HandleFunc(TypeResponseRecovery, HandleResponseRecovery)
 	mux.HandleFunc(TypeAPICallPayloadCleanup, HandleAPICallPayloadCleanup)
+	mux.HandleFunc(TypeVideoSubmit, HandleVideoSubmit)
+	mux.HandleFunc(TypeVideoPoll, HandleVideoPoll)
+	mux.HandleFunc(TypeVideoNotify, HandleVideoNotify)
 }

@@ -691,3 +691,28 @@ func TestChatStreamAttachesTrailingUsageToTerminal(t *testing.T) {
 		t.Fatalf("terminal=%#v err=%v", event, err)
 	}
 }
+
+// 上游内置工具(如 xAI web_search_preview)不是 function 类型,Chat 必须原样透传而非拒绝,
+// 否则 Grok 只能在正文里吐 <tool_call> 伪调用文本。
+func TestChatPassesThroughNonFunctionTools(t *testing.T) {
+	request := canonical.Request{Model: "m",
+		Items: []canonical.Item{{Type: "message", Role: canonical.RoleUser, Content: []canonical.Content{{Type: "input_text", Text: "hi"}}}},
+		Tools: []canonical.Tool{
+			{Type: "web_search_preview", Options: json.RawMessage(`{"type":"web_search_preview","search_context_size":"high"}`)},
+			{Type: "function", Name: "lookup", InputSchema: json.RawMessage(`{"type":"object"}`)},
+		},
+	}
+	if plan := NewChat(nil).Plan(transport.OperationChat, request, canonical.NewFeatureSet(canonical.FeatureTools)); !plan.Supported() {
+		t.Fatalf("Chat rejected an upstream built-in tool: %#v", plan)
+	}
+	prepared, err := NewChat(nil).Prepare(context.Background(), transport.Invocation{Route: transport.Route{BaseURL: "https://example.test"}, Operation: transport.OperationChat, Request: request})
+	if err != nil {
+		t.Fatal(err)
+	}
+	body := string(prepared.Body)
+	for _, expected := range []string{`"type":"web_search_preview"`, `"search_context_size":"high"`, `"function":{"name":"lookup"`} {
+		if !strings.Contains(body, expected) {
+			t.Fatalf("prepared body missing %s: %s", expected, body)
+		}
+	}
+}

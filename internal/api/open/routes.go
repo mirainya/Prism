@@ -19,6 +19,13 @@ func RegisterRoutes(group *gin.RouterGroup) {
 	group.POST("/images/generations", CreateImageGenerationOpenAI)
 	group.POST("/images/edits", CreateImageEditOpenAI)
 	group.POST("/videos/generations", CreateVideoGeneration)
+	group.POST("/videos/estimate", EstimateVideoGeneration)
+	group.GET("/videos/generations/:id", GetVideoGeneration)
+	group.POST("/videos/generations/:id/cancel", CancelVideoGeneration)
+	group.POST("/videos/assets", CreateVideoAsset)
+	group.POST("/videos/uploads", CreateVideoAsset)
+	group.GET("/videos/assets/:asset_id", GetVideoAsset)
+	group.DELETE("/videos/assets/:asset_id", DeleteVideoAsset)
 
 	// Chat 接口
 	// 注意: chat/completions 已切到网关 pipeline(见 router.go gw.RegisterChat),

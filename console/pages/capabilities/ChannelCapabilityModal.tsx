@@ -1,6 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import { X } from 'lucide-react';
 import { Modal } from '../../components/ui/Modal';
+import { Select } from '../../components/ui';
 import JsonEditor from '../../components/ui/JsonEditor';
 import { createChannelCapability, fetchChannelAccounts, updateChannelCapability } from '../../services/api';
 import { ChannelCapability, Channel, ChannelAccount, Capability } from '../../types';
@@ -36,7 +37,7 @@ const ChannelCapabilityModal: React.FC<{
 }> = ({isOpen, capabilityCode, channelCapability, channels, capabilities, defaultChannelId, defaultAccountId, initialTab = 'basic', onClose, onSave}) => {
     const [activeTab, setActiveTab] = useState<'basic' | 'accounts' | 'request' | 'param' | 'response' | 'poll_response' | 'callback' | 'schema'>('basic');
     const [form, setForm] = useState({
-        channel_id: 0, capability_code: '', model: '', name: '', price: 0, price_unit: 'request',
+        channel_id: 0, capability_code: '', route_operation: '', supported_operations: [] as string[], model: '', price: 0, price_unit: 'request',
         result_mode: 'poll', request_path: '', request_method: 'POST', content_type: 'application/json',
         auth_location: 'header', auth_key: 'Authorization', auth_value_prefix: 'Bearer ',
         poll_path: '', poll_method: 'GET', poll_interval: 5, poll_max_attempts: 60, transfer_enabled: false,
@@ -75,8 +76,11 @@ const ChannelCapabilityModal: React.FC<{
             setForm({
                 channel_id: Number(channelCapability.channelId),
                 capability_code: channelCapability.capabilityCode,
+                route_operation: channelCapability.routeOperation || '',
+                supported_operations: channelCapability.supportedOperations?.length
+                    ? channelCapability.supportedOperations
+                    : channelCapability.routeOperation ? [channelCapability.routeOperation] : [],
                 model: channelCapability.model || '',
-                name: channelCapability.name || '',
                 price: channelCapability.price || 0,
                 price_unit: channelCapability.priceUnit || 'request',
                 result_mode: channelCapability.resultMode || 'poll',
@@ -146,7 +150,7 @@ const ChannelCapabilityModal: React.FC<{
         } else {
             setForm({
                 channel_id: defaultChannelId || (channels[0]?.id ? Number(channels[0].id) : 0),
-                capability_code: capabilityCode, model: '', name: '', price: 0, price_unit: 'request',
+                capability_code: capabilityCode, route_operation: '', supported_operations: [], model: '', price: 0, price_unit: 'request',
                 result_mode: 'poll', request_path: '', request_method: 'POST', content_type: 'application/json',
                 auth_location: 'header', auth_key: 'Authorization', auth_value_prefix: 'Bearer ',
                 poll_path: '', poll_method: 'GET', poll_interval: 5, poll_max_attempts: 60, transfer_enabled: false,
@@ -211,12 +215,16 @@ const ChannelCapabilityModal: React.FC<{
         if (!tabs.some(t => t.key === activeTab)) setActiveTab('basic');
     }, [tabs, activeTab]);
 
-    if (!isOpen) return null;
+    const selectedCapabilityType = capabilities.find(capability => capability.code === form.capability_code)?.type || 'other';
 
     const handleSubmit = async (e: React.FormEvent) => {
         e.preventDefault();
-        if (!form.channel_id || !form.capability_code.trim()) {
-            setBasicError(!form.channel_id ? '请选择渠道' : '请选择能力 / 模型');
+        if (!form.channel_id || !form.capability_code.trim() || (selectedCapabilityType === 'image' && form.supported_operations.length === 0)) {
+            setBasicError(!form.channel_id
+                ? '请选择渠道'
+                : !form.capability_code.trim()
+                    ? '请选择平台能力'
+                    : '请选择生成或编辑操作');
             setActiveTab('basic');
             return;
         }
@@ -239,9 +247,11 @@ const ChannelCapabilityModal: React.FC<{
                 if (Object.keys(statusMap).length > 0) callbackMapping.status_mapping = statusMap;
             }
             const data: Record<string, any> = {
-                channel_id: form.channel_id, model_code: form.capability_code, model: form.model, name: form.name,
+                channel_id: form.channel_id, model_code: form.capability_code, route_operation: form.route_operation,
+                supported_operations: form.supported_operations,
+                vendor_model: form.model,
                 account_bindings: accountBindings,
-                price: form.price, price_unit: form.price_unit, interaction_mode: form.result_mode,
+                price_mode: form.price_unit, input_price: form.price, output_price: 0, interaction_mode: form.result_mode,
                 request_path: form.request_path, request_method: form.request_method, content_type: form.content_type,
                 auth_location: form.auth_location, auth_key: form.auth_key, auth_value_prefix: form.auth_value_prefix,
                 poll_path: form.poll_path, poll_method: form.poll_method, poll_interval: form.poll_interval,
@@ -300,7 +310,7 @@ const ChannelCapabilityModal: React.FC<{
     };
 
     return (
-        <Modal open={true} onClose={onClose} title={channelCapability ? '编辑渠道能力配置' : '新建渠道能力配置'} width="max-w-3xl">
+        <Modal open={isOpen} onClose={onClose} title={channelCapability ? '编辑渠道能力配置' : '新建渠道能力配置'} width="max-w-3xl">
                 <div className="flex border-b border-[var(--border-soft)] mb-4 overflow-x-auto">
                     {tabs.map(tab => (
                         <button key={tab.key} type="button" onClick={() => setActiveTab(tab.key as any)}
@@ -322,49 +332,71 @@ const ChannelCapabilityModal: React.FC<{
                             <div className="grid grid-cols-2 gap-4">
                                 <div>
                                     <label className="block text-sm font-medium text-[var(--text-primary)] mb-1">渠道 <span className="text-red-500">*</span></label>
-                                    <select value={form.channel_id} onChange={e => {
-                                        setForm({...form, channel_id: Number(e.target.value)});
+                                    <Select value={String(form.channel_id)} onChange={v => {
+                                        setForm({...form, channel_id: Number(v)});
                                         setAccountBindings([]);
                                         setBasicError('');
                                     }}
-                                        className="w-full px-3 py-2 border border-[var(--border-soft)] rounded-lg focus:outline-none focus:ring-2 focus:ring-[var(--primary)]" required>
-                                        <option value={0}>选择渠道</option>
-                                        {channels.map(ch => (<option key={ch.id} value={ch.id}>{ch.name} ({ch.type})</option>))}
-                                    </select>
+                                        options={[{ label: '选择渠道', value: '0' }, ...channels.map(ch => ({ label: `${ch.name} (${ch.type})`, value: String(ch.id) }))]} />
                                 </div>
                                 <div>
-                                    <label className="block text-sm font-medium text-[var(--text-primary)] mb-1">能力 / 模型 <span className="text-red-500">*</span></label>
-                                    <select value={form.capability_code} onChange={e => {
-                                        setForm({...form, capability_code: e.target.value});
+                                    <label className="block text-sm font-medium text-[var(--text-primary)] mb-1">平台能力 <span className="text-red-500">*</span></label>
+                                    <Select value={form.capability_code} onChange={v => {
+                                        const type = capabilities.find(capability => capability.code === v)?.type;
+                                        const operations = type === 'video' ? ['videos.generate'] : [];
+                                        setForm({...form, capability_code: v, route_operation: operations[0] || '', supported_operations: operations});
                                         setBasicError('');
                                     }}
-                                        className="w-full px-3 py-2 border border-[var(--border-soft)] rounded-lg focus:outline-none focus:ring-2 focus:ring-[var(--primary)]" required>
-                                        <option value="">选择能力</option>
-                                        {capabilities.map(cap => (<option key={cap.code} value={cap.code}>{cap.name} ({cap.code})</option>))}
-                                    </select>
+                                        options={[{ label: '选择能力', value: '' }, ...capabilities.map(cap => ({ label: `${cap.name} (${cap.code})`, value: cap.code }))]} />
                                 </div>
                             </div>
-                            <div className="grid grid-cols-2 gap-4">
+                            <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
                                 <div>
-                                    <label className="block text-sm font-medium text-[var(--text-primary)] mb-1">配置名称</label>
-                                    <input type="text" value={form.name} onChange={e => setForm({...form, name: e.target.value})}
-                                        className="w-full px-3 py-2 border border-[var(--border-soft)] rounded-lg focus:outline-none focus:ring-2 focus:ring-[var(--primary)]"
-                                        placeholder="如: 官方渠道-高质量" />
-                                </div>
-                                <div>
-                                    <label className="block text-sm font-medium text-[var(--text-primary)] mb-1">模型标识</label>
+                                    <label className="block text-sm font-medium text-[var(--text-primary)] mb-1">上游模型标识</label>
                                     <input type="text" value={form.model} onChange={e => setForm({...form, model: e.target.value})}
                                         className="w-full px-3 py-2 border border-[var(--border-soft)] rounded-lg focus:outline-none focus:ring-2 focus:ring-[var(--primary)]"
                                         placeholder="如: midjourney-v6" />
+                                </div>
+                                <div>
+                                    <label className="block text-sm font-medium text-[var(--text-primary)] mb-1">
+                                        支持操作 {selectedCapabilityType === 'image' && <span className="text-red-500">*</span>}
+                                    </label>
+                                    {selectedCapabilityType === 'image' ? (
+                                        <div className="flex h-10 items-center gap-4 rounded-lg border border-[var(--border-soft)] px-3">
+                                            {[
+                                                {value: 'images.generate', label: '图片生成'},
+                                                {value: 'images.edit', label: '图片编辑'},
+                                            ].map(operation => (
+                                                <label key={operation.value} className="inline-flex items-center gap-1.5 text-sm text-[var(--text-primary)]">
+                                                    <input type="checkbox" checked={form.supported_operations.includes(operation.value)}
+                                                        onChange={event => {
+                                                            const operations = event.target.checked
+                                                                ? [...form.supported_operations, operation.value]
+                                                                : form.supported_operations.filter(item => item !== operation.value);
+                                                            const routeOperation = operations.includes(form.route_operation)
+                                                                ? form.route_operation
+                                                                : operations[0] || '';
+                                                            setForm({...form, supported_operations: operations, route_operation: routeOperation});
+                                                            setBasicError('');
+                                                        }}
+                                                        className="h-4 w-4 rounded border-gray-300 text-[var(--primary)] focus:ring-[var(--primary)]" />
+                                                    {operation.label}
+                                                </label>
+                                            ))}
+                                        </div>
+                                    ) : (
+                                        <Select value={form.route_operation} onChange={v => {
+                                            setForm({...form, route_operation: v, supported_operations: v ? [v] : []});
+                                            setBasicError('');
+                                        }} options={[{ label: '未指定', value: '' }, ...(selectedCapabilityType === 'video' ? [{ label: '视频生成', value: 'videos.generate' }] : [])]} />
+                                    )}
                                 </div>
                             </div>
                             <div className="grid grid-cols-3 gap-4">
                                 <div>
                                     <label className="block text-sm font-medium text-[var(--text-primary)] mb-1">结果模式</label>
-                                    <select value={form.result_mode} onChange={e => setForm({...form, result_mode: e.target.value})}
-                                        className="w-full px-3 py-2 border border-[var(--border-soft)] rounded-lg focus:outline-none focus:ring-2 focus:ring-[var(--primary)]">
-                                        {RESULT_MODES.map(m => (<option key={m.value} value={m.value}>{m.label}</option>))}
-                                    </select>
+                                    <Select value={form.result_mode} onChange={v => setForm({...form, result_mode: v})}
+                                        options={RESULT_MODES.map(m => ({ label: m.label, value: m.value }))} />
                                 </div>
                                 <div>
                                     <label className="block text-sm font-medium text-[var(--text-primary)] mb-1">单价</label>
@@ -374,12 +406,8 @@ const ChannelCapabilityModal: React.FC<{
                                 </div>
                                 <div>
                                     <label className="block text-sm font-medium text-[var(--text-primary)] mb-1">计价单位</label>
-                                    <select value={form.price_unit} onChange={e => setForm({...form, price_unit: e.target.value})}
-                                        className="w-full px-3 py-2 border border-[var(--border-soft)] rounded-lg focus:outline-none focus:ring-2 focus:ring-[var(--primary)]">
-                                        <option value="request">按请求</option>
-                                        <option value="second">按秒</option>
-                                        <option value="image">按图片</option>
-                                    </select>
+                                    <Select value={form.price_unit} onChange={v => setForm({...form, price_unit: v})}
+                                        options={[{ label: '按请求', value: 'request' }, { label: '按秒', value: 'second' }, { label: '按图片', value: 'image' }]} />
                                 </div>
                             </div>
                             <div className="flex items-center gap-2 mt-2">
@@ -457,20 +485,13 @@ const ChannelCapabilityModal: React.FC<{
                             <div className="grid grid-cols-2 gap-4">
                                 <div>
                                     <label className="block text-sm font-medium text-[var(--text-primary)] mb-1">请求方法</label>
-                                    <select value={form.request_method} onChange={e => setForm({...form, request_method: e.target.value})}
-                                        className="w-full px-3 py-2 border border-[var(--border-soft)] rounded-lg focus:outline-none focus:ring-2 focus:ring-[var(--primary)]">
-                                        <option value="POST">POST</option>
-                                        <option value="GET">GET</option>
-                                    </select>
+                                    <Select value={form.request_method} onChange={v => setForm({...form, request_method: v})}
+                                        options={[{ label: 'POST', value: 'POST' }, { label: 'GET', value: 'GET' }]} />
                                 </div>
                                 <div>
                                     <label className="block text-sm font-medium text-[var(--text-primary)] mb-1">Content-Type</label>
-                                    <select value={form.content_type} onChange={e => setForm({...form, content_type: e.target.value})}
-                                        className="w-full px-3 py-2 border border-[var(--border-soft)] rounded-lg focus:outline-none focus:ring-2 focus:ring-[var(--primary)]">
-                                        <option value="application/json">application/json</option>
-                                        <option value="application/x-www-form-urlencoded">application/x-www-form-urlencoded</option>
-                                        <option value="multipart/form-data">multipart/form-data</option>
-                                    </select>
+                                    <Select value={form.content_type} onChange={v => setForm({...form, content_type: v})}
+                                        options={[{ label: 'application/json', value: 'application/json' }, { label: 'application/x-www-form-urlencoded', value: 'application/x-www-form-urlencoded' }, { label: 'multipart/form-data', value: 'multipart/form-data' }]} />
                                 </div>
                             </div>
                             <div className="border-t border-[var(--border-soft)] pt-4 space-y-4">
@@ -528,12 +549,8 @@ const ChannelCapabilityModal: React.FC<{
                             <div className="grid grid-cols-3 gap-4">
                                 <div>
                                     <label className="block text-sm font-medium text-[var(--text-primary)] mb-1">认证位置</label>
-                                    <select value={form.auth_location} onChange={e => setForm({...form, auth_location: e.target.value})}
-                                        className="w-full px-3 py-2 border border-[var(--border-soft)] rounded-lg focus:outline-none focus:ring-2 focus:ring-[var(--primary)]">
-                                        <option value="header">请求头 (Header)</option>
-                                        <option value="body">请求体 (Body)</option>
-                                        <option value="query">URL参数 (Query)</option>
-                                    </select>
+                                    <Select value={form.auth_location} onChange={v => setForm({...form, auth_location: v})}
+                                        options={[{ label: '请求头 (Header)', value: 'header' }, { label: '请求体 (Body)', value: 'body' }, { label: 'URL参数 (Query)', value: 'query' }]} />
                                 </div>
                                 <div>
                                     <label className="block text-sm font-medium text-[var(--text-primary)] mb-1">参数名</label>
@@ -561,11 +578,8 @@ const ChannelCapabilityModal: React.FC<{
                                     <div className="grid grid-cols-2 gap-4">
                                         <div>
                                             <label className="block text-sm font-medium text-[var(--text-primary)] mb-1">轮询方法</label>
-                                            <select value={form.poll_method} onChange={e => setForm({...form, poll_method: e.target.value})}
-                                                className="w-full px-3 py-2 border border-[var(--border-soft)] rounded-lg focus:outline-none focus:ring-2 focus:ring-[var(--primary)]">
-                                                <option value="GET">GET</option>
-                                                <option value="POST">POST</option>
-                                            </select>
+                                            <Select value={form.poll_method} onChange={v => setForm({...form, poll_method: v})}
+                                                options={[{ label: 'GET', value: 'GET' }, { label: 'POST', value: 'POST' }]} />
                                         </div>
                                         <div>
                                             <label className="block text-sm font-medium text-[var(--text-primary)] mb-1">独立轮询响应映射</label>
@@ -597,13 +611,8 @@ const ChannelCapabilityModal: React.FC<{
                                             <div className="mb-4">
                                                 <div className="flex items-center justify-between mb-2">
                                                     <span className="text-sm text-[var(--text-primary)]">字段映射</span>
-                                                    <select onChange={e => { if (e.target.value) addPollParamFieldMapping(e.target.value); e.target.value = ''; }}
-                                                        className="px-3 py-1.5 border border-[var(--border-soft)] rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-[var(--primary)]">
-                                                        <option value="">+ 添加字段</option>
-                                                        {Object.entries(POLL_PARAMS).filter(([key]) => !pollParamFieldMappings.find(m => m.stdField === key)).map(([key, def]) => (
-                                                            <option key={key} value={key}>{def.name} ({key})</option>
-                                                        ))}
-                                                    </select>
+                                                    <Select value="" onChange={v => { if (v) addPollParamFieldMapping(v); }}
+                                                        options={[{ label: '+ 添加字段', value: '' }, ...Object.entries(POLL_PARAMS).filter(([key]) => !pollParamFieldMappings.find(m => m.stdField === key)).map(([key, def]) => ({ label: `${def.name} (${key})`, value: key }))]} />
                                                 </div>
                                                 {pollParamFieldMappings.length === 0 ? (
                                                     <div className="text-sm text-[var(--text-secondary)] text-center py-3 bg-[var(--surface)] rounded-lg">暂无字段映射</div>
@@ -672,13 +681,8 @@ const ChannelCapabilityModal: React.FC<{
                             <div>
                                 <div className="flex items-center justify-between mb-3">
                                     <h4 className="text-sm font-medium text-[var(--text-primary)]">字段映射</h4>
-                                    <select onChange={e => { if (e.target.value) addParamFieldMapping(e.target.value); e.target.value = ''; }}
-                                        className="px-3 py-1.5 border border-[var(--border-soft)] rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-[var(--primary)]">
-                                        <option value="">+ 添加字段</option>
-                                        {Object.entries(STANDARD_PARAMS).filter(([key]) => !paramFieldMappings.find(m => m.stdField === key)).map(([key, def]) => (
-                                            <option key={key} value={key}>{def.name} ({key})</option>
-                                        ))}
-                                    </select>
+                                    <Select value="" onChange={v => { if (v) addParamFieldMapping(v); }}
+                                        options={[{ label: '+ 添加字段', value: '' }, ...Object.entries(STANDARD_PARAMS).filter(([key]) => !paramFieldMappings.find(m => m.stdField === key)).map(([key, def]) => ({ label: `${def.name} (${key})`, value: key }))]} />
                                 </div>
                                 <p className="text-xs text-[var(--text-secondary)] mb-3">配置系统标准参数字段到三方接口字段的映射</p>
                                 {paramFieldMappings.length === 0 ? (
@@ -704,11 +708,9 @@ const ChannelCapabilityModal: React.FC<{
                                 ) : (
                                     paramValueMappings.map((m, i) => (
                                         <div key={i} className="flex items-center gap-2 mb-2">
-                                            <select value={m.field} onChange={e => { const newList = [...paramValueMappings]; newList[i].field = e.target.value; setParamValueMappings(newList); }}
-                                                className="w-36 px-3 py-2 border border-[var(--border-soft)] rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-[var(--primary)]">
-                                                <option value="">选择字段</option>
-                                                {paramFieldMappings.map(fm => (<option key={fm.stdField} value={fm.stdField}>{STANDARD_PARAMS[fm.stdField]?.name || fm.stdField}</option>))}
-                                            </select>
+                                            <Select value={m.field} onChange={v => { const newList = [...paramValueMappings]; newList[i].field = v; setParamValueMappings(newList); }}
+                                                className="w-36"
+                                                options={[{ label: '选择字段', value: '' }, ...paramFieldMappings.map(fm => ({ label: STANDARD_PARAMS[fm.stdField]?.name || fm.stdField, value: fm.stdField }))]} />
                                             <ValueMappingRow stdValue={m.stdValue} vendorValue={m.vendorValue}
                                                 onChange={val => { const newList = [...paramValueMappings]; newList[i].vendorValue = val; setParamValueMappings(newList); }}
                                                 onRemove={() => setParamValueMappings(paramValueMappings.filter((_, idx) => idx !== i))} />
@@ -746,16 +748,12 @@ const ChannelCapabilityModal: React.FC<{
                                 ) : (
                                     paramTypeConverts.map((tc, i) => (
                                         <div key={i} className="flex items-center gap-2 mb-2">
-                                            <select value={tc.field} onChange={e => { const newList = [...paramTypeConverts]; newList[i].field = e.target.value; setParamTypeConverts(newList); }}
-                                                className="w-40 px-3 py-2 border border-[var(--border-soft)] rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-[var(--primary)]">
-                                                <option value="">选择字段</option>
-                                                {paramFieldMappings.map(m => (<option key={m.stdField} value={m.stdField}>{STANDARD_PARAMS[m.stdField]?.name || m.stdField}</option>))}
-                                            </select>
-                                            <select value={tc.type} onChange={e => { const newList = [...paramTypeConverts]; newList[i].type = e.target.value as 'string_to_array' | 'array_to_string'; setParamTypeConverts(newList); }}
-                                                className="w-44 px-3 py-2 border border-[var(--border-soft)] rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-[var(--primary)]">
-                                                <option value="array_to_string">数组→字符串</option>
-                                                <option value="string_to_array">字符串→数组</option>
-                                            </select>
+                                            <Select value={tc.field} onChange={v => { const newList = [...paramTypeConverts]; newList[i].field = v; setParamTypeConverts(newList); }}
+                                                className="w-40"
+                                                options={[{ label: '选择字段', value: '' }, ...paramFieldMappings.map(m => ({ label: STANDARD_PARAMS[m.stdField]?.name || m.stdField, value: m.stdField }))]} />
+                                            <Select value={tc.type} onChange={v => { const newList = [...paramTypeConverts]; newList[i].type = v as 'string_to_array' | 'array_to_string'; setParamTypeConverts(newList); }}
+                                                className="w-44"
+                                                options={[{ label: '数组→字符串', value: 'array_to_string' }, { label: '字符串→数组', value: 'string_to_array' }]} />
                                             <input type="text" value={tc.separator} onChange={e => { const newList = [...paramTypeConverts]; newList[i].separator = e.target.value; setParamTypeConverts(newList); }}
                                                 className="w-24 px-3 py-2 border border-[var(--border-soft)] rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-[var(--primary)]" placeholder="分隔符" />
                                             <span className="text-xs text-[var(--text-secondary)] whitespace-nowrap">用 \n 表示换行</span>
@@ -779,13 +777,8 @@ const ChannelCapabilityModal: React.FC<{
                             <div>
                                 <div className="flex items-center justify-between mb-3">
                                     <h4 className="text-sm font-medium text-[var(--text-primary)]">字段映射</h4>
-                                    <select onChange={e => { if (e.target.value) addRespFieldMapping(e.target.value); e.target.value = ''; }}
-                                        className="px-3 py-1.5 border border-[var(--border-soft)] rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-[var(--primary)]">
-                                        <option value="">+ 添加字段</option>
-                                        {Object.entries(STANDARD_RESPONSE).filter(([key]) => !respFieldMappings.find(m => m.stdField === key)).map(([key, def]) => (
-                                            <option key={key} value={key}>{def.name} ({key})</option>
-                                        ))}
-                                    </select>
+                                    <Select value="" onChange={v => { if (v) addRespFieldMapping(v); }}
+                                        options={[{ label: '+ 添加字段', value: '' }, ...Object.entries(STANDARD_RESPONSE).filter(([key]) => !respFieldMappings.find(m => m.stdField === key)).map(([key, def]) => ({ label: `${def.name} (${key})`, value: key }))]} />
                                 </div>
                                 <p className="text-xs text-[var(--text-secondary)] mb-3">配置三方接口响应字段路径到系统标准字段的映射（支持路径如 data.output.images[0]）</p>
                                 {respFieldMappings.length === 0 ? (
@@ -825,12 +818,10 @@ const ChannelCapabilityModal: React.FC<{
                                                 className="flex-1 px-3 py-2 border border-[var(--border-soft)] rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-[var(--primary)]"
                                                 placeholder="三方状态值" />
                                             <span className="text-[var(--text-secondary)]">→</span>
-                                            <select value={m.stdValue}
-                                                onChange={e => { const newList = [...respValueMappings]; newList[i].stdValue = e.target.value; setRespValueMappings(newList); }}
-                                                className="w-36 px-3 py-2 border border-[var(--border-soft)] rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-[var(--primary)]">
-                                                <option value="">系统状态</option>
-                                                {STANDARD_STATUS_VALUES.map(v => (<option key={v} value={v}>{v}</option>))}
-                                            </select>
+                                            <Select value={m.stdValue}
+                                                onChange={v => { const newList = [...respValueMappings]; newList[i].stdValue = v; setRespValueMappings(newList); }}
+                                                className="w-36"
+                                                options={[{ label: '系统状态', value: '' }, ...STANDARD_STATUS_VALUES.map(v => ({ label: v, value: v }))]} />
                                             <button type="button" onClick={() => setRespValueMappings(respValueMappings.filter((_, idx) => idx !== i))}
                                                 className="p-2 text-[var(--text-secondary)] hover:text-red-500 hover:bg-red-50 rounded-lg"><X size={14}/></button>
                                         </div>
@@ -848,16 +839,12 @@ const ChannelCapabilityModal: React.FC<{
                                 ) : (
                                     respTypeConverts.map((tc, i) => (
                                         <div key={i} className="flex items-center gap-2 mb-2">
-                                            <select value={tc.field} onChange={e => { const newList = [...respTypeConverts]; newList[i].field = e.target.value; setRespTypeConverts(newList); }}
-                                                className="w-40 px-3 py-2 border border-[var(--border-soft)] rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-[var(--primary)]">
-                                                <option value="">选择字段</option>
-                                                {respFieldMappings.map(m => (<option key={m.stdField} value={m.stdField}>{STANDARD_RESPONSE[m.stdField]?.name || m.stdField}</option>))}
-                                            </select>
-                                            <select value={tc.type} onChange={e => { const newList = [...respTypeConverts]; newList[i].type = e.target.value as 'string_to_array' | 'array_to_string'; setRespTypeConverts(newList); }}
-                                                className="w-44 px-3 py-2 border border-[var(--border-soft)] rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-[var(--primary)]">
-                                                <option value="string_to_array">字符串→数组</option>
-                                                <option value="array_to_string">数组→字符串</option>
-                                            </select>
+                                            <Select value={tc.field} onChange={v => { const newList = [...respTypeConverts]; newList[i].field = v; setRespTypeConverts(newList); }}
+                                                className="w-40"
+                                                options={[{ label: '选择字段', value: '' }, ...respFieldMappings.map(m => ({ label: STANDARD_RESPONSE[m.stdField]?.name || m.stdField, value: m.stdField }))]} />
+                                            <Select value={tc.type} onChange={v => { const newList = [...respTypeConverts]; newList[i].type = v as 'string_to_array' | 'array_to_string'; setRespTypeConverts(newList); }}
+                                                className="w-44"
+                                                options={[{ label: '字符串→数组', value: 'string_to_array' }, { label: '数组→字符串', value: 'array_to_string' }]} />
                                             <input type="text" value={tc.separator} onChange={e => { const newList = [...respTypeConverts]; newList[i].separator = e.target.value; setRespTypeConverts(newList); }}
                                                 className="w-24 px-3 py-2 border border-[var(--border-soft)] rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-[var(--primary)]" placeholder="分隔符" />
                                             <span className="text-xs text-[var(--text-secondary)] whitespace-nowrap">用 \n 表示换行</span>
@@ -885,11 +872,10 @@ const ChannelCapabilityModal: React.FC<{
                                             onChange={e => setRespSuccessCondition({...respSuccessCondition, field: e.target.value})}
                                             className="w-40 px-3 py-2 border border-[var(--border-soft)] rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-[var(--primary)]"
                                             placeholder="字段路径，如 code" />
-                                        <select value={respSuccessCondition.operator}
-                                            onChange={e => setRespSuccessCondition({...respSuccessCondition, operator: e.target.value as SuccessCondition['operator']})}
-                                            className="w-32 px-3 py-2 border border-[var(--border-soft)] rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-[var(--primary)]">
-                                            {SUCCESS_CONDITION_OPERATORS.map(op => (<option key={op.value} value={op.value}>{op.label}</option>))}
-                                        </select>
+                                        <Select value={respSuccessCondition.operator}
+                                            onChange={v => setRespSuccessCondition({...respSuccessCondition, operator: v as SuccessCondition['operator']})}
+                                            className="w-32"
+                                            options={SUCCESS_CONDITION_OPERATORS.map(op => ({ label: op.label, value: op.value }))} />
                                         {SUCCESS_CONDITION_OPERATORS.find(o => o.value === respSuccessCondition.operator)?.needValue && (
                                             <input type="text" value={respSuccessCondition.value !== undefined ? String(respSuccessCondition.value) : ''}
                                                 onChange={e => setRespSuccessCondition({...respSuccessCondition, value: e.target.value})}
@@ -928,13 +914,8 @@ const ChannelCapabilityModal: React.FC<{
                             <div>
                                 <div className="flex items-center justify-between mb-3">
                                     <h4 className="text-sm font-medium text-[var(--text-primary)]">字段映射</h4>
-                                    <select onChange={e => { if (e.target.value) addPollRespFieldMapping(e.target.value); e.target.value = ''; }}
-                                        className="px-3 py-1.5 border border-[var(--border-soft)] rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-[var(--primary)]">
-                                        <option value="">+ 添加字段</option>
-                                        {Object.entries(STANDARD_RESPONSE).filter(([key]) => !pollRespFieldMappings.find(m => m.stdField === key)).map(([key, def]) => (
-                                            <option key={key} value={key}>{def.name} ({key})</option>
-                                        ))}
-                                    </select>
+                                    <Select value="" onChange={v => { if (v) addPollRespFieldMapping(v); }}
+                                        options={[{ label: '+ 添加字段', value: '' }, ...Object.entries(STANDARD_RESPONSE).filter(([key]) => !pollRespFieldMappings.find(m => m.stdField === key)).map(([key, def]) => ({ label: `${def.name} (${key})`, value: key }))]} />
                                 </div>
                                 {pollRespFieldMappings.length === 0 ? (
                                     <div className="text-sm text-[var(--text-secondary)] text-center py-4 bg-[var(--surface)] rounded-lg">暂无字段映射，请从上方添加</div>
@@ -972,12 +953,10 @@ const ChannelCapabilityModal: React.FC<{
                                                 className="flex-1 px-3 py-2 border border-[var(--border-soft)] rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-[var(--primary)]"
                                                 placeholder="三方状态值" />
                                             <span className="text-[var(--text-secondary)]">→</span>
-                                            <select value={m.stdValue}
-                                                onChange={e => { const newList = [...pollRespValueMappings]; newList[i].stdValue = e.target.value; setPollRespValueMappings(newList); }}
-                                                className="w-36 px-3 py-2 border border-[var(--border-soft)] rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-[var(--primary)]">
-                                                <option value="">系统状态</option>
-                                                {STANDARD_STATUS_VALUES.map(v => (<option key={v} value={v}>{v}</option>))}
-                                            </select>
+                                            <Select value={m.stdValue}
+                                                onChange={v => { const newList = [...pollRespValueMappings]; newList[i].stdValue = v; setPollRespValueMappings(newList); }}
+                                                className="w-36"
+                                                options={[{ label: '系统状态', value: '' }, ...STANDARD_STATUS_VALUES.map(v => ({ label: v, value: v }))]} />
                                             <button type="button" onClick={() => setPollRespValueMappings(pollRespValueMappings.filter((_, idx) => idx !== i))}
                                                 className="p-2 text-[var(--text-secondary)] hover:text-red-500 hover:bg-red-50 rounded-lg"><X size={14}/></button>
                                         </div>
@@ -995,16 +974,12 @@ const ChannelCapabilityModal: React.FC<{
                                 ) : (
                                     pollRespTypeConverts.map((tc, i) => (
                                         <div key={i} className="flex items-center gap-2 mb-2">
-                                            <select value={tc.field} onChange={e => { const newList = [...pollRespTypeConverts]; newList[i].field = e.target.value; setPollRespTypeConverts(newList); }}
-                                                className="w-40 px-3 py-2 border border-[var(--border-soft)] rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-[var(--primary)]">
-                                                <option value="">选择字段</option>
-                                                {pollRespFieldMappings.map(m => (<option key={m.stdField} value={m.stdField}>{STANDARD_RESPONSE[m.stdField]?.name || m.stdField}</option>))}
-                                            </select>
-                                            <select value={tc.type} onChange={e => { const newList = [...pollRespTypeConverts]; newList[i].type = e.target.value as 'string_to_array' | 'array_to_string'; setPollRespTypeConverts(newList); }}
-                                                className="w-40 px-3 py-2 border border-[var(--border-soft)] rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-[var(--primary)]">
-                                                <option value="string_to_array">字符串→数组</option>
-                                                <option value="array_to_string">数组→字符串</option>
-                                            </select>
+                                            <Select value={tc.field} onChange={v => { const newList = [...pollRespTypeConverts]; newList[i].field = v; setPollRespTypeConverts(newList); }}
+                                                className="w-40"
+                                                options={[{ label: '选择字段', value: '' }, ...pollRespFieldMappings.map(m => ({ label: STANDARD_RESPONSE[m.stdField]?.name || m.stdField, value: m.stdField }))]} />
+                                            <Select value={tc.type} onChange={v => { const newList = [...pollRespTypeConverts]; newList[i].type = v as 'string_to_array' | 'array_to_string'; setPollRespTypeConverts(newList); }}
+                                                className="w-40"
+                                                options={[{ label: '字符串→数组', value: 'string_to_array' }, { label: '数组→字符串', value: 'array_to_string' }]} />
                                             <input type="text" value={tc.separator} onChange={e => { const newList = [...pollRespTypeConverts]; newList[i].separator = e.target.value; setPollRespTypeConverts(newList); }}
                                                 className="w-20 px-3 py-2 border border-[var(--border-soft)] rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-[var(--primary)]" placeholder="分隔符" />
                                             <button type="button" onClick={() => setPollRespTypeConverts(pollRespTypeConverts.filter((_, idx) => idx !== i))}
@@ -1031,11 +1006,10 @@ const ChannelCapabilityModal: React.FC<{
                                             onChange={e => setPollRespSuccessCondition({...pollRespSuccessCondition, field: e.target.value})}
                                             className="w-40 px-3 py-2 border border-[var(--border-soft)] rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-[var(--primary)]"
                                             placeholder="字段路径，如 code" />
-                                        <select value={pollRespSuccessCondition.operator}
-                                            onChange={e => setPollRespSuccessCondition({...pollRespSuccessCondition, operator: e.target.value as SuccessCondition['operator']})}
-                                            className="w-32 px-3 py-2 border border-[var(--border-soft)] rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-[var(--primary)]">
-                                            {SUCCESS_CONDITION_OPERATORS.map(op => (<option key={op.value} value={op.value}>{op.label}</option>))}
-                                        </select>
+                                        <Select value={pollRespSuccessCondition.operator}
+                                            onChange={v => setPollRespSuccessCondition({...pollRespSuccessCondition, operator: v as SuccessCondition['operator']})}
+                                            className="w-32"
+                                            options={SUCCESS_CONDITION_OPERATORS.map(op => ({ label: op.label, value: op.value }))} />
                                         {SUCCESS_CONDITION_OPERATORS.find(o => o.value === pollRespSuccessCondition.operator)?.needValue && (
                                             <input type="text" value={pollRespSuccessCondition.value !== undefined ? String(pollRespSuccessCondition.value) : ''}
                                                 onChange={e => setPollRespSuccessCondition({...pollRespSuccessCondition, value: e.target.value})}
@@ -1099,12 +1073,10 @@ const ChannelCapabilityModal: React.FC<{
                                                 className="flex-1 px-3 py-2 border border-[var(--border-soft)] rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-[var(--primary)]"
                                                 placeholder="三方状态值，如 COMPLETED" />
                                             <span className="text-[var(--text-secondary)]">→</span>
-                                            <select value={m.stdValue}
-                                                onChange={e => { const newList = [...callbackStatusMappings]; newList[i].stdValue = e.target.value; setCallbackStatusMappings(newList); }}
-                                                className="w-36 px-3 py-2 border border-[var(--border-soft)] rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-[var(--primary)]">
-                                                <option value="">系统状态</option>
-                                                {STANDARD_STATUS_VALUES.map(v => (<option key={v} value={v}>{v}</option>))}
-                                            </select>
+                                            <Select value={m.stdValue}
+                                                onChange={v => { const newList = [...callbackStatusMappings]; newList[i].stdValue = v; setCallbackStatusMappings(newList); }}
+                                                className="w-36"
+                                                options={[{ label: '系统状态', value: '' }, ...STANDARD_STATUS_VALUES.map(v => ({ label: v, value: v }))]} />
                                             <button type="button" onClick={() => setCallbackStatusMappings(callbackStatusMappings.filter((_, idx) => idx !== i))}
                                                 className="p-2 text-[var(--text-secondary)] hover:text-red-500 hover:bg-red-50 rounded-lg"><X size={14}/></button>
                                         </div>
