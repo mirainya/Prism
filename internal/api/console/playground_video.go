@@ -184,7 +184,7 @@ func playgroundVideoOptionsForChannel(
 	settings playgroundVideoAdapterSettings,
 ) playgroundVideoModelOptions {
 	allowLocalCancel := true
-	var cancelStatuses []string
+	cancelStatuses := make([]string, 0)
 	switch channel.AdapterType {
 	case "generic":
 		if settings.LocalCancel.Enabled != nil {
@@ -319,7 +319,7 @@ func clonePlaygroundVideoOptions(options playgroundVideoModelOptions) playground
 	options.AllowGeneratedAudio = cloneBool(options.AllowGeneratedAudio)
 	options.AllowedRoles = append([]string(nil), options.AllowedRoles...)
 	options.Parameters = clonePlaygroundVideoParameters(options.Parameters)
-	options.CancelStatuses = append([]string(nil), options.CancelStatuses...)
+	options.CancelStatuses = append([]string{}, options.CancelStatuses...)
 	return options
 }
 

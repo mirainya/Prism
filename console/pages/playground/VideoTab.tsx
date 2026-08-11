@@ -728,7 +728,7 @@ const VideoTab: React.FC<{ tokenId: string }> = ({ tokenId }) => {
                   || modelOptions[task.model];
                 const allowCancel = task.status === 'queued'
                   ? taskOptions?.allow_local_cancel !== false
-                  : taskOptions ? taskOptions.cancel_statuses.includes(task.status) : true;
+                  : taskOptions ? Boolean(taskOptions.cancel_statuses?.includes(task.status)) : true;
                 return <TaskCard key={task.id} task={task} onCancel={handleCancel} allowCancel={allowCancel} />;
               })}
             </div>

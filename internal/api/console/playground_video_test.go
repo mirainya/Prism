@@ -78,3 +78,15 @@ func TestBuildPlaygroundVideoRequestRejectsInvalidChannel(t *testing.T) {
 		t.Fatal("expected invalid channel_id error")
 	}
 }
+
+func TestPlaygroundVideoOptionsUseEmptyCancelStatusesWhenCancelIsDisabled(t *testing.T) {
+	options := playgroundVideoOptionsForChannel(
+		video.VideoChannel{AdapterType: "generic"},
+		"video-model",
+		playgroundVideoModelValidation{},
+		playgroundVideoAdapterSettings{},
+	)
+	if options.CancelStatuses == nil {
+		t.Fatal("cancel statuses must encode as an empty array, not null")
+	}
+}
