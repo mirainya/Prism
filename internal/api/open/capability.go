@@ -75,7 +75,7 @@ func InvokeCapability(c *gin.Context) {
 
 	invokeResp, err := capabilityService.Invoke(c.Request.Context(), req)
 	if err != nil {
-		if errors.Is(err, service.ErrInvalidCallbackURL) {
+		if errors.Is(err, service.ErrInvalidCallbackURL) || errors.Is(err, service.ErrVideoEndpointRequired) {
 			resp.BadRequest(c, perrors.WithMessage(perrors.ErrInvalidParams, err.Error()))
 			return
 		}

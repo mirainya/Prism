@@ -45,6 +45,7 @@ func setupTestDB(t *testing.T) *gorm.DB {
 		&model.BillingLog{},
 		&model.BalanceEntry{},
 		&model.ChannelAccount{},
+		&model.Model{},
 		&model.EndpointAccount{},
 		&model.AccountModelState{},
 		&model.APICall{},

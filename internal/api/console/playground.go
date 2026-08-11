@@ -1,6 +1,7 @@
 package console
 
 import (
+	stderrors "errors"
 	"fmt"
 	"net/http"
 
@@ -183,6 +184,10 @@ func PlaygroundInvokeCapability(c *gin.Context) {
 		Async: true,
 	})
 	if err != nil {
+		if stderrors.Is(err, service.ErrVideoEndpointRequired) {
+			resp.BadRequest(c, errors.WithMessage(errors.ErrInvalidParams, err.Error()))
+			return
+		}
 		resp.ErrorMsg(c, http.StatusInternalServerError, 500, err.Error())
 		return
 	}

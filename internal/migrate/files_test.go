@@ -12,8 +12,8 @@ func TestLoadIncludesImmutableBaseline(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(migrations) != 26 {
-		t.Fatalf("managed migrations=%d, want 26", len(migrations))
+	if len(migrations) != 29 {
+		t.Fatalf("managed migrations=%d, want 29", len(migrations))
 	}
 	baseline := migrations[0]
 	if baseline.Filename != "20260718_150000_schema_baseline.sql" {
@@ -203,6 +203,42 @@ func TestLoadIncludesImmutableBaseline(t *testing.T) {
 	} {
 		if !strings.Contains(officialSeedanceSQL, fragment) {
 			t.Errorf("official Seedance migration is missing %q", fragment)
+		}
+	}
+	if migrations[26].Filename != "20260811_150000_migrate_mirainya_grok_video.sql" {
+		t.Fatalf("MiraiNya Grok migration filename=%q", migrations[26].Filename)
+	}
+	for _, fragment := range []string{
+		"'MiraiNya Grok Video'",
+		`"content_projections"`,
+		`"models": ["grok-imagine-video-1.5"]`,
+		"JOIN endpoint_accounts ea",
+	} {
+		if !strings.Contains(migrations[26].SQL, fragment) {
+			t.Errorf("MiraiNya Grok migration is missing %q", fragment)
+		}
+	}
+	if migrations[27].Filename != "20260811_151000_migrate_xingjing_grok_video.sql" {
+		t.Fatalf("Xingjing Grok migration filename=%q", migrations[27].Filename)
+	}
+	for _, fragment := range []string{
+		"'Xingjing Grok Video'",
+		`"output": "array"`,
+		`"duration": "seconds"`,
+		"JOIN endpoint_accounts ea",
+	} {
+		if !strings.Contains(migrations[27].SQL, fragment) {
+			t.Errorf("Xingjing Grok migration is missing %q", fragment)
+		}
+	}
+	if migrations[28].Filename != "20260811_152000_disable_legacy_video_endpoints.sql" {
+		t.Fatalf("legacy video disable migration filename=%q", migrations[28].Filename)
+	}
+	for _, modelCode := range []string{
+		"Google_Veo", "sora2", "grok-imagine-video", "grok-imagine-video-1.5", "grok-video-1.5-preview",
+	} {
+		if !strings.Contains(migrations[28].SQL, modelCode) {
+			t.Errorf("legacy video disable migration is missing %q", modelCode)
 		}
 	}
 }

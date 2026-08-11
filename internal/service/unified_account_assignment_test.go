@@ -83,6 +83,38 @@ func TestInvokeRejectsUnsafeCallbackURLAndRecordsBadRequest(t *testing.T) {
 	}
 }
 
+func TestInvokeRejectsVideoModelsBeforeCreatingLegacyTask(t *testing.T) {
+	db := setupTestDB(t)
+	videoModel := &model.Model{Code: "legacy-video", Name: "Legacy Video", Type: model.ModelTypeVideo, Status: 1}
+	if err := db.Create(videoModel).Error; err != nil {
+		t.Fatal(err)
+	}
+	request := &InvokeRequest{
+		UserID: 18, TokenID: 29, Capability: videoModel.Code,
+		Endpoint: "/v1/capabilities/legacy-video", Operation: "capability.invoke",
+	}
+
+	_, err := NewUnifiedService().Invoke(context.Background(), request)
+	if !errors.Is(err, ErrVideoEndpointRequired) {
+		t.Fatalf("invoke error = %v, want ErrVideoEndpointRequired", err)
+	}
+	var taskCount int64
+	if err := db.Model(&model.Task{}).Count(&taskCount).Error; err != nil {
+		t.Fatal(err)
+	}
+	if taskCount != 0 {
+		t.Fatalf("legacy video task count = %d, want 0", taskCount)
+	}
+	var call model.APICall
+	if err := db.First(&call, "id = ?", request.CallID).Error; err != nil {
+		t.Fatal(err)
+	}
+	if call.Status != model.APICallStatusFailed || call.HTTPStatus != http.StatusBadRequest ||
+		call.ErrorCode != "video_endpoint_required" {
+		t.Fatalf("video rejection call = %#v", call)
+	}
+}
+
 func TestFindEndpointsDoesNotIgnoreUnknownRequestedChannel(t *testing.T) {
 	db := setupTestDB(t)
 	if err := db.AutoMigrate(&model.Channel{}, &model.Endpoint{}); err != nil {

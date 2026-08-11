@@ -58,8 +58,9 @@ var (
 	saveSynchronousSubmitCheckpoint    = func(taskID uint, leaseOwner string, checkpoint *TaskSubmitCheckpoint) error {
 		return NewTaskService().SaveTaskSubmitCheckpoint(taskID, leaseOwner, checkpoint)
 	}
-	errNoAvailableAccount = errors.New("no available account")
-	ErrInvalidCallbackURL = errors.New("invalid callback URL")
+	errNoAvailableAccount    = errors.New("no available account")
+	ErrInvalidCallbackURL    = errors.New("invalid callback URL")
+	ErrVideoEndpointRequired = errors.New("video generation requires POST /v1/videos/generations")
 )
 
 // Invoke 调用能力
@@ -68,6 +69,10 @@ func (s *UnifiedService) Invoke(ctx context.Context, req *InvokeRequest) (*Invok
 		return nil, errors.New("invoke request is required")
 	}
 	ensureInvokeIdentity(req)
+	if err := rejectLegacyVideoInvoke(req); err != nil {
+		s.recordCapabilityCallFailure(req, err)
+		return nil, err
+	}
 	req.CallbackURL = strings.TrimSpace(req.CallbackURL)
 	if err := validateCallbackURL(ctx, req.CallbackURL); err != nil {
 		s.recordCapabilityCallFailure(req, err)
@@ -105,6 +110,42 @@ func (s *UnifiedService) Invoke(ctx context.Context, req *InvokeRequest) (*Invok
 		Status: string(task.Status),
 		CallID: req.CallID,
 	}, nil
+}
+
+func rejectLegacyVideoInvoke(req *InvokeRequest) error {
+	if req == nil {
+		return nil
+	}
+	modelCodes := make([]string, 0, 2)
+	for _, candidate := range []string{req.Capability, req.Model} {
+		candidate = strings.TrimSpace(candidate)
+		if candidate == "" || containsString(modelCodes, candidate) {
+			continue
+		}
+		modelCodes = append(modelCodes, candidate)
+	}
+	if len(modelCodes) == 0 {
+		return nil
+	}
+	var count int64
+	if err := model.DB().Model(&model.Model{}).
+		Where("type = ? AND code IN ?", model.ModelTypeVideo, modelCodes).
+		Count(&count).Error; err != nil {
+		return fmt.Errorf("check capability model type: %w", err)
+	}
+	if count > 0 {
+		return ErrVideoEndpointRequired
+	}
+	return nil
+}
+
+func containsString(values []string, target string) bool {
+	for _, value := range values {
+		if value == target {
+			return true
+		}
+	}
+	return false
 }
 
 func validateCallbackURL(ctx context.Context, rawURL string) error {
@@ -194,6 +235,10 @@ func (s *UnifiedService) recordCapabilityCallFailure(req *InvokeRequest, cause e
 		httpStatus = 400
 		errorType = "invalid_request_error"
 		errorCode = "invalid_callback_url"
+	} else if errors.Is(cause, ErrVideoEndpointRequired) {
+		httpStatus = 400
+		errorType = "invalid_request_error"
+		errorCode = "video_endpoint_required"
 	} else if errors.Is(cause, ErrInsufficientTokenBalance) || errors.Is(cause, ErrInsufficientUserBalance) {
 		httpStatus = 400
 		errorType = "billing_error"
