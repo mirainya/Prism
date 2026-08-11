@@ -156,7 +156,7 @@ describe('playgroundApi', () => {
     });
     const controller = new AbortController();
     const params = {
-      model: 'seedance-2.5', prompt: 'test', duration: 5, priority: 4,
+      model: 'video-model', prompt: 'test', duration: 5, params: { priority: 4 },
       task_mode: 'references',
       content: [{ type: 'video_url' as const, role: 'reference_video' as const, asset_id: 'asset-1', duration_seconds: 4 }],
     };

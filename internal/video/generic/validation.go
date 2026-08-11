@@ -2,6 +2,7 @@ package generic
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
@@ -42,6 +43,27 @@ func validateRequestRule(request *video.GenerateRequest, rule validationRule) er
 	if rule.AllowGeneratedAudio != nil && !*rule.AllowGeneratedAudio && request.Audio {
 		return errors.New("generated audio is not supported")
 	}
+	for _, parameter := range rule.Parameters {
+		value, exists := request.Params[parameter.Name]
+		if !exists {
+			continue
+		}
+		encoded, err := json.Marshal(value)
+		if err != nil {
+			return fmt.Errorf("parameter %q has an invalid value", parameter.Name)
+		}
+		valid := false
+		for _, option := range parameter.Options {
+			optionValue, optionErr := json.Marshal(option.Value)
+			if optionErr == nil && string(optionValue) == string(encoded) {
+				valid = true
+				break
+			}
+		}
+		if !valid {
+			return fmt.Errorf("parameter %q is not supported", parameter.Name)
+		}
+	}
 
 	counts := map[string]int{}
 	totals := map[string]float64{}
@@ -68,6 +90,9 @@ func validateRequestRule(request *video.GenerateRequest, rule validationRule) er
 	}
 	if rule.RequireMedia && mediaCount == 0 {
 		return errors.New("at least one reference media item is required")
+	}
+	if rule.RequireVisualMediaWithAudio && counts["audio"] > 0 && counts["image"] == 0 && counts["video"] == 0 {
+		return errors.New("audio references require image or video media")
 	}
 	if rule.MaxImages > 0 && counts["image"] > rule.MaxImages ||
 		rule.MaxVideos > 0 && counts["video"] > rule.MaxVideos ||

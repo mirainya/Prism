@@ -77,20 +77,20 @@ func TestParseImageSSEStream(t *testing.T) {
 			wantB64: "ZW9m",
 		},
 		{
-			name: "sub2api object result event",
+			name: "nested object result event",
 			input: "data: {\"object\":\"image.generation.chunk\",\"index\":1,\"data\":[]}\n\n" +
 				"data: {\"object\":\"image.generation.result\",\"data\":[{\"b64_json\":\"c3ViMmFwaQ==\",\"revised_prompt\":\"a red apple\"}]}\n\n" +
 				"data: [DONE]\n\n",
 			wantB64: "c3ViMmFwaQ==",
 		},
 		{
-			name: "sub2api edit result event",
+			name: "nested edit result event",
 			input: "data: {\"object\":\"image.edit.result\",\"data\":[{\"b64_json\":\"ZWRpdGVk\"}]}\n\n" +
 				"data: [DONE]\n\n",
 			wantB64: "ZWRpdGVk",
 		},
 		{
-			name: "sub2api chunk partial fallback",
+			name: "nested chunk partial fallback",
 			input: "data: {\"object\":\"image.generation.chunk\",\"data\":[{\"b64_json\":\"cGFydA==\"}]}\n\n" +
 				"data: [DONE]\n\n",
 			wantB64: "cGFydA==",
@@ -160,7 +160,7 @@ func TestParseImageSSEStreamUsesEventNameForMissingType(t *testing.T) {
 	}
 }
 
-// response_format=url 时 sub2api 把图放在 data[0].url，且值是 data URI 而非 http 链接。
+// data[0].url 可能是 data URI 而非 http 链接。
 // 解析器必须能取到，否则用户选了 url 就永远拿不到图。
 func TestParseImageSSEStream_URLOutput(t *testing.T) {
 	tests := []struct {

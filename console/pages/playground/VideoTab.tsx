@@ -19,7 +19,6 @@ const DURATION_OPTIONS = [
   { label: '20 秒', value: '20' },
   { label: '30 秒', value: '30' },
 ];
-const SEEDANCE25_DURATION_OPTIONS = DURATION_OPTIONS.filter(option => Number(option.value) >= 4);
 
 type FilterType = 'all' | 'active' | 'completed' | 'failed';
 type VideoTaskType = 'text' | 'first_frame' | 'first_last_frame' | 'multimodal';
@@ -36,7 +35,6 @@ interface ReferenceInput {
 }
 
 const REFERENCE_LIMITS: Record<ReferenceKind, number> = { image: 9, video: 3, audio: 3 };
-const SEEDANCE25_LIMITS: Record<ReferenceKind, number> = { image: 30, video: 10, audio: 10 };
 const REFERENCE_LABELS: Record<ReferenceKind, string> = { image: '图片', video: '视频', audio: '音频' };
 
 const REFERENCE_ROLES: Record<ReferenceKind, Array<{ label: string; value: VideoContentItem['role'] }>> = {
@@ -102,6 +100,22 @@ const countReferences = (items: ReferenceInput[]) => items.reduce<Record<Referen
   { image: 0, video: 0, audio: 0 },
 );
 
+const parameterValueKey = (value: string | number | boolean) => JSON.stringify(value) as string;
+
+const durationOptionsForModel = (options?: PlaygroundVideoModelOptions) => {
+  const minimum = options?.duration_min || 0;
+  const maximum = options?.duration_max || 0;
+  const values = DURATION_OPTIONS.filter(option => (
+    (!minimum || Number(option.value) >= minimum) && (!maximum || Number(option.value) <= maximum)
+  ));
+  for (const boundary of [minimum, maximum]) {
+    if (boundary > 0 && !values.some(option => Number(option.value) === boundary)) {
+      values.push({ label: `${boundary} 秒`, value: String(boundary) });
+    }
+  }
+  return values.sort((left, right) => Number(left.value) - Number(right.value));
+};
+
 const materialReferenceName = (items: ReferenceInput[], index: number) => {
   const kind = items[index].kind;
   const ordinal = items.slice(0, index + 1).filter(item => item.kind === kind).length;
@@ -137,7 +151,7 @@ const VideoTab: React.FC<{ tokenId: string }> = ({ tokenId }) => {
   const [ratio, setRatio] = useState('16:9');
   const [duration, setDuration] = useState('5');
   const [generateAudio, setGenerateAudio] = useState(true);
-  const [priority, setPriority] = useState('5');
+  const [parameterValues, setParameterValues] = useState<Record<string, string>>({});
   const [references, setReferences] = useState<ReferenceInput[]>([]);
   const [uploadingReference, setUploadingReference] = useState<number | null>(null);
   const [submitting, setSubmitting] = useState(false);
@@ -155,28 +169,38 @@ const VideoTab: React.FC<{ tokenId: string }> = ({ tokenId }) => {
     { label: '自动选择', value: '0' },
     ...channels.map(channel => ({ label: channel.name, value: String(channel.id) })),
   ];
-  const isSeedance25 = model === 'seedance-2.5';
-  const configuredTaskTypes = activeModelOptions[model]?.task_types;
+  const currentModelOptions = activeModelOptions[model];
+  const configuredTaskTypes = currentModelOptions?.task_types;
   const taskTypeOptions: VideoTaskType[] = configuredTaskTypes?.length
     ? configuredTaskTypes
-    : isSeedance25 ? ['multimodal'] : ['text', 'multimodal'];
+    : ['text', 'multimodal'];
+  const allowedRoles = currentModelOptions?.allowed_roles;
+  const multimodalLimits: Record<ReferenceKind, number> = {
+    image: allowedRoles?.length && !allowedRoles.includes('reference_image') ? 0 : currentModelOptions?.max_images || REFERENCE_LIMITS.image,
+    video: allowedRoles?.length && !allowedRoles.includes('reference_video') ? 0 : currentModelOptions?.max_videos || REFERENCE_LIMITS.video,
+    audio: allowedRoles?.length && !allowedRoles.includes('reference_audio') ? 0 : currentModelOptions?.max_audios || REFERENCE_LIMITS.audio,
+  };
   const referenceLimits: Record<ReferenceKind, number> = taskType === 'first_frame'
     ? { image: 1, video: 0, audio: 0 }
     : taskType === 'first_last_frame'
       ? { image: 2, video: 0, audio: 0 }
-      : isSeedance25 ? SEEDANCE25_LIMITS : REFERENCE_LIMITS;
-  const configuredResolutions = activeModelOptions[model]?.resolutions;
+      : multimodalLimits;
+  const configuredResolutions = currentModelOptions?.resolutions;
   const resolutionOptions = configuredResolutions?.length
     ? configuredResolutions
-    : isSeedance25 ? ['480p', '720p'] : RESOLUTIONS;
-  const durationOptions = isSeedance25 ? SEEDANCE25_DURATION_OPTIONS : DURATION_OPTIONS;
+    : RESOLUTIONS;
+  const ratioOptions = currentModelOptions?.ratios?.length ? currentModelOptions.ratios : RATIOS;
+  const durationOptions = durationOptionsForModel(currentModelOptions);
+  const referenceKindOptions = REFERENCE_KIND_OPTIONS.filter(option => referenceLimits[option.value as ReferenceKind] > 0);
   const roleOptions = (kind: ReferenceKind, index: number) => {
     if (taskType === 'first_frame') return [{ label: '首帧', value: 'first_frame' as VideoContentItem['role'] }];
     if (taskType === 'first_last_frame') return [{
       label: index === 0 ? '首帧' : '尾帧',
       value: (index === 0 ? 'first_frame' : 'last_frame') as VideoContentItem['role'],
     }];
-    return REFERENCE_ROLES[kind].filter(option => option.value.startsWith('reference_'));
+    return REFERENCE_ROLES[kind].filter(option => option.value.startsWith('reference_') && (
+      !allowedRoles?.length || allowedRoles.includes(option.value)
+    ));
   };
   const taskTypeLabel = VIDEO_TASK_TYPE_OPTIONS.find(option => option.value === taskType)?.label || '视频任务';
   const videoParams = useMemo<VideoCreateParams>(() => {
@@ -190,14 +214,19 @@ const VideoTab: React.FC<{ tokenId: string }> = ({ tokenId }) => {
       if (item.kind !== 'image' && item.durationSeconds) mapped.duration_seconds = item.durationSeconds;
       return mapped;
     });
+    const params = Object.fromEntries((currentModelOptions?.parameters || []).flatMap(parameter => {
+      const selected = parameterValues[parameter.name];
+      const option = parameter.options.find(item => parameterValueKey(item.value) === selected);
+      return option ? [[parameter.name, option.value]] : [];
+    }));
     return {
       model, prompt: prompt.trim(), ...(channelId !== '0' ? { channel_id: Number(channelId) } : {}), resolution, ratio,
       duration: Number(duration), generate_audio: generateAudio,
       task_mode: taskType === 'text' ? 'text' : 'references',
       ...(content.length > 0 ? { content } : {}),
-      ...(isSeedance25 ? { priority: Number(priority) } : {}),
+      ...(Object.keys(params).length > 0 ? { params } : {}),
     };
-  }, [model, prompt, channelId, resolution, ratio, duration, generateAudio, taskType, references, isSeedance25, priority]);
+  }, [model, prompt, channelId, resolution, ratio, duration, generateAudio, taskType, references, currentModelOptions, parameterValues]);
   const estimateReady = Boolean(
     model && (taskType === 'text' ? prompt.trim() : prompt.trim() || references.length > 0) &&
     (taskType === 'text' || references.length > 0) &&
@@ -234,21 +263,36 @@ const VideoTab: React.FC<{ tokenId: string }> = ({ tokenId }) => {
   }, [taskType]);
 
   useEffect(() => {
-    const configuredResolutions = activeModelOptions[model]?.resolutions;
-    const allowedResolutions = configuredResolutions?.length
-      ? configuredResolutions
-      : isSeedance25 ? ['480p', '720p'] : RESOLUTIONS;
-    setResolution(value => allowedResolutions.includes(value) ? value : allowedResolutions[0]);
-    if (isSeedance25) {
-      setDuration(value => Number(value) < 4 ? '4' : value);
-      setResolution(value => value === '480p' || value === '720p' ? value : '480p');
+    setResolution(value => resolutionOptions.includes(value) ? value : resolutionOptions[0]);
+    setRatio(value => ratioOptions.includes(value) ? value : ratioOptions[0]);
+    setDuration(value => durationOptions.some(option => option.value === value) ? value : durationOptions[0]?.value || '5');
+    if (currentModelOptions?.allow_generated_audio === false) {
       setGenerateAudio(false);
-      setReferences(items => items.map(item => ({
-        ...item,
-        role: roleForTaskType(taskType, item.kind),
-      })));
     }
-  }, [model, activeModelOptions, isSeedance25, taskType]);
+    if (taskType === 'multimodal') {
+      setReferences(items => {
+        const counts: Record<ReferenceKind, number> = { image: 0, video: 0, audio: 0 };
+        const maximum = currentModelOptions?.max_media || Number.POSITIVE_INFINITY;
+        const supported = items.filter(item => {
+          if (referenceLimits[item.kind] <= counts[item.kind] || counts.image + counts.video + counts.audio >= maximum) return false;
+          counts[item.kind]++;
+          return true;
+        }).map(item => ({ ...item, role: roleForTaskType(taskType, item.kind) }));
+        if (supported.length > 0) return supported;
+        const firstKind = (['image', 'video', 'audio'] as ReferenceKind[]).find(kind => referenceLimits[kind] > 0);
+        return firstKind ? [makeReference(firstKind, taskType, 0)] : [];
+      });
+    }
+  }, [model, activeModelOptions, taskType]);
+
+  useEffect(() => {
+    const parameters = currentModelOptions?.parameters || [];
+    setParameterValues(current => Object.fromEntries(parameters.map(parameter => {
+      const validCurrent = parameter.options.some(option => parameterValueKey(option.value) === current[parameter.name]);
+      const fallback = parameter.default ?? parameter.options[0]?.value ?? '';
+      return [parameter.name, validCurrent ? current[parameter.name] : parameterValueKey(fallback)];
+    })));
+  }, [model, activeModelOptions]);
 
   useEffect(() => {
     playgroundListVideoModels(tokenId).then(result => {
@@ -319,6 +363,10 @@ const VideoTab: React.FC<{ tokenId: string }> = ({ tokenId }) => {
 
   const addReference = () => {
     if (taskType !== 'multimodal') return;
+    if (currentModelOptions?.max_media && references.length >= currentModelOptions.max_media) {
+      setError(`参考素材最多 ${currentModelOptions.max_media} 个`);
+      return;
+    }
     const counts = countReferences(references);
     const kind = (Object.keys(referenceLimits) as ReferenceKind[])
       .find(candidate => counts[candidate] < referenceLimits[candidate]);
@@ -406,27 +454,30 @@ const VideoTab: React.FC<{ tokenId: string }> = ({ tokenId }) => {
       setError(`${REFERENCE_LABELS[exceededKind]}素材最多 ${referenceLimits[exceededKind]} 个`);
       return;
     }
-    if (counts.audio > 0 && counts.image === 0 && counts.video === 0) {
+    if (currentModelOptions?.max_media && references.length > currentModelOptions.max_media) {
+      setError(`参考素材最多 ${currentModelOptions.max_media} 个`);
+      return;
+    }
+    if (currentModelOptions?.require_visual_media_with_audio && counts.audio > 0 && counts.image === 0 && counts.video === 0) {
       setError('音频素材需同时添加图片或视频素材');
       return;
     }
+    const minimumMediaDuration = currentModelOptions?.media_duration_min || 2;
+    const maximumMediaDuration = currentModelOptions?.media_duration_max || 0;
     if (references.some(item => (item.kind === 'video' || item.kind === 'audio') &&
-      (!item.durationSeconds || item.durationSeconds < 2))) {
-      setError('视频或音频素材必须填写 2 秒以上的时长');
+      (!item.durationSeconds || item.durationSeconds < minimumMediaDuration || (maximumMediaDuration > 0 && item.durationSeconds > maximumMediaDuration)))) {
+      const range = maximumMediaDuration > 0 ? `${minimumMediaDuration}-${maximumMediaDuration}` : `${minimumMediaDuration} 以上`;
+      setError(`视频或音频素材时长必须为 ${range} 秒`);
       return;
     }
-    if (isSeedance25 && references.length > 50) {
-      setError('2.5 的参考素材总数不能超过 50 个');
+    const videoDurationTotal = references.reduce((sum, item) => sum + (item.kind === 'video' ? item.durationSeconds || 0 : 0), 0);
+    if (currentModelOptions?.max_video_duration_total && videoDurationTotal > currentModelOptions.max_video_duration_total) {
+      setError(`视频素材总时长不能超过 ${currentModelOptions.max_video_duration_total} 秒`);
       return;
     }
-    if (isSeedance25 && references.some(item => (item.kind === 'video' || item.kind === 'audio') &&
-      (!item.durationSeconds || item.durationSeconds < 2 || item.durationSeconds > 30))) {
-      setError('2.5 的视频或音频素材时长必须为 2-30 秒');
-      return;
-    }
-    if (isSeedance25 && references.reduce((sum, item) =>
-      sum + ((item.kind === 'video' || item.kind === 'audio') ? (item.durationSeconds || 0) : 0), 0) > 60) {
-      setError('2.5 的视频和音频素材时长总和不能超过 60 秒');
+    const audioDurationTotal = references.reduce((sum, item) => sum + (item.kind === 'audio' ? item.durationSeconds || 0 : 0), 0);
+    if (currentModelOptions?.max_audio_duration_total && audioDurationTotal > currentModelOptions.max_audio_duration_total) {
+      setError(`音频素材总时长不能超过 ${currentModelOptions.max_audio_duration_total} 秒`);
       return;
     }
     const content = videoParams.content || [];
@@ -520,7 +571,7 @@ const VideoTab: React.FC<{ tokenId: string }> = ({ tokenId }) => {
           </div>
           <div>
             <div className="text-xs text-[var(--text-secondary)] mb-1 font-medium">画面比例</div>
-            <EnumSelect options={RATIOS} value={ratio} onChange={setRatio} />
+            <EnumSelect options={ratioOptions} value={ratio} onChange={setRatio} />
           </div>
           <div>
             <div className="text-xs text-[var(--text-secondary)] mb-1 font-medium">时长</div>
@@ -528,22 +579,23 @@ const VideoTab: React.FC<{ tokenId: string }> = ({ tokenId }) => {
           </div>
           <div className="flex items-end pb-1">
             <label className="flex items-center gap-2 cursor-pointer select-none">
-              <input type="checkbox" checked={generateAudio} disabled={isSeedance25} onChange={e => setGenerateAudio(e.target.checked)}
+              <input type="checkbox" checked={generateAudio} disabled={currentModelOptions?.allow_generated_audio === false} onChange={e => setGenerateAudio(e.target.checked)}
                 className="w-4 h-4 rounded border-[var(--border-soft)] text-[var(--primary)] focus:ring-[var(--primary)]" />
               <span className="text-sm text-[var(--text-secondary)]">生成音频</span>
             </label>
           </div>
         </div>
 
-        {isSeedance25 && (
-          <div className="mb-3">
-            <div className="text-xs text-[var(--text-secondary)] mb-1 font-medium">队列</div>
-            <Select options={[
-              { label: '普通', value: '5' },
-              { label: '优先', value: '4' },
-            ]} value={priority} onChange={setPriority} />
+        {(currentModelOptions?.parameters || []).map(parameter => (
+          <div key={parameter.name} className="mb-3">
+            <div className="text-xs text-[var(--text-secondary)] mb-1 font-medium">{parameter.label}</div>
+            <Select options={parameter.options.map(option => ({
+              label: option.label,
+              value: parameterValueKey(option.value),
+            }))} value={parameterValues[parameter.name] || ''}
+              onChange={value => setParameterValues(current => ({ ...current, [parameter.name]: value }))} />
           </div>
-        )}
+        ))}
 
         <div className="mb-3 border-y border-[var(--border-soft)] py-3">
           <div className="flex items-center justify-between mb-2">
@@ -560,7 +612,7 @@ const VideoTab: React.FC<{ tokenId: string }> = ({ tokenId }) => {
               {references.map((item, index) => (
                 <div key={index} className="py-2 first:pt-0 last:pb-0 space-y-2">
                   <div className="grid grid-cols-2 gap-2">
-                    <Select options={taskType === 'multimodal' ? REFERENCE_KIND_OPTIONS : [{ label: '图片', value: 'image' }]} value={item.kind}
+                    <Select options={taskType === 'multimodal' ? referenceKindOptions : [{ label: '图片', value: 'image' }]} value={item.kind}
                       disabled={taskType !== 'multimodal'} onChange={value => {
                       changeReferenceKind(index, value as ReferenceKind);
                     }} />
@@ -671,9 +723,14 @@ const VideoTab: React.FC<{ tokenId: string }> = ({ tokenId }) => {
             </div>
           ) : (
             <div className="grid grid-cols-1 lg:grid-cols-2 xl:grid-cols-2 2xl:grid-cols-3 gap-3">
-              {filteredTasks.map(task => (
-                <TaskCard key={task.id} task={task} onCancel={handleCancel} allowCancel={task.model !== 'seedance-2.5'} />
-              ))}
+              {filteredTasks.map(task => {
+                const taskOptions = channels.find(channel => channel.id === task.channel_id)?.model_options[task.model]
+                  || modelOptions[task.model];
+                const allowCancel = task.status === 'queued'
+                  ? taskOptions?.allow_local_cancel !== false
+                  : taskOptions ? taskOptions.cancel_statuses.includes(task.status) : true;
+                return <TaskCard key={task.id} task={task} onCancel={handleCancel} allowCancel={allowCancel} />;
+              })}
             </div>
           )}
         </div>

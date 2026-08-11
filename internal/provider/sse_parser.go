@@ -10,7 +10,7 @@ import (
 	"github.com/tidwall/gjson"
 )
 
-// parseImageSSEStream 边读边解析图像生成的 SSE 流(如 sub2api 带 stream:true 的响应)。
+// parseImageSSEStream 边读边解析图像生成的 SSE 流。
 //
 // 靠 data JSON 的 type 字段区分事件(中转路径可能无 event: 行,不能依赖它):
 //   - image_generation.completed / image_edit.completed → 取 b64_json 或 url,立即返回成功
@@ -18,7 +18,6 @@ import (
 //   - image_generation.partial_image / *.partial_image  → 记为兜底
 //
 // 多个 data: 行按 SSE 规范用 \n 拼成完整 JSON 再解析;遇 [DONE] 结束。
-// parseImageSSEStream 边读边解析图像生成的 SSE 流。
 // sink 非 nil 时，每个有效 JSON 事件的原始 payload 都会发送到 sink（非阻塞，满则丢弃）。
 func parseImageSSEStream(r io.Reader, sink chan<- []byte) (SubmitResult, error) {
 	reader := bufio.NewReader(r)
@@ -51,9 +50,7 @@ func parseImageSSEStream(r io.Reader, sink chan<- []byte) (SubmitResult, error) 
 			}
 		}
 
-		// 两种上游 SSE 格式:
-		//   A) OpenAI 风格: type=image_generation.completed, b64_json 在顶层
-		//   B) sub2api 风格: object=image.generation.result, b64_json 在 data[0]
+		// 支持顶层 completed 事件和 data[0] 嵌套 result/chunk 事件。
 		typ := gjson.Get(payload, "type").String()
 		obj := gjson.Get(payload, "object").String()
 		switch {
@@ -226,8 +223,8 @@ func (o imageOutput) result() SubmitResult {
 	return out
 }
 
-// extractImageOutput 从事件 JSON 取图,prefix 区分顶层("")与 sub2api 的 data 数组("data.0.")。
-// url 若是 data URI(如 sub2api 在 response_format=url 时返回的 data:image/png;base64,...),
+// extractImageOutput 从事件 JSON 取图，prefix 区分顶层("")与 data 数组("data.0.")。
+// url 若是 data URI，
 // 剥壳还原成 base64 走转存路径,真实 http 链接才留在 URLs。
 func extractImageOutput(payload, prefix string) imageOutput {
 	out := imageOutput{

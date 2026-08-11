@@ -71,23 +71,38 @@ type responseConfig struct {
 	UnknownStatus       string            `json:"unknown_status"`
 }
 
+type parameterOption struct {
+	Label string `json:"label"`
+	Value any    `json:"value"`
+}
+
+type parameterRule struct {
+	Name    string            `json:"name"`
+	Label   string            `json:"label"`
+	Type    string            `json:"type"`
+	Default any               `json:"default"`
+	Options []parameterOption `json:"options"`
+}
+
 type validationRule struct {
-	DurationMin         int      `json:"duration_min"`
-	DurationMax         int      `json:"duration_max"`
-	Resolutions         []string `json:"resolutions"`
-	Ratios              []string `json:"ratios"`
-	TaskModes           []string `json:"task_modes"`
-	RequireMedia        bool     `json:"require_media"`
-	AllowGeneratedAudio *bool    `json:"allow_generated_audio"`
-	AllowedRoles        []string `json:"allowed_roles"`
-	MaxImages           int      `json:"max_images"`
-	MaxVideos           int      `json:"max_videos"`
-	MaxAudios           int      `json:"max_audios"`
-	MaxMedia            int      `json:"max_media"`
-	MediaDurationMin    float64  `json:"media_duration_min"`
-	MediaDurationMax    float64  `json:"media_duration_max"`
-	MaxVideoDuration    float64  `json:"max_video_duration_total"`
-	MaxAudioDuration    float64  `json:"max_audio_duration_total"`
+	DurationMin                 int             `json:"duration_min"`
+	DurationMax                 int             `json:"duration_max"`
+	Resolutions                 []string        `json:"resolutions"`
+	Ratios                      []string        `json:"ratios"`
+	TaskModes                   []string        `json:"task_modes"`
+	RequireMedia                bool            `json:"require_media"`
+	RequireVisualMediaWithAudio bool            `json:"require_visual_media_with_audio"`
+	AllowGeneratedAudio         *bool           `json:"allow_generated_audio"`
+	AllowedRoles                []string        `json:"allowed_roles"`
+	MaxImages                   int             `json:"max_images"`
+	MaxVideos                   int             `json:"max_videos"`
+	MaxAudios                   int             `json:"max_audios"`
+	MaxMedia                    int             `json:"max_media"`
+	MediaDurationMin            float64         `json:"media_duration_min"`
+	MediaDurationMax            float64         `json:"media_duration_max"`
+	MaxVideoDuration            float64         `json:"max_video_duration_total"`
+	MaxAudioDuration            float64         `json:"max_audio_duration_total"`
+	Parameters                  []parameterRule `json:"parameters"`
 }
 
 type validationConfig struct {
@@ -220,6 +235,21 @@ func (c *adapterConfig) defaults() {
 	}
 	for index := range c.LocalCancel.DisabledModels {
 		c.LocalCancel.DisabledModels[index] = strings.TrimSpace(c.LocalCancel.DisabledModels[index])
+	}
+	for modelName, rule := range c.Validation.Models {
+		for index := range rule.Parameters {
+			parameter := &rule.Parameters[index]
+			parameter.Name = strings.TrimSpace(parameter.Name)
+			parameter.Label = strings.TrimSpace(parameter.Label)
+			parameter.Type = strings.ToLower(strings.TrimSpace(parameter.Type))
+			if parameter.Label == "" {
+				parameter.Label = parameter.Name
+			}
+			for optionIndex := range parameter.Options {
+				parameter.Options[optionIndex].Label = strings.TrimSpace(parameter.Options[optionIndex].Label)
+			}
+		}
+		c.Validation.Models[modelName] = rule
 	}
 }
 
@@ -550,5 +580,60 @@ func validateRule(model string, rule validationRule) error {
 		rule.MaxVideoDuration < 0 || rule.MaxAudioDuration < 0 {
 		return fmt.Errorf("generic adapter validation for %s has invalid media duration limits", model)
 	}
+	seenParameters := make(map[string]struct{}, len(rule.Parameters))
+	for _, parameter := range rule.Parameters {
+		if !jsonFieldSegment.MatchString(parameter.Name) {
+			return fmt.Errorf("generic adapter validation for %s has invalid parameter name %q", model, parameter.Name)
+		}
+		if _, exists := seenParameters[parameter.Name]; exists {
+			return fmt.Errorf("generic adapter validation for %s has duplicate parameter %q", model, parameter.Name)
+		}
+		seenParameters[parameter.Name] = struct{}{}
+		if parameter.Type != "select" {
+			return fmt.Errorf("generic adapter validation for %s parameter %q must use select type", model, parameter.Name)
+		}
+		if len(parameter.Options) == 0 {
+			return fmt.Errorf("generic adapter validation for %s parameter %q requires options", model, parameter.Name)
+		}
+		seenOptions := make(map[string]struct{}, len(parameter.Options))
+		for _, option := range parameter.Options {
+			if option.Label == "" || !validParameterValue(option.Value) {
+				return fmt.Errorf("generic adapter validation for %s parameter %q has an invalid option", model, parameter.Name)
+			}
+			encoded, err := json.Marshal(option.Value)
+			if err != nil {
+				return fmt.Errorf("generic adapter validation for %s parameter %q has an invalid option value", model, parameter.Name)
+			}
+			key := string(encoded)
+			if _, exists := seenOptions[key]; exists {
+				return fmt.Errorf("generic adapter validation for %s parameter %q has duplicate options", model, parameter.Name)
+			}
+			seenOptions[key] = struct{}{}
+		}
+		if parameter.Default != nil {
+			if !validParameterValue(parameter.Default) {
+				return fmt.Errorf("generic adapter validation for %s parameter %q has an invalid default", model, parameter.Name)
+			}
+			encoded, err := json.Marshal(parameter.Default)
+			if err != nil {
+				return fmt.Errorf("generic adapter validation for %s parameter %q has an invalid default", model, parameter.Name)
+			}
+			if _, exists := seenOptions[string(encoded)]; !exists {
+				return fmt.Errorf("generic adapter validation for %s parameter %q default is not an option", model, parameter.Name)
+			}
+		}
+	}
 	return nil
+}
+
+func validParameterValue(value any) bool {
+	switch value.(type) {
+	case string, bool,
+		int, int8, int16, int32, int64,
+		uint, uint8, uint16, uint32, uint64,
+		float32, float64, json.Number:
+		return true
+	default:
+		return false
+	}
 }

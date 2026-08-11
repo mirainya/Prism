@@ -12,8 +12,8 @@ func TestLoadIncludesImmutableBaseline(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(migrations) != 30 {
-		t.Fatalf("managed migrations=%d, want 30", len(migrations))
+	if len(migrations) != 31 {
+		t.Fatalf("managed migrations=%d, want 31", len(migrations))
 	}
 	baseline := migrations[0]
 	if baseline.Filename != "20260718_150000_schema_baseline.sql" {
@@ -246,6 +246,19 @@ func TestLoadIncludesImmutableBaseline(t *testing.T) {
 	}
 	if !strings.Contains(migrations[29].SQL, "DROP COLUMN passthrough") {
 		t.Fatal("video passthrough cleanup migration does not drop the unused column")
+	}
+	if migrations[30].Filename != "20260811_170000_configure_seedance_playground_options.sql" {
+		t.Fatalf("video playground options migration filename=%q", migrations[30].Filename)
+	}
+	for _, fragment := range []string{
+		`"seedance-2.5".parameters`,
+		"'name', 'priority'",
+		"'type', 'select'",
+		"require_visual_media_with_audio",
+	} {
+		if !strings.Contains(migrations[30].SQL, fragment) {
+			t.Errorf("video playground options migration is missing %q", fragment)
+		}
 	}
 }
 

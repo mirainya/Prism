@@ -288,8 +288,12 @@ func TestGenericAdapterValidatesConfigAndRequestLimits(t *testing.T) {
 	config.Validation.Models = map[string]validationRule{
 		"seedance-2.5": {
 			DurationMin: 4, DurationMax: 30, TaskModes: []string{"references"}, RequireMedia: true,
-			AllowGeneratedAudio: boolPointer(false), MaxImages: 30, MaxMedia: 50,
+			RequireVisualMediaWithAudio: true, AllowGeneratedAudio: boolPointer(false), MaxImages: 30, MaxMedia: 50,
 			MediaDurationMin: 2, MediaDurationMax: 30,
+			Parameters: []parameterRule{{
+				Name: "priority", Label: "Queue", Type: "select", Default: 5,
+				Options: []parameterOption{{Label: "Normal", Value: 5}, {Label: "Priority", Value: 4}},
+			}},
 		},
 	}
 	adapter := newTestAdapter("https://provider.example", "secret", http.DefaultClient, config)
@@ -299,6 +303,18 @@ func TestGenericAdapterValidatesConfigAndRequestLimits(t *testing.T) {
 	}
 	if err := adapter.ValidateRequest(context.Background(), &video.GenerateRequest{Model: "seedance-2.5", Duration: 4, TaskMode: "references", Content: []video.ContentItem{{Type: "video_url", DurationSeconds: 1}}}); err == nil || !strings.Contains(err.Error(), "at least 2") {
 		t.Fatalf("expected media duration validation error, got %v", err)
+	}
+	if err := adapter.ValidateRequest(context.Background(), &video.GenerateRequest{
+		Model: "seedance-2.5", Duration: 4, TaskMode: "references", Params: map[string]any{"priority": 3},
+		Content: []video.ContentItem{{Type: "image_url"}},
+	}); err == nil || !strings.Contains(err.Error(), "parameter \"priority\"") {
+		t.Fatalf("expected parameter validation error, got %v", err)
+	}
+	if err := adapter.ValidateRequest(context.Background(), &video.GenerateRequest{
+		Model: "seedance-2.5", Duration: 4, TaskMode: "references", Params: map[string]any{"priority": 4},
+		Content: []video.ContentItem{{Type: "audio_url", DurationSeconds: 2}},
+	}); err == nil || !strings.Contains(err.Error(), "require image or video") {
+		t.Fatalf("expected audio reference dependency error, got %v", err)
 	}
 }
 

@@ -20,8 +20,38 @@ import (
 var playgroundVideoEngine *video.Engine
 
 type playgroundVideoModelOptions struct {
-	Resolutions []string `json:"resolutions,omitempty"`
-	TaskTypes   []string `json:"task_types,omitempty"`
+	Resolutions                 []string                   `json:"resolutions,omitempty"`
+	Ratios                      []string                   `json:"ratios,omitempty"`
+	DurationMin                 int                        `json:"duration_min,omitempty"`
+	DurationMax                 int                        `json:"duration_max,omitempty"`
+	TaskTypes                   []string                   `json:"task_types,omitempty"`
+	RequireVisualMediaWithAudio bool                       `json:"require_visual_media_with_audio,omitempty"`
+	AllowGeneratedAudio         *bool                      `json:"allow_generated_audio,omitempty"`
+	AllowedRoles                []string                   `json:"allowed_roles,omitempty"`
+	MaxImages                   int                        `json:"max_images,omitempty"`
+	MaxVideos                   int                        `json:"max_videos,omitempty"`
+	MaxAudios                   int                        `json:"max_audios,omitempty"`
+	MaxMedia                    int                        `json:"max_media,omitempty"`
+	MediaDurationMin            float64                    `json:"media_duration_min,omitempty"`
+	MediaDurationMax            float64                    `json:"media_duration_max,omitempty"`
+	MaxVideoDuration            float64                    `json:"max_video_duration_total,omitempty"`
+	MaxAudioDuration            float64                    `json:"max_audio_duration_total,omitempty"`
+	Parameters                  []playgroundVideoParameter `json:"parameters,omitempty"`
+	AllowLocalCancel            bool                       `json:"allow_local_cancel"`
+	CancelStatuses              []string                   `json:"cancel_statuses"`
+}
+
+type playgroundVideoParameterOption struct {
+	Label string `json:"label"`
+	Value any    `json:"value"`
+}
+
+type playgroundVideoParameter struct {
+	Name    string                           `json:"name"`
+	Label   string                           `json:"label"`
+	Type    string                           `json:"type"`
+	Default any                              `json:"default,omitempty"`
+	Options []playgroundVideoParameterOption `json:"options"`
 }
 
 type playgroundVideoChannelOption struct {
@@ -32,10 +62,38 @@ type playgroundVideoChannelOption struct {
 }
 
 type playgroundVideoModelValidation struct {
-	Resolutions  []string `json:"resolutions"`
-	TaskModes    []string `json:"task_modes"`
-	RequireMedia bool     `json:"require_media"`
-	AllowedRoles []string `json:"allowed_roles"`
+	Resolutions                 []string                   `json:"resolutions"`
+	Ratios                      []string                   `json:"ratios"`
+	DurationMin                 int                        `json:"duration_min"`
+	DurationMax                 int                        `json:"duration_max"`
+	TaskModes                   []string                   `json:"task_modes"`
+	RequireMedia                bool                       `json:"require_media"`
+	RequireVisualMediaWithAudio bool                       `json:"require_visual_media_with_audio"`
+	AllowGeneratedAudio         *bool                      `json:"allow_generated_audio"`
+	AllowedRoles                []string                   `json:"allowed_roles"`
+	MaxImages                   int                        `json:"max_images"`
+	MaxVideos                   int                        `json:"max_videos"`
+	MaxAudios                   int                        `json:"max_audios"`
+	MaxMedia                    int                        `json:"max_media"`
+	MediaDurationMin            float64                    `json:"media_duration_min"`
+	MediaDurationMax            float64                    `json:"media_duration_max"`
+	MaxVideoDuration            float64                    `json:"max_video_duration_total"`
+	MaxAudioDuration            float64                    `json:"max_audio_duration_total"`
+	Parameters                  []playgroundVideoParameter `json:"parameters"`
+}
+
+type playgroundVideoAdapterSettings struct {
+	Validation struct {
+		Models map[string]playgroundVideoModelValidation `json:"models"`
+	} `json:"validation"`
+	Cancel struct {
+		Enabled         bool     `json:"enabled"`
+		AllowedStatuses []string `json:"allowed_statuses"`
+	} `json:"cancel"`
+	LocalCancel struct {
+		Enabled        *bool    `json:"enabled"`
+		DisabledModels []string `json:"disabled_models"`
+	} `json:"local_cancel"`
 }
 
 var playgroundVideoTaskTypeOrder = []string{"text", "first_frame", "first_last_frame", "multimodal"}
@@ -85,29 +143,24 @@ func PlaygroundListVideoModels(c *gin.Context) {
 			}
 		}
 		var envelope struct {
-			Adapter struct {
-				Validation struct {
-					Models map[string]playgroundVideoModelValidation `json:"models"`
-				} `json:"validation"`
-			} `json:"adapter"`
+			Adapter playgroundVideoAdapterSettings `json:"adapter"`
 		}
 		_ = json.Unmarshal(ch.ExtraConfig, &envelope)
 		perChannelOptions := make(map[string]playgroundVideoModelOptions, len(ms))
 		for _, modelName := range ms {
 			options := envelope.Adapter.Validation.Models[modelName]
-			channelModelOptions := playgroundVideoModelOptions{
-				Resolutions: append([]string(nil), options.Resolutions...),
-				TaskTypes:   orderVideoTaskTypes(videoTaskTypesForChannel(ch, options)),
-			}
+			channelModelOptions := playgroundVideoOptionsForChannel(ch, modelName, options, envelope.Adapter)
 			if len(channelModelOptions.TaskTypes) == 0 {
 				channelModelOptions.TaskTypes = []string{"text", "multimodal"}
 			}
 			perChannelOptions[modelName] = channelModelOptions
 
-			current := modelOptions[modelName]
-			current.Resolutions = appendUniqueOrdered(current.Resolutions, options.Resolutions...)
-			current.TaskTypes = appendUniqueOrdered(current.TaskTypes, channelModelOptions.TaskTypes...)
-			modelOptions[modelName] = current
+			current, exists := modelOptions[modelName]
+			if !exists {
+				modelOptions[modelName] = clonePlaygroundVideoOptions(channelModelOptions)
+			} else {
+				modelOptions[modelName] = mergePlaygroundVideoOptions(current, channelModelOptions)
+			}
 		}
 		channelOptions = append(channelOptions, playgroundVideoChannelOption{
 			ID: ch.ID, Name: ch.Name, Models: ms, ModelOptions: perChannelOptions,
@@ -122,6 +175,182 @@ func PlaygroundListVideoModels(c *gin.Context) {
 	}
 
 	resp.Success(c, gin.H{"models": models, "model_options": modelOptions, "channels": channelOptions})
+}
+
+func playgroundVideoOptionsForChannel(
+	channel video.VideoChannel,
+	modelName string,
+	rule playgroundVideoModelValidation,
+	settings playgroundVideoAdapterSettings,
+) playgroundVideoModelOptions {
+	allowLocalCancel := true
+	var cancelStatuses []string
+	switch channel.AdapterType {
+	case "generic":
+		if settings.LocalCancel.Enabled != nil {
+			allowLocalCancel = *settings.LocalCancel.Enabled
+		}
+		for _, disabledModel := range settings.LocalCancel.DisabledModels {
+			if disabledModel == modelName {
+				allowLocalCancel = false
+				break
+			}
+		}
+		if settings.Cancel.Enabled {
+			cancelStatuses = append([]string(nil), settings.Cancel.AllowedStatuses...)
+			if len(cancelStatuses) == 0 {
+				cancelStatuses = []string{string(video.VideoTaskStatusSubmitted), string(video.VideoTaskStatusTracking)}
+			}
+		}
+	case "seedance":
+		cancelStatuses = []string{string(video.VideoTaskStatusSubmitted)}
+	}
+
+	return playgroundVideoModelOptions{
+		Resolutions:                 append([]string(nil), rule.Resolutions...),
+		Ratios:                      append([]string(nil), rule.Ratios...),
+		DurationMin:                 rule.DurationMin,
+		DurationMax:                 rule.DurationMax,
+		TaskTypes:                   orderVideoTaskTypes(videoTaskTypesForChannel(channel, rule)),
+		RequireVisualMediaWithAudio: rule.RequireVisualMediaWithAudio,
+		AllowGeneratedAudio:         cloneBool(rule.AllowGeneratedAudio),
+		AllowedRoles:                append([]string(nil), rule.AllowedRoles...),
+		MaxImages:                   rule.MaxImages,
+		MaxVideos:                   rule.MaxVideos,
+		MaxAudios:                   rule.MaxAudios,
+		MaxMedia:                    rule.MaxMedia,
+		MediaDurationMin:            rule.MediaDurationMin,
+		MediaDurationMax:            rule.MediaDurationMax,
+		MaxVideoDuration:            rule.MaxVideoDuration,
+		MaxAudioDuration:            rule.MaxAudioDuration,
+		Parameters:                  clonePlaygroundVideoParameters(rule.Parameters),
+		AllowLocalCancel:            allowLocalCancel,
+		CancelStatuses:              cancelStatuses,
+	}
+}
+
+func mergePlaygroundVideoOptions(current, next playgroundVideoModelOptions) playgroundVideoModelOptions {
+	current.Resolutions = mergeOptionalStringOptions(current.Resolutions, next.Resolutions)
+	current.Ratios = mergeOptionalStringOptions(current.Ratios, next.Ratios)
+	current.DurationMin = mergeMinimumConstraint(current.DurationMin, next.DurationMin)
+	current.DurationMax = mergeMaximumConstraint(current.DurationMax, next.DurationMax)
+	current.TaskTypes = appendUniqueOrdered(current.TaskTypes, next.TaskTypes...)
+	current.RequireVisualMediaWithAudio = current.RequireVisualMediaWithAudio && next.RequireVisualMediaWithAudio
+	current.AllowGeneratedAudio = mergeOptionalBool(current.AllowGeneratedAudio, next.AllowGeneratedAudio)
+	current.AllowedRoles = mergeOptionalStringOptions(current.AllowedRoles, next.AllowedRoles)
+	current.MaxImages = mergeMaximumConstraint(current.MaxImages, next.MaxImages)
+	current.MaxVideos = mergeMaximumConstraint(current.MaxVideos, next.MaxVideos)
+	current.MaxAudios = mergeMaximumConstraint(current.MaxAudios, next.MaxAudios)
+	current.MaxMedia = mergeMaximumConstraint(current.MaxMedia, next.MaxMedia)
+	current.MediaDurationMin = mergeMinimumFloatConstraint(current.MediaDurationMin, next.MediaDurationMin)
+	current.MediaDurationMax = mergeMaximumFloatConstraint(current.MediaDurationMax, next.MediaDurationMax)
+	current.MaxVideoDuration = mergeMaximumFloatConstraint(current.MaxVideoDuration, next.MaxVideoDuration)
+	current.MaxAudioDuration = mergeMaximumFloatConstraint(current.MaxAudioDuration, next.MaxAudioDuration)
+	current.Parameters = mergePlaygroundVideoParameters(current.Parameters, next.Parameters)
+	current.AllowLocalCancel = current.AllowLocalCancel || next.AllowLocalCancel
+	current.CancelStatuses = appendUniqueOrdered(current.CancelStatuses, next.CancelStatuses...)
+	return current
+}
+
+func mergeOptionalStringOptions(current, next []string) []string {
+	if len(current) == 0 || len(next) == 0 {
+		return nil
+	}
+	return appendUniqueOrdered(current, next...)
+}
+
+func mergeMinimumConstraint(current, next int) int {
+	if current == 0 || next == 0 {
+		return 0
+	}
+	return min(current, next)
+}
+
+func mergeMaximumConstraint(current, next int) int {
+	if current == 0 || next == 0 {
+		return 0
+	}
+	return max(current, next)
+}
+
+func mergeMinimumFloatConstraint(current, next float64) float64 {
+	if current == 0 || next == 0 {
+		return 0
+	}
+	return math.Min(current, next)
+}
+
+func mergeMaximumFloatConstraint(current, next float64) float64 {
+	if current == 0 || next == 0 {
+		return 0
+	}
+	return math.Max(current, next)
+}
+
+func mergeOptionalBool(current, next *bool) *bool {
+	if current == nil || next == nil {
+		return nil
+	}
+	value := *current || *next
+	return &value
+}
+
+func cloneBool(value *bool) *bool {
+	if value == nil {
+		return nil
+	}
+	cloned := *value
+	return &cloned
+}
+
+func clonePlaygroundVideoParameters(parameters []playgroundVideoParameter) []playgroundVideoParameter {
+	result := make([]playgroundVideoParameter, len(parameters))
+	for index, parameter := range parameters {
+		result[index] = parameter
+		result[index].Options = append([]playgroundVideoParameterOption(nil), parameter.Options...)
+	}
+	return result
+}
+
+func clonePlaygroundVideoOptions(options playgroundVideoModelOptions) playgroundVideoModelOptions {
+	options.Resolutions = append([]string(nil), options.Resolutions...)
+	options.Ratios = append([]string(nil), options.Ratios...)
+	options.TaskTypes = append([]string(nil), options.TaskTypes...)
+	options.AllowGeneratedAudio = cloneBool(options.AllowGeneratedAudio)
+	options.AllowedRoles = append([]string(nil), options.AllowedRoles...)
+	options.Parameters = clonePlaygroundVideoParameters(options.Parameters)
+	options.CancelStatuses = append([]string(nil), options.CancelStatuses...)
+	return options
+}
+
+func mergePlaygroundVideoParameters(current, next []playgroundVideoParameter) []playgroundVideoParameter {
+	result := clonePlaygroundVideoParameters(current)
+	indexes := make(map[string]int, len(result))
+	for index, parameter := range result {
+		indexes[parameter.Name] = index
+	}
+	for _, parameter := range next {
+		index, exists := indexes[parameter.Name]
+		if !exists {
+			indexes[parameter.Name] = len(result)
+			result = append(result, clonePlaygroundVideoParameters([]playgroundVideoParameter{parameter})[0])
+			continue
+		}
+		seenValues := make(map[string]struct{}, len(result[index].Options))
+		for _, option := range result[index].Options {
+			encoded, _ := json.Marshal(option.Value)
+			seenValues[string(encoded)] = struct{}{}
+		}
+		for _, option := range parameter.Options {
+			encoded, _ := json.Marshal(option.Value)
+			if _, found := seenValues[string(encoded)]; found {
+				continue
+			}
+			seenValues[string(encoded)] = struct{}{}
+			result[index].Options = append(result[index].Options, option)
+		}
+	}
+	return result
 }
 
 func videoTaskTypesForChannel(channel video.VideoChannel, rule playgroundVideoModelValidation) []string {
@@ -437,6 +666,7 @@ func PlaygroundListVideos(c *gin.Context) {
 	for _, t := range tasks {
 		item := gin.H{
 			"id":         t.ID,
+			"channel_id": t.ChannelID,
 			"model":      t.Model,
 			"status":     string(t.Status),
 			"progress":   t.Progress,

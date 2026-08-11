@@ -454,7 +454,7 @@ export interface VideoCreateParams {
     generate_audio?: boolean;
     task_mode?: string;
     content?: VideoContentItem[];
-    priority?: number;
+    params?: Record<string, string | number | boolean>;
 }
 
 export interface VideoEstimate {
@@ -484,6 +484,7 @@ export interface VideoAsset {
 
 export interface VideoTask {
     id: string;
+    channel_id?: number;
     model: string;
     status: string;
     progress: number;
@@ -499,7 +500,37 @@ export interface VideoTask {
 
 export interface PlaygroundVideoModelOptions {
     resolutions?: string[];
+    ratios?: string[];
+    duration_min?: number;
+    duration_max?: number;
     task_types?: Array<'text' | 'first_frame' | 'first_last_frame' | 'multimodal'>;
+    require_visual_media_with_audio?: boolean;
+    allow_generated_audio?: boolean;
+    allowed_roles?: VideoContentItem['role'][];
+    max_images?: number;
+    max_videos?: number;
+    max_audios?: number;
+    max_media?: number;
+    media_duration_min?: number;
+    media_duration_max?: number;
+    max_video_duration_total?: number;
+    max_audio_duration_total?: number;
+    parameters?: PlaygroundVideoParameter[];
+    allow_local_cancel: boolean;
+    cancel_statuses: string[];
+}
+
+export interface PlaygroundVideoParameterOption {
+    label: string;
+    value: string | number | boolean;
+}
+
+export interface PlaygroundVideoParameter {
+    name: string;
+    label: string;
+    type: 'select';
+    default?: string | number | boolean;
+    options: PlaygroundVideoParameterOption[];
 }
 
 export interface PlaygroundVideoChannelOption {
