@@ -74,6 +74,7 @@ func SetupRouter(executionEngine *engine.Engine, videoEngine *video.Engine) *gin
 	// 管理员专用 API
 	adminGroup := r.Group("/api/admin")
 	adminGroup.Use(middleware.JWTAuth(), middleware.AdminOnly())
+	admin.SetVideoEngine(videoEngine)
 	admin.RegisterRoutes(adminGroup)
 
 	// v1 API (Token 鉴权，用于 AI 调用)。chat/completions 已切到网关 pipeline,

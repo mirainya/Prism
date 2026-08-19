@@ -309,8 +309,12 @@ func (a *Adapter) CanCancelLocal(task *video.VideoTask) bool {
 		a.config.LocalCancel.Enabled == nil || !*a.config.LocalCancel.Enabled {
 		return false
 	}
+	modelName := task.VendorModel
+	if modelName == "" {
+		modelName = task.Model
+	}
 	for _, model := range a.config.LocalCancel.DisabledModels {
-		if model == task.Model {
+		if model == modelName {
 			return false
 		}
 	}

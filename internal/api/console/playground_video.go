@@ -137,8 +137,8 @@ func PlaygroundListVideoModels(c *gin.Context) {
 		if representativeKeys[ch.ID] == nil {
 			continue
 		}
-		var ms []string
-		if json.Unmarshal(ch.Models, &ms) != nil || len(ms) == 0 {
+		mappings, err := video.ParseVideoModelMappings(ch.Models)
+		if err != nil {
 			continue
 		}
 		var envelope struct {
@@ -146,50 +146,52 @@ func PlaygroundListVideoModels(c *gin.Context) {
 		}
 		_ = json.Unmarshal(ch.ExtraConfig, &envelope)
 		discovered := discoveredCapabilities[ch.ID]
-		availableModels := make([]string, 0, len(ms))
-		for _, modelName := range ms {
-			rule := envelope.Adapter.Validation.Models[modelName]
+		availableMappings := make([]video.VideoModelMapping, 0, len(mappings))
+		for _, mapping := range mappings {
+			rule := envelope.Adapter.Validation.Models[mapping.VendorModel]
 			if !playgroundVideoModelAvailable(rule.AvailableUntil) {
 				continue
 			}
 			if len(discovered) > 0 {
-				if _, exists := discovered[modelName]; !exists {
+				if _, exists := discovered[mapping.VendorModel]; !exists {
 					continue
 				}
 			}
-			availableModels = append(availableModels, modelName)
+			availableMappings = append(availableMappings, mapping)
 		}
-		ms = availableModels
-		if len(ms) == 0 {
+		mappings = availableMappings
+		if len(mappings) == 0 {
 			continue
 		}
-		for _, m := range ms {
-			if !seen[m] {
-				seen[m] = true
-				models = append(models, m)
+		for _, mapping := range mappings {
+			if !seen[mapping.ModelName] {
+				seen[mapping.ModelName] = true
+				models = append(models, mapping.ModelName)
 			}
 		}
-		perChannelOptions := make(map[string]playgroundVideoModelOptions, len(ms))
-		for _, modelName := range ms {
-			options := envelope.Adapter.Validation.Models[modelName]
-			channelModelOptions := playgroundVideoOptionsForChannel(ch, modelName, options, envelope.Adapter)
-			if capability, exists := discovered[modelName]; exists {
+		publicModels := make([]string, 0, len(mappings))
+		perChannelOptions := make(map[string]playgroundVideoModelOptions, len(mappings))
+		for _, mapping := range mappings {
+			publicModels = append(publicModels, mapping.ModelName)
+			options := envelope.Adapter.Validation.Models[mapping.VendorModel]
+			channelModelOptions := playgroundVideoOptionsForChannel(ch, mapping.VendorModel, options, envelope.Adapter)
+			if capability, exists := discovered[mapping.VendorModel]; exists {
 				channelModelOptions = restrictPlaygroundVideoOptions(channelModelOptions, capability)
 			}
 			if len(channelModelOptions.TaskTypes) == 0 {
 				channelModelOptions.TaskTypes = []string{"text", "multimodal"}
 			}
-			perChannelOptions[modelName] = channelModelOptions
+			perChannelOptions[mapping.ModelName] = channelModelOptions
 
-			current, exists := modelOptions[modelName]
+			current, exists := modelOptions[mapping.ModelName]
 			if !exists {
-				modelOptions[modelName] = clonePlaygroundVideoOptions(channelModelOptions)
+				modelOptions[mapping.ModelName] = clonePlaygroundVideoOptions(channelModelOptions)
 			} else {
-				modelOptions[modelName] = mergePlaygroundVideoOptions(current, channelModelOptions)
+				modelOptions[mapping.ModelName] = mergePlaygroundVideoOptions(current, channelModelOptions)
 			}
 		}
 		channelOptions = append(channelOptions, playgroundVideoChannelOption{
-			ID: ch.ID, Name: ch.Name, Models: ms, ModelOptions: perChannelOptions,
+			ID: ch.ID, Name: ch.Name, Models: publicModels, ModelOptions: perChannelOptions,
 		})
 	}
 	for modelName, options := range modelOptions {

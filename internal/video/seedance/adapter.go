@@ -61,7 +61,24 @@ func (Codec) ValidateRequest(ctx context.Context, req *video.GenerateRequest) er
 }
 
 func validateOfficialRequest(req *video.GenerateRequest) error {
+	if err := validateOfficialParameters(req.Params); err != nil {
+		return err
+	}
 	return validateReferenceLimits(req, 9, 3, 3, 15, false)
+}
+
+func validateOfficialParameters(parameters map[string]any) error {
+	for name, value := range parameters {
+		switch name {
+		case "camera_fixed", "return_last_frame", "web_search":
+			if _, ok := value.(bool); !ok {
+				return fmt.Errorf("seedance parameter %q must be a boolean", name)
+			}
+		default:
+			return fmt.Errorf("seedance parameter %q is not supported", name)
+		}
+	}
+	return nil
 }
 
 func validateReferenceLimits(req *video.GenerateRequest, imageLimit, videoLimit, audioLimit int, maxDuration float64, requireMediaDuration bool) error {
@@ -111,6 +128,9 @@ func (Codec) BuildRequest(ctx context.Context, req *video.GenerateRequest) (*vid
 	}
 	body, err := buildOfficialBody(req)
 	if err != nil {
+		return nil, err
+	}
+	if err := validateOfficialParameters(req.Params); err != nil {
 		return nil, err
 	}
 	for key, value := range req.Params {

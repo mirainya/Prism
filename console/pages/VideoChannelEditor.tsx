@@ -1,11 +1,14 @@
 import React, { useEffect, useMemo, useState } from 'react';
-import { ArrowLeft, Braces, Check, Plus, Save, Trash2 } from 'lucide-react';
+import { ArrowLeft, Braces, Check, Plus, RefreshCw, Save, Trash2 } from 'lucide-react';
 import { useNavigate, useParams } from 'react-router-dom';
 import JsonEditor from '../components/ui/JsonEditor';
 import { ConfirmDialog, Select } from '../components/ui';
 import {
   VideoChannel,
+  DiscoveredVideoModel,
+  VideoModelMapping,
   createVideoChannel,
+  discoverVideoChannelModels,
   getVideoChannel,
   updateVideoChannel,
 } from '../services/videoApi';
@@ -18,7 +21,7 @@ interface ChannelForm {
   baseURL: string;
   status: string;
   priority: number;
-  models: string[];
+  models: VideoModelMapping[];
   capabilities: Record<string, boolean>;
   pricingMode: string;
   fixedPrice: string;
@@ -70,11 +73,22 @@ const asObject = (value: unknown): Record<string, any> => {
   return typeof value === 'object' && !Array.isArray(value) ? value as Record<string, any> : {};
 };
 
-const asModels = (value: unknown): string[] => {
+const asModels = (value: unknown): VideoModelMapping[] => {
   if (typeof value === 'string') {
     try { return asModels(JSON.parse(value)); } catch { return []; }
   }
-  return Array.isArray(value) ? value.filter(item => typeof item === 'string' && item.trim()).map(item => item.trim()) : [];
+  if (!Array.isArray(value)) return [];
+  return value.flatMap(item => {
+    if (typeof item === 'string' && item.trim()) {
+      const model = item.trim();
+      return [{ model_name: model, vendor_model: model }];
+    }
+    if (!item || typeof item !== 'object') return [];
+    const raw = item as Record<string, unknown>;
+    const modelName = String(raw.model_name || '').trim();
+    if (!modelName) return [];
+    return [{ model_name: modelName, vendor_model: String(raw.vendor_model || modelName).trim() || modelName }];
+  });
 };
 
 const prettyObject = (value: unknown) => JSON.stringify(asObject(value), null, 2);
@@ -143,11 +157,14 @@ const VideoChannelEditor: React.FC = () => {
   const params = useParams<{ id: string }>();
   const isCreate = !params.id;
   const [form, setForm] = useState<ChannelForm>(emptyForm);
-  const [modelDraft, setModelDraft] = useState('');
+  const [modelDraft, setModelDraft] = useState<VideoModelMapping>({ model_name: '', vendor_model: '' });
   const [activeSection, setActiveSection] = useState('basic');
   const [initialFingerprint, setInitialFingerprint] = useState(formFingerprint(emptyForm()));
   const [loading, setLoading] = useState(!isCreate);
   const [saving, setSaving] = useState(false);
+  const [discoveringModels, setDiscoveringModels] = useState(false);
+  const [discoveredModels, setDiscoveredModels] = useState<DiscoveredVideoModel[]>([]);
+  const [modelDiscoveryError, setModelDiscoveryError] = useState('');
   const [discardDialogOpen, setDiscardDialogOpen] = useState(false);
   const [error, setError] = useState('');
   const [fieldErrors, setFieldErrors] = useState<Record<string, string>>({});
@@ -217,11 +234,38 @@ const VideoChannelEditor: React.FC = () => {
     setError('');
   };
 
-  const addModels = (raw: string) => {
-    const additions = raw.split(/[\n,]/).map(item => item.trim()).filter(Boolean);
-    if (!additions.length) return;
-    updateForm('models', [...new Set([...form.models, ...additions])]);
-    setModelDraft('');
+  const addModel = () => {
+    const modelName = modelDraft.model_name.trim();
+    const vendorModel = modelDraft.vendor_model.trim() || modelName;
+    if (!modelName) return;
+    if (form.models.some(model => model.model_name === modelName)) {
+      setFieldErrors(current => ({ ...current, models: `公开模型 ${modelName} 已存在` }));
+      return;
+    }
+    updateForm('models', [...form.models, { model_name: modelName, vendor_model: vendorModel }]);
+    setModelDraft({ model_name: '', vendor_model: '' });
+    setFieldErrors(current => ({ ...current, models: '' }));
+  };
+
+  const addDiscoveredModel = (vendorModel: string) => {
+    if (form.models.some(model => model.vendor_model === vendorModel)) return;
+    updateForm('models', [...form.models, { model_name: vendorModel, vendor_model: vendorModel }]);
+    setFieldErrors(current => ({ ...current, models: '' }));
+  };
+
+  const discoverModels = async () => {
+    const id = Number(params.id);
+    if (!Number.isInteger(id) || id <= 0) return;
+    setDiscoveringModels(true);
+    setModelDiscoveryError('');
+    try {
+      const result = await discoverVideoChannelModels(id);
+      setDiscoveredModels(result.models || []);
+    } catch (err: any) {
+      setModelDiscoveryError(err?.message || '读取上游模型失败');
+    } finally {
+      setDiscoveringModels(false);
+    }
   };
 
   const goBack = () => {
@@ -376,29 +420,66 @@ const VideoChannelEditor: React.FC = () => {
 
           <Section id="models" title="模型与能力">
             <div>
-              <label className={labelClass}>支持模型</label>
-              <div className="flex gap-2">
-                <input value={modelDraft} onChange={event => setModelDraft(event.target.value)}
+              <div className="mb-1.5 flex items-center justify-between gap-3">
+                <label className="text-xs font-semibold text-[var(--text-secondary)]">模型映射</label>
+                {!isCreate && form.adapterType === 'generic' && (
+                  <button type="button" onClick={discoverModels} disabled={discoveringModels}
+                    className="inline-flex h-8 items-center gap-1.5 px-2.5 rounded-md text-xs font-semibold text-[var(--primary)] hover:bg-[var(--primary-lighter)] disabled:opacity-50">
+                    <RefreshCw size={13} className={discoveringModels ? 'animate-spin' : ''} />
+                    {discoveringModels ? '读取中...' : '读取上游模型'}
+                  </button>
+                )}
+              </div>
+              <div className="grid grid-cols-1 md:grid-cols-[minmax(0,1fr)_minmax(0,1fr)_40px] gap-2">
+                <input value={modelDraft.model_name} onChange={event => setModelDraft(current => ({ ...current, model_name: event.target.value }))}
                   onKeyDown={event => {
-                    if (event.key === 'Enter' || event.key === ',') {
+                    if (event.key === 'Enter') {
                       event.preventDefault();
-                      addModels(modelDraft);
+                      addModel();
                     }
                   }}
-                  placeholder="seedance-2.0" className={inputClass} />
-                <button type="button" onClick={() => addModels(modelDraft)} title="添加模型" className="w-10 h-10 shrink-0 inline-flex items-center justify-center rounded-lg border border-[var(--border-soft)] text-[var(--primary)] hover:bg-[var(--primary-lighter)]">
+                  placeholder="公开模型名，如 video-fast" className={inputClass} />
+                <input value={modelDraft.vendor_model} onChange={event => setModelDraft(current => ({ ...current, vendor_model: event.target.value }))}
+                  onKeyDown={event => {
+                    if (event.key === 'Enter') {
+                      event.preventDefault();
+                      addModel();
+                    }
+                  }}
+                  placeholder="上游模型名，留空则同名" className={inputClass} />
+                <button type="button" onClick={addModel} title="添加模型映射" className="w-10 h-10 shrink-0 inline-flex items-center justify-center rounded-lg border border-[var(--border-soft)] text-[var(--primary)] hover:bg-[var(--primary-lighter)]">
                   <Plus size={17} />
                 </button>
               </div>
               {fieldErrors.models && <p className="mt-1.5 text-xs text-red-500">{fieldErrors.models}</p>}
-              <div className="mt-3 min-h-11 flex flex-wrap gap-2 p-2 rounded-lg border border-[var(--border-soft)] bg-[var(--surface)]">
-                {form.models.length === 0 ? <span className="px-2 py-1 text-xs text-[var(--text-secondary)]">暂无模型</span> : form.models.map(model => (
-                  <span key={model} className="inline-flex items-center gap-1.5 h-7 pl-2.5 pr-1.5 rounded-md bg-[var(--surface-card)] border border-[var(--border-soft)] text-xs font-mono text-[var(--text-primary)]">
-                    {model}
-                    <button type="button" onClick={() => updateForm('models', form.models.filter(item => item !== model))} title={`删除 ${model}`} className="w-5 h-5 inline-flex items-center justify-center rounded hover:bg-red-50 text-[var(--text-secondary)] hover:text-red-500">
+              {modelDiscoveryError && <p className="mt-2 text-xs text-red-500">{modelDiscoveryError}</p>}
+              {discoveredModels.length > 0 && (
+                <div className="mt-3">
+                  <div className="mb-2 text-xs font-semibold text-[var(--text-secondary)]">上游可用模型</div>
+                  <div className="flex flex-wrap gap-2">
+                    {discoveredModels.map(model => {
+                      const added = form.models.some(item => item.vendor_model === model.vendor_model);
+                      return (
+                        <button key={model.vendor_model} type="button" disabled={added} onClick={() => addDiscoveredModel(model.vendor_model)}
+                          title={added ? `${model.vendor_model} 已加入映射` : `加入 ${model.vendor_model}`}
+                          className="inline-flex h-8 items-center gap-1.5 px-2.5 rounded-md border border-[var(--border-soft)] bg-[var(--surface)] text-xs font-mono text-[var(--text-primary)] hover:border-[var(--primary)] hover:text-[var(--primary)] disabled:opacity-60 disabled:hover:border-[var(--border-soft)] disabled:hover:text-[var(--text-primary)]">
+                          {added ? <Check size={13} /> : <Plus size={13} />}{model.vendor_model}
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+              )}
+              <div className="mt-3 min-h-11 space-y-2 p-2 rounded-lg border border-[var(--border-soft)] bg-[var(--surface)]">
+                {form.models.length === 0 ? <span className="px-2 py-1 text-xs text-[var(--text-secondary)]">暂无模型映射</span> : form.models.map(model => (
+                  <div key={model.model_name} className="grid grid-cols-[minmax(0,1fr)_24px_minmax(0,1fr)_28px] items-center gap-2 min-h-9 px-2 rounded-md bg-[var(--surface-card)] border border-[var(--border-soft)] text-xs font-mono text-[var(--text-primary)]">
+                    <span className="truncate" title={model.model_name}>{model.model_name}</span>
+                    <span className="text-center text-[var(--text-secondary)]">→</span>
+                    <span className="truncate" title={model.vendor_model}>{model.vendor_model}</span>
+                    <button type="button" onClick={() => updateForm('models', form.models.filter(item => item.model_name !== model.model_name))} title={`删除 ${model.model_name}`} className="w-6 h-6 inline-flex items-center justify-center rounded hover:bg-red-50 text-[var(--text-secondary)] hover:text-red-500">
                       <Trash2 size={12} />
                     </button>
-                  </span>
+                  </div>
                 ))}
               </div>
             </div>

@@ -76,6 +76,7 @@ type VideoTask struct {
 	UserID           uint            `gorm:"not null;index:idx_user_status;comment:用户ID" json:"user_id"`
 	TokenID          uint            `gorm:"not null;index:idx_token_status;comment:令牌ID" json:"token_id"`
 	Model            string          `gorm:"type:varchar(64);not null;comment:模型标识" json:"model"`
+	VendorModel      string          `gorm:"type:varchar(120);not null;default:'';comment:上游模型标识快照" json:"vendor_model"`
 	Status           VideoTaskStatus `gorm:"type:varchar(16);not null;index:idx_token_status;index:idx_status_created;comment:状态" json:"status"`
 	Progress         int             `gorm:"default:0;comment:进度(0-100)" json:"progress"`
 	TaskMode         string          `gorm:"type:varchar(16);not null;comment:任务模式" json:"task_mode"`
@@ -89,6 +90,7 @@ type VideoTask struct {
 	ChannelID        uint            `gorm:"index:idx_channel_key;comment:渠道ID" json:"channel_id"`
 	KeyID            uint            `gorm:"index:idx_channel_key;comment:密钥ID" json:"key_id"`
 	AdapterType      string          `gorm:"type:varchar(32);not null;comment:任务使用的协议实现快照" json:"adapter_type"`
+	RoutePlan        datatypes.JSON  `gorm:"type:json;comment:不可变视频选路快照" json:"route_plan"`
 	ProviderTaskID   string          `gorm:"type:varchar(128);comment:上游任务ID" json:"provider_task_id"`
 	ProviderResponse datatypes.JSON  `gorm:"type:json;comment:上游原始响应" json:"-"`
 	EstimatedCost    decimal.Decimal `gorm:"type:decimal(10,4);comment:预估费用" json:"estimated_cost"`

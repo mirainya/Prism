@@ -89,10 +89,11 @@ type EstimateTaskResult struct {
 }
 
 type preparedTaskRequest struct {
-	channel  *VideoChannel
-	key      *VideoChannelKey
-	adapter  Adapter
-	provider *GenerateRequest
+	channel     *VideoChannel
+	key         *VideoChannelKey
+	adapter     Adapter
+	vendorModel string
+	provider    *GenerateRequest
 }
 
 func (e *Engine) CreateTask(ctx context.Context, req *CreateTaskRequest) (*CreateTaskResult, error) {
@@ -140,6 +141,11 @@ func (e *Engine) CreateTask(ctx context.Context, req *CreateTaskRequest) (*Creat
 		e.router.ReleaseConcurrency(ctx, key.ID)
 		return nil, err
 	}
+	routePlan, err := BuildVideoRoutePlan(channel, key, req.Model, prepared.vendorModel)
+	if err != nil {
+		e.router.ReleaseConcurrency(ctx, key.ID)
+		return nil, err
+	}
 
 	task := &VideoTask{
 		ID:            taskID,
@@ -147,6 +153,7 @@ func (e *Engine) CreateTask(ctx context.Context, req *CreateTaskRequest) (*Creat
 		UserID:        req.UserID,
 		TokenID:       req.TokenID,
 		Model:         req.Model,
+		VendorModel:   prepared.vendorModel,
 		Status:        VideoTaskStatusQueued,
 		TaskMode:      req.TaskMode,
 		Prompt:        req.Prompt,
@@ -159,6 +166,7 @@ func (e *Engine) CreateTask(ctx context.Context, req *CreateTaskRequest) (*Creat
 		ChannelID:     channel.ID,
 		KeyID:         key.ID,
 		AdapterType:   channel.AdapterType,
+		RoutePlan:     routePlan,
 		EstimatedCost: price.EstimatedCost,
 		MarkupRatio:   price.MarkupRatio,
 		BillingStatus: "reserved",
@@ -234,13 +242,17 @@ func (e *Engine) prepareTaskRequest(ctx context.Context, req *CreateTaskRequest,
 	var prepared *preparedTaskRequest
 	var validationErr error
 	_, _, err = e.router.SelectCompatible(ctx, req.Model, caps, req.ChannelID, acquireConcurrency, func(channel *VideoChannel, key *VideoChannelKey) bool {
+		vendorModel, supported := ResolveVideoVendorModel(channel.Models, req.Model)
+		if !supported {
+			return false
+		}
 		adapter := e.registry.Get(channel.AdapterType, channel, key)
 		if adapter == nil {
 			validationErr = fmt.Errorf("video adapter %q is not registered", channel.AdapterType)
 			return false
 		}
 		providerRequest := &GenerateRequest{
-			Model: req.Model, Prompt: req.Prompt, Resolution: req.Resolution,
+			Model: vendorModel, Prompt: req.Prompt, Resolution: req.Resolution,
 			Ratio: req.Ratio, Duration: req.Duration, Audio: req.Audio,
 			TaskMode: req.TaskMode, Content: append([]ContentItem(nil), req.Content...), Params: req.Params,
 			TaskID: requestID, TokenID: req.TokenID, Channel: channel, Key: key,
@@ -251,7 +263,10 @@ func (e *Engine) prepareTaskRequest(ctx context.Context, req *CreateTaskRequest,
 				return false
 			}
 		}
-		prepared = &preparedTaskRequest{channel: channel, key: key, adapter: adapter, provider: providerRequest}
+		prepared = &preparedTaskRequest{
+			channel: channel, key: key, adapter: adapter,
+			vendorModel: vendorModel, provider: providerRequest,
+		}
 		return true
 	})
 	if err != nil {

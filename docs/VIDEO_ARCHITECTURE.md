@@ -36,6 +36,23 @@
 
 `video_channel_keys` 保存凭据和并发设置。
 
+每个渠道的模型使用公开名到上游名的映射：
+
+```json
+[
+  {
+    "model_name": "video-fast",
+    "vendor_model": "seedance-2.0-fast"
+  }
+]
+```
+
+- `model_name` 是 Prism 对外公开的稳定名称，请求、查询和自动选路均使用它。
+- `vendor_model` 是当前渠道实际接收的模型名称，仅在调用上游时使用。
+- 历史字符串数组仍可读取，`"seedance-2.0"` 等价于公开名与上游名相同。
+
+任务创建后保存 `RoutePlan`，其中包含公开模型、上游模型及渠道协议配置快照。渠道后续修改不会改变已创建任务的提交、轮询和取消行为。RoutePlan 只保存 Key ID，密钥仍从 `video_channel_keys` 实时读取；运行中任务引用的渠道或 Key 不允许删除。
+
 ## 协议
 
 Prism 只有两种视频协议实现：

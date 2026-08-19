@@ -19,6 +19,9 @@ func (a *Adapter) ValidateRequest(_ context.Context, request *video.GenerateRequ
 		return errors.New("generic video request is required")
 	}
 	if len(a.config.Validation.Models) == 0 {
+		if len(request.Params) > 0 {
+			return errors.New("video extension parameters are not declared for this channel")
+		}
 		return nil
 	}
 	rule, exists := a.config.Validation.Models[request.Model]
@@ -50,9 +53,22 @@ func validateRequestRule(request *video.GenerateRequest, rule validationRule) er
 	if rule.AllowGeneratedAudio != nil && !*rule.AllowGeneratedAudio && request.Audio {
 		return errors.New("generated audio is not supported")
 	}
-	for _, name := range rule.ForbiddenParameters {
+	forbidden := forbiddenParameterSet(rule.ForbiddenParameters)
+	for name := range forbidden {
 		if _, exists := request.Params[name]; exists {
 			return fmt.Errorf("parameter %q is not supported", name)
+		}
+	}
+	declared := make(map[string]struct{}, len(rule.Parameters))
+	for _, parameter := range rule.Parameters {
+		declared[parameter.Name] = struct{}{}
+	}
+	for name := range request.Params {
+		if _, exists := forbidden[name]; exists {
+			continue
+		}
+		if _, exists := declared[name]; !exists {
+			return fmt.Errorf("parameter %q is not declared for model %q", name, request.Model)
 		}
 	}
 	for _, parameter := range rule.Parameters {
@@ -139,6 +155,14 @@ func validateRequestRule(request *video.GenerateRequest, rule validationRule) er
 		return fmt.Errorf("audio reference duration total cannot exceed %.0f seconds", rule.MaxAudioDuration)
 	}
 	return nil
+}
+
+func forbiddenParameterSet(names []string) map[string]struct{} {
+	result := make(map[string]struct{}, len(names))
+	for _, name := range names {
+		result[name] = struct{}{}
+	}
+	return result
 }
 
 func contentKind(contentType string) string {

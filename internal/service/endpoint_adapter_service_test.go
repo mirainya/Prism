@@ -380,3 +380,50 @@ func TestAccountDiscoveryImportReusesRoutesAndBindsSecondKey(t *testing.T) {
 		t.Fatalf("bindings = %d, want 3", bindings)
 	}
 }
+
+func TestAccountDiscoveryImportRestoresSoftDeletedImageModel(t *testing.T) {
+	setupEndpointAdapterTestDB(t)
+	config := endpointDiscoveryChannelConfig(t, "/catalog/models", []string{RouteOperationImagesGenerate, RouteOperationImagesEdit})
+	channel := &model.Channel{Type: "account-discovery-restore", BaseURL: "https://images.example", Config: config, Status: 1}
+	if err := model.DB().Create(channel).Error; err != nil {
+		t.Fatal(err)
+	}
+	account := &model.ChannelAccount{ChannelID: channel.ID, Name: "key", APIKey: "secret", Status: 1}
+	if err := model.DB().Create(account).Error; err != nil {
+		t.Fatal(err)
+	}
+	capability := &model.Model{Code: "gpt-image-2", Name: "GPT Image 2", Type: model.ModelTypeImage, Status: 1}
+	if err := model.DB().Create(capability).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := model.DB().Delete(capability).Error; err != nil {
+		t.Fatal(err)
+	}
+
+	result, err := NewEndpointAdapterService().ImportAccountEndpointModels(account.ID, &EndpointModelImportRequest{
+		Models: []EndpointModelImportItem{{
+			ID: "gpt-image-2", ModelCode: "gpt-image-2",
+			Operations: []string{RouteOperationImagesGenerate, RouteOperationImagesEdit},
+		}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.ModelsCreated != 0 || result.EndpointsCreated != 2 || result.BindingsAdded != 2 {
+		t.Fatalf("import result = %#v", result)
+	}
+	var restored model.Model
+	if err := model.DB().Where("code = ?", capability.Code).First(&restored).Error; err != nil {
+		t.Fatal(err)
+	}
+	if restored.Status != 1 || restored.DeletedAt.Valid {
+		t.Fatalf("restored model = %#v", restored)
+	}
+	var features map[string]bool
+	if err := json.Unmarshal(restored.Features, &features); err != nil {
+		t.Fatal(err)
+	}
+	if !features[RouteOperationImagesGenerate] || !features[RouteOperationImagesEdit] {
+		t.Fatalf("restored features = %#v", features)
+	}
+}

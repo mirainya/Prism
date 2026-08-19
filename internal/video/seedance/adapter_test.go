@@ -53,6 +53,21 @@ func TestBuildRequestRejectsUnresolvedAsset(t *testing.T) {
 	}
 }
 
+func TestBuildRequestRejectsUnknownOrInvalidParameters(t *testing.T) {
+	adapter := Codec{}
+	for _, params := range []map[string]any{
+		{"unexpected": true},
+		{"camera_fixed": "yes"},
+	} {
+		_, err := adapter.BuildRequest(context.Background(), &video.GenerateRequest{
+			Model: "seedance-2.0", Prompt: "test", Params: params,
+		})
+		if err == nil {
+			t.Fatalf("parameters %#v should fail", params)
+		}
+	}
+}
+
 func TestAdapterSupportsDirectAndEnvelopeResponses(t *testing.T) {
 	var seenSubmit bool
 	var seenCancel bool

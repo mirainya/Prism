@@ -1,9 +1,7 @@
 package open
 
 import (
-	"encoding/json"
 	"errors"
-	"fmt"
 	"net/http"
 
 	"github.com/gin-gonic/gin"
@@ -12,6 +10,7 @@ import (
 	"github.com/mirainya/Prism/internal/model"
 	"github.com/mirainya/Prism/internal/service"
 	"github.com/mirainya/Prism/internal/video"
+	"github.com/mirainya/Prism/internal/video/codec/prismv1"
 	perrors "github.com/mirainya/Prism/pkg/errors"
 	"gorm.io/gorm"
 )
@@ -20,13 +19,6 @@ var videoEngine *video.Engine
 
 func InitVideoEngine(e *video.Engine) {
 	videoEngine = e
-}
-
-type GenerationRequest struct {
-	Model       string         `json:"model" binding:"required"`
-	Prompt      string         `json:"prompt"`
-	Params      map[string]any `json:"params"`
-	CallbackURL string         `json:"callback_url"`
 }
 
 type GenerationResponse struct {
@@ -43,8 +35,8 @@ type videoEstimateResponse struct {
 }
 
 func EstimateVideoGeneration(c *gin.Context) {
-	var raw map[string]any
-	if err := c.ShouldBindJSON(&raw); err != nil {
+	spec, err := prismv1.Decode(c.Request.Body)
+	if err != nil {
 		resp.BadRequest(c, perrors.WithMessage(perrors.ErrInvalidParams, err.Error()))
 		return
 	}
@@ -57,10 +49,7 @@ func EstimateVideoGeneration(c *gin.Context) {
 		resp.ErrorMsg(c, http.StatusServiceUnavailable, 503, video.ErrEngineUnavailable.Error())
 		return
 	}
-	modelName, _ := raw["model"].(string)
-	prompt, _ := raw["prompt"].(string)
-	callbackURL, _ := raw["callback_url"].(string)
-	req, err := buildVideoCreateRequest(raw, token.UserID, token.ID, modelName, prompt, callbackURL)
+	req, err := prismv1.ToTaskRequest(spec, token.UserID, token.ID)
 	if err != nil {
 		resp.BadRequest(c, perrors.WithMessage(perrors.ErrInvalidParams, err.Error()))
 		return
@@ -90,19 +79,11 @@ func writeVideoEstimateError(c *gin.Context, err error) {
 }
 
 func CreateVideoGeneration(c *gin.Context) {
-	var raw map[string]any
-	if err := c.ShouldBindJSON(&raw); err != nil {
+	spec, err := prismv1.Decode(c.Request.Body)
+	if err != nil {
 		resp.BadRequest(c, perrors.WithMessage(perrors.ErrInvalidParams, err.Error()))
 		return
 	}
-
-	modelName, _ := raw["model"].(string)
-	prompt, _ := raw["prompt"].(string)
-	if modelName == "" {
-		resp.BadRequest(c, perrors.WithMessage(perrors.ErrInvalidParams, "model is required"))
-		return
-	}
-	callbackURL, _ := raw["callback_url"].(string)
 
 	token := middleware.GetToken(c)
 	if token == nil {
@@ -115,17 +96,16 @@ func CreateVideoGeneration(c *gin.Context) {
 		return
 	}
 
-	req, buildErr := buildVideoCreateRequest(raw, token.UserID, token.ID, modelName, prompt, callbackURL)
+	req, buildErr := prismv1.ToTaskRequest(spec, token.UserID, token.ID)
+	if buildErr != nil {
+		resp.BadRequest(c, perrors.WithMessage(perrors.ErrInvalidParams, buildErr.Error()))
+		return
+	}
 	req.CallID = service.GenerateAPICallID()
 	req.RequestID = middleware.GetRequestID(c.Request.Context())
 	req.Endpoint = c.FullPath()
 	req.Operation = "videos.generate"
 	c.Header(prismCallIDHeader, req.CallID)
-	if buildErr != nil {
-		recordVideoCreateFailure(req, http.StatusBadRequest, "invalid_request_error", "invalid_video_request", buildErr)
-		resp.BadRequest(c, perrors.WithMessage(perrors.ErrInvalidParams, buildErr.Error()))
-		return
-	}
 	result, err := videoEngine.CreateTask(c.Request.Context(), req)
 	if err == nil {
 		resp.Success(c, GenerationResponse{ID: result.TaskID, Status: "queued"})
@@ -178,67 +158,4 @@ func recordVideoCreateFailure(req *video.CreateTaskRequest, status int, errorTyp
 			HTTPStatus: status, ErrorType: errorType, ErrorCode: errorCode, ErrorMessage: cause.Error(),
 		})
 	})
-}
-
-func buildVideoCreateRequest(raw map[string]any, userID, tokenID uint, modelName, prompt, callbackURL string) (*video.CreateTaskRequest, error) {
-	req := &video.CreateTaskRequest{
-		UserID:   userID,
-		TokenID:  tokenID,
-		Model:    modelName,
-		Prompt:   prompt,
-		Callback: callbackURL,
-		Audio:    true,
-	}
-	if v, ok := raw["resolution"].(string); ok {
-		req.Resolution = v
-	}
-	if v, ok := raw["ratio"].(string); ok {
-		req.Ratio = v
-	}
-	if v, ok := raw["duration"].(float64); ok {
-		req.Duration = int(v)
-	}
-	if v, ok := raw["generate_audio"].(bool); ok {
-		req.Audio = v
-	}
-	if v, ok := raw["task_mode"].(string); ok {
-		req.TaskMode = v
-	}
-
-	// content 数组
-	if rawContent, ok := raw["content"]; ok {
-		b, err := json.Marshal(rawContent)
-		if err != nil {
-			return req, fmt.Errorf("invalid content: %w", err)
-		}
-		var items []video.ContentItem
-		if err := json.Unmarshal(b, &items); err != nil {
-			return req, fmt.Errorf("invalid content: %w", err)
-		}
-		req.Content = items
-	}
-
-	// params：把顶层非保留字段 + nested params 合并
-	params := make(map[string]any)
-	reserved := map[string]bool{
-		"model": true, "prompt": true, "callback_url": true,
-		"resolution": true, "ratio": true, "duration": true,
-		"generate_audio": true, "task_mode": true, "content": true, "params": true,
-	}
-	for k, v := range raw {
-		if !reserved[k] {
-			params[k] = v
-		}
-	}
-	if nested, ok := raw["params"].(map[string]any); ok {
-		for k, v := range nested {
-			params[k] = v
-		}
-	} else if value, exists := raw["params"]; exists && value != nil {
-		return req, fmt.Errorf("params must be an object")
-	}
-	if len(params) > 0 {
-		req.Params = params
-	}
-	return req, nil
 }

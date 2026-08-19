@@ -458,18 +458,49 @@ curl -X POST "https://prism.example/v1/images/edits" \
 
 视频生成。存在匹配的 `video_channels` 时使用专用视频引擎，否则调用 `capabilities/text2video`。动态计价渠道会在创建时重新估价、固化价格快照并预扣费用。
 
-任务类型不是独立的 `task_mode` 枚举，而是由 `task_mode` 与 `content[].role` 组合表达：
+Prism V1 视频请求只接受 `model`、`prompt`、`duration`、`resolution`、`aspect_ratio`、`generate_audio`、`references`、`provider_options` 和 `callback_url`。未知字段会被拒绝，不兼容 `content`、`ratio`、`params`、`parameters` 和 `task_mode` 等旧输入。
+
+`model` 始终填写 Prism 公开模型名。管理员在视频渠道中配置 `model_name → vendor_model` 映射；Prism 选路后把公开名转换为该渠道的上游模型名，客户端无需感知各上游命名差异。
+
+```json
+{
+  "model": "seedance-2.0",
+  "prompt": "海边日落",
+  "duration": 5,
+  "resolution": "720p",
+  "aspect_ratio": "16:9",
+  "generate_audio": true,
+  "references": [
+    {
+      "type": "image",
+      "role": "first_frame",
+      "asset_id": "asset_xxx"
+    }
+  ],
+  "provider_options": {
+    "seedance": {
+      "camera_fixed": false,
+      "web_search": true,
+      "return_last_frame": true
+    }
+  },
+  "callback_url": "https://example.com/webhook"
+}
+```
+
+任务类型由 `references[].role` 自动推导：
 
 | 产品任务类型 | 请求表达 | 素材要求 |
 |-------------|----------|----------|
-| 文生视频 | `task_mode=text` | 不提交媒体素材 |
-| 首帧生视频 | `task_mode=references` | 一张 `image_url`，`role=first_frame` |
-| 首尾帧视频 | `task_mode=references` | 两张图片，分别为 `first_frame`、`last_frame` |
-| 多模态视频 | `task_mode=references` | `reference_image`、`reference_video` 或 `reference_audio` |
+| 文生视频 | 不提交 `references` | 提供 `prompt` |
+| 首帧生视频 | 一张 `type=image`、`role=first_frame` | 图片素材 |
+| 首尾帧视频 | 两张图片，分别为 `first_frame`、`last_frame` | 图片素材 |
+| 多模态视频 | `reference_image`、`reference_video` 或 `reference_audio` | 对应类型素材 |
+| 视频续写 | 一项 `type=video`、`role=source_video` | 视频素材 |
 
-实际可用类型由渠道能力决定：官满血可支持四种，H 渠道通常支持文生和多模态，Seedance 2.5 仅支持多模态。控制台试用接口 `GET /api/playground/:token_id/videos/models` 会返回自动选路使用的 `model_options`，以及每个可用渠道的 `channels[].id/name/models/model_options`。控制台创建与估价请求可提交 `channel_id` 强制使用指定渠道；省略或传 `0` 时自动选路。指定渠道不兼容请求参数时会直接报错，不会改投其他渠道。
+实际可用类型由渠道能力决定：官满血支持文生、首帧、首尾帧和多模态；H 渠道的 Seedance 2.5 支持文生、多模态和视频拓展；即梦 Seedance 2.5 只支持多模态。控制台试用接口 `GET /api/playground/:token_id/videos/models` 会返回自动选路使用的 `model_options`，以及每个可用渠道的 `channels[].id/name/models/model_options`。控制台创建与估价请求可提交 `channel_id` 强制使用指定渠道；省略或传 `0` 时自动选路。指定渠道不兼容请求参数时会直接报错，不会改投其他渠道。
 
-专用引擎支持 `content[].asset_id` 或公网 `url`（二选一），并自动推断 `task_mode`。`prompt` 与媒体素材至少提供一种，音频必须与图片或视频同时使用。Seedance 2.0 最多接收 9 个图片、3 个视频和 3 个音频；Seedance 2.5 最多接收 30 个图片、10 个视频和 10 个音频，总数不超过 50。官方 Seedance 提示词可使用 `图片1`、`视频1`、`音频1` 引用素材；Sub2API 不要求该写法。调用写入统一 `api_calls`，响应头包含 `X-Prism-Call-ID`。
+每项素材使用 `type`、`role`，并在 `asset_id` 与公网 `url` 中二选一；视频和音频可提交 `duration_seconds`。渠道专属选项只能放入对应的 `provider_options` 命名空间。官方 Seedance 提示词可使用 `图片1`、`视频1`、`音频1` 引用素材；Sub2API 不要求该写法。调用写入统一 `api_calls`，响应头包含 `X-Prism-Call-ID`。
 
 ### POST /v1/videos/assets
 
@@ -491,7 +522,7 @@ curl -X POST "https://prism.example/v1/images/edits" \
 
 ### POST /v1/videos/generations/:id/cancel
 
-取消专用视频引擎任务；支持时同步取消上游，并执行统一退款与调用状态更新。Sub2API H 渠道只允许取消尚未取得上游任务号的本地排队任务，Seedance 2.5 不支持取消。
+取消专用视频引擎任务；支持时同步取消上游，并执行统一退款与调用状态更新。Sub2API H 渠道只允许取消尚未取得上游任务号的本地排队任务；即梦 Seedance 2.5 不支持取消。
 
 ### GET /v1/tasks/:task_no
 

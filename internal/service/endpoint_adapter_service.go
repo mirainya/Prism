@@ -364,7 +364,7 @@ func fetchConfiguredEndpointModels(ctx context.Context, channel *model.Channel, 
 
 func ensureDiscoveredImageModel(tx *gorm.DB, channel *model.Channel, modelCode, name string, operations []string, result *EndpointModelImportResult) error {
 	var capability model.Model
-	lookup := tx.Where("code = ?", modelCode).First(&capability)
+	lookup := tx.Unscoped().Where("code = ?", modelCode).First(&capability)
 	if errors.Is(lookup.Error, gorm.ErrRecordNotFound) {
 		features := make(map[string]bool, len(operations))
 		for _, operation := range operations {
@@ -401,14 +401,22 @@ func ensureDiscoveredImageModel(tx *gorm.DB, channel *model.Channel, modelCode, 
 			changed = true
 		}
 	}
-	if !changed {
+	updates := map[string]any{}
+	if changed {
+		encoded, err := json.Marshal(features)
+		if err != nil {
+			return err
+		}
+		updates["features"] = datatypes.JSON(encoded)
+	}
+	if capability.DeletedAt.Valid {
+		updates["deleted_at"] = nil
+		updates["status"] = 1
+	}
+	if len(updates) == 0 {
 		return nil
 	}
-	encoded, err := json.Marshal(features)
-	if err != nil {
-		return err
-	}
-	return tx.Model(&capability).Update("features", datatypes.JSON(encoded)).Error
+	return tx.Unscoped().Model(&capability).Updates(updates).Error
 }
 
 func ensureDiscoveredImageEndpoint(

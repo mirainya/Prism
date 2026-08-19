@@ -12,8 +12,8 @@ func TestLoadIncludesImmutableBaseline(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(migrations) != 34 {
-		t.Fatalf("managed migrations=%d, want 34", len(migrations))
+	if len(migrations) != 37 {
+		t.Fatalf("managed migrations=%d, want 37", len(migrations))
 	}
 	baseline := migrations[0]
 	if baseline.Filename != "20260718_150000_schema_baseline.sql" {
@@ -283,6 +283,45 @@ func TestLoadIncludesImmutableBaseline(t *testing.T) {
 	} {
 		if !strings.Contains(migrations[33].SQL, fragment) {
 			t.Errorf("Sub2 v2.3 migration is missing %q", fragment)
+		}
+	}
+	if migrations[34].Filename != "20260812_120000_add_video_route_plan.sql" {
+		t.Fatalf("video route plan migration filename=%q", migrations[34].Filename)
+	}
+	for _, fragment := range []string{
+		"ADD COLUMN vendor_model VARCHAR(120)",
+		"SET vendor_model = model",
+		"ADD COLUMN route_plan JSON",
+	} {
+		if !strings.Contains(migrations[34].SQL, fragment) {
+			t.Errorf("video route plan migration is missing %q", fragment)
+		}
+	}
+	if migrations[35].Filename != "20260812_180000_restore_configured_video_models.sql" {
+		t.Fatalf("video model repair migration filename=%q", migrations[35].Filename)
+	}
+	for _, fragment := range []string{
+		"JSON_ARRAY_APPEND",
+		`validation.models."seedance-2.5"`,
+		"NOT JSON_CONTAINS",
+	} {
+		if !strings.Contains(migrations[35].SQL, fragment) {
+			t.Errorf("video model repair migration is missing %q", fragment)
+		}
+	}
+	if migrations[36].Filename != "20260813_120000_repair_h_seedance_v23_channel.sql" {
+		t.Fatalf("H Seedance repair migration filename=%q", migrations[36].Filename)
+	}
+	for _, fragment := range []string{
+		"hig逆-Seedance",
+		"'duration_max', 20",
+		"'video_extension'",
+		"'allow_generated_audio', CAST('true' AS JSON)",
+		"'$.adapter.local_cancel.disabled_models', JSON_ARRAY()",
+		"2026-08-14T00:00:00+08:00",
+	} {
+		if !strings.Contains(migrations[36].SQL, fragment) {
+			t.Errorf("H Seedance repair migration is missing %q", fragment)
 		}
 	}
 }

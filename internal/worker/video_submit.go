@@ -69,24 +69,20 @@ func HandleVideoSubmit(ctx context.Context, t *asynq.Task) error {
 		return nil
 	}
 
-	var channel video.VideoChannel
-	if err := db.WithContext(ctx).First(&channel, task.ChannelID).Error; err != nil {
-		return videoSubmitFail(ctx, db, &task, "channel not found: "+err.Error())
-	}
-	var key video.VideoChannelKey
-	if err := db.WithContext(ctx).First(&key, task.KeyID).Error; err != nil {
-		return videoSubmitFail(ctx, db, &task, "key not found: "+err.Error())
+	channel, key, vendorModel, err := video.LoadVideoTaskRoute(db.WithContext(ctx), &task)
+	if err != nil {
+		return videoSubmitFail(ctx, db, &task, "load route: "+err.Error())
 	}
 
 	eng := videoEngine
 	if eng == nil {
 		return fmt.Errorf("video engine not initialized")
 	}
-	adapter := eng.Registry().Get(channel.AdapterType, &channel, &key)
+	adapter := eng.Registry().Get(channel.AdapterType, channel, key)
 	if adapter == nil {
 		return videoSubmitFail(ctx, db, &task, "unknown adapter: "+channel.AdapterType)
 	}
-	attempt, err := video.StartCallAttempt(ctx, &task, &channel, &key, adapter)
+	attempt, err := video.StartCallAttempt(ctx, &task, channel, key, adapter)
 	if err != nil {
 		return videoSubmitFail(ctx, db, &task, "start call attempt: "+err.Error())
 	}
@@ -102,10 +98,10 @@ func HandleVideoSubmit(ctx context.Context, t *asynq.Task) error {
 	}
 
 	genReq := &video.GenerateRequest{
-		Model: task.Model, Prompt: task.Prompt, Resolution: task.Resolution,
+		Model: vendorModel, Prompt: task.Prompt, Resolution: task.Resolution,
 		Ratio: task.Ratio, Duration: task.Duration, Audio: task.GenerateAudio,
 		TaskMode: task.TaskMode, TaskID: task.ID, TokenID: task.TokenID,
-		Channel: &channel, Key: &key,
+		Channel: channel, Key: key,
 	}
 	if len(task.ContentJSON) > 0 {
 		if err := json.Unmarshal(task.ContentJSON, &genReq.Content); err != nil {
@@ -117,7 +113,7 @@ func HandleVideoSubmit(ctx context.Context, t *asynq.Task) error {
 			return videoSubmitFail(ctx, db, &task, "decode params: "+err.Error())
 		}
 	}
-	if err := video.ResolveGenerateRequestAssets(ctx, db, &channel, &key, task.ID, task.TokenID, genReq); err != nil {
+	if err := video.ResolveGenerateRequestAssets(ctx, db, channel, key, task.ID, task.TokenID, genReq); err != nil {
 		if video.IsRetryableProviderError(err) {
 			return fmt.Errorf("retry video asset resolution: %w", err)
 		}

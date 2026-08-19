@@ -1,6 +1,8 @@
 package admin
 
 import (
+	"encoding/json"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -22,6 +24,28 @@ func TestValidateVideoChannelRequestSeedanceAcceptsEmptyConfig(t *testing.T) {
 	req := validSeedanceChannelRequest()
 	if err := validateVideoChannelRequest(req); err != nil {
 		t.Fatalf("validate channel: %v", err)
+	}
+	var mappings []video.VideoModelMapping
+	if err := json.Unmarshal(req.Models, &mappings); err != nil {
+		t.Fatal(err)
+	}
+	if len(mappings) != 1 || mappings[0].ModelName != "seedance-2.0" || mappings[0].VendorModel != "seedance-2.0" {
+		t.Fatalf("normalized mappings = %#v", mappings)
+	}
+}
+
+func TestBuildDiscoveredVideoModelOptionsIncludesUnconfiguredModels(t *testing.T) {
+	discovered := map[string]video.DiscoveredModelCapabilities{
+		"seedance-2.5": {},
+		"seedance-2.0": {},
+	}
+	got := buildDiscoveredVideoModelOptions([]byte(`[{"model_name":"video-standard","vendor_model":"seedance-2.0"}]`), discovered)
+	want := []discoveredVideoModelOption{
+		{VendorModel: "seedance-2.0", PublicModels: []string{"video-standard"}},
+		{VendorModel: "seedance-2.5", PublicModels: nil},
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("discovered options = %#v, want %#v", got, want)
 	}
 }
 

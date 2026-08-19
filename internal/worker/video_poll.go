@@ -62,19 +62,15 @@ func HandleVideoPoll(ctx context.Context, t *asynq.Task) error {
 		return videoPollFail(ctx, db, &task, "poll timeout: max attempts reached")
 	}
 
-	var channel video.VideoChannel
-	if err := db.First(&channel, task.ChannelID).Error; err != nil {
-		return videoPollFail(ctx, db, &task, "channel not found: "+err.Error())
-	}
-	var key video.VideoChannelKey
-	if err := db.First(&key, task.KeyID).Error; err != nil {
-		return videoPollFail(ctx, db, &task, "key not found: "+err.Error())
+	channel, key, _, err := video.LoadVideoTaskRoute(db.WithContext(ctx), &task)
+	if err != nil {
+		return videoPollFail(ctx, db, &task, "load route: "+err.Error())
 	}
 	eng := videoEngine
 	if eng == nil {
 		return fmt.Errorf("video engine not initialized")
 	}
-	adapter := eng.Registry().Get(channel.AdapterType, &channel, &key)
+	adapter := eng.Registry().Get(channel.AdapterType, channel, key)
 	if adapter == nil {
 		return videoPollFail(ctx, db, &task, "unknown adapter: "+channel.AdapterType)
 	}

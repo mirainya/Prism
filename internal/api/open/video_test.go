@@ -1,29 +1,39 @@
 package open
 
 import (
+	"bytes"
 	"errors"
 	"net/http"
+	"net/http/httptest"
 	"testing"
 	"time"
 
+	"github.com/gin-gonic/gin"
 	"github.com/mirainya/Prism/internal/model"
 	"github.com/mirainya/Prism/internal/video"
 	"github.com/shopspring/decimal"
 	"gorm.io/datatypes"
 )
 
-func TestBuildVideoCreateRequestDefaultsAudioAndAllowsReferenceOnly(t *testing.T) {
-	req, err := buildVideoCreateRequest(map[string]any{
-		"model": "seedance-2.0",
-		"content": []any{map[string]any{
-			"type": "image_url", "role": "reference_image", "url": "https://cdn.example/image.png",
-		}},
-	}, 3, 7, "seedance-2.0", "", "")
-	if err != nil {
-		t.Fatal(err)
+func TestVideoGenerationEndpointsRejectLegacyInput(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	handlers := map[string]gin.HandlerFunc{
+		"create":   CreateVideoGeneration,
+		"estimate": EstimateVideoGeneration,
 	}
-	if !req.Audio || req.Prompt != "" || len(req.Content) != 1 {
-		t.Fatalf("request = %#v", req)
+	for name, handler := range handlers {
+		t.Run(name, func(t *testing.T) {
+			response := httptest.NewRecorder()
+			context, _ := gin.CreateTestContext(response)
+			context.Request = httptest.NewRequest(http.MethodPost, "/v1/videos/generations", bytes.NewBufferString(
+				`{"model":"video-fast","prompt":"test","content":[]}`,
+			))
+
+			handler(context)
+			if response.Code != http.StatusBadRequest {
+				t.Fatalf("status = %d, body = %s", response.Code, response.Body.String())
+			}
+		})
 	}
 }
 

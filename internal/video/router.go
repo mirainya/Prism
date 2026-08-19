@@ -120,16 +120,8 @@ func (r *Router) findChannels(ctx context.Context, model string, caps RequiredCa
 }
 
 func (r *Router) channelSupportsModel(ch *VideoChannel, model string) bool {
-	var models []string
-	if err := json.Unmarshal(ch.Models, &models); err != nil {
-		return false
-	}
-	for _, m := range models {
-		if m == model {
-			return true
-		}
-	}
-	return false
+	_, supported := ResolveVideoVendorModel(ch.Models, model)
+	return supported
 }
 
 func (r *Router) channelMeetsCaps(ch *VideoChannel, caps RequiredCaps) bool {

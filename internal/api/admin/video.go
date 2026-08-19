@@ -1,10 +1,14 @@
 package admin
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
+	"net/http"
 	"net/url"
+	"sort"
 	"strings"
+	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/mirainya/Prism/internal/api/resp"
@@ -17,6 +21,12 @@ import (
 )
 
 // ========== Video Channel ==========
+
+var adminVideoEngine *video.Engine
+
+func SetVideoEngine(engine *video.Engine) {
+	adminVideoEngine = engine
+}
 
 func ListVideoChannels(c *gin.Context) {
 	var channels []video.VideoChannel
@@ -38,6 +48,72 @@ func GetVideoChannel(c *gin.Context) {
 		return
 	}
 	resp.Success(c, ch)
+}
+
+type discoveredVideoModelOption struct {
+	VendorModel  string   `json:"vendor_model"`
+	PublicModels []string `json:"public_models"`
+}
+
+// DiscoverVideoChannelModels reads the model matrix exposed by the channel's
+// active upstream key. The result is advisory until an administrator saves it.
+func DiscoverVideoChannelModels(c *gin.Context) {
+	id, err := resp.ParseUintParam(c, "id")
+	if err != nil {
+		return
+	}
+	if adminVideoEngine == nil || adminVideoEngine.Registry() == nil {
+		resp.InternalError(c, pkgErrors.ErrInternalError)
+		return
+	}
+
+	var channel video.VideoChannel
+	if err := model.DB().First(&channel, id).Error; err != nil {
+		resp.NotFound(c, pkgErrors.ErrTaskNotFound)
+		return
+	}
+	var key video.VideoChannelKey
+	if err := model.DB().Where("channel_id = ? AND status = ?", id, "active").
+		Order("weight DESC, id ASC").First(&key).Error; err != nil {
+		resp.BadRequest(c, pkgErrors.WithMessage(pkgErrors.ErrInvalidParams, "channel has no active video key"))
+		return
+	}
+
+	adapter := adminVideoEngine.Registry().Get(channel.AdapterType, &channel, &key)
+	discoverer, ok := adapter.(video.CapabilityDiscoverer)
+	if !ok {
+		resp.BadRequest(c, pkgErrors.WithMessage(pkgErrors.ErrInvalidParams, "channel adapter does not expose model discovery"))
+		return
+	}
+	discoveryContext, cancel := context.WithTimeout(c.Request.Context(), 10*time.Second)
+	defer cancel()
+	discovered, err := discoverer.DiscoverCapabilities(discoveryContext)
+	if err != nil {
+		resp.BadRequest(c, pkgErrors.WithMessage(pkgErrors.ErrInvalidParams, fmt.Sprintf("discover upstream video models: %v", err)))
+		return
+	}
+	resp.Success(c, gin.H{"models": buildDiscoveredVideoModelOptions(channel.Models, discovered)})
+}
+
+func buildDiscoveredVideoModelOptions(rawModels []byte, discovered map[string]video.DiscoveredModelCapabilities) []discoveredVideoModelOption {
+	publicByVendor := make(map[string][]string)
+	if mappings, err := video.ParseVideoModelMappings(rawModels); err == nil {
+		for _, mapping := range mappings {
+			publicByVendor[mapping.VendorModel] = append(publicByVendor[mapping.VendorModel], mapping.ModelName)
+		}
+	}
+	options := make([]discoveredVideoModelOption, 0, len(discovered))
+	for vendorModel := range discovered {
+		vendorModel = strings.TrimSpace(vendorModel)
+		if vendorModel == "" {
+			continue
+		}
+		publicModels := append([]string(nil), publicByVendor[vendorModel]...)
+		sort.Strings(publicModels)
+		options = append(options, discoveredVideoModelOption{VendorModel: vendorModel, PublicModels: publicModels})
+	}
+	sort.Slice(options, func(i, j int) bool { return options[i].VendorModel < options[j].VendorModel })
+	return options
 }
 
 type createVideoChannelRequest struct {
@@ -67,15 +143,15 @@ func validateVideoChannelRequest(req *createVideoChannelRequest) error {
 	if req.AdapterType != video.AdapterTypeSeedance && req.AdapterType != video.AdapterTypeGeneric {
 		return fmt.Errorf("unsupported video adapter type %q", req.AdapterType)
 	}
-	var models []string
-	if len(req.Models) == 0 || json.Unmarshal(req.Models, &models) != nil || len(models) == 0 {
-		return fmt.Errorf("models must be a non-empty JSON string array")
+	mappings, err := video.ParseVideoModelMappings(req.Models)
+	if err != nil {
+		return err
 	}
-	for _, modelName := range models {
-		if strings.TrimSpace(modelName) == "" {
-			return fmt.Errorf("models cannot contain empty names")
-		}
+	normalizedModels, err := json.Marshal(mappings)
+	if err != nil {
+		return fmt.Errorf("encode models: %w", err)
 	}
+	req.Models = datatypes.JSON(normalizedModels)
 	if req.Status != "" && req.Status != "active" && req.Status != "inactive" && req.Status != "disabled" {
 		return fmt.Errorf("unsupported channel status %q", req.Status)
 	}
@@ -235,6 +311,15 @@ func DeleteVideoChannel(c *gin.Context) {
 	if err != nil {
 		return
 	}
+	active, err := hasActiveVideoTasks("channel_id", id)
+	if err != nil {
+		resp.InternalError(c, pkgErrors.ErrInternalError)
+		return
+	}
+	if active {
+		resp.ErrorMsg(c, http.StatusConflict, http.StatusConflict, "video channel is used by active tasks")
+		return
+	}
 	if err := model.DB().Delete(&video.VideoChannel{}, id).Error; err != nil {
 		resp.InternalError(c, pkgErrors.ErrInternalError)
 		return
@@ -380,11 +465,31 @@ func DeleteVideoKey(c *gin.Context) {
 	if err != nil {
 		return
 	}
+	active, err := hasActiveVideoTasks("key_id", id)
+	if err != nil {
+		resp.InternalError(c, pkgErrors.ErrInternalError)
+		return
+	}
+	if active {
+		resp.ErrorMsg(c, http.StatusConflict, http.StatusConflict, "video channel key is used by active tasks")
+		return
+	}
 	if err := model.DB().Delete(&video.VideoChannelKey{}, id).Error; err != nil {
 		resp.InternalError(c, pkgErrors.ErrInternalError)
 		return
 	}
 	resp.Success(c, nil)
+}
+
+func hasActiveVideoTasks(column string, id uint) (bool, error) {
+	var count int64
+	err := model.DB().Model(&video.VideoTask{}).
+		Where(column+" = ? AND status IN ?", id, []video.VideoTaskStatus{
+			video.VideoTaskStatusQueued,
+			video.VideoTaskStatusSubmitted,
+			video.VideoTaskStatusTracking,
+		}).Count(&count).Error
+	return count > 0, err
 }
 
 // ========== Video Tasks ==========

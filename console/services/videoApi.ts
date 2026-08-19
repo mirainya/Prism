@@ -2,6 +2,16 @@ import { request } from './request';
 
 // ========== 视频引擎管理 API ==========
 
+export interface VideoModelMapping {
+  model_name: string;
+  vendor_model: string;
+}
+
+export interface DiscoveredVideoModel {
+  vendor_model: string;
+  public_models: string[];
+}
+
 export interface VideoChannel {
   id: number;
   name: string;
@@ -9,7 +19,7 @@ export interface VideoChannel {
   base_url: string;
   status: string;
   priority: number;
-  models: any;
+  models: VideoModelMapping[] | string[] | string;
   capabilities: any;
   pricing: any;
   asset_resolver: string;
@@ -38,6 +48,7 @@ export interface VideoTask {
   channel_id: number;
   key_id: number;
   model: string;
+  vendor_model: string;
   status: string;
   progress: number;
   task_mode: string;
@@ -78,6 +89,9 @@ export const fetchVideoChannels = () =>
 
 export const getVideoChannel = (id: number) =>
   request<VideoChannel>(`/admin/video/channels/${id}`);
+
+export const discoverVideoChannelModels = (id: number) =>
+  request<{ models: DiscoveredVideoModel[] }>(`/admin/video/channels/${id}/models/discover`);
 
 export const createVideoChannel = (data: Partial<VideoChannel>) =>
   request<VideoChannel>('/admin/video/channels', { method: 'POST', body: JSON.stringify(data) });

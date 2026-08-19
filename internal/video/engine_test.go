@@ -35,6 +35,7 @@ func (a *priceTestAdapter) Estimate(context.Context, *GenerateRequest) (float64,
 
 type routeValidationAdapter struct {
 	resolution string
+	model      string
 }
 
 func (a *routeValidationAdapter) BuildRequest(context.Context, *GenerateRequest) (*ProviderRequest, error) {
@@ -50,10 +51,46 @@ func (a *routeValidationAdapter) Poll(context.Context, string) (*Progress, error
 }
 
 func (a *routeValidationAdapter) ValidateRequest(_ context.Context, request *GenerateRequest) error {
+	a.model = request.Model
 	if request.Resolution != a.resolution {
 		return fmt.Errorf("resolution %q is not supported", request.Resolution)
 	}
 	return nil
+}
+
+func TestPrepareTaskRequestMapsPublicModelToVendorModel(t *testing.T) {
+	db, err := gorm.Open(sqlite.Open("file:"+t.Name()+"?mode=memory&cache=shared"), &gorm.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := db.AutoMigrate(&VideoChannel{}, &VideoChannelKey{}); err != nil {
+		t.Fatal(err)
+	}
+	channel := VideoChannel{
+		Name: "aliased", AdapterType: "test", BaseURL: "https://video.example.com",
+		Status: "active", Models: datatypes.JSON(`[{"model_name":"video-fast","vendor_model":"seedance-2.0-fast"}]`),
+		Capabilities: datatypes.JSON(`{}`),
+	}
+	if err := db.Create(&channel).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Create(&VideoChannelKey{ChannelID: channel.ID, APIKey: "test-key", Status: "active", Weight: 1}).Error; err != nil {
+		t.Fatal(err)
+	}
+	adapter := &routeValidationAdapter{resolution: "720p"}
+	registry := NewRegistry()
+	registry.Register("test", func(*VideoChannel, *VideoChannelKey) Adapter { return adapter })
+	engine := &Engine{db: db, router: NewRouter(db, nil), registry: registry}
+
+	prepared, err := engine.prepareTaskRequest(context.Background(), &CreateTaskRequest{
+		TokenID: 1, Model: "video-fast", Prompt: "test", Resolution: "720p",
+	}, "request-alias", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if prepared.vendorModel != "seedance-2.0-fast" || prepared.provider.Model != "seedance-2.0-fast" || adapter.model != "seedance-2.0-fast" {
+		t.Fatalf("prepared vendor=%q provider=%q adapter=%q", prepared.vendorModel, prepared.provider.Model, adapter.model)
+	}
 }
 
 func TestValidateContentInfersReferencesAndCapabilities(t *testing.T) {

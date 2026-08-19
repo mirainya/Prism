@@ -98,6 +98,7 @@ func RegisterRoutes(group *gin.RouterGroup) {
 		vid.GET("/channels", ListVideoChannels)
 		vid.POST("/channels", CreateVideoChannel)
 		vid.GET("/channels/:id", GetVideoChannel)
+		vid.GET("/channels/:id/models/discover", DiscoverVideoChannelModels)
 		vid.PUT("/channels/:id", UpdateVideoChannel)
 		vid.DELETE("/channels/:id", DeleteVideoChannel)
 		vid.GET("/channels/:id/keys", ListVideoChannelKeys)

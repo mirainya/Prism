@@ -429,6 +429,20 @@ func TestGenericAdapterValidatesModeRulesForbiddenParametersAndExpiry(t *testing
 	}
 }
 
+func TestGenericAdapterRejectsUndeclaredParameters(t *testing.T) {
+	config := testAdapterConfig()
+	config.Validation.Models = map[string]validationRule{
+		"seedance-2.0": {DurationMin: 4, DurationMax: 15},
+	}
+	adapter := newTestAdapter("https://provider.example", "secret", http.DefaultClient, config)
+	err := adapter.ValidateRequest(context.Background(), &video.GenerateRequest{
+		Model: "seedance-2.0", Duration: 5, Params: map[string]any{"unexpected": true},
+	})
+	if err == nil || !strings.Contains(err.Error(), "is not declared") {
+		t.Fatalf("error = %v", err)
+	}
+}
+
 func TestGenericAdapterSupportsOptionalResponseEnvelope(t *testing.T) {
 	config := testAdapterConfig()
 	config.Response.Root = ""

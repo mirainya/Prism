@@ -22,6 +22,10 @@ func StartCallAttempt(ctx context.Context, task *VideoTask, channel *VideoChanne
 	if task.CallID == "" {
 		return nil, nil
 	}
+	vendorModel := task.VendorModel
+	if vendorModel == "" {
+		vendorModel = task.Model
+	}
 	db := model.DB().WithContext(ctx)
 	var existing model.APICallAttempt
 	err := db.Where("call_id = ? AND status = ?", task.CallID, model.APICallAttemptStatusStarted).
@@ -39,7 +43,7 @@ func StartCallAttempt(ctx context.Context, task *VideoTask, channel *VideoChanne
 	return service.NewAPICallService().StartAttempt(&service.StartAttemptRequest{
 		CallID: task.CallID, RouteKind: model.APICallRouteVideo, Stage: model.APICallStageSubmit,
 		ChannelID: channel.ID, KeyID: key.ID, Protocol: model.ProtocolCustom,
-		VendorModel: task.Model, Transport: model.UpstreamTransportVideoGeneration,
+		VendorModel: vendorModel, Transport: model.UpstreamTransportVideoGeneration,
 		RequestPath: requestPath,
 	})
 }
@@ -70,15 +74,11 @@ func (e *Engine) CancelVideoTask(ctx context.Context, task *VideoTask) (bool, er
 	}
 
 	if task.ProviderTaskID != "" {
-		var channel VideoChannel
-		if err := e.db.WithContext(ctx).First(&channel, task.ChannelID).Error; err != nil {
-			return false, fmt.Errorf("load video channel: %w", err)
+		channel, key, _, err := LoadVideoTaskRoute(e.db.WithContext(ctx), task)
+		if err != nil {
+			return false, err
 		}
-		var key VideoChannelKey
-		if err := e.db.WithContext(ctx).First(&key, task.KeyID).Error; err != nil {
-			return false, fmt.Errorf("load video channel key: %w", err)
-		}
-		adapter := e.registry.Get(task.AdapterType, &channel, &key)
+		adapter := e.registry.Get(channel.AdapterType, channel, key)
 		canceller, ok := adapter.(Canceller)
 		if !ok {
 			return false, ErrCancelNotSupported
@@ -87,21 +87,17 @@ func (e *Engine) CancelVideoTask(ctx context.Context, task *VideoTask) (bool, er
 			return false, ErrCancelNotAllowed
 		}
 		cancelCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
-		err := canceller.Cancel(cancelCtx, task.ProviderTaskID)
+		err = canceller.Cancel(cancelCtx, task.ProviderTaskID)
 		cancel()
 		if err != nil {
 			return false, err
 		}
 	} else {
-		var channel VideoChannel
-		if err := e.db.WithContext(ctx).First(&channel, task.ChannelID).Error; err != nil {
-			return false, fmt.Errorf("load video channel: %w", err)
+		channel, key, _, err := LoadVideoTaskRoute(e.db.WithContext(ctx), task)
+		if err != nil {
+			return false, err
 		}
-		var key VideoChannelKey
-		if err := e.db.WithContext(ctx).First(&key, task.KeyID).Error; err != nil {
-			return false, fmt.Errorf("load video channel key: %w", err)
-		}
-		adapter := e.registry.Get(task.AdapterType, &channel, &key)
+		adapter := e.registry.Get(channel.AdapterType, channel, key)
 		if policy, ok := adapter.(LocalCancellationPolicy); ok && !policy.CanCancelLocal(task) {
 			return false, ErrCancelNotSupported
 		}
