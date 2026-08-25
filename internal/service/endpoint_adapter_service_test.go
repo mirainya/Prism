@@ -39,6 +39,21 @@ func setupEndpointAdapterTestDB(t *testing.T) {
 	}
 }
 
+func TestDiscoveredImageEndpointUsesImageWaitTimeout(t *testing.T) {
+	endpoint := discoveredImageEndpoint(
+		&model.Channel{BaseModel: model.BaseModel{ID: 9}},
+		&model.ChannelAccount{BaseModel: model.BaseModel{ID: 21}},
+		ChannelEndpointDiscoveryConfig{GenerationPath: "/v1/images/generations"},
+		"gpt-image-2-c",
+		"gpt-image-2-c",
+		RouteOperationImagesGenerate,
+	)
+
+	if endpoint.Timeout != DefaultSyncWaitMaxSeconds {
+		t.Fatalf("endpoint timeout = %d, want %d", endpoint.Timeout, DefaultSyncWaitMaxSeconds)
+	}
+}
+
 func TestTaskEndpointSnapshotPreservesExecutionConfiguration(t *testing.T) {
 	setupEndpointAdapterTestDB(t)
 	channel := &model.Channel{Type: "endpoint-snapshot", Status: 1}

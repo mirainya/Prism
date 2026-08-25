@@ -43,8 +43,31 @@ func writeImageSSEError(w io.Writer, message, errType string) {
 //
 // 上游 error / failed 事件          → 直接下发错误帧
 func forwardImageSSEEvents(w io.Writer, events <-chan []byte) (errorForwarded bool) {
+	heartbeat := time.NewTicker(15 * time.Second)
+	defer heartbeat.Stop()
+	return forwardImageSSEEventsWithHeartbeat(w, events, heartbeat.C)
+}
+
+func forwardImageSSEEventsWithHeartbeat(
+	w io.Writer,
+	events <-chan []byte,
+	heartbeat <-chan time.Time,
+) (errorForwarded bool) {
 	partialIndex := 0
-	for raw := range events {
+	for {
+		var raw []byte
+		select {
+		case event, ok := <-events:
+			if !ok {
+				return errorForwarded
+			}
+			raw = event
+		case <-heartbeat:
+			_, _ = io.WriteString(w, ": keep-alive\n\n")
+			flushImageSSE(w)
+			continue
+		}
+
 		payload := string(raw)
 		if !gjson.Valid(payload) {
 			continue
@@ -87,7 +110,6 @@ func forwardImageSSEEvents(w io.Writer, events <-chan []byte) (errorForwarded bo
 			errorForwarded = true
 		}
 	}
-	return errorForwarded
 }
 
 func flushImageSSE(w io.Writer) {

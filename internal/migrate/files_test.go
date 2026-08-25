@@ -12,8 +12,8 @@ func TestLoadIncludesImmutableBaseline(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(migrations) != 37 {
-		t.Fatalf("managed migrations=%d, want 37", len(migrations))
+	if len(migrations) != 39 {
+		t.Fatalf("managed migrations=%d, want 39", len(migrations))
 	}
 	baseline := migrations[0]
 	if baseline.Filename != "20260718_150000_schema_baseline.sql" {
@@ -323,6 +323,12 @@ func TestLoadIncludesImmutableBaseline(t *testing.T) {
 		if !strings.Contains(migrations[36].SQL, fragment) {
 			t.Errorf("H Seedance repair migration is missing %q", fragment)
 		}
+	}
+	if migrations[37].Filename != "20260825_171500_use_direct_image_upstream.sql" {
+		t.Fatalf("direct image upstream migration filename=%q", migrations[37].Filename)
+	}
+	if migrations[38].Filename != "20260825_172000_extend_gpt_image2_c_timeout.sql" {
+		t.Fatalf("image timeout migration filename=%q", migrations[38].Filename)
 	}
 }
 

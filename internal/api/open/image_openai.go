@@ -401,6 +401,10 @@ func openAIImageFileParam(files []string) any {
 	return values
 }
 
+func imageExecutionContext(requestCtx context.Context) context.Context {
+	return context.WithoutCancel(requestCtx)
+}
+
 func invokeOpenAIImage(
 	c *gin.Context,
 	modelName string,
@@ -429,7 +433,8 @@ func invokeOpenAIImage(
 		Params:         params,
 	}
 	attachCapabilityCallIdentity(c, invokeReq, operation)
-	result, err := openAIImageService.InvokeAndWait(c.Request.Context(), invokeReq, 0)
+	executionCtx := imageExecutionContext(c.Request.Context())
+	result, err := openAIImageService.InvokeAndWait(executionCtx, invokeReq, 0)
 	if err != nil {
 		if errors.Is(err, service.ErrInsufficientTokenBalance) || errors.Is(err, service.ErrInsufficientUserBalance) {
 			openAIError(c, http.StatusBadRequest, err.Error(), "insufficient_quota")
@@ -515,8 +520,9 @@ func invokeOpenAIImageStream(
 		err    error
 	}
 	outcomeCh := make(chan invokeOutcome, 1)
+	executionCtx := imageExecutionContext(c.Request.Context())
 	go func() {
-		result, err := openAIImageService.InvokeAndWait(c.Request.Context(), invokeReq, 0)
+		result, err := openAIImageService.InvokeAndWait(executionCtx, invokeReq, 0)
 		close(events) // 通知读端 SSE 事件已全部写完
 		outcomeCh <- invokeOutcome{result, err}
 	}()

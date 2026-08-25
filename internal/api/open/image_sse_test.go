@@ -2,17 +2,26 @@ package open
 
 import (
 	"bytes"
+	"context"
 	"strings"
 	"testing"
+	"time"
 )
 
 type imageSSEFlushRecorder struct {
 	bytes.Buffer
 	flushCount int
+	flushed    chan struct{}
 }
 
 func (r *imageSSEFlushRecorder) Flush() {
 	r.flushCount++
+	if r.flushed != nil {
+		select {
+		case r.flushed <- struct{}{}:
+		default:
+		}
+	}
 }
 
 func TestForwardImageSSEEventsFlushesClientVisibleFrames(t *testing.T) {
@@ -70,5 +79,33 @@ func TestForwardImageSSEEventsRecognizesUntypedAPIError(t *testing.T) {
 	if !strings.Contains(body, `"type":"image_generation.failed"`) ||
 		!strings.Contains(body, "no available account") {
 		t.Fatalf("SSE body = %s", body)
+	}
+}
+
+func TestForwardImageSSEEventsSendsHeartbeatWhileUpstreamIsSilent(t *testing.T) {
+	events := make(chan []byte)
+	heartbeats := make(chan time.Time, 1)
+	recorder := &imageSSEFlushRecorder{flushed: make(chan struct{}, 1)}
+	done := make(chan bool, 1)
+	go func() {
+		done <- forwardImageSSEEventsWithHeartbeat(recorder, events, heartbeats)
+	}()
+	heartbeats <- time.Now()
+	<-recorder.flushed
+	close(events)
+	<-done
+
+	if recorder.String() != ": keep-alive\n\n" || recorder.flushCount != 1 {
+		t.Fatalf("heartbeat output = %q, flush count = %d", recorder.String(), recorder.flushCount)
+	}
+}
+
+func TestOpenAIImageExecutionContextSurvivesClientCancellation(t *testing.T) {
+	requestCtx, cancel := context.WithCancel(context.Background())
+	executionCtx := imageExecutionContext(requestCtx)
+	cancel()
+
+	if err := executionCtx.Err(); err != nil {
+		t.Fatalf("execution context was canceled with client: %v", err)
 	}
 }

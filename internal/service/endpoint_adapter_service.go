@@ -483,7 +483,7 @@ func discoveredImageEndpoint(channel *model.Channel, account *model.ChannelAccou
 		DefaultStream: config.DefaultStream, PriceMode: model.PriceModeRequest,
 		ParamSchema: paramSchema, ParamMapping: datatypes.JSON(fmt.Sprintf(`{"fixed_params":{"model":%q}}`, vendorModel)),
 		ResponseMapping: responseMapping, ExtraHeaders: datatypes.JSON(extraHeaders), ExtraConfig: extraConfig,
-		Timeout: 120, Status: 1,
+		Timeout: DefaultSyncWaitMaxSeconds, Status: 1,
 	}
 }
 
