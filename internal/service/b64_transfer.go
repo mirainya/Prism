@@ -3,9 +3,12 @@ package service
 import (
 	"context"
 	"fmt"
+	"time"
 
 	"github.com/mirainya/Prism/pkg/filestorage"
 )
+
+const base64UploadTimeout = 120 * time.Second
 
 // resolveB64ToURLs uploads base64 image data and returns public URLs.
 func resolveB64ToURLs(ctx context.Context, b64List []string, capabilityCode string) ([]string, error) {
@@ -14,7 +17,9 @@ func resolveB64ToURLs(ctx context.Context, b64List []string, capabilityCode stri
 		if b64 == "" {
 			continue
 		}
-		url, err := filestorage.TransferBase64(ctx, b64, capabilityCode)
+		uploadCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), base64UploadTimeout)
+		url, err := filestorage.TransferBase64(uploadCtx, b64, capabilityCode)
+		cancel()
 		if err != nil {
 			return nil, fmt.Errorf("transfer base64: %w", err)
 		}
