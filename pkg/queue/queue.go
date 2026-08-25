@@ -33,6 +33,7 @@ func NewServer() *asynq.Server {
 			Concurrency: config.C.Worker.Concurrency,
 			Queues: map[string]int{
 				"critical": 6,
+				"poll":     4,
 				"default":  3,
 				"notify":   2,
 				"low":      1,
