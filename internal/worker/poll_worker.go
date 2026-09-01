@@ -265,7 +265,9 @@ func requeuePoll(taskID uint, pollCount int, intervalSeconds int) error {
 	info, err := queue.Client.Enqueue(
 		task,
 		asynq.ProcessIn(time.Duration(intervalSeconds)*time.Second),
-		asynq.Queue("default"),
+		// Polling must have its own queue so a burst of image uploads cannot
+		// delay status checks until the task timeout.
+		asynq.Queue("poll"),
 		asynq.TaskID(fmt.Sprintf("task-poll-%d-%d", taskID, pollCount)),
 	)
 	if errors.Is(err, asynq.ErrTaskIDConflict) {
