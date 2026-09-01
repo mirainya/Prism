@@ -1,6 +1,7 @@
 package console
 
 import (
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -10,6 +11,7 @@ import (
 	"github.com/mirainya/Prism/internal/api/middleware"
 	"github.com/mirainya/Prism/internal/model"
 	"github.com/mirainya/Prism/internal/service"
+	"gorm.io/datatypes"
 )
 
 func TestPlaygroundTaskEndpointsEnforceTokenOwnership(t *testing.T) {
@@ -21,7 +23,7 @@ func TestPlaygroundTaskEndpointsEnforceTokenOwnership(t *testing.T) {
 	otherToken := createPlaygroundDebugToken(t, db, 70, "task-token-other")
 	task := &model.Task{
 		TaskNo: service.GenerateTaskNo(), UserID: currentToken.UserID, TokenID: otherToken.ID,
-		Status: model.TaskStatusPending,
+		Status: model.TaskStatusPending, RequestParams: datatypes.JSON(`{"prompt":"detail test"}`),
 	}
 	if err := db.Create(task).Error; err != nil {
 		t.Fatal(err)
@@ -52,12 +54,39 @@ func TestPlaygroundTaskEndpointsEnforceTokenOwnership(t *testing.T) {
 	if owned.Code != http.StatusOK {
 		t.Fatalf("owned detail status = %d, want %d; body=%s", owned.Code, http.StatusOK, owned.Body.String())
 	}
+	var lightPayload struct {
+		Data map[string]any `json:"data"`
+	}
+	if err := json.Unmarshal(owned.Body.Bytes(), &lightPayload); err != nil {
+		t.Fatal(err)
+	}
+	if _, exists := lightPayload.Data["raw_params"]; exists {
+		t.Fatalf("light task response includes raw_params: %s", owned.Body.String())
+	}
+
+	full := requestPlaygroundTaskEndpoint(
+		otherToken.UserID, otherToken.ID, task.TaskNo, http.MethodGet, PlaygroundGetTask, "include_params=true",
+	)
+	var fullPayload struct {
+		Data map[string]any `json:"data"`
+	}
+	if err := json.Unmarshal(full.Body.Bytes(), &fullPayload); err != nil {
+		t.Fatal(err)
+	}
+	if _, exists := fullPayload.Data["raw_params"]; !exists {
+		t.Fatalf("full task response omits raw_params: %s", full.Body.String())
+	}
+	rawParams, ok := fullPayload.Data["raw_params"].(map[string]any)
+	if !ok || rawParams["prompt"] != "detail test" {
+		t.Fatalf("full task response raw_params = %#v", fullPayload.Data["raw_params"])
+	}
 }
 
 func requestPlaygroundTaskEndpoint(
 	userID, tokenID uint,
 	taskNo, method string,
 	handler gin.HandlerFunc,
+	query ...string,
 ) *httptest.ResponseRecorder {
 	gin.SetMode(gin.TestMode)
 	router := gin.New()
@@ -68,9 +97,13 @@ func requestPlaygroundTaskEndpoint(
 	})
 
 	recorder := httptest.NewRecorder()
+	requestPath := fmt.Sprintf("/api/playground/%d/tasks/%s", tokenID, taskNo)
+	if len(query) > 0 && query[0] != "" {
+		requestPath += "?" + query[0]
+	}
 	request := httptest.NewRequest(
 		method,
-		fmt.Sprintf("/api/playground/%d/tasks/%s", tokenID, taskNo),
+		requestPath,
 		nil,
 	)
 	router.ServeHTTP(recorder, request)

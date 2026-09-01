@@ -1,7 +1,5 @@
 import React, { useEffect, useRef, useState } from 'react';
 import {
-  ChevronLeft,
-  ChevronRight,
   Globe2,
   RefreshCw,
   RotateCcw,
@@ -19,9 +17,9 @@ import {
   fetchUsers,
 } from '../services';
 import { User, UserRole } from '../types';
-import { Select } from '../components/ui';
+import { Pagination, Select } from '../components/ui';
 
-const PAGE_SIZE = 20;
+const DEFAULT_PAGE_SIZE = 20;
 const INPUT_CLASS = 'min-w-0 rounded-lg border border-[var(--border-soft)] bg-[var(--surface-card)] px-3 py-2 text-sm text-[var(--text-primary)] outline-none transition focus:border-[var(--primary)] focus:ring-2 focus:ring-[var(--primary)]/20';
 const TH_CLASS = 'px-4 py-3 text-left text-xs font-semibold text-[var(--text-secondary)]';
 const TD_CLASS = 'px-4 py-3 align-top text-sm text-[var(--text-primary)]';
@@ -113,6 +111,7 @@ const Observability: React.FC = () => {
   const [draft, setDraft] = useState<FilterState>({ ...EMPTY_FILTERS });
   const [filters, setFilters] = useState<FilterState>({ ...EMPTY_FILTERS });
   const [page, setPage] = useState(1);
+  const [pageSize, setPageSize] = useState(DEFAULT_PAGE_SIZE);
   const [total, setTotal] = useState(0);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
@@ -136,7 +135,7 @@ const Observability: React.FC = () => {
     let active = true;
     const common = {
       page,
-      page_size: PAGE_SIZE,
+      page_size: pageSize,
       snapshot_id: snapshotIds.current[activeTab],
       start_date: filters.start_date,
       end_date: filters.end_date,
@@ -195,7 +194,7 @@ const Observability: React.FC = () => {
 
     load().then(value => {
       if (!active) return;
-      const lastPage = Math.max(1, Math.ceil(value / PAGE_SIZE));
+      const lastPage = Math.max(1, Math.ceil(value / pageSize));
       if (page > lastPage) {
         setPage(lastPage);
         return;
@@ -207,9 +206,8 @@ const Observability: React.FC = () => {
       if (active) setLoading(false);
     });
     return () => { active = false; };
-  }, [activeTab, filters, isAdmin, page, refreshKey]);
+  }, [activeTab, filters, isAdmin, page, pageSize, refreshKey]);
 
-  const totalPages = Math.max(1, Math.ceil(total / PAGE_SIZE));
   const updateDraft = (key: keyof FilterState, value: string) => {
     setDraft(current => ({ ...current, [key]: value }));
   };
@@ -238,6 +236,11 @@ const Observability: React.FC = () => {
     snapshotIds.current[activeTab] = undefined;
     setPage(1);
     setRefreshKey(value => value + 1);
+  };
+  const changePageSize = (value: number) => {
+    snapshotIds.current[activeTab] = undefined;
+    setPageSize(value);
+    setPage(1);
   };
 
   const renderAccessLogs = () => (
@@ -497,18 +500,7 @@ const Observability: React.FC = () => {
             <div className="flex h-64 items-center justify-center text-sm text-[var(--text-secondary)]">暂无记录</div>
           ) : activeTab === 'access' ? renderAccessLogs() : activeTab === 'audit' ? renderAuditEvents() : renderBalanceEntries()}
         </div>
-        <footer className="flex flex-wrap items-center justify-between gap-3 border-t border-[var(--border-soft)] px-4 py-3">
-          <span className="text-sm text-[var(--text-secondary)]">共 {total} 条</span>
-          <div className="flex items-center gap-2">
-            <button type="button" title="上一页" aria-label="上一页" disabled={page <= 1 || loading} onClick={() => setPage(value => Math.max(1, value - 1))} className="flex h-8 w-8 items-center justify-center rounded-lg border border-[var(--border-soft)] disabled:cursor-not-allowed disabled:opacity-40">
-              <ChevronLeft size={16} />
-            </button>
-            <span className="min-w-[84px] text-center text-sm text-[var(--text-secondary)]">{page} / {totalPages}</span>
-            <button type="button" title="下一页" aria-label="下一页" disabled={page >= totalPages || loading} onClick={() => setPage(value => Math.min(totalPages, value + 1))} className="flex h-8 w-8 items-center justify-center rounded-lg border border-[var(--border-soft)] disabled:cursor-not-allowed disabled:opacity-40">
-              <ChevronRight size={16} />
-            </button>
-          </div>
-        </footer>
+        <Pagination page={page} pageSize={pageSize} total={total} loading={loading} onPageChange={setPage} onPageSizeChange={changePageSize} />
       </section>
     </div>
   );

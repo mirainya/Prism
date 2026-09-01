@@ -176,7 +176,7 @@ const Home: React.FC<HomeProps> = ({onLogin, onPricing}) => {
                             </div>
                             <pre className="text-sm text-gray-300 overflow-x-auto">
                 <code>{`curl -X POST \\
-  http://your-host/v1/capabilities/text2img \\
+  ${window.location.origin}/v1/capabilities/text2img \\
   -H "Authorization: Bearer YOUR_TOKEN" \\
   -H "Content-Type: application/json" \\
   -d '{

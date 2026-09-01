@@ -451,6 +451,20 @@ func TestAPICallServiceListAndDetailEnforceUserScope(t *testing.T) {
 	if err := service.CompleteCall(capabilityCall.ID, &CompleteCallRequest{FinalAttemptID: capabilityAttempt.ID}); err != nil {
 		t.Fatal(err)
 	}
+	videoCall := startAPICallForTest(t, service, 104, false, "request-video", "minimax-h3")
+	videoAttempt, err := service.StartAttempt(&StartAttemptRequest{
+		CallID: videoCall.ID, RouteKind: model.APICallRouteVideo, Stage: model.APICallStageSubmit,
+		ChannelID: 202, Transport: model.UpstreamTransportVideoGeneration,
+	})
+	if err != nil {
+		t.Fatalf("start video attempt: %v", err)
+	}
+	if err := service.CompleteAttempt(videoAttempt.ID, &CompleteAttemptRequest{HTTPStatus: 200}); err != nil {
+		t.Fatal(err)
+	}
+	if err := service.CompleteCall(videoCall.ID, &CompleteCallRequest{FinalAttemptID: videoAttempt.ID}); err != nil {
+		t.Fatal(err)
+	}
 
 	payload := &model.APICallPayload{
 		CallID: callOne.ID,
@@ -536,6 +550,15 @@ func TestAPICallServiceListAndDetailEnforceUserScope(t *testing.T) {
 	}
 	if capabilityList.Total != 1 || len(capabilityList.Items) != 1 || capabilityList.Items[0].ID != capabilityCall.ID {
 		t.Fatalf("capability channel filter failed: %+v", capabilityList)
+	}
+	videoList, err := service.ListCalls(&ListCallsRequest{
+		IsAdmin: true, RouteKind: model.APICallRouteVideo, ChannelID: 202,
+	})
+	if err != nil {
+		t.Fatalf("list video calls by channel: %v", err)
+	}
+	if videoList.Total != 1 || len(videoList.Items) != 1 || videoList.Items[0].ID != videoCall.ID {
+		t.Fatalf("video channel filter failed: %+v", videoList)
 	}
 	channelList, err := service.ListCalls(&ListCallsRequest{IsAdmin: true, ChannelID: 201})
 	if err != nil {

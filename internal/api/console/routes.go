@@ -47,6 +47,7 @@ func RegisterRoutes(group *gin.RouterGroup) {
 
 	// 文档
 	group.GET("/docs/models", DocsListModels)
+	group.GET("/docs/videos", DocsListVideos)
 
 	// Playground 代理（通过 JWT + token_id，无需原始 API Key）
 	group.GET("/playground/:token_id/models", PlaygroundListModels)
@@ -72,4 +73,5 @@ func RegisterRoutes(group *gin.RouterGroup) {
 	group.GET("/playground/:token_id/videos/generations", PlaygroundListVideos)
 	group.GET("/playground/:token_id/videos/generations/:id", PlaygroundGetVideo)
 	group.POST("/playground/:token_id/videos/generations/:id/cancel", PlaygroundCancelVideo)
+	group.POST("/playground/:token_id/videos/generations/:id/priority-queue", PlaygroundPriorityQueueVideo)
 }

@@ -3,6 +3,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import {
     playgroundGetConversationTurns,
     playgroundEstimateVideo,
+    playgroundGetTask,
     playgroundListCapabilities,
     playgroundListConversations,
     playgroundListModels,
@@ -150,6 +151,19 @@ describe('playgroundApi', () => {
     expect(requestMock).toHaveBeenCalledWith('/playground/token-1/capabilities');
   });
 
+  it('loads large task parameters only for explicit detail requests', async () => {
+    requestMock.mockResolvedValue({
+      task_id: 'task-1', task_no: 'task-1', status: 'success', progress: 100,
+      result: { url: 'https://result.example/image.png' }, raw_params: { prompt: 'test' },
+    });
+
+    await playgroundGetTask('token-1', 'task-1');
+    await playgroundGetTask('token-1', 'task-1', true);
+
+    expect(requestMock).toHaveBeenNthCalledWith(1, '/playground/token-1/tasks/task-1');
+    expect(requestMock).toHaveBeenNthCalledWith(2, '/playground/token-1/tasks/task-1?include_params=true');
+  });
+
   it('sends video estimate parameters unchanged', async () => {
     requestMock.mockResolvedValue({
       estimated_cost: '1.5', base_cost: '1.25', markup_ratio: '1.2', pricing_mode: 'upstream_estimate',
@@ -178,7 +192,18 @@ describe('playgroundApi', () => {
 
     await expect(playgroundListVideoModels('token-1')).resolves.toEqual({
       models: ['seedance-2.0'],
-      model_options: { 'seedance-2.0': { resolutions: ['1080p'] } },
+      model_options: {
+        'seedance-2.0': {
+          resolutions: ['1080p'],
+          ratios: [],
+          task_types: [],
+          allowed_roles: [],
+          parameters: [],
+          service_tier_options: [],
+          allow_local_cancel: false,
+          cancel_statuses: [],
+        },
+      },
       channels: [{ id: 2, name: '官满血-Seedance', models: ['seedance-2.0'], model_options: {} }],
     });
     expect(requestMock).toHaveBeenCalledWith('/playground/token-1/videos/models');

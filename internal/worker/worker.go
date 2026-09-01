@@ -11,12 +11,14 @@ import (
 )
 
 var (
-	taskService              = service.NewTaskService()
-	circuitService           = service.NewAccountCircuitService()
-	responsePipe             *responsepipeline.Pipeline
-	newProvider              = provider.NewProvider
-	finishCapabilityAttempt  = service.FinishCapabilityAttempt
-	saveTaskSubmitCheckpoint = func(taskID uint, leaseOwner string, checkpoint *service.TaskSubmitCheckpoint) error {
+	taskService               = service.NewTaskService()
+	circuitService            = service.NewAccountCircuitService()
+	responsePipe              *responsepipeline.Pipeline
+	newProvider               = provider.NewProvider
+	materializeTaskFileParams = service.MaterializeFileParams
+	resolveTaskFileParams     = service.ResolveFileParams
+	finishCapabilityAttempt   = service.FinishCapabilityAttempt
+	saveTaskSubmitCheckpoint  = func(taskID uint, leaseOwner string, checkpoint *service.TaskSubmitCheckpoint) error {
 		return taskService.SaveTaskSubmitCheckpoint(taskID, leaseOwner, checkpoint)
 	}
 	recoverTaskSubmit = queue.RecoverTaskSubmit

@@ -52,6 +52,49 @@ func TestGenericAdapterBuildsConfiguredRequest(t *testing.T) {
 	}
 }
 
+func TestGenericAdapterAppliesServiceTierRequestParams(t *testing.T) {
+	config := testAdapterConfig()
+	config.ServiceTiers = map[string]serviceTierConfig{
+		"standard": {RequestParams: map[string]any{}},
+		"vip":      {RequestParams: map[string]any{"h_channel_points_vip": true}},
+	}
+	adapter := newTestAdapter("https://provider.example", "secret", http.DefaultClient, config)
+	request, err := adapter.BuildRequest(context.Background(), &video.GenerateRequest{
+		Model: "seedance-2.5", Prompt: "test", ServiceTier: "vip",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if request.Body["h_channel_points_vip"] != true {
+		t.Fatalf("service tier params=%#v", request.Body)
+	}
+}
+
+func TestGenericAdapterMapsTaskModeAndContentRole(t *testing.T) {
+	config := testAdapterConfig()
+	config.Request.Fields["task_mode"] = "provider_mode"
+	config.Request.TaskModeMap = map[string]string{"video_extension": "video_extension"}
+	config.Request.ContentRoleMap = map[string]map[string]string{
+		"video_extension": {"source_video": "extension_source"},
+	}
+	config.Request.ContentFields["client_ref_id"] = "client_ref_id"
+	adapter := newTestAdapter("https://provider.example", "secret", http.DefaultClient, config)
+
+	request, err := adapter.BuildRequest(context.Background(), &video.GenerateRequest{
+		Model: "seedance-2.5", TaskMode: "video_extension",
+		Content: []video.ContentItem{{
+			ClientRefID: "source", Type: "video_url", Role: "source_video", StorageObjectID: "object-1",
+		}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	content := request.Body["content"].([]map[string]any)
+	if request.Body["provider_mode"] != "video_extension" || content[0]["role"] != "extension_source" || content[0]["client_ref_id"] != "source" {
+		t.Fatalf("body=%#v", request.Body)
+	}
+}
+
 func TestGenericAdapterProjectsSelectedContentIntoRequestFields(t *testing.T) {
 	config := testAdapterConfig()
 	config.Request.IncludeContent = boolPointer(false)
@@ -329,6 +372,7 @@ func TestGenericAdapterDiscoversConfiguredCapabilitiesForCurrentPlatform(t *test
 			`{"platform":"official","model":"seedance-2.0","resolutions":["4k"]},` +
 			`{"platform":"H","model":"seedance-2.5","resolutions":["480p","720p"],"ratios":["16:9"],` +
 			`"supported_modes":["default","video_extension"],"duration_options":[4,5,6],"min_duration_seconds":4,"max_duration_seconds":20,` +
+			`"max_duration_seconds_with_video_reference":18,` +
 			`"supports_generate_audio":true,"supports_cancel":true,"audio_requires_visual_reference":false,` +
 			`"max_reference_images":30,"max_reference_videos":10,"max_reference_audios":10,"max_references":50}` +
 			`]}}`))
@@ -341,7 +385,8 @@ func TestGenericAdapterDiscoversConfiguredCapabilitiesForCurrentPlatform(t *test
 		Fields: map[string]string{
 			"model": "model", "platform": "platform", "resolutions": "resolutions", "ratios": "ratios",
 			"supported_modes": "supported_modes", "duration_min": "min_duration_seconds", "duration_max": "max_duration_seconds",
-			"duration_options": "duration_options", "supports_smart_duration": "supports_smart_duration",
+			"duration_max_with_video_reference": "max_duration_seconds_with_video_reference",
+			"duration_options":                  "duration_options", "supports_smart_duration": "supports_smart_duration",
 			"allow_generated_audio": "supports_generate_audio", "supports_cancel": "supports_cancel",
 			"require_visual_media_with_audio": "audio_requires_visual_reference", "max_images": "max_reference_images",
 			"max_videos": "max_reference_videos", "max_audios": "max_reference_audios", "max_media": "max_references",
@@ -356,6 +401,7 @@ func TestGenericAdapterDiscoversConfiguredCapabilitiesForCurrentPlatform(t *test
 	}
 	capability, exists := discovered["seedance-2.5"]
 	if !exists || len(discovered) != 1 || capability.DurationMin != 4 || capability.DurationMax != 20 ||
+		capability.DurationMaxWithVideoReference != 18 ||
 		!reflect.DeepEqual(capability.TaskModes, []string{"text", "references", "video_extension"}) ||
 		!reflect.DeepEqual(capability.DurationOptions, []int{4, 5, 6}) ||
 		capability.AllowGeneratedAudio == nil || !*capability.AllowGeneratedAudio || capability.MaxMedia != 50 {
@@ -426,6 +472,113 @@ func TestGenericAdapterValidatesModeRulesForbiddenParametersAndExpiry(t *testing
 	expired := newTestAdapter("https://provider.example", "secret", http.DefaultClient, config)
 	if err := expired.ValidateRequest(context.Background(), valid); err == nil || !strings.Contains(err.Error(), "no longer available") {
 		t.Fatalf("expiry error=%v", err)
+	}
+}
+
+func TestGenericAdapterValidatesConditionalOptionsAndVideoModes(t *testing.T) {
+	config := testAdapterConfig()
+	config.Validation.Models = map[string]validationRule{
+		"seedance-2.5": {
+			DurationMin: 4, DurationMax: 20, DurationMaxWithVideoReference: 18,
+			Resolutions: []string{"480p", "720p"},
+			TaskModes:   []string{"video_edit", "video_extension"},
+			AllowedRoles: []string{
+				"edit_source", "source_video", "reference_image", "reference_audio",
+			},
+			Parameters: []parameterRule{
+				{
+					Name: "h_channel_points_vip", Type: "select", Default: false,
+					Options: []parameterOption{
+						{Label: "Off", Value: false},
+						{Label: "On", Value: true, AddsResolutions: []string{"1080p"}},
+					},
+					ConflictsWith: []string{"h_channel_priority_queue"},
+				},
+				{
+					Name: "h_channel_priority_queue", Type: "select", Default: false,
+					Options:       []parameterOption{{Label: "Off", Value: false}, {Label: "On", Value: true}},
+					ConflictsWith: []string{"h_channel_points_vip"},
+				},
+				{
+					Name: "extension_mode", Type: "select", Default: "forward",
+					Options:   []parameterOption{{Label: "Forward", Value: "forward"}, {Label: "Backward", Value: "backward"}},
+					TaskModes: []string{"video_extension"},
+				},
+			},
+			TaskModeRules: map[string]taskModeValidationRule{
+				"video_edit": {
+					AllowedRoles:    []string{"edit_source", "reference_image", "reference_audio"},
+					ExactRoleCounts: map[string]int{"edit_source": 1},
+				},
+				"video_extension": {
+					AllowedRoles:    []string{"source_video", "reference_image", "reference_audio"},
+					ExactRoleCounts: map[string]int{"source_video": 1},
+				},
+			},
+		},
+	}
+	adapter := newTestAdapter("https://provider.example", "secret", http.DefaultClient, config)
+	editRequest := &video.GenerateRequest{
+		Model: "seedance-2.5", Duration: 18, Resolution: "1080p", TaskMode: "video_edit",
+		Params: map[string]any{"h_channel_points_vip": true},
+		Content: []video.ContentItem{
+			{Type: "video_url", Role: "edit_source", DurationSeconds: 8},
+			{Type: "image_url", Role: "reference_image"},
+		},
+	}
+	if err := adapter.ValidateRequest(context.Background(), editRequest); err != nil {
+		t.Fatal(err)
+	}
+
+	withoutVIP := *editRequest
+	withoutVIP.Params = nil
+	if err := adapter.ValidateRequest(context.Background(), &withoutVIP); err == nil || !strings.Contains(err.Error(), "1080p") {
+		t.Fatalf("conditional resolution error=%v", err)
+	}
+	tooLong := *editRequest
+	tooLong.Duration = 19
+	if err := adapter.ValidateRequest(context.Background(), &tooLong); err == nil || !strings.Contains(err.Error(), "video reference") {
+		t.Fatalf("video duration error=%v", err)
+	}
+	conflicting := *editRequest
+	conflicting.Resolution = "720p"
+	conflicting.Params = map[string]any{"h_channel_points_vip": true, "h_channel_priority_queue": true}
+	if err := adapter.ValidateRequest(context.Background(), &conflicting); err == nil || !strings.Contains(err.Error(), "cannot both be enabled") {
+		t.Fatalf("parameter conflict error=%v", err)
+	}
+	wrongModeParameter := *editRequest
+	wrongModeParameter.Resolution = "720p"
+	wrongModeParameter.Params = map[string]any{"extension_mode": "forward"}
+	if err := adapter.ValidateRequest(context.Background(), &wrongModeParameter); err == nil || !strings.Contains(err.Error(), "video_edit") {
+		t.Fatalf("task-mode parameter error=%v", err)
+	}
+	wrongSource := *editRequest
+	wrongSource.Resolution = "720p"
+	wrongSource.Params = nil
+	wrongSource.Content = []video.ContentItem{{Type: "video_url", Role: "source_video", DurationSeconds: 8}}
+	if err := adapter.ValidateRequest(context.Background(), &wrongSource); err == nil || !strings.Contains(err.Error(), "video_edit") {
+		t.Fatalf("task-mode role error=%v", err)
+	}
+}
+
+func TestGenericAdapterValidatesNumericParameters(t *testing.T) {
+	min, max := 1.0, 999999999999999.0
+	config := testAdapterConfig()
+	config.Validation.Models = map[string]validationRule{
+		"autodl-h3": {
+			DurationMin: 1, DurationMax: 15,
+			Parameters: []parameterRule{{Name: "seed", Type: "integer", Min: &min, Max: &max}},
+		},
+	}
+	adapter := newTestAdapter("https://provider.example", "secret", http.DefaultClient, config)
+	valid := &video.GenerateRequest{Model: "autodl-h3", Duration: 1, Params: map[string]any{"seed": float64(731242627237534)}}
+	if err := adapter.ValidateRequest(context.Background(), valid); err != nil {
+		t.Fatal(err)
+	}
+	invalid := *valid
+	invalid.Params = map[string]any{"seed": float64(0)}
+	if err := adapter.ValidateRequest(context.Background(), &invalid); err == nil || !strings.Contains(err.Error(), "seed") {
+		t.Fatalf("numeric range error=%v", err)
 	}
 }
 

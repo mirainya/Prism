@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"math"
 	"strings"
+	"time"
 
 	"github.com/mirainya/Prism/internal/model"
 	"github.com/mirainya/Prism/internal/service"
@@ -29,6 +30,8 @@ var (
 	ErrEstimateNotSupported = errors.New("video estimate is not supported")
 	ErrCancelNotSupported   = errors.New("video task cancellation is not supported")
 	ErrCancelNotAllowed     = errors.New("video task cannot be cancelled in its current state")
+	ErrActionNotSupported   = errors.New("video task action is not supported")
+	ErrActionNotAllowed     = errors.New("video task action is not allowed in its current state")
 )
 
 type Engine struct {
@@ -57,23 +60,24 @@ func (e *Engine) Registry() *Registry { return e.registry }
 func (e *Engine) DB() *gorm.DB        { return e.db }
 
 type CreateTaskRequest struct {
-	UserID     uint
-	TokenID    uint
-	ChannelID  uint
-	CallID     string
-	RequestID  string
-	Endpoint   string
-	Operation  string
-	Model      string
-	Prompt     string
-	Resolution string
-	Ratio      string
-	Duration   int
-	Audio      bool
-	TaskMode   string
-	Content    []ContentItem
-	Params     map[string]any
-	Callback   string
+	UserID      uint
+	TokenID     uint
+	ChannelID   uint
+	CallID      string
+	RequestID   string
+	Endpoint    string
+	Operation   string
+	Model       string
+	Prompt      string
+	Resolution  string
+	Ratio       string
+	Duration    int
+	Audio       bool
+	TaskMode    string
+	ServiceTier string
+	Content     []ContentItem
+	Params      map[string]any
+	Callback    string
 }
 
 type CreateTaskResult struct {
@@ -81,11 +85,12 @@ type CreateTaskResult struct {
 }
 
 type EstimateTaskResult struct {
-	EstimatedCost   decimal.Decimal
-	BaseCost        decimal.Decimal
-	MarkupRatio     decimal.Decimal
-	PricingMode     string
-	PricingSnapshot datatypes.JSON
+	EstimatedCost    decimal.Decimal
+	BaseCost         decimal.Decimal
+	MarkupRatio      decimal.Decimal
+	PricingMode      string
+	PricingSnapshot  datatypes.JSON
+	ProviderEstimate *ProviderEstimate
 }
 
 type preparedTaskRequest struct {
@@ -156,6 +161,7 @@ func (e *Engine) CreateTask(ctx context.Context, req *CreateTaskRequest) (*Creat
 		VendorModel:   prepared.vendorModel,
 		Status:        VideoTaskStatusQueued,
 		TaskMode:      req.TaskMode,
+		ServiceTier:   req.ServiceTier,
 		Prompt:        req.Prompt,
 		Resolution:    req.Resolution,
 		Ratio:         req.Ratio,
@@ -185,7 +191,7 @@ func (e *Engine) CreateTask(ctx context.Context, req *CreateTaskRequest) (*Creat
 		if _, err := service.NewAPICallService().StartCallTx(tx, &service.StartCallRequest{
 			ID: callID, RequestID: requestID, UserID: req.UserID, TokenID: req.TokenID,
 			Endpoint: endpoint, Operation: operation, Model: req.Model, Background: true,
-			ResourceType: "video_task", ResourceID: taskID,
+			RetainPayload: boolPointer(true), ResourceType: "video_task", ResourceID: taskID,
 		}); err != nil {
 			return err
 		}
@@ -201,6 +207,12 @@ func (e *Engine) CreateTask(ctx context.Context, req *CreateTaskRequest) (*Creat
 		e.router.ReleaseConcurrency(ctx, key.ID)
 		return nil, fmt.Errorf("create task: %w", err)
 	}
+	RecordCallPayloadBestEffort(callID, 0, model.APICallPayloadRequest, map[string]any{
+		"model": req.Model, "prompt": req.Prompt, "resolution": req.Resolution,
+		"ratio": req.Ratio, "duration": req.Duration, "generate_audio": req.Audio,
+		"task_mode": req.TaskMode, "service_tier": req.ServiceTier,
+		"content": req.Content, "params": req.Params, "callback_url": req.Callback,
+	})
 
 	if err := queue.EnqueueVideoSubmit(taskID); err != nil {
 		logger.Error("enqueue video submit failed", zap.String("task_id", taskID), zap.Error(err))
@@ -220,6 +232,107 @@ func (e *Engine) EstimateTask(ctx context.Context, req *CreateTaskRequest) (*Est
 	return videoPrice(ctx, e.db, prepared.channel, prepared.key, prepared.adapter, prepared.provider)
 }
 
+// ActionVideoTask executes a configured provider action for an existing task.
+func (e *Engine) ActionVideoTask(ctx context.Context, task *VideoTask, action string) (*ProviderMetadata, error) {
+	if e == nil || e.db == nil || e.registry == nil {
+		return nil, ErrEngineUnavailable
+	}
+	if task == nil || strings.TrimSpace(task.ID) == "" || strings.TrimSpace(action) == "" {
+		return nil, ErrInvalidTaskRequest
+	}
+	if task.Status.IsTerminal() || task.ProviderTaskID == "" {
+		return nil, ErrActionNotAllowed
+	}
+	channel, key, _, err := LoadVideoTaskRoute(e.db.WithContext(ctx), task)
+	if err != nil {
+		return nil, err
+	}
+	adapter := e.registry.Get(channel.AdapterType, channel, key)
+	actioner, ok := adapter.(Actioner)
+	if !ok {
+		return nil, ErrActionNotSupported
+	}
+	if !actioner.CanAction(action, task.Status) {
+		return nil, ErrActionNotAllowed
+	}
+	actionCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
+	defer cancel()
+	return actioner.Action(actionCtx, action, task.ProviderTaskID)
+}
+
+func (e *Engine) UpgradeVideoTaskPriority(ctx context.Context, task *VideoTask) (*ProviderMetadata, error) {
+	if task == nil || task.ServiceTier != "standard" {
+		return nil, ErrActionNotAllowed
+	}
+	previous := DecodeProviderMetadata(task.ProviderMetadata)
+	if previous != nil && previous.PointsVIP != nil && *previous.PointsVIP {
+		return nil, ErrActionNotAllowed
+	}
+	channel, key, _, err := LoadVideoTaskRoute(e.db.WithContext(ctx), task)
+	if err != nil {
+		return nil, err
+	}
+	metadata, err := e.ActionVideoTask(ctx, task, "priority_queue")
+	if err != nil {
+		return nil, err
+	}
+	surcharge := 0.0
+	if adapter := e.registry.Get(channel.AdapterType, channel, key); adapter != nil {
+		if pricing, ok := adapter.(ActionPricing); ok {
+			surcharge = pricing.ActionSurchargePercent("priority_queue")
+		}
+	}
+	if metadata != nil {
+		if metadata.PrioritySurchargePercent > 0 {
+			surcharge = metadata.PrioritySurchargePercent
+		}
+	}
+	if surcharge <= 0 && previous != nil {
+		surcharge = previous.PrioritySurchargePercent
+	}
+	newCost := task.EstimatedCost
+	if metadata != nil && metadata.EstimatedCost > 0 {
+		markup := task.MarkupRatio
+		if !markup.IsPositive() {
+			markup = decimal.NewFromInt(1)
+		}
+		newCost = decimal.NewFromFloat(metadata.EstimatedCost).Mul(markup)
+	} else if surcharge > 0 {
+		newCost = task.EstimatedCost.Mul(decimal.NewFromFloat(1 + surcharge/100))
+	}
+	if newCost.LessThan(task.EstimatedCost) {
+		newCost = task.EstimatedCost
+	}
+	if metadata == nil {
+		metadata = &ProviderMetadata{}
+	}
+	priority := true
+	metadata.PriorityQueue = &priority
+	encoded, err := json.Marshal(metadata)
+	if err != nil {
+		return nil, err
+	}
+	err = e.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		result := tx.Model(&VideoTask{}).
+			Where("id = ? AND service_tier = ? AND status IN ?", task.ID, "standard", []VideoTaskStatus{VideoTaskStatusSubmitted, VideoTaskStatusTracking}).
+			Updates(map[string]any{"service_tier": "priority", "estimated_cost": newCost, "provider_metadata": datatypes.JSON(encoded)})
+		if result.Error != nil {
+			return result.Error
+		}
+		if result.RowsAffected == 0 {
+			return ErrActionNotAllowed
+		}
+		return service.NewBillingService().SettleReservationWithBillingContextTx(
+			tx, task.TokenID, task.UserID, task.EstimatedCost, newCost,
+			task.ID+":priority", service.BillingContext{},
+		)
+	})
+	if err != nil {
+		return nil, err
+	}
+	return metadata, nil
+}
+
 func (e *Engine) prepareTaskRequest(ctx context.Context, req *CreateTaskRequest, requestID string, acquireConcurrency bool) (*preparedTaskRequest, error) {
 	if req == nil || req.TokenID == 0 || strings.TrimSpace(req.Model) == "" {
 		return nil, fmt.Errorf("%w: token and model are required", ErrInvalidTaskRequest)
@@ -230,6 +343,13 @@ func (e *Engine) prepareTaskRequest(ctx context.Context, req *CreateTaskRequest,
 	}
 	req.Content = content
 	req.TaskMode = taskMode
+	req.ServiceTier = strings.ToLower(strings.TrimSpace(req.ServiceTier))
+	if req.ServiceTier == "" {
+		req.ServiceTier = "standard"
+	}
+	if req.ServiceTier != "standard" && req.ServiceTier != "priority" && req.ServiceTier != "vip" {
+		return nil, fmt.Errorf("%w: unsupported service_tier %q", ErrInvalidTaskRequest, req.ServiceTier)
+	}
 	if strings.TrimSpace(req.Prompt) == "" && len(content) == 0 {
 		return nil, fmt.Errorf("%w: prompt or reference media is required", ErrInvalidTaskRequest)
 	}
@@ -255,7 +375,12 @@ func (e *Engine) prepareTaskRequest(ctx context.Context, req *CreateTaskRequest,
 			Model: vendorModel, Prompt: req.Prompt, Resolution: req.Resolution,
 			Ratio: req.Ratio, Duration: req.Duration, Audio: req.Audio,
 			TaskMode: req.TaskMode, Content: append([]ContentItem(nil), req.Content...), Params: req.Params,
-			TaskID: requestID, TokenID: req.TokenID, Channel: channel, Key: key,
+			ServiceTier: req.ServiceTier,
+			TaskID:      requestID, TokenID: req.TokenID, Channel: channel, Key: key,
+		}
+		if req.ServiceTier != "standard" && channel.AdapterType != AdapterTypeGeneric {
+			validationErr = fmt.Errorf("service tier %q is not supported by adapter %q", req.ServiceTier, channel.AdapterType)
+			return false
 		}
 		if validator, ok := adapter.(RequestValidator); ok {
 			if validateErr := validator.ValidateRequest(ctx, providerRequest); validateErr != nil {
@@ -283,20 +408,26 @@ func enabledVideoParam(params map[string]any, name string) bool {
 	return ok && value
 }
 
+func boolPointer(value bool) *bool { return &value }
+
 func (e *Engine) validateContent(ctx context.Context, tokenID uint, requestedMode string, content []ContentItem) ([]ContentItem, string, RequiredCaps, error) {
 	mode := strings.TrimSpace(requestedMode)
-	if mode != "" && mode != "text" && mode != "references" && mode != "video_extension" {
+	if mode != "" && mode != "text" && mode != "references" && mode != "first_frame" &&
+		mode != "first_last_frame" && mode != "multimodal" && mode != "video_edit" && mode != "video_extension" {
 		return nil, "", RequiredCaps{}, fmt.Errorf("%w: unsupported task_mode %q", ErrInvalidTaskRequest, mode)
 	}
 	result := append([]ContentItem(nil), content...)
 	caps := RequiredCaps{}
 	hasReference := false
 	counts := map[string]int{"image": 0, "video": 0, "audio": 0}
+	roleCounts := make(map[string]int)
+	clientReferenceIDs := make(map[string]struct{})
 	assets := NewAssetService(e.db)
 	for i := range result {
 		item := &result[i]
 		item.Type = strings.TrimSpace(item.Type)
 		item.Role = strings.TrimSpace(item.Role)
+		item.ClientRefID = strings.TrimSpace(item.ClientRefID)
 		item.AssetID = strings.TrimSpace(item.AssetID)
 		item.URL = strings.TrimSpace(item.URL)
 		if item.Type == "text" {
@@ -311,6 +442,14 @@ func (e *Engine) validateContent(ctx context.Context, tokenID uint, requestedMod
 		}
 		hasReference = true
 		counts[expectedKind]++
+		roleCounts[item.Role]++
+		if item.ClientRefID == "" {
+			item.ClientRefID = fmt.Sprintf("ref_%d", i+1)
+		}
+		if _, exists := clientReferenceIDs[item.ClientRefID]; exists {
+			return nil, "", caps, fmt.Errorf("%w: content %d has duplicate client_ref_id %q", ErrInvalidTaskRequest, i, item.ClientRefID)
+		}
+		clientReferenceIDs[item.ClientRefID] = struct{}{}
 		limits := map[string]int{"image": 30, "video": 10, "audio": 10}
 		if counts[expectedKind] > limits[expectedKind] {
 			return nil, "", caps, fmt.Errorf("%w: at most %d %s references are allowed", ErrInvalidTaskRequest, limits[expectedKind], expectedKind)
@@ -365,8 +504,17 @@ func (e *Engine) validateContent(ctx context.Context, tokenID uint, requestedMod
 	}
 	if mode == "" {
 		mode = "text"
-		if hasReference {
-			mode = "references"
+		switch {
+		case roleCounts["edit_source"] > 0:
+			mode = "video_edit"
+		case roleCounts["source_video"] > 0:
+			mode = "video_extension"
+		case roleCounts["first_frame"] == 1 && roleCounts["last_frame"] == 1 && len(result) == 2:
+			mode = "first_last_frame"
+		case roleCounts["first_frame"] == 1 && len(result) == 1:
+			mode = "first_frame"
+		case hasReference:
+			mode = "multimodal"
 		}
 	}
 	if mode == "text" && hasReference {
@@ -375,8 +523,23 @@ func (e *Engine) validateContent(ctx context.Context, tokenID uint, requestedMod
 	if mode == "references" && !hasReference {
 		return nil, "", caps, fmt.Errorf("%w: references mode requires reference media", ErrInvalidTaskRequest)
 	}
+	if mode == "first_frame" && (roleCounts["first_frame"] != 1 || len(result) != 1) {
+		return nil, "", caps, fmt.Errorf("%w: first_frame mode requires exactly one first_frame image", ErrInvalidTaskRequest)
+	}
+	if mode == "first_last_frame" && (roleCounts["first_frame"] != 1 || roleCounts["last_frame"] != 1 || len(result) != 2) {
+		return nil, "", caps, fmt.Errorf("%w: first_last_frame mode requires one first_frame and one last_frame image", ErrInvalidTaskRequest)
+	}
+	if mode == "multimodal" && !hasReference {
+		return nil, "", caps, fmt.Errorf("%w: multimodal mode requires reference media", ErrInvalidTaskRequest)
+	}
+	if mode == "video_edit" && (roleCounts["edit_source"] != 1 || counts["video"] != 1) {
+		return nil, "", caps, fmt.Errorf("%w: video_edit mode requires exactly one edit_source video", ErrInvalidTaskRequest)
+	}
 	if mode == "video_extension" && !hasReference {
 		return nil, "", caps, fmt.Errorf("%w: video_extension mode requires reference media", ErrInvalidTaskRequest)
+	}
+	if mode == "video_extension" && (roleCounts["source_video"] != 1 || counts["video"] != 1) {
+		return nil, "", caps, fmt.Errorf("%w: video_extension mode requires exactly one source_video", ErrInvalidTaskRequest)
 	}
 	return result, mode, caps, nil
 }
@@ -399,7 +562,7 @@ func validContentRole(kind, role string) bool {
 	case "image":
 		return role == "first_frame" || role == "last_frame" || role == "reference_image"
 	case "video":
-		return role == "reference_video"
+		return role == "reference_video" || role == "source_video" || role == "edit_source"
 	case "audio":
 		return role == "reference_audio"
 	default:
@@ -432,7 +595,12 @@ func videoPrice(
 		MarkupRatio float64 `json:"markup_ratio"`
 	}
 	pricing := pricingConfig{Mode: "fixed", MarkupRatio: 1}
-	if channel != nil && len(channel.Pricing) > 0 {
+	formalPricing := channel != nil && strings.TrimSpace(channel.PricingMode) != ""
+	if formalPricing {
+		pricing.Mode = strings.TrimSpace(channel.PricingMode)
+		pricing.FixedPrice, _ = channel.FixedPrice.Float64()
+		pricing.MarkupRatio, _ = channel.MarkupRatio.Float64()
+	} else if channel != nil && len(channel.Pricing) > 0 {
 		if err := json.Unmarshal(channel.Pricing, &pricing); err != nil {
 			return nil, fmt.Errorf("invalid video pricing: %w", err)
 		}
@@ -450,9 +618,12 @@ func videoPrice(
 		pricing.MarkupRatio = 1
 	}
 	base := decimal.NewFromFloat(pricing.FixedPrice)
+	var providerEstimate *ProviderEstimate
 	if pricing.Mode == "upstream_estimate" {
-		estimator, ok := adapter.(Estimator)
-		if !ok {
+		var estimateErr error
+		estimator, estimatorOK := adapter.(Estimator)
+		detailedEstimator, detailedOK := adapter.(DetailedEstimator)
+		if !estimatorOK && !detailedOK {
 			return nil, ErrEstimateNotSupported
 		}
 		// Upstream estimates use the same material references as submission.
@@ -460,9 +631,17 @@ func videoPrice(
 		if err := ResolveGenerateRequestAssets(ctx, db, channel, key, request.TaskID, request.TokenID, request); err != nil {
 			return nil, fmt.Errorf("resolve estimate assets: %w", err)
 		}
-		upstreamCost, err := estimator.Estimate(ctx, request)
-		if err != nil {
-			return nil, fmt.Errorf("estimate upstream video cost: %w", err)
+		var upstreamCost float64
+		if detailedOK {
+			providerEstimate, estimateErr = detailedEstimator.EstimateDetailed(ctx, request)
+			if providerEstimate != nil {
+				upstreamCost = providerEstimate.EstimatedCost
+			}
+		} else {
+			upstreamCost, estimateErr = estimator.Estimate(ctx, request)
+		}
+		if estimateErr != nil {
+			return nil, fmt.Errorf("estimate upstream video cost: %w", estimateErr)
 		}
 		if upstreamCost < 0 || math.IsNaN(upstreamCost) || math.IsInf(upstreamCost, 0) {
 			return nil, errors.New("upstream video estimate cannot be negative")
@@ -479,11 +658,15 @@ func videoPrice(
 		snapshotValues["fixed_price"] = base.String()
 	} else {
 		snapshotValues["upstream_estimated_cost"] = base.String()
+		if providerEstimate != nil {
+			snapshotValues["provider_estimate"] = providerEstimate
+		}
 	}
 	snapshot, _ := json.Marshal(snapshotValues)
 	return &EstimateTaskResult{
 		EstimatedCost: estimated, BaseCost: base, MarkupRatio: markup,
 		PricingMode: pricing.Mode, PricingSnapshot: datatypes.JSON(snapshot),
+		ProviderEstimate: providerEstimate,
 	}, nil
 }
 

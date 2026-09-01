@@ -3,6 +3,7 @@ import { HashRouter as Router, Routes, Route, Navigate } from 'react-router-dom'
 import { ThemeProvider } from './theme/ThemeProvider';
 import Layout from './components/Layout';
 import ErrorBoundary from './components/ErrorBoundary';
+import { PageSkeleton } from './components/shell';
 import Home from './pages/Home';
 import Pricing from './pages/Pricing';
 // 登录后的页面按路由懒加载,避免全部打进首屏主 bundle
@@ -249,11 +250,7 @@ const App: React.FC = () => {
     <Router>
       <Layout user={user} onLogout={handleLogout}>
         <ErrorBoundary>
-        <Suspense fallback={
-          <div className="flex items-center justify-center py-32">
-            <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-[var(--primary)]"></div>
-          </div>
-        }>
+        <Suspense fallback={<PageSkeleton />}>
         <Routes>
           <Route path="/" element={<Navigate to="/dashboard" replace />} />
           <Route path="/dashboard" element={<Dashboard />} />

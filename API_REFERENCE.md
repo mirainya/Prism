@@ -4,7 +4,7 @@
 
 ## 基础信息
 
-- Base URL: `http://{host}:{port}`
+- Base URL: `https://prism.mirainya.icu`
 - `/api/*` 管理接口使用统一 JSON 包装:
 
 ```json
@@ -458,7 +458,7 @@ curl -X POST "https://prism.example/v1/images/edits" \
 
 视频生成。存在匹配的 `video_channels` 时使用专用视频引擎，否则调用 `capabilities/text2video`。动态计价渠道会在创建时重新估价、固化价格快照并预扣费用。
 
-Prism V1 视频请求只接受 `model`、`prompt`、`duration`、`resolution`、`aspect_ratio`、`generate_audio`、`references`、`provider_options` 和 `callback_url`。未知字段会被拒绝，不兼容 `content`、`ratio`、`params`、`parameters` 和 `task_mode` 等旧输入。
+Prism V1 视频请求只接受 `model`、`prompt`、`duration`、`resolution`、`aspect_ratio`、`generate_audio`、`service_tier`、`references`、`provider_options` 和 `callback_url`。未知字段会被拒绝，不兼容 `content`、`ratio`、`params`、`parameters` 和 `task_mode` 等旧输入。`service_tier` 可选 `standard`、`priority`、`vip`，实际可用值以 `/docs/videos` 返回的模型能力为准。
 
 `model` 始终填写 Prism 公开模型名。管理员在视频渠道中配置 `model_name → vendor_model` 映射；Prism 选路后把公开名转换为该渠道的上游模型名，客户端无需感知各上游命名差异。
 
@@ -496,11 +496,14 @@ Prism V1 视频请求只接受 `model`、`prompt`、`duration`、`resolution`、
 | 首帧生视频 | 一张 `type=image`、`role=first_frame` | 图片素材 |
 | 首尾帧视频 | 两张图片，分别为 `first_frame`、`last_frame` | 图片素材 |
 | 多模态视频 | `reference_image`、`reference_video` 或 `reference_audio` | 对应类型素材 |
+| 视频编辑 | 一项 `type=video`、`role=edit_source`，可附加图片或音频参考 | 视频素材 |
 | 视频续写 | 一项 `type=video`、`role=source_video` | 视频素材 |
 
-实际可用类型由渠道能力决定：官满血支持文生、首帧、首尾帧和多模态；H 渠道的 Seedance 2.5 支持文生、多模态和视频拓展；即梦 Seedance 2.5 只支持多模态。控制台试用接口 `GET /api/playground/:token_id/videos/models` 会返回自动选路使用的 `model_options`，以及每个可用渠道的 `channels[].id/name/models/model_options`。控制台创建与估价请求可提交 `channel_id` 强制使用指定渠道；省略或传 `0` 时自动选路。指定渠道不兼容请求参数时会直接报错，不会改投其他渠道。
+实际可用类型由渠道能力决定：官满血支持文生、首帧、首尾帧和多模态；H 渠道的 Seedance 2.5 支持文生、多模态、视频编辑和视频拓展；即梦 Seedance 2.5 只支持多模态。控制台试用接口 `GET /api/playground/:token_id/videos/models` 会返回自动选路使用的 `model_options`，以及每个可用渠道的 `channels[].id/name/models/model_options`。控制台创建与估价请求可提交 `channel_id` 强制使用指定渠道；省略或传 `0` 时自动选路。指定渠道不兼容请求参数时会直接报错，不会改投其他渠道。
 
-每项素材使用 `type`、`role`，并在 `asset_id` 与公网 `url` 中二选一；视频和音频可提交 `duration_seconds`。渠道专属选项只能放入对应的 `provider_options` 命名空间。官方 Seedance 提示词可使用 `图片1`、`视频1`、`音频1` 引用素材；Sub2API 不要求该写法。调用写入统一 `api_calls`，响应头包含 `X-Prism-Call-ID`。
+接口文档中的统一协议会列出所有可能的素材角色，但这不是每个渠道都支持的清单。调用时必须以所选渠道对应的 `channels[].model_options[model].allowed_roles`、`task_types` 和 `max_*` 限制为准，未声明的角色或超过数量上限的素材不要提交。AutoDL 的 `minimax-h3-image-audio-to-video-v2-15s` 多模态范围为图片最多 9 张、音频最多 3 个、总素材最多 12 项；仅支持图片（首帧、尾帧、参考图）和音频参考，不支持 `reference_video`、`edit_source` 或 `source_video`，也不支持视频编辑和视频续写。
+
+每项素材使用 `type`、`role`，并在 `asset_id` 与公网 `url` 中二选一；视频和音频可提交 `duration_seconds`。可选 `id` 是请求内稳定且唯一的素材标识，适配器需要引用编号时会将其映射为上游 `client_ref_id`。渠道专属选项只能放入对应的 `provider_options` 命名空间。官方 Seedance 提示词可使用 `图片1`、`视频1`、`音频1` 引用素材；Sub2API 不要求该写法。调用写入统一 `api_calls`，响应头包含 `X-Prism-Call-ID`。
 
 ### POST /v1/videos/assets
 

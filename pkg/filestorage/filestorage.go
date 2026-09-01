@@ -44,6 +44,17 @@ func IsBase64Data(s string) bool {
 
 // TransferURL 从 URL 下载文件并上传到 xfilestorage，返回最终 URL
 func TransferURL(ctx context.Context, originURL string, capabilityCode string) (string, error) {
+	return transferURL(ctx, originURL, capabilityCode, nil)
+}
+
+// TransferURLTrusted is used for provider result URLs whose hosts are
+// explicitly configured by the channel. Normal user-provided URLs must use
+// TransferURL so SSRF validation remains strict.
+func TransferURLTrusted(ctx context.Context, originURL string, capabilityCode string, trustedHosts []string) (string, error) {
+	return transferURL(ctx, originURL, capabilityCode, trustedHosts)
+}
+
+func transferURL(ctx context.Context, originURL string, capabilityCode string, trustedHosts []string) (string, error) {
 	cfg := config.C.FileStorage
 	if cfg.BaseURL == "" {
 		return originURL, nil
@@ -53,7 +64,13 @@ func TransferURL(ctx context.Context, originURL string, capabilityCode string) (
 	if maxBytes <= 0 {
 		maxBytes = 64 * 1024 * 1024 // 默认 64MiB 兜底
 	}
-	result, err := safeurl.Download(ctx, originURL, maxBytes)
+	var result *safeurl.Result
+	var err error
+	if len(trustedHosts) > 0 {
+		result, err = safeurl.DownloadTrusted(ctx, originURL, maxBytes, trustedHosts)
+	} else {
+		result, err = safeurl.Download(ctx, originURL, maxBytes)
+	}
 	if err != nil {
 		return "", fmt.Errorf("download: %w", err)
 	}

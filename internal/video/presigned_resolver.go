@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"regexp"
 	"sort"
 	"strings"
 	"sync"
@@ -24,7 +25,10 @@ import (
 
 const presignedDispositionProfile = "disposition_v1"
 
-var errUploadSessionExpired = errors.New("presigned upload session expired")
+var (
+	errUploadSessionExpired = errors.New("presigned upload session expired")
+	presignedJSONFieldName  = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_-]*$`)
+)
 
 type presignedUploadConfig struct {
 	Profile              string   `json:"profile"`
@@ -37,6 +41,7 @@ type presignedUploadConfig struct {
 	ReferencePaths       []string `json:"reference_paths"`
 	ReferenceExpiryPaths []string `json:"reference_expiry_paths"`
 	IdempotencyHeader    string   `json:"idempotency_header"`
+	IdempotencyBodyField string   `json:"idempotency_body_field"`
 	AuthHeader           string   `json:"auth_header"`
 	AuthPrefix           string   `json:"auth_prefix"`
 	Purpose              string   `json:"purpose"`
@@ -56,6 +61,7 @@ func (c *presignedUploadConfig) defaults() {
 	c.ResponseRoot = strings.TrimSpace(c.ResponseRoot)
 	c.SuccessCodePath = strings.TrimSpace(c.SuccessCodePath)
 	c.IdempotencyHeader = strings.TrimSpace(c.IdempotencyHeader)
+	c.IdempotencyBodyField = strings.TrimSpace(c.IdempotencyBodyField)
 	c.AuthHeader = strings.TrimSpace(c.AuthHeader)
 	c.Purpose = strings.TrimSpace(c.Purpose)
 	if c.ResponseRoot == "" {
@@ -129,6 +135,9 @@ func (c presignedUploadConfig) validate() error {
 	}
 	if len(c.ReferencePaths) == 0 || strings.TrimSpace(c.ReferencePaths[0]) == "" {
 		return errors.New("presigned_upload reference_paths are required")
+	}
+	if c.IdempotencyBodyField != "" && !presignedJSONFieldName.MatchString(c.IdempotencyBodyField) {
+		return errors.New("presigned_upload idempotency_body_field must be a JSON field name")
 	}
 	return nil
 }
@@ -372,6 +381,9 @@ func (r *presignedUploadResolver) apply(
 	body := map[string]any{
 		"sha256": source.SHA256, "size_bytes": source.SizeBytes, "kind": asset.Kind,
 		"content_type": contentType, "purpose": r.config.Purpose,
+	}
+	if r.config.IdempotencyBodyField != "" {
+		body[r.config.IdempotencyBodyField] = idempotencyKey
 	}
 	disposition, err := r.control(ctx, r.config.ApplyPath, body, idempotencyKey)
 	if err != nil {

@@ -32,17 +32,19 @@ type progressReply struct {
 }
 
 type scriptedCapabilityProvider struct {
-	submitResult provider.SubmitResult
-	submitErr    error
-	submitHook   func()
-	submitCalls  int
-	progress     []progressReply
-	progressHook func()
-	progressCall int
+	submitResult  provider.SubmitResult
+	submitErr     error
+	submitHook    func()
+	submitRequest provider.SubmitRequest
+	submitCalls   int
+	progress      []progressReply
+	progressHook  func()
+	progressCall  int
 }
 
-func (p *scriptedCapabilityProvider) Submit(context.Context, provider.SubmitRequest) (provider.SubmitResult, error) {
+func (p *scriptedCapabilityProvider) Submit(_ context.Context, request provider.SubmitRequest) (provider.SubmitResult, error) {
 	p.submitCalls++
+	p.submitRequest = request
 	if p.submitHook != nil {
 		p.submitHook()
 	}
@@ -102,6 +104,102 @@ func TestTaskSubmitAttemptSuccessLinksCallBillingAndRequestLog(t *testing.T) {
 	assertWorkerBillingAttempt(t, db, task.TaskNo+":reserve", attempt.ID)
 	assertWorkerBillingAttempt(t, db, task.TaskNo+":settle", attempt.ID)
 	assertCapabilityRequestLog(t, db, task, channel, attempt, metadata, "")
+}
+
+func TestTaskSubmitResolvesFileParamsBeforeUpstreamSubmission(t *testing.T) {
+	db, task, _, endpoint := setupCapabilityWorkerTest(t, model.TaskStatusPending, model.ModeSync)
+	endpoint.ExtraConfig = datatypes.JSON(`{
+		"image_edit":{"enabled":true,"input_mode":"url","file_field":"image_urls"}
+	}`)
+	if err := db.Model(endpoint).UpdateColumn("extra_config", endpoint.ExtraConfig).Error; err != nil {
+		t.Fatal(err)
+	}
+	dataURI := "data:image/png;base64,iVBORw0KGgo="
+	task.RequestParams = datatypes.JSON(`{"prompt":"edit","image_urls":["` + dataURI + `"]}`)
+	task.MappedParams = datatypes.JSON(`{"prompt":"edit","image_urls":["` + dataURI + `"]}`)
+	if err := db.Model(task).Updates(map[string]any{
+		"request_params": task.RequestParams,
+		"mapped_params":  task.MappedParams,
+	}).Error; err != nil {
+		t.Fatal(err)
+	}
+
+	materializeCalls := 0
+	materializeTaskFileParams = func(
+		_ context.Context,
+		requestParams map[string]any,
+		mappedParams map[string]any,
+		resolvedEndpoint *model.Endpoint,
+		capabilityCode string,
+	) (map[string]any, map[string]any, error) {
+		materializeCalls++
+		requestImages, ok := requestParams["image_urls"].([]any)
+		if !ok || len(requestImages) != 1 || requestImages[0] != dataURI {
+			t.Fatalf("request image_urls = %#v", requestParams["image_urls"])
+		}
+		mappedImages, ok := mappedParams["image_urls"].([]any)
+		if !ok || len(mappedImages) != 1 || mappedImages[0] != dataURI {
+			t.Fatalf("mapped image_urls = %#v", mappedParams["image_urls"])
+		}
+		if resolvedEndpoint.ImageEdit() == nil || capabilityCode != endpoint.ModelCode {
+			t.Fatalf("materializer endpoint = %#v, capability = %q", resolvedEndpoint.ImageEdit(), capabilityCode)
+		}
+		stored := map[string]any{
+			"prompt":     "edit",
+			"image_urls": []any{"https://storage.example/reference.png"},
+		}
+		return stored, stored, nil
+	}
+
+	resolveCalls := 0
+	resolveTaskFileParams = func(_ context.Context, params map[string]any, resolvedEndpoint *model.Endpoint, capabilityCode string) (map[string]any, error) {
+		resolveCalls++
+		images, ok := params["image_urls"].([]any)
+		if !ok || len(images) != 1 || images[0] != "https://storage.example/reference.png" {
+			t.Fatalf("stored image_urls = %#v", params["image_urls"])
+		}
+		if resolvedEndpoint.ImageEdit() == nil || capabilityCode != endpoint.ModelCode {
+			t.Fatalf("resolver endpoint = %#v, capability = %q", resolvedEndpoint.ImageEdit(), capabilityCode)
+		}
+		return params, nil
+	}
+	fake := &scriptedCapabilityProvider{submitResult: provider.SubmitResult{
+		RequestMetadata: provider.RequestMetadata{Method: httpMethodPost, RequestPath: "/actual/submit", StatusCode: 201},
+		URLs:            []string{"https://result.example/edited.png"},
+	}}
+	newProvider = func(*model.Channel, *model.ChannelAccount, *model.Endpoint) (provider.Provider, error) {
+		return fake, nil
+	}
+
+	job, err := NewTaskSubmit(task.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := HandleTaskSubmit(context.Background(), job); err != nil {
+		t.Fatal(err)
+	}
+	if materializeCalls != 1 {
+		t.Fatalf("materialize calls = %d, want 1", materializeCalls)
+	}
+	if resolveCalls != 1 {
+		t.Fatalf("resolver calls = %d, want 1", resolveCalls)
+	}
+	images, ok := fake.submitRequest.Params["image_urls"].([]any)
+	if !ok || len(images) != 1 || images[0] != "https://storage.example/reference.png" {
+		t.Fatalf("submitted image_urls = %#v", fake.submitRequest.Params["image_urls"])
+	}
+	var stored model.Task
+	if err := db.First(&stored, task.ID).Error; err != nil {
+		t.Fatal(err)
+	}
+	for name, raw := range map[string]datatypes.JSON{
+		"request_params": stored.RequestParams,
+		"mapped_params":  stored.MappedParams,
+	} {
+		if strings.Contains(string(raw), "base64") || !strings.Contains(string(raw), "https://storage.example/reference.png") {
+			t.Fatalf("stored %s = %s", name, raw)
+		}
+	}
 }
 
 func TestTaskSubmitAttemptFailureEndsAttemptBeforeTask(t *testing.T) {
@@ -856,6 +954,8 @@ func setupCapabilityWorkerTest(
 	model.SetDB(db)
 	previousLogger := logger.L
 	previousProvider := newProvider
+	previousMaterializeTaskFileParams := materializeTaskFileParams
+	previousResolveTaskFileParams := resolveTaskFileParams
 	previousFinishAttempt := finishCapabilityAttempt
 	previousSaveCheckpoint := saveTaskSubmitCheckpoint
 	previousRequeue := requeueTaskPoll
@@ -864,6 +964,8 @@ func setupCapabilityWorkerTest(
 	t.Cleanup(func() {
 		logger.L = previousLogger
 		newProvider = previousProvider
+		materializeTaskFileParams = previousMaterializeTaskFileParams
+		resolveTaskFileParams = previousResolveTaskFileParams
 		finishCapabilityAttempt = previousFinishAttempt
 		saveTaskSubmitCheckpoint = previousSaveCheckpoint
 		requeueTaskPoll = previousRequeue

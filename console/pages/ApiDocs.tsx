@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { Book, Search, Copy, Check, ChevronDown, ChevronRight, Play, Loader2, Zap, MessageSquare, ListChecks, Bell, AlertTriangle, RefreshCw, Braces, FileUp } from 'lucide-react';
-import { fetchDocsModels, DocsModel } from '../services/docsApi';
+import { fetchDocsModels, fetchDocsVideos, DocsModel, DocsVideosResponse, DocsVideoModelOptions } from '../services/docsApi';
 import { fetchGwModels } from '../services/gatewayApi';
 import { TryItDrawer } from './TryItDrawer';
 
@@ -71,10 +71,126 @@ interface ApiEndpoint {
   description: string;
   params: { name: string; type: string; required: boolean; description: string }[];
   channelParams?: { channelName: string; channelType: string; interactionMode?: string; params: { name: string; type: string; required: boolean; description: string }[] }[];
+  videoModels?: { model: string; options: DocsVideoModelOptions; channelName?: string }[];
   requestExample?: string;
   responseExample?: string;
   bodyType?: 'json' | 'multipart';
 }
+
+const videoTaskLabels: Record<string, string> = {
+  text: '文生视频',
+  first_frame: '首帧',
+  first_last_frame: '首尾帧',
+  multimodal: '多模态',
+  video_edit: '视频编辑',
+  video_extension: '视频拓展',
+};
+
+const videoRoleLabels: Record<string, string> = {
+  first_frame: '首帧',
+  last_frame: '尾帧',
+  reference_image: '参考图片',
+  reference_video: '参考视频',
+  reference_audio: '参考音频',
+  edit_source: '编辑源视频',
+  source_video: '拓展源视频',
+};
+
+const formatDurationConstraint = (options: DocsVideoModelOptions) => {
+  if (options.duration_options?.length) return `${options.duration_options.join('、')} 秒`;
+  if (options.duration_min || options.duration_max) return `${options.duration_min || 1}-${options.duration_max || '不限'} 秒`;
+  return '未配置';
+};
+
+const formatMultimodalScope = (options: DocsVideoModelOptions) => {
+  if (!options.task_types?.includes('multimodal')) return '不支持';
+  const roles = options.allowed_roles || [];
+  const media = [
+    roles.some(role => ['first_frame', 'last_frame', 'reference_image'].includes(role))
+      ? `图片${options.max_images ? `（最多 ${options.max_images} 张）` : ''}`
+      : '',
+    roles.some(role => ['reference_video', 'edit_source', 'source_video'].includes(role))
+      ? `视频${options.max_videos ? `（最多 ${options.max_videos} 个）` : ''}`
+      : '',
+    roles.includes('reference_audio')
+      ? `音频${options.max_audios ? `（最多 ${options.max_audios} 个）` : ''}`
+      : '',
+  ].filter(Boolean);
+  if (media.length === 0) return '按素材角色配置';
+  return `${media.join('、')}${options.max_media ? `；总计最多 ${options.max_media} 项` : ''}`;
+};
+
+const VideoModelCapabilities: React.FC<{ models: { model: string; options: DocsVideoModelOptions; channelName?: string }[] }> = ({ models }) => (
+  <div className="space-y-2">
+    <div className="flex items-center justify-between gap-3">
+      <h4 className="text-xs font-bold text-[var(--text-secondary)]">模型能力</h4>
+      <span className="text-[11px] text-[var(--text-tertiary)]">共 {models.length} 个模型</span>
+    </div>
+    <div className="space-y-2">
+      {models.map(({ model, options, channelName }, index) => (
+        <details key={`${channelName || 'channel'}:${model}:${index}`} className="group rounded-lg border border-[var(--border-soft)] bg-[var(--surface)]" open={index === 0}>
+          <summary className="flex cursor-pointer list-none items-center gap-2 px-3 py-2.5 text-sm font-semibold text-[var(--text-primary)] [&::-webkit-details-marker]:hidden">
+            <ChevronRight size={14} className="shrink-0 transition-transform group-open:rotate-90" />
+            <code className="min-w-0 flex-1 truncate text-xs text-[var(--primary)]">{model}</code>
+            {channelName ? <span className="max-w-[14rem] truncate text-[11px] font-normal text-[var(--text-tertiary)]">{channelName}</span> : null}
+            <span className="hidden shrink-0 text-[11px] font-normal text-[var(--text-tertiary)] sm:inline">{formatDurationConstraint(options)}</span>
+          </summary>
+          <div className="grid grid-cols-1 gap-3 border-t border-[var(--border-soft)] px-3 py-3 text-xs sm:grid-cols-2 lg:grid-cols-3">
+            <div>
+              <div className="mb-1 text-[var(--text-tertiary)]">任务类型</div>
+              <div className="text-[var(--text-secondary)]">{options.task_types?.map(value => videoTaskLabels[value] || value).join('、') || '未配置'}</div>
+            </div>
+            <div>
+              <div className="mb-1 text-[var(--text-tertiary)]">多模态范围</div>
+              <div className="text-[var(--text-secondary)]">{formatMultimodalScope(options)}</div>
+            </div>
+            <div>
+              <div className="mb-1 text-[var(--text-tertiary)]">时长</div>
+              <div className="text-[var(--text-secondary)]">{formatDurationConstraint(options)}</div>
+            </div>
+            <div>
+              <div className="mb-1 text-[var(--text-tertiary)]">分辨率</div>
+              <div className="text-[var(--text-secondary)]">{options.resolutions?.join('、') || '未配置'}</div>
+            </div>
+            <div>
+              <div className="mb-1 text-[var(--text-tertiary)]">画面比例</div>
+              <div className="text-[var(--text-secondary)]">{options.ratios?.join('、') || '未配置'}</div>
+            </div>
+            <div>
+              <div className="mb-1 text-[var(--text-tertiary)]">素材</div>
+              <div className="text-[var(--text-secondary)]">
+                {options.allowed_roles?.map(value => videoRoleLabels[value] || value).join('、') || '无'}
+                {options.max_media ? `，最多 ${options.max_media} 项` : ''}
+              </div>
+            </div>
+            <div>
+              <div className="mb-1 text-[var(--text-tertiary)]">音频与档位</div>
+              <div className="text-[var(--text-secondary)]">
+                {options.allow_generated_audio === false ? '不支持生成音频' : '支持生成音频'}
+                {options.service_tiers?.length ? `；${options.service_tiers.join('、')}` : ''}
+              </div>
+            </div>
+            {options.parameters?.length ? (
+              <div className="sm:col-span-2 lg:col-span-3">
+                <div className="mb-1 text-[var(--text-tertiary)]">渠道参数</div>
+                <div className="space-y-1 text-[var(--text-secondary)]">
+                  {options.parameters.map(parameter => (
+                    <div key={parameter.name} className="flex flex-wrap gap-x-2 gap-y-1">
+                      <code className="text-[var(--primary)]">{parameter.name}</code>
+                      <span>{parameter.label}</span>
+                      {parameter.min !== undefined || parameter.max !== undefined ? <span>范围 {parameter.min ?? '-'}-{parameter.max ?? '不限'}</span> : null}
+                      {parameter.options?.length ? <span>可选 {parameter.options.map(option => option.label || String(option.value)).join('、')}</span> : null}
+                    </div>
+                  ))}
+                </div>
+              </div>
+            ) : null}
+          </div>
+        </details>
+      ))}
+    </div>
+  </div>
+);
 
 // ===== 可复制路径 =====
 const CopyablePath: React.FC<{ path: string }> = ({ path }) => {
@@ -125,6 +241,7 @@ const EndpointCard: React.FC<{ api: ApiEndpoint; onTryIt: (api: ApiEndpoint) => 
         <div className="border-t border-[var(--border-soft)] p-4 space-y-4">
           <p className="text-sm text-[var(--text-secondary)]">{api.description}</p>
           {api.params.length > 0 && <ParamTable params={api.params} />}
+          {api.videoModels && api.videoModels.length > 0 && <VideoModelCapabilities models={api.videoModels} />}
           {api.channelParams && api.channelParams.length > 0 && (
             <div className="space-y-3">
               <h4 className="text-xs font-bold text-[var(--text-secondary)]">渠道专属参数</h4>
@@ -370,8 +487,8 @@ const FILE_ENDPOINTS: ApiEndpoint[] = [
   },
 ];
 
-// 兼容接口（图片/视频生成）——卡片渲染与 copyAllDocs 的单一数据源
-const COMPAT_ENDPOINTS: ApiEndpoint[] = [
+// 兼容接口（图片生成）
+const IMAGE_COMPAT_ENDPOINTS: ApiEndpoint[] = [
   {
     id: 'ep-images-generations',
     method: 'POST',
@@ -392,24 +509,82 @@ const COMPAT_ENDPOINTS: ApiEndpoint[] = [
     requestExample: JSON.stringify({ model: "gpt-image-1", prompt: "a cute corgi wearing sunglasses", n: 1, size: "1024x1024" }, null, 2),
     responseExample: JSON.stringify({ created: 1704067200, data: [{ url: "https://...", revised_prompt: "..." }] }, null, 2),
   },
-  {
+];
+
+const buildVideoDocEndpoints = (docs: DocsVideosResponse): ApiEndpoint[] => {
+  const modelOptions = docs.model_options || {};
+  const channelModels = (docs.channels || []).flatMap(channel => (
+    channel.models.map(model => ({
+      model,
+      channelName: channel.name,
+      options: channel.model_options?.[model] || modelOptions[model] || {},
+    }))
+  ));
+  const videoModels = channelModels.length > 0
+    ? channelModels
+    : (docs.models || []).map(model => ({ model, options: modelOptions[model] || {} }));
+  const roleLabels = Array.from(new Set(videoModels.flatMap(({ options }) => options.allowed_roles || [])))
+    .map(role => videoRoleLabels[role] || role);
+  const params = [
+    { name: 'model', type: 'string', required: true, description: '公开模型标识，具体能力和限制见下方“模型能力”列表' },
+    { name: 'prompt', type: 'string', required: false, description: '文本提示词；纯素材任务可省略' },
+    { name: 'duration', type: 'integer', required: false, description: '视频时长（秒），按所选模型的能力限制' },
+    { name: 'resolution', type: 'string', required: false, description: '输出分辨率，按所选模型的能力限制' },
+    { name: 'aspect_ratio', type: 'string', required: false, description: '画面比例；未配置比例的模型不要提交此字段' },
+    { name: 'generate_audio', type: 'boolean', required: false, description: '是否生成音频；以模型能力为准，部分模型固定禁止' },
+    { name: 'service_tier', type: 'string', required: false, description: '执行档位；具体可用值以所选模型能力为准，未填写时使用 standard' },
+    { name: 'references', type: 'array', required: false, description: `素材引用数组。每项为 {type, role, asset_id|url, duration_seconds}；可用角色以所选渠道的模型能力为准${roleLabels.length ? `，当前已配置：${roleLabels.join('、')}` : ''}，未声明的角色不要提交` },
+    { name: 'provider_options', type: 'object', required: false, description: '官方协议扩展；provider_options.seedance 支持 camera_fixed、return_last_frame、web_search' },
+    { name: 'callback_url', type: 'string', required: false, description: '任务完成后的回调地址' },
+  ];
+  const example = videoModels[0];
+  const exampleModel = example?.model || docs.models?.[0] || 'your-video-model';
+  const exampleOptions = example?.options || modelOptions[exampleModel] || {};
+  const exampleRole = exampleOptions.allowed_roles?.includes('reference_image')
+    ? 'reference_image'
+    : exampleOptions.allowed_roles?.[0];
+  const exampleType = exampleRole?.includes('audio') ? 'audio' : exampleRole?.includes('video') ? 'video' : 'image';
+  const generationEndpoint: ApiEndpoint = {
     id: 'ep-videos-generations',
     method: 'POST',
     path: '/v1/videos/generations',
-    name: '视频生成',
-    description: '兼容 OpenAI 格式的视频生成',
-    params: [
-      { name: 'model', type: 'string', required: true, description: '模型标识' },
-      { name: 'prompt', type: 'string', required: true, description: '提示词' },
-      { name: 'params', type: 'object', required: false, description: '额外参数' },
-      { name: 'callback_url', type: 'string', required: false, description: '回调地址' },
-    ],
-  },
-];
+    name: '视频生成（Prism V1）',
+    description: 'Prism 统一视频协议。模型能力按当前渠道配置动态展示；任务类型由 references[].role 推断，不需要填写上游 provider_mode。',
+    params,
+    videoModels,
+    requestExample: JSON.stringify({
+      model: exampleModel,
+      prompt: '镜头缓慢推进，城市夜景亮起灯光',
+      duration: exampleOptions.duration_options?.[0] || exampleOptions.duration_min || 5,
+      resolution: exampleOptions.resolutions?.[0] || '1080p',
+      ...(exampleOptions.ratios?.length ? { aspect_ratio: exampleOptions.ratios[0] } : {}),
+      generate_audio: exampleOptions.allow_generated_audio !== false,
+      service_tier: exampleOptions.service_tiers?.[0] || 'standard',
+      ...(exampleRole ? { references: [{ type: exampleType, role: exampleRole, asset_id: 'asset_xxx' }] } : {}),
+    }, null, 2),
+    responseExample: JSON.stringify({ id: 'video_xxx', status: 'queued', service_tier: 'standard' }, null, 2),
+  };
+  return [generationEndpoint,
+    {
+      id: 'ep-videos-queue', method: 'GET', path: '/v1/videos/queue', name: '视频队列',
+      description: '查询当前 Token 的活动视频任务和队列摘要。', params: [],
+      responseExample: JSON.stringify({ active_count: 1, queued_count: 1, running_count: 0, items: [] }, null, 2),
+    },
+    {
+      id: 'ep-video-queue', method: 'GET', path: '/v1/videos/generations/{id}/queue', name: '任务队列状态',
+      description: '查询单个视频任务的实时队列信息。', params: [{ name: 'id', type: 'string', required: true, description: '任务 ID' }],
+    },
+    {
+      id: 'ep-video-priority-queue', method: 'POST', path: '/v1/videos/generations/{id}/priority-queue', name: '升级优先队列',
+      description: '将支持的标准队列任务升级为优先队列；积分 VIP、已开始生成和终态任务不可升级。', params: [{ name: 'id', type: 'string', required: true, description: '任务 ID' }],
+    },
+  ];
+};
 
 // ===== 主组件 =====
 const ApiDocs: React.FC = () => {
   const [models, setModels] = useState<DocsModel[]>([]);
+  const [videoDocs, setVideoDocs] = useState<DocsVideosResponse>({ models: [], model_options: {}, channels: [] });
   const [search, setSearch] = useState('');
   const [loading, setLoading] = useState(true);
   const [activeSection, setActiveSection] = useState('quickstart');
@@ -420,8 +595,9 @@ const ApiDocs: React.FC = () => {
   useEffect(() => {
     Promise.all([
       fetchDocsModels().catch(() => []),
+      fetchDocsVideos().catch(() => ({ models: [], model_options: {}, channels: [] })),
       fetchGwModels().catch(() => []),
-    ]).then(([caps, gwModels]) => {
+    ]).then(([caps, videos, gwModels]) => {
       // caps 是老 models 表(现只剩 image/video 能力);chat 模型已迁网关,从 gw 拉取补进来
       const chatDocs: DocsModel[] = gwModels
         .filter(g => g.key_available > 0)
@@ -434,9 +610,13 @@ const ApiDocs: React.FC = () => {
           channels: [],
         }));
       setModels([...chatDocs, ...caps]);
+      setVideoDocs(videos);
       setLoading(false);
     });
   }, []);
+
+  const videoEndpoints = buildVideoDocEndpoints(videoDocs);
+  const compatEndpoints = [...IMAGE_COMPAT_ENDPOINTS, ...videoEndpoints];
 
   // IntersectionObserver for active nav tracking
   useEffect(() => {
@@ -476,6 +656,14 @@ const ApiDocs: React.FC = () => {
           ep.params.forEach(p => { section += `| ${p.name} | ${p.type} | ${p.required ? '是' : '否'} | ${p.description} |\n`; });
           section += '\n';
         }
+        if (ep.videoModels?.length) {
+          section += `**模型能力（按渠道）:**\n\n| 渠道 | 模型 | 任务 | 多模态范围 | 时长 | 分辨率 | 比例 | 素材角色 |\n|------|------|------|------|------|------|------|------|\n`;
+          ep.videoModels.forEach(({ model, options, channelName }) => {
+            const roles = (options.allowed_roles || []).map(value => videoRoleLabels[value] || value).join('、') || '-';
+            section += `| ${channelName || '-'} | ${model} | ${(options.task_types || []).map(value => videoTaskLabels[value] || value).join('、') || '-'} | ${formatMultimodalScope(options)} | ${formatDurationConstraint(options)} | ${(options.resolutions || []).join('、') || '-'} | ${(options.ratios || []).join('、') || '-'} | ${roles} |\n`;
+          });
+          section += '\n';
+        }
         if (ep.requestExample) section += `**请求示例:**\n\`\`\`json\n${ep.requestExample}\n\`\`\`\n\n`;
         if (ep.responseExample) section += `**响应示例:**\n\`\`\`json\n${ep.responseExample}\n\`\`\`\n\n`;
       });
@@ -503,7 +691,7 @@ const ApiDocs: React.FC = () => {
       md += '\n';
     });
     md += `## 兼容接口\n\n`;
-    COMPAT_ENDPOINTS.forEach(ep => {
+    compatEndpoints.forEach(ep => {
       md += `### ${ep.method} ${ep.path}\n${ep.name}${ep.description ? ' - ' + ep.description : ''}\n\n| 参数 | 类型 | 必填 | 说明 |\n|------|------|------|------|\n`;
       ep.params.forEach(p => { md += `| ${p.name} | ${p.type} | ${p.required ? '是' : '否'} | ${p.description} |\n`; });
       if (ep.requestExample) md += `\n**请求示例:**\n\`\`\`json\n${ep.requestExample}\n\`\`\`\n`;
@@ -583,10 +771,7 @@ const ApiDocs: React.FC = () => {
     { id: 'responses', label: 'Responses', icon: <Braces size={14} />, items: RESPONSES_ENDPOINTS.map(e => ({ id: e.id, label: e.name })) },
     { id: 'files', label: 'Files', icon: <FileUp size={14} />, items: FILE_ENDPOINTS.map(e => ({ id: e.id, label: e.name })) },
     { id: 'capabilities', label: '能力接口', icon: <Zap size={14} />, items: capabilityEndpoints.map(e => ({ id: e.id, label: e.name })) },
-    { id: 'compat', label: '兼容接口', icon: <RefreshCw size={14} />, items: [
-      { id: 'ep-images-generations', label: '图片生成' },
-      { id: 'ep-videos-generations', label: '视频生成' },
-    ]},
+    { id: 'compat', label: '兼容接口', icon: <RefreshCw size={14} />, items: compatEndpoints.map(e => ({ id: e.id, label: e.name })) },
     { id: 'tasks', label: '任务管理', icon: <ListChecks size={14} />, items: [
       { id: 'ep-get-task', label: '查询任务' },
       { id: 'ep-cancel-task', label: '取消任务' },
@@ -804,7 +989,7 @@ const ApiDocs: React.FC = () => {
           <h2 className="text-lg font-bold text-[var(--text-primary)] mb-3 flex items-center gap-2"><RefreshCw size={18} /> 兼容接口</h2>
           <p className="text-sm text-[var(--text-secondary)] mb-4">兼容 OpenAI 格式的图片/视频生成接口</p>
           <div className="space-y-3">
-            {COMPAT_ENDPOINTS.map(ep => (
+            {compatEndpoints.map(ep => (
               <EndpointCard key={ep.id} api={ep} onTryIt={setTryItApi} />
             ))}
           </div>

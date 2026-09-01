@@ -32,6 +32,7 @@ func (a *Adapter) DiscoverCapabilities(ctx context.Context) (map[string]video.Di
 		return nil, errors.New("generic capability response root is not an array")
 	}
 	platform := strings.TrimSpace(gjson.GetBytes(payload, config.PlatformPath).String())
+	serviceTiers := discoverServiceTiers(payload, config.ServiceTiers)
 	result := make(map[string]video.DiscoveredModelCapabilities)
 	for _, item := range items.Array() {
 		if platform != "" {
@@ -45,19 +46,21 @@ func (a *Adapter) DiscoverCapabilities(ctx context.Context) (map[string]video.Di
 			continue
 		}
 		capability := video.DiscoveredModelCapabilities{
-			Resolutions:      discoveryStrings(discoveryField(item, config, "resolutions")),
-			Ratios:           discoveryStrings(discoveryField(item, config, "ratios")),
-			DurationOptions:  discoveryInts(discoveryField(item, config, "duration_options")),
-			DurationMin:      int(discoveryField(item, config, "duration_min").Int()),
-			DurationMax:      int(discoveryField(item, config, "duration_max").Int()),
-			MaxImages:        int(discoveryField(item, config, "max_images").Int()),
-			MaxVideos:        int(discoveryField(item, config, "max_videos").Int()),
-			MaxAudios:        int(discoveryField(item, config, "max_audios").Int()),
-			MaxMedia:         int(discoveryField(item, config, "max_media").Int()),
-			MediaDurationMin: discoveryField(item, config, "media_duration_min").Float(),
-			MediaDurationMax: discoveryField(item, config, "media_duration_max").Float(),
-			MaxVideoDuration: discoveryField(item, config, "max_video_duration_total").Float(),
-			MaxAudioDuration: discoveryField(item, config, "max_audio_duration_total").Float(),
+			Resolutions:                   discoveryStrings(discoveryField(item, config, "resolutions")),
+			Ratios:                        discoveryStrings(discoveryField(item, config, "ratios")),
+			DurationOptions:               discoveryInts(discoveryField(item, config, "duration_options")),
+			DurationMin:                   int(discoveryField(item, config, "duration_min").Int()),
+			DurationMax:                   int(discoveryField(item, config, "duration_max").Int()),
+			DurationMaxWithVideoReference: int(discoveryField(item, config, "duration_max_with_video_reference").Int()),
+			MaxImages:                     int(discoveryField(item, config, "max_images").Int()),
+			MaxVideos:                     int(discoveryField(item, config, "max_videos").Int()),
+			MaxAudios:                     int(discoveryField(item, config, "max_audios").Int()),
+			MaxMedia:                      int(discoveryField(item, config, "max_media").Int()),
+			MediaDurationMin:              discoveryField(item, config, "media_duration_min").Float(),
+			MediaDurationMax:              discoveryField(item, config, "media_duration_max").Float(),
+			MaxVideoDuration:              discoveryField(item, config, "max_video_duration_total").Float(),
+			MaxAudioDuration:              discoveryField(item, config, "max_audio_duration_total").Float(),
+			ServiceTiers:                  append([]string(nil), serviceTiers...),
 		}
 		capability.AllowGeneratedAudio = discoveryBool(discoveryField(item, config, "allow_generated_audio"))
 		capability.SupportsSmartDuration = discoveryBool(discoveryField(item, config, "supports_smart_duration"))
@@ -76,6 +79,27 @@ func (a *Adapter) DiscoverCapabilities(ctx context.Context) (map[string]video.Di
 		result[model] = capability
 	}
 	return result, nil
+}
+
+func discoverServiceTiers(payload []byte, configured map[string]serviceTierDiscoveryConfig) []string {
+	result := make([]string, 0, len(configured))
+	for _, name := range []string{"standard", "priority", "vip"} {
+		tier, exists := configured[name]
+		if !exists {
+			continue
+		}
+		enabled := name == "standard" && tier.EnabledPath == "" && tier.PresentPath == ""
+		if tier.EnabledPath != "" {
+			value := gjson.GetBytes(payload, tier.EnabledPath)
+			enabled = value.Exists() && value.Bool()
+		} else if tier.PresentPath != "" {
+			enabled = gjson.GetBytes(payload, tier.PresentPath).Exists()
+		}
+		if enabled {
+			result = append(result, name)
+		}
+	}
+	return result
 }
 
 func discoveryField(item gjson.Result, config capabilityDiscoveryConfig, name string) gjson.Result {

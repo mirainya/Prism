@@ -22,16 +22,24 @@ func InitVideoEngine(e *video.Engine) {
 }
 
 type GenerationResponse struct {
-	ID        string `json:"id"`
-	Status    string `json:"status"`
-	CreatedAt string `json:"created_at,omitempty"`
+	ID          string `json:"id"`
+	Status      string `json:"status"`
+	ServiceTier string `json:"service_tier,omitempty"`
+	CreatedAt   string `json:"created_at,omitempty"`
 }
 
 type videoEstimateResponse struct {
-	EstimatedCost string `json:"estimated_cost"`
-	BaseCost      string `json:"base_cost"`
-	MarkupRatio   string `json:"markup_ratio"`
-	PricingMode   string `json:"pricing_mode"`
+	EstimatedCost string  `json:"estimated_cost"`
+	BaseCost      string  `json:"base_cost"`
+	MarkupRatio   string  `json:"markup_ratio"`
+	PricingMode   string  `json:"pricing_mode"`
+	ServiceTier   string  `json:"service_tier,omitempty"`
+	UnitCost      float64 `json:"unit_cost,omitempty"`
+	Units         float64 `json:"units,omitempty"`
+	BillingMode   string  `json:"billing_mode,omitempty"`
+	BillingTier   string  `json:"billing_tier,omitempty"`
+	PricingSource string  `json:"pricing_source,omitempty"`
+	Currency      string  `json:"currency,omitempty"`
 }
 
 func EstimateVideoGeneration(c *gin.Context) {
@@ -59,10 +67,20 @@ func EstimateVideoGeneration(c *gin.Context) {
 		writeVideoEstimateError(c, err)
 		return
 	}
-	resp.Success(c, videoEstimateResponse{
+	response := videoEstimateResponse{
 		EstimatedCost: estimate.EstimatedCost.String(), BaseCost: estimate.BaseCost.String(),
 		MarkupRatio: estimate.MarkupRatio.String(), PricingMode: estimate.PricingMode,
-	})
+		ServiceTier: req.ServiceTier,
+	}
+	if detail := estimate.ProviderEstimate; detail != nil {
+		response.UnitCost = detail.UnitCost
+		response.Units = detail.Units
+		response.BillingMode = detail.BillingMode
+		response.BillingTier = detail.BillingTier
+		response.PricingSource = detail.PricingSource
+		response.Currency = detail.Currency
+	}
+	resp.Success(c, response)
 }
 
 func writeVideoEstimateError(c *gin.Context, err error) {
@@ -108,7 +126,7 @@ func CreateVideoGeneration(c *gin.Context) {
 	c.Header(prismCallIDHeader, req.CallID)
 	result, err := videoEngine.CreateTask(c.Request.Context(), req)
 	if err == nil {
-		resp.Success(c, GenerationResponse{ID: result.TaskID, Status: "queued"})
+		resp.Success(c, GenerationResponse{ID: result.TaskID, Status: "queued", ServiceTier: req.ServiceTier})
 		return
 	}
 

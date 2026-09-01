@@ -18,6 +18,17 @@ func (a *Adapter) ValidateRequest(_ context.Context, request *video.GenerateRequ
 	if request == nil {
 		return errors.New("generic video request is required")
 	}
+	if request.ServiceTier == "" {
+		request.ServiceTier = "standard"
+	}
+	if request.ServiceTier != "standard" && len(a.config.ServiceTiers) == 0 {
+		return fmt.Errorf("service tier %q is not supported by this channel", request.ServiceTier)
+	}
+	if len(a.config.ServiceTiers) > 0 {
+		if _, exists := a.config.ServiceTiers[request.ServiceTier]; !exists {
+			return fmt.Errorf("service tier %q is not supported by this channel", request.ServiceTier)
+		}
+	}
 	if len(a.config.Validation.Models) == 0 {
 		if len(request.Params) > 0 {
 			return errors.New("video extension parameters are not declared for this channel")
@@ -34,20 +45,51 @@ func (a *Adapter) ValidateRequest(_ context.Context, request *video.GenerateRequ
 			return fmt.Errorf("model %q is no longer available", request.Model)
 		}
 	}
-	return validateRequestRule(request, rule)
+	validationRequest := *request
+	validationRequest.Params = cloneObject(request.Params)
+	if tier, exists := a.config.ServiceTiers[request.ServiceTier]; exists {
+		for name, value := range tier.RequestParams {
+			if _, present := validationRequest.Params[name]; !present {
+				validationRequest.Params[name] = value
+			}
+		}
+	}
+	return validateRequestRule(&validationRequest, rule)
 }
 
 func validateRequestRule(request *video.GenerateRequest, rule validationRule) error {
 	if rule.DurationMin > 0 && request.Duration < rule.DurationMin || rule.DurationMax > 0 && request.Duration > rule.DurationMax {
 		return fmt.Errorf("duration must be between %d and %d seconds", rule.DurationMin, rule.DurationMax)
 	}
-	if request.Resolution != "" && len(rule.Resolutions) > 0 && !contains(rule.Resolutions, request.Resolution) {
+	allowedResolutions := append([]string(nil), rule.Resolutions...)
+	for _, parameter := range rule.Parameters {
+		selected, exists := request.Params[parameter.Name]
+		if !exists {
+			continue
+		}
+		selectedJSON, _ := json.Marshal(selected)
+		for _, option := range parameter.Options {
+			optionJSON, _ := json.Marshal(option.Value)
+			if string(selectedJSON) == string(optionJSON) {
+				for _, resolution := range option.AddsResolutions {
+					if !contains(allowedResolutions, resolution) {
+						allowedResolutions = append(allowedResolutions, resolution)
+					}
+				}
+			}
+		}
+	}
+	if request.Resolution != "" && len(allowedResolutions) > 0 && !contains(allowedResolutions, request.Resolution) {
 		return fmt.Errorf("resolution %q is not supported", request.Resolution)
 	}
 	if request.Ratio != "" && len(rule.Ratios) > 0 && !contains(rule.Ratios, request.Ratio) {
 		return fmt.Errorf("ratio %q is not supported", request.Ratio)
 	}
-	if request.TaskMode != "" && len(rule.TaskModes) > 0 && !contains(rule.TaskModes, request.TaskMode) {
+	validationMode := request.TaskMode
+	if isReferenceTaskMode(validationMode) && !contains(rule.TaskModes, validationMode) && contains(rule.TaskModes, "references") {
+		validationMode = "references"
+	}
+	if validationMode != "" && len(rule.TaskModes) > 0 && !contains(rule.TaskModes, validationMode) {
 		return fmt.Errorf("task mode %q is not supported", request.TaskMode)
 	}
 	if rule.AllowGeneratedAudio != nil && !*rule.AllowGeneratedAudio && request.Audio {
@@ -76,9 +118,18 @@ func validateRequestRule(request *video.GenerateRequest, rule validationRule) er
 		if !exists {
 			continue
 		}
+		if len(parameter.TaskModes) > 0 && !contains(parameter.TaskModes, request.TaskMode) {
+			return fmt.Errorf("parameter %q is not supported for task mode %q", parameter.Name, request.TaskMode)
+		}
 		encoded, err := json.Marshal(value)
 		if err != nil {
 			return fmt.Errorf("parameter %q has an invalid value", parameter.Name)
+		}
+		if parameter.Type == "number" || parameter.Type == "integer" {
+			if !validNumericParameter(value, parameter.Type, parameter.Min, parameter.Max) {
+				return fmt.Errorf("parameter %q is outside its numeric range", parameter.Name)
+			}
+			continue
 		}
 		valid := false
 		for _, option := range parameter.Options {
@@ -90,6 +141,13 @@ func validateRequestRule(request *video.GenerateRequest, rule validationRule) er
 		}
 		if !valid {
 			return fmt.Errorf("parameter %q is not supported", parameter.Name)
+		}
+		if enabled, ok := value.(bool); ok && enabled {
+			for _, conflict := range parameter.ConflictsWith {
+				if conflicting, conflictExists := request.Params[conflict].(bool); conflictExists && conflicting {
+					return fmt.Errorf("parameters %q and %q cannot both be enabled", parameter.Name, conflict)
+				}
+			}
 		}
 	}
 
@@ -124,7 +182,11 @@ func validateRequestRule(request *video.GenerateRequest, rule validationRule) er
 	if rule.RequireVisualMediaWithAudio && counts["audio"] > 0 && counts["image"] == 0 && counts["video"] == 0 {
 		return errors.New("audio references require image or video media")
 	}
-	if modeRule, exists := rule.TaskModeRules[request.TaskMode]; exists {
+	modeRule, modeRuleExists := rule.TaskModeRules[request.TaskMode]
+	if !modeRuleExists && validationMode != request.TaskMode {
+		modeRule, modeRuleExists = rule.TaskModeRules[validationMode]
+	}
+	if modeRuleExists {
 		if modeRule.MinMedia > 0 && mediaCount < modeRule.MinMedia {
 			return fmt.Errorf("task mode %q requires at least %d reference items", request.TaskMode, modeRule.MinMedia)
 		}
@@ -153,6 +215,9 @@ func validateRequestRule(request *video.GenerateRequest, rule validationRule) er
 	}
 	if rule.MaxAudioDuration > 0 && totals["audio"] > rule.MaxAudioDuration {
 		return fmt.Errorf("audio reference duration total cannot exceed %.0f seconds", rule.MaxAudioDuration)
+	}
+	if counts["video"] > 0 && rule.DurationMaxWithVideoReference > 0 && request.Duration > rule.DurationMaxWithVideoReference {
+		return fmt.Errorf("duration with video reference cannot exceed %d seconds", rule.DurationMaxWithVideoReference)
 	}
 	return nil
 }

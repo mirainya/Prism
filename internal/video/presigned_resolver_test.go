@@ -24,6 +24,11 @@ func TestPresignedUploadResolverSingleUpload(t *testing.T) {
 			if r.Header.Get("Authorization") != "Bearer secret" || r.Header.Get("Idempotency-Key") == "" {
 				t.Error("upload application headers are missing")
 			}
+			var body map[string]any
+			_ = json.NewDecoder(r.Body).Decode(&body)
+			if body["idempotency_key"] == "" {
+				t.Error("upload application body idempotency key is missing")
+			}
 			w.Header().Set("Content-Type", "application/json")
 			_, _ = io.WriteString(w, `{"code":0,"data":{"disposition":"owner","upload":{"session_token":"session-1","generation":1,"mode":"single","upload_url":"`+serverURL+`/r2/single"}}}`)
 		case "/r2/single":
@@ -47,6 +52,7 @@ func TestPresignedUploadResolverSingleUpload(t *testing.T) {
 		baseURL: server.URL + "/api", apiKey: "secret", controlClient: server.Client(), uploadClient: server.Client(),
 		requestID: "task-1", config: testPresignedUploadConfig(), openSource: testAssetSource(data, "image/png"),
 	}
+	resolver.config.IdempotencyBodyField = "idempotency_key"
 	asset := &VideoAsset{ID: "asset-1", Kind: "image", ContentType: "image/png", StoragePath: "https://cdn.example/image.png", Status: VideoAssetStatusReady, ExpiresAt: time.Now().Add(time.Hour)}
 	resolved, err := resolver.Prepare(context.Background(), asset)
 	if err != nil || resolved.RefType != ResolvedAssetRefProviderObject || resolved.RefValue != "object-1" || !completed {
@@ -119,6 +125,11 @@ func TestParsePresignedUploadConfigRejectsMissingAndInvalidPaths(t *testing.T) {
 			name:        "protocol relative path",
 			extraConfig: []byte(`{"asset_resolver":{"profile":"disposition_v1","apply_path":"//upload.example/apply","wait_path":"/wait","complete_path":"/complete","abort_path":"/abort"}}`),
 			wantError:   "apply_path must be an absolute URL path",
+		},
+		{
+			name:        "invalid idempotency body field",
+			extraConfig: []byte(`{"asset_resolver":{"profile":"disposition_v1","apply_path":"/apply","wait_path":"/wait","complete_path":"/complete","abort_path":"/abort","idempotency_body_field":"metadata.idempotency_key"}}`),
+			wantError:   "idempotency_body_field must be a JSON field name",
 		},
 	}
 

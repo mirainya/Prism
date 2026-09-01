@@ -30,7 +30,7 @@ func TestDecodeAndConvertCanonicalRequest(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if req.UserID != 3 || req.TokenID != 7 || req.Ratio != "16:9" || req.TaskMode != "references" || !req.Audio {
+	if req.UserID != 3 || req.TokenID != 7 || req.Ratio != "16:9" || req.TaskMode != "first_frame" || !req.Audio {
 		t.Fatalf("request = %#v", req)
 	}
 	if len(req.Content) != 1 || req.Content[0].Type != "image_url" || req.Content[0].AssetID != "asset_1" {
@@ -64,7 +64,7 @@ func TestDecodeRejectsInvalidReferenceSemantics(t *testing.T) {
 	requests := []string{
 		`{"model":"video-fast","references":[{"type":"image","role":"last_frame","url":"https://example.com/last.png"}]}`,
 		`{"model":"video-fast","references":[{"type":"audio","role":"first_frame","url":"https://example.com/a.mp3"}]}`,
-		`{"model":"video-fast","references":[{"type":"video","role":"source_video","url":"https://example.com/a.mp4"},{"type":"image","role":"reference_image","url":"https://example.com/a.png"}]}`,
+		`{"model":"video-fast","references":[{"type":"video","role":"source_video","url":"https://example.com/a.mp4"},{"type":"video","role":"reference_video","url":"https://example.com/b.mp4"}]}`,
 		`{"model":"video-fast","references":[{"type":"image","role":"reference_image","asset_id":"asset_1","url":"https://example.com/a.png"}]}`,
 	}
 	for _, request := range requests {
@@ -101,7 +101,7 @@ func TestDecodeRejectsUnknownProviderOptions(t *testing.T) {
 	}
 }
 
-func TestToTaskRequestMapsSourceVideoToLegacyExtensionMode(t *testing.T) {
+func TestToTaskRequestPreservesSourceVideoForExtensionMode(t *testing.T) {
 	spec, err := Decode(strings.NewReader(`{
 		"model":"video-fast",
 		"references":[{"type":"video","role":"source_video","asset_id":"asset_video"}]
@@ -113,7 +113,27 @@ func TestToTaskRequestMapsSourceVideoToLegacyExtensionMode(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if req.TaskMode != "video_extension" || req.Content[0].Role != "reference_video" {
+	if req.TaskMode != "video_extension" || req.Content[0].Role != "source_video" {
+		t.Fatalf("request = %#v", req)
+	}
+}
+
+func TestToTaskRequestMapsVideoEdit(t *testing.T) {
+	spec, err := Decode(strings.NewReader(`{
+		"model":"video-fast",
+		"references":[
+			{"id":"source","type":"video","role":"edit_source","asset_id":"asset_video"},
+			{"id":"style","type":"image","role":"reference_image","asset_id":"asset_image"}
+		]
+	}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	req, err := ToTaskRequest(spec, 3, 7)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if req.TaskMode != "video_edit" || req.Content[0].Role != "edit_source" || req.Content[0].ClientRefID != "source" {
 		t.Fatalf("request = %#v", req)
 	}
 }

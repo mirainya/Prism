@@ -12,8 +12,8 @@ func TestLoadIncludesImmutableBaseline(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(migrations) != 39 {
-		t.Fatalf("managed migrations=%d, want 39", len(migrations))
+	if len(migrations) != 46 {
+		t.Fatalf("managed migrations=%d, want 46", len(migrations))
 	}
 	baseline := migrations[0]
 	if baseline.Filename != "20260718_150000_schema_baseline.sql" {
@@ -324,11 +324,88 @@ func TestLoadIncludesImmutableBaseline(t *testing.T) {
 			t.Errorf("H Seedance repair migration is missing %q", fragment)
 		}
 	}
-	if migrations[37].Filename != "20260825_171500_use_direct_image_upstream.sql" {
-		t.Fatalf("direct image upstream migration filename=%q", migrations[37].Filename)
+	if migrations[37].Filename != "20260820_170000_update_sub2_seedance_v27.sql" {
+		t.Fatalf("Sub2 v2.7 migration filename=%q", migrations[37].Filename)
 	}
-	if migrations[38].Filename != "20260825_172000_extend_gpt_image2_c_timeout.sql" {
-		t.Fatalf("image timeout migration filename=%q", migrations[38].Filename)
+	for _, fragment := range []string{
+		"'$.adapter.request.fields.task_mode', 'provider_mode'",
+		"'video_edit', 'video_edit'",
+		"'source_video', 'extension_source'",
+		"'$.asset_resolver.idempotency_body_field', 'idempotency_key'",
+		"'duration_max_with_video_reference', 18",
+		"'h_channel_points_vip'",
+		`validation.models."seedance-2.5".require_media`,
+	} {
+		if !strings.Contains(migrations[37].SQL, fragment) {
+			t.Errorf("Sub2 v2.7 migration is missing %q", fragment)
+		}
+	}
+	if migrations[38].Filename != "20260820_183000_add_video_service_tiers.sql" {
+		t.Fatalf("video service tier migration filename=%q", migrations[38].Filename)
+	}
+	for _, fragment := range []string{
+		"service_tier VARCHAR(24)",
+		"provider_metadata JSON",
+		"h_channel_priority_queue",
+		"h_channel_points_vip",
+		"priority-queue",
+	} {
+		if !strings.Contains(migrations[38].SQL, fragment) {
+			t.Errorf("video service tier migration is missing %q", fragment)
+		}
+	}
+	if migrations[39].Filename != "20260824_110000_add_autodl_minimax_h3_workflow.sql" {
+		t.Fatalf("AutoDL workflow migration filename=%q", migrations[39].Filename)
+	}
+	for _, fragment := range []string{
+		"minimax_h3_image_audio_to_video_v2_15s",
+		`"auth_prefix": ""`,
+		`"video_url_paths": ["data.results.0.url"]`,
+		`"target":"ref_image_8"`,
+		`"target":"ref_audio_2"`,
+		`"result_storage": {"enabled": true}`,
+	} {
+		if !strings.Contains(migrations[39].SQL, fragment) {
+			t.Errorf("AutoDL workflow migration is missing %q", fragment)
+		}
+	}
+	if migrations[40].Filename != "20260824_132000_allow_autodl_result_host.sql" {
+		t.Fatalf("AutoDL result host migration filename=%q", migrations[40].Filename)
+	}
+	if migrations[41].Filename != "20260825_171500_use_direct_image_upstream.sql" {
+		t.Fatalf("direct image upstream migration filename=%q", migrations[41].Filename)
+	}
+	if migrations[42].Filename != "20260825_172000_extend_gpt_image2_c_timeout.sql" {
+		t.Fatalf("image timeout migration filename=%q", migrations[42].Filename)
+	}
+	if migrations[43].Filename != "20260825_174500_enable_duomi_image_edit.sql" {
+		t.Fatalf("Duomi image edit migration filename=%q", migrations[43].Filename)
+	}
+	if migrations[44].Filename != "20260827_175629_disable_unverified_sub2_video_cancel.sql" {
+		t.Fatalf("Sub2 cancel policy migration filename=%q", migrations[44].Filename)
+	}
+	for _, fragment := range []string{
+		"'$.cancel', CAST('false' AS JSON)",
+		"'$.adapter.cancel.enabled', CAST('false' AS JSON)",
+		"'$.adapter.local_cancel.enabled', CAST('true' AS JSON)",
+	} {
+		if !strings.Contains(migrations[44].SQL, fragment) {
+			t.Errorf("Sub2 cancel policy migration is missing %q", fragment)
+		}
+	}
+	if migrations[45].Filename != "20260827_180000_formalize_video_channel_settings.sql" {
+		t.Fatalf("video channel settings migration filename=%q", migrations[45].Filename)
+	}
+	for _, fragment := range []string{
+		"ADD COLUMN adapter_profile",
+		"ADD COLUMN cancel_mode",
+		"ADD COLUMN pricing_mode",
+		"ADD COLUMN result_storage_enabled",
+		"JSON_EXTRACT(extra_config, '$.result_storage.enabled')",
+	} {
+		if !strings.Contains(migrations[45].SQL, fragment) {
+			t.Errorf("video channel settings migration is missing %q", fragment)
+		}
 	}
 }
 

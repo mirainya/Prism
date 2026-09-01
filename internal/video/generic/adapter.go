@@ -65,6 +65,17 @@ func (a *Adapter) BuildRequest(_ context.Context, request *video.GenerateRequest
 		"audio":      {value: request.Audio, present: true},
 		"task_mode":  {value: request.TaskMode, present: strings.TrimSpace(request.TaskMode) != ""},
 	}
+	if value := sources["task_mode"]; value.present && len(a.config.Request.TaskModeMap) > 0 {
+		mapped, exists := a.config.Request.TaskModeMap[request.TaskMode]
+		if !exists && isReferenceTaskMode(request.TaskMode) {
+			mapped, exists = a.config.Request.TaskModeMap["references"]
+		}
+		if !exists {
+			return nil, fmt.Errorf("generic adapter has no upstream task mode mapping for %q", request.TaskMode)
+		}
+		value.value = mapped
+		sources["task_mode"] = value
+	}
 	for source, target := range a.config.Request.Fields {
 		value := sources[source]
 		if value.present {
@@ -81,7 +92,7 @@ func (a *Adapter) BuildRequest(_ context.Context, request *video.GenerateRequest
 	if len(request.Content) > 0 && *a.config.Request.IncludeContent {
 		content := make([]map[string]any, 0, len(request.Content))
 		for _, item := range request.Content {
-			mapped, err := a.mapContent(item)
+			mapped, err := a.mapContent(item, request.TaskMode)
 			if err != nil {
 				return nil, err
 			}
@@ -93,6 +104,19 @@ func (a *Adapter) BuildRequest(_ context.Context, request *video.GenerateRequest
 	}
 	if err := a.applyContentProjections(body, request.Model, request.Content); err != nil {
 		return nil, err
+	}
+	if request.ServiceTier != "" {
+		if tier, exists := a.config.ServiceTiers[strings.ToLower(request.ServiceTier)]; exists {
+			for key, value := range tier.RequestParams {
+				if _, present := body[key]; !present {
+					if err := setField(body, key, cloneValue(value)); err != nil {
+						return nil, fmt.Errorf("map service tier %s: %w", request.ServiceTier, err)
+					}
+				}
+			}
+		} else if len(a.config.ServiceTiers) > 0 {
+			return nil, fmt.Errorf("service tier %q is not supported by this channel", request.ServiceTier)
+		}
 	}
 	if a.config.Request.ParamsMode == "merge_missing" {
 		for key, value := range request.Params {
@@ -106,6 +130,10 @@ func (a *Adapter) BuildRequest(_ context.Context, request *video.GenerateRequest
 		headers[a.config.Request.RequestIDHeader] = request.TaskID
 	}
 	return &video.ProviderRequest{Body: body, Headers: headers}, nil
+}
+
+func isReferenceTaskMode(mode string) bool {
+	return mode == "first_frame" || mode == "first_last_frame" || mode == "multimodal"
 }
 
 func (a *Adapter) applyContentProjections(body map[string]any, model string, content []video.ContentItem) error {
@@ -184,12 +212,19 @@ func contentValue(item video.ContentItem, source string) (any, bool) {
 		return item.StorageObjectID, item.StorageObjectID != ""
 	case "duration":
 		return item.DurationSeconds, item.DurationSeconds > 0
+	case "client_ref_id":
+		return item.ClientRefID, item.ClientRefID != ""
 	default:
 		return nil, false
 	}
 }
 
-func (a *Adapter) mapContent(item video.ContentItem) (map[string]any, error) {
+func (a *Adapter) mapContent(item video.ContentItem, taskMode string) (map[string]any, error) {
+	if roleMap := a.config.Request.ContentRoleMap[taskMode]; len(roleMap) > 0 {
+		if mappedRole, exists := roleMap[item.Role]; exists {
+			item.Role = mappedRole
+		}
+	}
 	mapped := make(map[string]any)
 	for source, target := range a.config.Request.ContentFields {
 		value, present := contentValue(item, source)
@@ -231,41 +266,59 @@ func (a *Adapter) Submit(ctx context.Context, request *video.ProviderRequest) (*
 		ProviderTaskID: parsed.ProviderTaskID,
 		Status:         parsed.Status,
 		Result:         parsed.Result,
+		Metadata:       parsed.Metadata,
 	}, nil
 }
 
 func (a *Adapter) Estimate(ctx context.Context, request *video.GenerateRequest) (float64, error) {
-	if err := a.ready(); err != nil {
+	estimate, err := a.EstimateDetailed(ctx, request)
+	if err != nil {
 		return 0, err
 	}
+	return estimate.EstimatedCost, nil
+}
+
+func (a *Adapter) EstimateDetailed(ctx context.Context, request *video.GenerateRequest) (*video.ProviderEstimate, error) {
+	if err := a.ready(); err != nil {
+		return nil, err
+	}
 	if !a.config.Estimate.Enabled {
-		return 0, video.ErrEstimateNotSupported
+		return nil, video.ErrEstimateNotSupported
 	}
 	providerRequest, err := a.BuildRequest(ctx, request)
 	if err != nil {
-		return 0, err
+		return nil, err
 	}
 	body, err := a.marshalBody(providerRequest.Body)
 	if err != nil {
-		return 0, fmt.Errorf("marshal generic estimate request: %w", err)
+		return nil, fmt.Errorf("marshal generic estimate request: %w", err)
 	}
 	responseBody, err := a.do(ctx, "estimate", a.config.Estimate, body, providerRequest.Headers)
 	if err != nil {
-		return 0, err
+		return nil, err
 	}
 	payload, err := a.responsePayload(responseBody)
 	if err != nil {
-		return 0, fmt.Errorf("parse generic estimate response: %w", err)
+		return nil, fmt.Errorf("parse generic estimate response: %w", err)
 	}
 	result := firstResult(payload, a.config.Response.EstimatedCostPaths)
 	if !result.Exists() || result.Type == gjson.Null || result.IsObject() || result.IsArray() {
-		return 0, errors.New("generic estimate response is missing estimated cost")
+		return nil, errors.New("generic estimate response is missing estimated cost")
 	}
 	estimatedCost, err := strconv.ParseFloat(strings.TrimSpace(result.String()), 64)
 	if err != nil || estimatedCost < 0 || math.IsNaN(estimatedCost) || math.IsInf(estimatedCost, 0) {
-		return 0, errors.New("generic estimate response contains an invalid estimated cost")
+		return nil, errors.New("generic estimate response contains an invalid estimated cost")
 	}
-	return estimatedCost, nil
+	return &video.ProviderEstimate{
+		EstimatedCost: estimatedCost,
+		ActualCost:    firstFloat(payload, a.config.Response.ActualCostPaths),
+		UnitCost:      firstFloat(payload, a.config.Response.UnitCostPaths),
+		Units:         firstFloat(payload, a.config.Response.UnitsPaths),
+		BillingMode:   firstText(payload, a.config.Response.BillingModePaths),
+		BillingTier:   firstText(payload, a.config.Response.BillingTierPaths),
+		PricingSource: firstText(payload, a.config.Response.PricingSourcePaths),
+		Currency:      firstText(payload, a.config.Response.CurrencyPaths),
+	}, nil
 }
 
 func (a *Adapter) Poll(ctx context.Context, providerTaskID string) (*video.Progress, error) {
@@ -288,7 +341,7 @@ func (a *Adapter) Poll(ctx context.Context, providerTaskID string) (*video.Progr
 		return nil, video.NewRetryableProviderError("parse generic poll response", err)
 	}
 	return &video.Progress{
-		Status: parsed.Status, Percent: parsed.Percent, Result: parsed.Result, Error: parsed.Error,
+		Status: parsed.Status, Percent: parsed.Percent, Result: parsed.Result, Error: parsed.Error, Metadata: parsed.Metadata,
 	}, nil
 }
 
@@ -345,6 +398,67 @@ func (a *Adapter) Cancel(ctx context.Context, providerTaskID string) error {
 		}
 	}
 	return nil
+}
+
+func (a *Adapter) CanAction(action string, status video.VideoTaskStatus) bool {
+	if a == nil || a.configErr != nil {
+		return false
+	}
+	operation, exists := a.config.Actions[strings.ToLower(strings.TrimSpace(action))]
+	if !exists || !operation.Enabled {
+		return false
+	}
+	if len(operation.AllowedStatuses) == 0 {
+		return true
+	}
+	for _, allowed := range operation.AllowedStatuses {
+		if video.VideoTaskStatus(allowed) == status {
+			return true
+		}
+	}
+	return false
+}
+
+func (a *Adapter) ActionSurchargePercent(action string) float64 {
+	if a == nil || a.configErr != nil {
+		return 0
+	}
+	if action == "priority_queue" {
+		if tier, ok := a.config.ServiceTiers["priority"]; ok && tier.SurchargePercent > 0 {
+			return tier.SurchargePercent
+		}
+	}
+	return 0
+}
+
+func (a *Adapter) Action(ctx context.Context, action, providerTaskID string) (*video.ProviderMetadata, error) {
+	if err := a.ready(); err != nil {
+		return nil, err
+	}
+	action = strings.ToLower(strings.TrimSpace(action))
+	operation, exists := a.config.Actions[action]
+	if !exists || !operation.Enabled {
+		return nil, video.ErrActionNotSupported
+	}
+	if strings.TrimSpace(providerTaskID) == "" {
+		return nil, errors.New("provider task id is required")
+	}
+	body, err := a.operationBody(operation, providerTaskID)
+	if err != nil {
+		return nil, fmt.Errorf("build generic action request: %w", err)
+	}
+	responseBody, err := a.do(ctx, "action."+action, operation, body, nil, providerTaskID)
+	if err != nil {
+		return nil, err
+	}
+	if len(bytes.TrimSpace(responseBody)) > 0 {
+		payload, err := a.responsePayload(responseBody)
+		if err != nil {
+			return nil, fmt.Errorf("parse generic action response: %w", err)
+		}
+		return a.parseProviderMetadata(payload), nil
+	}
+	return nil, nil
 }
 
 func (a *Adapter) RequestPath() string {
@@ -406,6 +520,7 @@ type parsedResponse struct {
 	Percent        int
 	Result         *video.GenerationResult
 	Error          string
+	Metadata       *video.ProviderMetadata
 }
 
 func (a *Adapter) parseResponse(body []byte, defaultStatus string) (*parsedResponse, error) {
@@ -445,8 +560,26 @@ func (a *Adapter) parseResponse(body []byte, defaultStatus string) (*parsedRespo
 	}
 	return &parsedResponse{
 		ProviderTaskID: providerTaskID, Status: status, Percent: percent, Result: result,
-		Error: firstText(payload, a.config.Response.ErrorPaths),
+		Error:    firstText(payload, a.config.Response.ErrorPaths),
+		Metadata: a.parseProviderMetadata(payload),
 	}, nil
+}
+
+func (a *Adapter) parseProviderMetadata(payload []byte) *video.ProviderMetadata {
+	metadata := &video.ProviderMetadata{
+		QueueStatus:              firstText(payload, a.config.Response.QueueStatusPaths),
+		QueuePosition:            firstInt(payload, a.config.Response.QueuePositionPaths),
+		QueueLimit:               firstInt(payload, a.config.Response.QueueLimitPaths),
+		PriorityQueue:            firstBool(payload, a.config.Response.PriorityQueuePaths),
+		PointsVIP:                firstBool(payload, a.config.Response.PointsVIPPaths),
+		PrioritySurchargePercent: firstFloat(payload, a.config.Response.PrioritySurchargePercentPaths),
+		EstimatedCost:            firstFloat(payload, a.config.Response.EstimatedCostPaths),
+	}
+	if metadata.QueueStatus == "" && metadata.QueuePosition == 0 && metadata.QueueLimit == 0 &&
+		metadata.PriorityQueue == nil && metadata.PointsVIP == nil && metadata.PrioritySurchargePercent == 0 && metadata.EstimatedCost == 0 {
+		return nil
+	}
+	return metadata
 }
 
 func (a *Adapter) responsePayload(body []byte) ([]byte, error) {
@@ -522,6 +655,15 @@ func firstFloat(body []byte, paths []string) float64 {
 		return 0
 	}
 	return result.Float()
+}
+
+func firstBool(body []byte, paths []string) *bool {
+	result := firstResult(body, paths)
+	if !result.Exists() || (result.Type != gjson.True && result.Type != gjson.False) {
+		return nil
+	}
+	value := result.Bool()
+	return &value
 }
 
 func setField(target map[string]any, path string, value any) error {

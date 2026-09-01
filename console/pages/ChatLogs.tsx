@@ -7,7 +7,6 @@ import {
     Search,
     ChevronRight,
     RefreshCw,
-    ChevronLeft,
     MessageSquare,
     User,
     Bot,
@@ -23,9 +22,9 @@ import {
 } from 'lucide-react';
 import {fetchConversations, fetchConversationMessages, fetchConversationTurns, fetchUsers, ConversationListParams} from '../services/api';
 import {Conversation, ChatMessage, ConversationCanonicalItem, ConversationTurnRecord, User as PrismUser, UserRole} from '../types';
-import {Dialog, Drawer, Select} from '../components/ui';
+import {Dialog, Drawer, Pagination, Select} from '../components/ui';
 
-const PAGE_SIZE = 20;
+const DEFAULT_PAGE_SIZE = 20;
 const DETAIL_PAGE_SIZE = 200;
 const INPUT_CLASS = 'w-full min-w-0 rounded-lg border border-[var(--border-soft)] bg-[var(--surface-card)] px-3 py-2 text-sm text-[var(--text-primary)] outline-none transition focus:border-[var(--primary)] focus:ring-2 focus:ring-[var(--primary)]/20';
 
@@ -670,6 +669,7 @@ const ChatLogs: React.FC = () => {
     const [conversations, setConversations] = useState<Conversation[]>([]);
     const [total, setTotal] = useState(0);
     const [page, setPage] = useState(1);
+    const [pageSize, setPageSize] = useState(DEFAULT_PAGE_SIZE);
     const [isLoading, setIsLoading] = useState(true);
     const [loadError, setLoadError] = useState('');
     const [refreshKey, setRefreshKey] = useState(0);
@@ -705,7 +705,7 @@ const ChatLogs: React.FC = () => {
         setLoadError('');
         const params: ConversationListParams = {
             page,
-            page_size: PAGE_SIZE,
+            page_size: pageSize,
             keyword: filters.keyword.trim() || undefined,
             model: filters.model.trim() || undefined,
             start_date: filters.start_date || undefined,
@@ -719,7 +719,7 @@ const ChatLogs: React.FC = () => {
             if (requestNo !== listRequest.current) return;
             setConversations(resp.items);
             setTotal(resp.total);
-            const lastPage = Math.max(1, Math.ceil(resp.total / PAGE_SIZE));
+            const lastPage = Math.max(1, Math.ceil(resp.total / pageSize));
             if (page > lastPage) setPage(lastPage);
         }).catch(error => {
             if (requestNo !== listRequest.current) return;
@@ -732,7 +732,7 @@ const ChatLogs: React.FC = () => {
         return () => {
             if (requestNo === listRequest.current) listRequest.current += 1;
         };
-    }, [admin, filters, page, refreshKey]);
+    }, [admin, filters, page, pageSize, refreshKey]);
 
     const openDetails = async (conv: Conversation) => {
         const requestNo = ++detailRequest.current;
@@ -862,12 +862,16 @@ const ChatLogs: React.FC = () => {
         setRefreshKey(value => value + 1);
     };
 
+    const changePageSize = (value: number) => {
+        setPageSize(value);
+        setPage(1);
+    };
+
     const openCall = (callId: string) => {
         closeDetails();
         navigate(`/calls?call_id=${encodeURIComponent(callId)}`);
     };
 
-    const totalPages = Math.max(1, Math.ceil(total / PAGE_SIZE));
     const tableColumnCount = admin ? 8 : 7;
     const canLoadMoreDetails = messages.length < messageTotal || turnRecords.length < turnTotal;
     const detailLoadSummary = `消息 ${messages.length}/${messageTotal} · 轮次 ${turnRecords.length}/${turnTotal}`;
@@ -957,13 +961,7 @@ const ChatLogs: React.FC = () => {
                         </tbody>
                     </table>
                 </div>
-                <footer className="flex flex-wrap items-center justify-between gap-3 border-t border-[var(--border-soft)] px-4 py-3">
-                    <span className="text-sm text-[var(--text-secondary)]">共 {total} 条，第 {page}/{totalPages} 页</span>
-                    <div className="flex items-center gap-1">
-                        <button type="button" title="上一页" aria-label="上一页" disabled={page <= 1 || isLoading} onClick={() => setPage(value => Math.max(1, value - 1))} className="flex h-8 w-8 items-center justify-center rounded-lg border border-[var(--border-soft)] hover:bg-[var(--surface)] disabled:cursor-not-allowed disabled:opacity-40"><ChevronLeft size={16}/></button>
-                        <button type="button" title="下一页" aria-label="下一页" disabled={page >= totalPages || isLoading} onClick={() => setPage(value => Math.min(totalPages, value + 1))} className="flex h-8 w-8 items-center justify-center rounded-lg border border-[var(--border-soft)] hover:bg-[var(--surface)] disabled:cursor-not-allowed disabled:opacity-40"><ChevronRight size={16}/></button>
-                    </div>
-                </footer>
+                <Pagination page={page} pageSize={pageSize} total={total} loading={isLoading} onPageChange={setPage} onPageSizeChange={changePageSize} />
             </section>
 
             <Drawer open={isDrawerOpen && Boolean(selectedConversation)} onClose={closeDetails} title="对话详情" subtitle={selectedConversation ? (selectedConversation.title || `会话 #${selectedConversation.id}`) : '加载中'} width="max-w-5xl" panelClassName="bg-[var(--surface)]">

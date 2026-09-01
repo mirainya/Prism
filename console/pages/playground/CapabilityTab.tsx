@@ -220,8 +220,8 @@ const CapabilityTab: React.FC<{ tokenId: string }> = ({ tokenId }) => {
     }) ? previous : '');
   }, [currentCap, selectedOperation, currentChannelOptions]);
 
-  const hydrateTask = async (taskNo: string) => {
-    const detail = await playgroundGetTask(tokenId, taskNo);
+  const hydrateTask = async (taskNo: string, includeParams = false) => {
+    const detail = await playgroundGetTask(tokenId, taskNo, includeParams);
     setTasks(prev => mergeTask(prev, {
       taskNo: detail.taskNo, status: detail.status, progress: detail.progress || 0,
       result: detail.result, error: detail.error || '', cost: detail.cost || 0,
@@ -265,17 +265,6 @@ const CapabilityTab: React.FC<{ tokenId: string }> = ({ tokenId }) => {
       if (prev && historyTasks.some(task => task.taskNo === prev)) return prev;
       return historyTasks[0]?.taskNo || '';
     });
-    const detailTargets = historyTasks.slice(0, 5);
-    await Promise.allSettled(detailTargets.map(task => playgroundGetTask(currentTokenId, task.taskNo).then(detail => {
-      if (currentTokenId !== activeTokenRef.current) return;
-      setTasks(prev => mergeTask(prev, {
-        taskNo: detail.taskNo, status: detail.status, progress: detail.progress || 0,
-        result: detail.result, error: detail.error || '', cost: detail.cost || 0,
-        rawParams: detail.rawParams, mappedParams: detail.mappedParams,
-        vendorResponse: detail.vendorResponse, vendorTaskId: detail.vendorTaskId,
-        createdAt: detail.createdAt, startedAt: detail.startedAt, completedAt: detail.completedAt,
-      }));
-    })));
     historyTasks.forEach(task => {
       if (['pending', 'processing', 'running'].includes(task.status)) startPolling(task.taskNo);
     });
@@ -286,13 +275,6 @@ const CapabilityTab: React.FC<{ tokenId: string }> = ({ tokenId }) => {
     if (!tokenId) return;
     loadCapabilityHistory().catch(() => setTasks([]));
   }, [tokenId]);
-
-  useEffect(() => {
-    if (!selectedTaskNo || !tokenId) return;
-    hydrateTask(selectedTaskNo).then(detail => {
-      if (['pending', 'processing', 'running'].includes(detail.status)) startPolling(detail.taskNo);
-    }).catch(() => undefined);
-  }, [selectedTaskNo, tokenId]);
 
   useEffect(() => {
     if (!showCapabilityPicker) return;
@@ -396,7 +378,13 @@ const CapabilityTab: React.FC<{ tokenId: string }> = ({ tokenId }) => {
     }
   };
 
-  const openTaskDetail = (taskNo: string) => { setSelectedTaskNo(taskNo); setShowDetailModal(true); };
+  const openTaskDetail = (taskNo: string) => {
+    setSelectedTaskNo(taskNo);
+    setShowDetailModal(true);
+    if (!taskNo.startsWith('sync-')) {
+      hydrateTask(taskNo, true).catch(() => undefined);
+    }
+  };
 
   // 画廊大图卡: 正方形大图 + 底部状态/prompt,点击弹出详情
   const renderGalleryCard = (task: TaskResult) => {

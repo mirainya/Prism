@@ -1270,11 +1270,13 @@ func (s *APICallService) ListCalls(req *ListCallsRequest) (*ListCallsResponse, e
 			endpointIDs := model.DB().Model(&model.Endpoint{}).
 				Select("id").Where("channel_id = ?", req.ChannelID)
 			attempts = attempts.Where(
-				"(route_kind = ? AND channel_id = ?) OR (route_kind = ? AND endpoint_id IN (?))",
+				"(route_kind = ? AND channel_id = ?) OR (route_kind = ? AND endpoint_id IN (?)) OR (route_kind = ? AND channel_id = ?)",
 				model.APICallRouteGatewayV2,
 				req.ChannelID,
 				model.APICallRouteCapability,
 				endpointIDs,
+				model.APICallRouteVideo,
+				req.ChannelID,
 			)
 		}
 		if req.Transport != "" {

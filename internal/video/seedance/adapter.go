@@ -40,16 +40,22 @@ func NewAdapter(channel *video.VideoChannel, key *video.VideoChannelKey) video.A
 	client := taskhttp.NewClient(taskhttp.Config{
 		BaseURL: baseURL, APIKey: key.APIKey,
 		AuthHeader: "Authorization", AuthPrefix: "Bearer ",
-		HTTPClient: &http.Client{Timeout: 30 * time.Second},
+		HTTPClient: &http.Client{Timeout: time.Duration(channel.EffectiveRequestTimeoutSeconds()) * time.Second},
 	})
 	initializationError = validateAdapterConfig(baseURL, config)
+	cancelOperation := taskhttp.Operation{}
+	cancelStatuses := []video.VideoTaskStatus(nil)
+	if channel.EffectiveCancelMode() == video.CancelModeProvider {
+		cancelOperation = taskhttp.Operation{Method: http.MethodDelete, Path: config.CancelPath}
+		cancelStatuses = []video.VideoTaskStatus{video.VideoTaskStatusSubmitted}
+	}
 	return taskhttp.NewAdapter(taskhttp.AdapterConfig{
 		Client: client, Codec: Codec{}, InitializationError: initializationError,
 		Submit:           taskhttp.Operation{Method: http.MethodPost, Path: config.SubmitPath},
 		Poll:             taskhttp.Operation{Method: http.MethodGet, Path: config.PollPath},
-		Cancel:           taskhttp.Operation{Method: http.MethodDelete, Path: config.CancelPath},
-		CancelStatuses:   []video.VideoTaskStatus{video.VideoTaskStatusSubmitted},
-		AllowLocalCancel: true,
+		Cancel:           cancelOperation,
+		CancelStatuses:   cancelStatuses,
+		AllowLocalCancel: channel.EffectiveCancelMode() != video.CancelModeDisabled,
 	})
 }
 

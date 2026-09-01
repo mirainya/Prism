@@ -97,9 +97,16 @@ func HandleVideoPoll(ctx context.Context, t *asynq.Task) error {
 	if err := lease.Check(); err != nil {
 		return fmt.Errorf("check video poll lease: %w", err)
 	}
+	if err := video.SaveProviderMetadata(ctx, task.ID, progress.Metadata); err != nil {
+		return fmt.Errorf("save video provider metadata: %w", err)
+	}
 	switch progress.Status {
 	case video.VideoTaskStatusCompleted:
-		completed, err := video.CompleteTask(ctx, task.ID, task.ProviderTaskID, progress.Result, payload.PollCount+1)
+		materialized, err := video.MaterializeGenerationResult(ctx, channel, progress.Result)
+		if err != nil {
+			return videoPollFail(ctx, db, &task, err.Error())
+		}
+		completed, err := video.CompleteTask(ctx, task.ID, task.ProviderTaskID, materialized, payload.PollCount+1)
 		if err != nil {
 			return fmt.Errorf("complete video task: %w", err)
 		}

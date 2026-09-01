@@ -6,7 +6,6 @@ import {
   Ban,
   Check,
   CheckCircle2,
-  ChevronLeft,
   ChevronRight,
   CircleDot,
   Copy,
@@ -37,11 +36,13 @@ import {
   fetchUsers,
 } from '../services';
 import { fetchGwChannels, GW_TRANSPORTS, GwChannel } from '../services/gatewayApi';
-import { Drawer, Select } from '../components/ui';
+import { fetchVideoChannels, type VideoChannel } from '../services/videoApi';
+import { Drawer, Pagination, Select } from '../components/ui';
+import { PageHeader } from '../components/shell';
 import { ChannelAccount, ChannelCapability, User, UserRole } from '../types';
 
-const PAGE_SIZE = 20;
-const INPUT_CLASS = 'w-full min-w-0 rounded-lg border border-[var(--border-soft)] bg-[var(--surface-card)] px-3 py-2 text-sm text-[var(--text-primary)] outline-none transition focus:border-[var(--primary)] focus:ring-2 focus:ring-[var(--primary)]/20';
+const DEFAULT_PAGE_SIZE = 20;
+const INPUT_CLASS = 'w-full min-w-0 rounded-lg border border-[var(--border-soft)] bg-[var(--surface-card)] px-3 py-2 text-sm text-[var(--text-primary)] outline-none transition placeholder:text-[var(--text-tertiary)] focus:border-[var(--primary)] focus:ring-2 focus:ring-[var(--focus-ring)]';
 
 const ENDPOINT_LABELS: Record<string, string> = {
   '/v1/chat/completions': 'OpenAI Chat',
@@ -55,11 +56,22 @@ const TRANSPORT_LABELS: Record<string, string> = {
   anthropic_messages: 'Anthropic Messages',
   google_generate_content: 'Google GenerateContent',
   volcengine_responses_v3: 'Volcengine Responses V3',
+  video_generation: '视频生成',
 };
+
+const CALL_TRANSPORTS = [...GW_TRANSPORTS, 'video_generation'];
 
 const ROUTE_KIND_LABELS: Record<string, string> = {
   gateway_v2: 'Gateway',
   capability: '能力任务',
+  video: '视频任务',
+};
+
+const PAYLOAD_KIND_LABELS: Record<string, string> = {
+  request: '调用参数',
+  response: '调用响应',
+  upstream_request: '实际上游请求',
+  upstream_response: '实际上游响应',
 };
 
 const STAGE_LABELS: Record<string, string> = {
@@ -138,6 +150,48 @@ const StatusBadge: React.FC<{ status: string }> = ({ status }) => {
   );
 };
 
+const CALL_TABLE_SKELETON = [
+  ['w-40', 'w-32', 'w-40', 'w-16', 'w-20', 'w-16', 'w-20'],
+  ['w-36', 'w-40', 'w-36', 'w-20', 'w-16', 'w-20', 'w-16'],
+  ['w-44', 'w-36', 'w-44', 'w-16', 'w-20', 'w-16', 'w-20'],
+  ['w-40', 'w-32', 'w-36', 'w-20', 'w-16', 'w-20', 'w-16'],
+  ['w-36', 'w-40', 'w-40', 'w-16', 'w-20', 'w-16', 'w-20'],
+];
+
+const CallTableSkeleton: React.FC = () => (
+  <>
+    {CALL_TABLE_SKELETON.map((widths, rowIndex) => (
+      <tr key={rowIndex} aria-hidden="true">
+        {widths.map((width, columnIndex) => (
+          <td key={columnIndex} className="px-4 py-4">
+            <div className={`candy-skeleton h-3 rounded-md ${width}`} />
+            {columnIndex < 3 && <div className="candy-skeleton mt-2 h-2.5 w-20 rounded-md opacity-70" />}
+          </td>
+        ))}
+        <td className="px-3 py-4"><div className="candy-skeleton h-5 w-5 rounded-md" /></td>
+      </tr>
+    ))}
+  </>
+);
+
+const CallDetailSkeleton: React.FC = () => (
+  <div role="status" aria-label="调用详情加载中" className="space-y-6">
+    {[0, 1, 2].map(section => (
+      <section key={section}>
+        <div className="candy-skeleton mb-3 h-4 w-24 rounded-md" />
+        <div className="grid gap-x-6 border-y border-[var(--border-soft)] md:grid-cols-2 xl:grid-cols-3">
+          {[0, 1, 2, 3, 4, 5].map(item => (
+            <div key={item} className="space-y-2 border-b border-[var(--border-soft)] py-3 last:border-b-0 md:px-3">
+              <div className="candy-skeleton h-2.5 w-16 rounded-md" />
+              <div className="candy-skeleton h-3 w-28 rounded-md" />
+            </div>
+          ))}
+        </div>
+      </section>
+    ))}
+  </div>
+);
+
 const Info: React.FC<{ label: string; children: React.ReactNode; mono?: boolean }> = ({ label, children, mono }) => (
   <div className="min-w-0 py-2">
     <div className="mb-1 text-[11px] font-semibold text-[var(--text-secondary)]">{label}</div>
@@ -151,6 +205,7 @@ const CallLogs: React.FC = () => {
   const [calls, setCalls] = useState<APICall[]>([]);
   const [total, setTotal] = useState(0);
   const [page, setPage] = useState(1);
+  const [pageSize, setPageSize] = useState(DEFAULT_PAGE_SIZE);
   const [draft, setDraft] = useState<FilterDraft>({ ...EMPTY_FILTERS, call_id: initialCallID });
   const [filters, setFilters] = useState<FilterDraft>({ ...EMPTY_FILTERS, call_id: initialCallID });
   const [loading, setLoading] = useState(true);
@@ -162,6 +217,7 @@ const CallLogs: React.FC = () => {
   const [activeTab, setActiveTab] = useState<'overview' | 'attempts' | 'billing' | 'payloads'>('overview');
   const [copied, setCopied] = useState(false);
   const [channels, setChannels] = useState<GwChannel[]>([]);
+  const [videoChannels, setVideoChannels] = useState<VideoChannel[]>([]);
   const [capabilityEndpoints, setCapabilityEndpoints] = useState<ChannelCapability[]>([]);
   const [accounts, setAccounts] = useState<ChannelAccount[]>([]);
   const [users, setUsers] = useState<User[]>([]);
@@ -172,6 +228,7 @@ const CallLogs: React.FC = () => {
     try { return JSON.parse(localStorage.getItem('prism_user') || '{}').role === UserRole.ADMIN; } catch { return false; }
   }, []);
   const channelNames = useMemo(() => new Map(channels.map(channel => [channel.id, channel.name])), [channels]);
+  const videoChannelNames = useMemo(() => new Map(videoChannels.map(channel => [channel.id, channel.name])), [videoChannels]);
   const endpointMap = useMemo(
     () => new Map(capabilityEndpoints.map(endpoint => [Number(endpoint.id), endpoint])),
     [capabilityEndpoints],
@@ -190,12 +247,13 @@ const CallLogs: React.FC = () => {
     });
     return Array.from(items, ([id, name]) => ({ id, name })).sort((a, b) => a.name.localeCompare(b.name, 'zh-CN'));
   }, [capabilityEndpoints]);
-  const filterChannels = draft.route_kind === 'gateway_v2' ? channels : draft.route_kind === 'capability' ? capabilityChannels : [];
+  const filterChannels = draft.route_kind === 'gateway_v2' ? channels : draft.route_kind === 'capability' ? capabilityChannels : draft.route_kind === 'video' ? videoChannels : [];
 
   useEffect(() => {
     if (!isAdmin) return;
     Promise.all([
       fetchGwChannels().then(setChannels).catch(() => setChannels([])),
+      fetchVideoChannels().then(setVideoChannels).catch(() => setVideoChannels([])),
       fetchChannelCapabilities().then(setCapabilityEndpoints).catch(() => setCapabilityEndpoints([])),
       fetchChannelAccounts().then(setAccounts).catch(() => setAccounts([])),
       fetchUsers().then(setUsers).catch(() => setUsers([])),
@@ -206,7 +264,7 @@ const CallLogs: React.FC = () => {
     let active = true;
     // 服务端返回的 snapshot_at 在本轮筛选内复用，刷新或重新查询时才重新取快照。
     const params: CallListParams = {
-      page, page_size: PAGE_SIZE,
+      page, page_size: pageSize,
       snapshot_at: snapshotAt.current || undefined,
       call_id: filters.call_id.trim(), request_id: filters.request_id.trim(), status: filters.status,
       endpoint: filters.endpoint.trim(), model: filters.model.trim(),
@@ -223,13 +281,14 @@ const CallLogs: React.FC = () => {
       setCalls(response.items || []);
       setTotal(response.total || 0);
       snapshotAt.current = response.snapshot_at || snapshotAt.current;
+      const lastPage = Math.max(1, Math.ceil((response.total || 0) / pageSize));
+      if (page > lastPage) setPage(lastPage);
     }).catch(err => {
       if (active) setError(err instanceof Error ? err.message : '调用记录加载失败');
     }).finally(() => { if (active) setLoading(false); });
     return () => { active = false; };
-  }, [filters, isAdmin, page, refreshKey]);
+  }, [filters, isAdmin, page, pageSize, refreshKey]);
 
-  const totalPages = Math.max(1, Math.ceil(total / PAGE_SIZE));
   const updateDraft = (key: keyof FilterDraft, value: string) => setDraft(current => ({ ...current, [key]: value }));
   const updateRouteKind = (value: APICallRouteKind | '') => setDraft(current => ({
     ...current,
@@ -239,6 +298,7 @@ const CallLogs: React.FC = () => {
   const search = () => { snapshotAt.current = ''; setPage(1); setFilters({ ...draft }); };
   const reset = () => { snapshotAt.current = ''; setPage(1); setDraft({ ...EMPTY_FILTERS }); setFilters({ ...EMPTY_FILTERS }); };
   const refresh = () => { snapshotAt.current = ''; setPage(1); setRefreshKey(value => value + 1); };
+  const changePageSize = (value: number) => { snapshotAt.current = ''; setPageSize(value); setPage(1); };
 
   const openDetail = async (id: string) => {
     const requestNo = ++detailRequest.current;
@@ -270,34 +330,42 @@ const CallLogs: React.FC = () => {
   };
 
   return (
-    <div className="space-y-5">
-      <header className="flex flex-wrap items-center justify-between gap-3">
-        <div>
-          <h1 className="flex items-center gap-2 text-xl font-bold text-[var(--text-primary)] md:text-2xl"><Activity size={22} />调用记录</h1>
-          <p className="mt-1 text-sm text-[var(--text-secondary)]">查看下游请求、上游尝试、Usage 与计费结果</p>
-        </div>
-        <button title="刷新" onClick={refresh} className="flex items-center gap-2 rounded-lg border border-[var(--border-soft)] bg-[var(--surface-card)] px-3 py-2 text-sm font-medium text-[var(--text-primary)] hover:bg-[var(--surface)]">
-          <RefreshCw size={16} className={loading ? 'animate-spin' : ''} />刷新
-        </button>
-      </header>
+    <div className="space-y-4">
+      <PageHeader
+        icon={Activity}
+        title="调用记录"
+        meta={loading ? '正在同步调用数据' : `共 ${total} 条记录`}
+        actions={(
+          <button
+            type="button"
+            title="刷新"
+            aria-label="刷新"
+            onClick={refresh}
+            className="flex h-9 w-9 items-center justify-center rounded-lg border border-[var(--border-soft)] bg-[var(--surface-card)] text-[var(--text-secondary)] shadow-[var(--shadow-soft)] transition hover:border-[var(--primary)] hover:text-[var(--primary)]"
+          >
+            <RefreshCw size={17} className={loading ? 'animate-spin' : ''} />
+          </button>
+        )}
+      />
 
-      <section className="rounded-lg border border-[var(--border-soft)] bg-[var(--surface-card)] p-4">
-        <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
+      <section className="rounded-lg border border-[var(--border-soft)] bg-[var(--surface-card)] p-4 shadow-[var(--shadow-soft)]">
+        <form onSubmit={event => { event.preventDefault(); search(); }}>
+          <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
           <label className="text-xs font-semibold text-[var(--text-secondary)]">调用 ID
-            <input value={draft.call_id} onChange={e => updateDraft('call_id', e.target.value)} onKeyDown={e => e.key === 'Enter' && search()} placeholder="call_..." className={`${INPUT_CLASS} mt-1`} />
+            <input value={draft.call_id} onChange={e => updateDraft('call_id', e.target.value)} placeholder="call_..." className={`${INPUT_CLASS} mt-1`} />
           </label>
           <label className="text-xs font-semibold text-[var(--text-secondary)]">请求 ID
-            <input value={draft.request_id} onChange={e => updateDraft('request_id', e.target.value)} onKeyDown={e => e.key === 'Enter' && search()} placeholder="req_..." className={`${INPUT_CLASS} mt-1`} />
+            <input value={draft.request_id} onChange={e => updateDraft('request_id', e.target.value)} placeholder="req_..." className={`${INPUT_CLASS} mt-1`} />
           </label>
           <label className="text-xs font-semibold text-[var(--text-secondary)]">模型
-            <input value={draft.model} onChange={e => updateDraft('model', e.target.value)} onKeyDown={e => e.key === 'Enter' && search()} placeholder="模型名称" className={`${INPUT_CLASS} mt-1`} />
+            <input value={draft.model} onChange={e => updateDraft('model', e.target.value)} placeholder="模型名称" className={`${INPUT_CLASS} mt-1`} />
           </label>
           <div className="text-xs font-semibold text-[var(--text-secondary)]">状态
             <Select value={draft.status} onChange={v => updateDraft('status', v)} className="mt-1"
               options={[{ label: '全部状态', value: '' }, { label: '已接收', value: 'received' }, { label: '处理中', value: 'in_progress' }, { label: '成功', value: 'completed' }, { label: '失败', value: 'failed' }, { label: '已取消', value: 'cancelled' }]} />
           </div>
           <label className="text-xs font-semibold text-[var(--text-secondary)]">端点
-            <input value={draft.endpoint} onChange={e => updateDraft('endpoint', e.target.value)} onKeyDown={e => e.key === 'Enter' && search()} placeholder="/v1/capabilities/image-generation" className={`${INPUT_CLASS} mt-1 font-mono`} />
+            <input value={draft.endpoint} onChange={e => updateDraft('endpoint', e.target.value)} placeholder="/v1/capabilities/image-generation" className={`${INPUT_CLASS} mt-1 font-mono`} />
           </label>
           <label className="text-xs font-semibold text-[var(--text-secondary)]">开始日期
             <input type="date" value={draft.start_date} onChange={e => updateDraft('start_date', e.target.value)} className={`${INPUT_CLASS} mt-1`} />
@@ -315,7 +383,7 @@ const CallLogs: React.FC = () => {
             </label>
             <div className="text-xs font-semibold text-[var(--text-secondary)]">路由类型
               <Select value={draft.route_kind} onChange={v => updateRouteKind(v as APICallRouteKind | '')} className="mt-1"
-                options={[{ label: '全部路由', value: '' }, { label: 'Gateway', value: 'gateway_v2' }, { label: '能力任务', value: 'capability' }]} />
+                options={[{ label: '全部路由', value: '' }, { label: 'Gateway', value: 'gateway_v2' }, { label: '能力任务', value: 'capability' }, { label: '视频任务', value: 'video' }]} />
             </div>
             <div className="text-xs font-semibold text-[var(--text-secondary)]">渠道
               <Select value={draft.channel_id} onChange={v => updateDraft('channel_id', v)} disabled={!draft.route_kind} className="mt-1"
@@ -323,27 +391,33 @@ const CallLogs: React.FC = () => {
             </div>
             <div className="text-xs font-semibold text-[var(--text-secondary)]">Transport
               <Select value={draft.transport} onChange={v => updateDraft('transport', v)} className="mt-1"
-                options={[{ label: '全部 Transport', value: '' }, ...GW_TRANSPORTS.map(item => ({ label: TRANSPORT_LABELS[item], value: item }))]} />
+                options={[{ label: '全部 Transport', value: '' }, ...CALL_TRANSPORTS.map(item => ({ label: TRANSPORT_LABELS[item], value: item }))]} />
             </div>
           </>}
-        </div>
-        <div className="mt-4 flex justify-end gap-2">
-          <button onClick={reset} className="flex items-center gap-2 rounded-lg border border-[var(--border-soft)] px-3 py-2 text-sm font-medium text-[var(--text-secondary)] hover:bg-[var(--surface)]"><RotateCcw size={15} />重置</button>
-          <button onClick={search} className="flex items-center gap-2 rounded-lg bg-[var(--primary)] px-4 py-2 text-sm font-semibold text-white hover:opacity-90"><Search size={15} />查询</button>
-        </div>
+          </div>
+          <div className="mt-4 flex justify-end gap-2">
+            <button type="button" onClick={reset} className="flex items-center gap-2 rounded-lg border border-[var(--border-soft)] px-3 py-2 text-sm font-medium text-[var(--text-secondary)] transition hover:bg-[var(--surface-muted)] hover:text-[var(--text-primary)]"><RotateCcw size={15} />重置</button>
+            <button type="submit" className="flex items-center gap-2 rounded-lg [background:var(--brand-gradient)] px-4 py-2 text-sm font-semibold text-white shadow-[0_5px_14px_var(--glow-color)] transition hover:brightness-[0.98]"><Search size={15} />查询</button>
+          </div>
+        </form>
       </section>
 
-      <section className="overflow-hidden rounded-lg border border-[var(--border-soft)] bg-[var(--surface-card)]">
+      <section aria-busy={loading} className="relative overflow-hidden rounded-lg border border-[var(--border-soft)] bg-[var(--surface-card)] shadow-[var(--shadow-soft)]">
+        {loading && (
+          <div className="absolute inset-x-0 top-0 z-10 h-1 overflow-hidden bg-[var(--border-soft)]">
+            <div className="candy-skeleton h-full w-2/5" />
+          </div>
+        )}
         {error && <div className="flex items-center gap-2 border-b border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700"><AlertTriangle size={16} />{error}</div>}
         <div className="overflow-x-auto">
           <table className="w-full min-w-[980px] text-left">
-            <thead className="border-b border-[var(--border-soft)] bg-[var(--surface)]/60 text-xs text-[var(--text-secondary)]">
+            <thead className="border-b border-[var(--border-soft)] bg-[var(--surface-muted)] text-xs font-semibold text-[var(--text-secondary)]">
               <tr><th className="px-4 py-3">时间 / 请求 ID</th><th className="px-4 py-3">模型</th><th className="px-4 py-3">协议</th><th className="px-4 py-3">状态</th><th className="px-4 py-3 text-right">Usage</th><th className="px-4 py-3 text-right">费用</th><th className="px-4 py-3 text-right">耗时</th><th className="w-10 px-3 py-3" /></tr>
             </thead>
             <tbody className="divide-y divide-[var(--border-soft)]">
-              {loading ? Array.from({ length: 7 }).map((_, index) => <tr key={index} className="animate-pulse"><td colSpan={8} className="px-4 py-4"><div className="h-4 rounded bg-[var(--primary-lighter)]" /></td></tr>) :
+              {loading ? <CallTableSkeleton /> :
                 calls.length === 0 ? <tr><td colSpan={8} className="px-4 py-16 text-center text-sm text-[var(--text-secondary)]">暂无调用记录</td></tr> :
-                calls.map(call => <tr key={call.id} tabIndex={0} onClick={() => openDetail(call.id)} onKeyDown={e => e.key === 'Enter' && openDetail(call.id)} className="cursor-pointer transition hover:bg-[var(--primary-lighter)]/50 focus:bg-[var(--primary-lighter)]/50 focus:outline-none">
+                calls.map(call => <tr key={call.id} tabIndex={0} onClick={() => openDetail(call.id)} onKeyDown={event => { if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); openDetail(call.id); } }} className="cursor-pointer transition hover:bg-[var(--surface-tint)] focus:bg-[var(--surface-tint)] focus:outline-none">
                   <td className="px-4 py-3"><div className="text-sm text-[var(--text-primary)]">{formatDate(call.created_at)}</div><div title={call.request_id} className="mt-1 max-w-52 truncate font-mono text-[11px] text-[var(--text-secondary)]">{call.request_id}</div></td>
                   <td className="px-4 py-3"><div className="max-w-52 truncate text-sm font-semibold text-[var(--text-primary)]" title={call.model}>{call.model || '-'}</div><div className="mt-1 text-xs text-[var(--text-secondary)]">{call.is_stream ? '流式' : '非流式'} · {call.attempt_count} 次尝试</div></td>
                   <td className="px-4 py-3"><div className="text-sm text-[var(--text-primary)]">{endpointLabel(call.endpoint)}</div><div className="mt-1 font-mono text-[11px] text-[var(--text-secondary)]">{call.endpoint}</div></td>
@@ -356,10 +430,7 @@ const CallLogs: React.FC = () => {
             </tbody>
           </table>
         </div>
-        <div className="flex items-center justify-between border-t border-[var(--border-soft)] px-4 py-3 text-sm text-[var(--text-secondary)]">
-          <span>共 {total} 条，第 {page}/{totalPages} 页</span>
-          <div className="flex gap-1"><button title="上一页" disabled={page <= 1 || loading} onClick={() => setPage(value => Math.max(1, value - 1))} className="rounded-lg p-2 hover:bg-[var(--surface)] disabled:opacity-40"><ChevronLeft size={17} /></button><button title="下一页" disabled={page >= totalPages || loading} onClick={() => setPage(value => Math.min(totalPages, value + 1))} className="rounded-lg p-2 hover:bg-[var(--surface)] disabled:opacity-40"><ChevronRight size={17} /></button></div>
-        </div>
+        <Pagination page={page} pageSize={pageSize} total={total} loading={loading} onPageChange={setPage} onPageSizeChange={changePageSize} />
       </section>
 
       <Drawer
@@ -367,17 +438,18 @@ const CallLogs: React.FC = () => {
         onClose={closeDetail}
         title="调用详情"
         subtitle={<span className="font-mono">{detail?.call.id || '加载中'}</span>}
+        panelClassName="bg-[var(--surface-card)]"
       >
-          {detail && <div className="flex overflow-x-auto border-b border-[var(--border-soft)] px-4">
+          {detail && <div className="flex overflow-x-auto border-b border-[var(--border-soft)] bg-[var(--surface-muted)] px-4">
             {([
-              ['overview', '概览', LayoutList], ['attempts', '上游尝试', RouteIcon], ['billing', '计费', ReceiptText], ['payloads', '内容', FileJson],
-            ] as const).map(([key, label, Icon]) => <button key={key} onClick={() => setActiveTab(key)} className={`flex shrink-0 items-center gap-2 border-b-2 px-4 py-3 text-sm font-semibold ${activeTab === key ? 'border-[var(--primary)] text-[var(--primary)]' : 'border-transparent text-[var(--text-secondary)] hover:text-[var(--text-primary)]'}`}><Icon size={16} />{label}</button>)}
+                ['overview', '概览', LayoutList], ['attempts', '上游尝试', RouteIcon], ['billing', '计费', ReceiptText], ['payloads', '请求与响应', FileJson],
+            ] as const).map(([key, label, Icon]) => <button key={key} onClick={() => setActiveTab(key)} className={`flex shrink-0 items-center gap-2 border-b-2 px-4 py-3 text-sm font-semibold transition ${activeTab === key ? 'border-[var(--primary)] bg-[var(--surface-tint)] text-[var(--primary)]' : 'border-transparent text-[var(--text-secondary)] hover:text-[var(--text-primary)]'}`}><Icon size={16} />{label}</button>)}
           </div>}
           <div className="flex-1 overflow-y-auto p-5">
-            {detailLoading ? <div className="space-y-4 animate-pulse"><div className="h-24 rounded-lg bg-[var(--primary-lighter)]" /><div className="h-48 rounded-lg bg-[var(--primary-lighter)]" /></div> :
+            {detailLoading ? <CallDetailSkeleton /> :
               detailError ? <div className="flex items-center gap-2 rounded-lg border border-red-200 bg-red-50 p-4 text-sm text-red-700"><AlertTriangle size={17} />{detailError}</div> :
               detail && activeTab === 'overview' ? <Overview call={detail.call} isAdmin={isAdmin} copied={copied} onCopy={copyRequestID} /> :
-              detail && activeTab === 'attempts' ? <Attempts attempts={detail.attempts || []} isAdmin={isAdmin} channelNames={channelNames} endpointMap={endpointMap} accountNames={accountNames} /> :
+              detail && activeTab === 'attempts' ? <Attempts attempts={detail.attempts || []} isAdmin={isAdmin} channelNames={channelNames} videoChannelNames={videoChannelNames} endpointMap={endpointMap} accountNames={accountNames} /> :
               detail && activeTab === 'billing' ? <Billing call={detail.call} logs={detail.billing_logs || []} /> :
               detail && <Payloads payloads={detail.payloads || []} />}
           </div>
@@ -389,7 +461,7 @@ const CallLogs: React.FC = () => {
 const Overview: React.FC<{ call: APICall; isAdmin: boolean; copied: boolean; onCopy: () => void }> = ({ call, isAdmin, copied, onCopy }) => <div className="space-y-5">
   <section><h3 className="mb-2 text-sm font-bold text-[var(--text-primary)]">请求</h3><div className="grid gap-x-6 border-y border-[var(--border-soft)] md:grid-cols-2 xl:grid-cols-3">
     <Info label="状态"><StatusBadge status={call.status} /></Info><Info label="模型">{call.model}</Info><Info label="协议">{endpointLabel(call.endpoint)}</Info>
-    <Info label="调用 ID" mono>{call.id}</Info><Info label="请求 ID"><span className="inline-flex max-w-full items-center gap-2 font-mono"><span className="truncate">{call.request_id}</span><button title="复制请求 ID" onClick={onCopy} className="shrink-0 rounded-md p-1 hover:bg-[var(--surface)]">{copied ? <Check size={14} className="text-green-600" /> : <Copy size={14} />}</button></span></Info><Info label="操作">{call.operation || '-'}</Info>
+    <Info label="调用 ID" mono>{call.id}</Info><Info label="请求 ID"><span className="inline-flex max-w-full items-center gap-2 font-mono"><span className="truncate">{call.request_id}</span><button title="复制请求 ID" onClick={onCopy} className="shrink-0 rounded-md p-1 transition hover:bg-[var(--surface-muted)]">{copied ? <Check size={14} className="text-green-600" /> : <Copy size={14} />}</button></span></Info><Info label="操作">{call.operation || '-'}</Info>
     {isAdmin && <><Info label="用户 ID">{call.user_id}</Info><Info label="Token ID">{call.token_id}</Info><Info label="最终尝试 ID">{call.final_attempt_id || '-'}</Info></>}
     <Info label="模式">{call.is_stream ? '流式' : '非流式'}{call.background ? ' · 后台' : ''}{call.store ? ' · 存储' : ''}</Info><Info label="HTTP 状态">{call.http_status || '-'}</Info><Info label="尝试次数">{call.attempt_count}</Info>
   </div></section>
@@ -409,11 +481,12 @@ type AttemptsProps = {
   attempts: APICallAttempt[];
   isAdmin: boolean;
   channelNames: Map<number, string>;
+  videoChannelNames: Map<number, string>;
   endpointMap: Map<number, ChannelCapability>;
   accountNames: Map<number, string>;
 };
 
-const Attempts: React.FC<AttemptsProps> = ({ attempts, isAdmin, channelNames, endpointMap, accountNames }) => {
+const Attempts: React.FC<AttemptsProps> = ({ attempts, isAdmin, channelNames, videoChannelNames, endpointMap, accountNames }) => {
   if (attempts.length === 0) {
     return <div className="py-16 text-center text-sm text-[var(--text-secondary)]">暂无上游尝试</div>;
   }
@@ -422,7 +495,7 @@ const Attempts: React.FC<AttemptsProps> = ({ attempts, isAdmin, channelNames, en
     const endpoint = endpointMap.get(attempt.endpoint_id);
     const capabilityChannelID = Number(endpoint?.channelId || 0);
     const channelID = routeKind === 'capability' ? capabilityChannelID || attempt.channel_id : attempt.channel_id;
-    const channelName = routeKind === 'capability' ? endpoint?.channel?.name : channelNames.get(channelID);
+    const channelName = routeKind === 'capability' ? endpoint?.channel?.name : routeKind === 'video' ? videoChannelNames.get(channelID) : channelNames.get(channelID);
     const endpointName = endpoint?.name || endpoint?.capabilityCode || endpoint?.model;
     const accountID = attempt.account_id || Number(endpoint?.accountId || 0);
     return <section key={attempt.id} className="py-4 first:pt-3">
@@ -435,12 +508,12 @@ const Attempts: React.FC<AttemptsProps> = ({ attempts, isAdmin, channelNames, en
 
 const Billing: React.FC<{ call: APICall; logs: APICallBillingLog[] }> = ({ call, logs }) => <div className="space-y-5">
   <div className="grid border-y border-[var(--border-soft)] md:grid-cols-3"><Info label="预留金额">{formatMoney(call.reserved_amount)}</Info><Info label="最终费用">{formatMoney(call.final_cost)}</Info><Info label="退款金额">{formatMoney(call.refunded_amount)}</Info></div>
-  {logs.length === 0 ? <div className="py-12 text-center text-sm text-[var(--text-secondary)]">暂无计费流水</div> : <div className="overflow-x-auto rounded-lg border border-[var(--border-soft)]"><table className="w-full min-w-[680px] text-left text-sm"><thead className="border-b border-[var(--border-soft)] bg-[var(--surface)]/60 text-xs text-[var(--text-secondary)]"><tr><th className="px-3 py-3">时间</th><th className="px-3 py-3">阶段</th><th className="px-3 py-3">类型</th><th className="px-3 py-3">尝试 ID</th><th className="px-3 py-3 text-right">金额</th><th className="px-3 py-3">状态</th></tr></thead><tbody className="divide-y divide-[var(--border-soft)]">{logs.map(log => <React.Fragment key={log.id}><tr><td className="px-3 py-3 text-[var(--text-secondary)]">{formatDate(log.created_at)}</td><td className="px-3 py-3 text-[var(--text-primary)]">{log.phase || '-'}</td><td className="px-3 py-3 text-[var(--text-primary)]">{log.type}</td><td className="px-3 py-3 text-[var(--text-primary)]">{log.attempt_id || '-'}</td><td className="px-3 py-3 text-right font-semibold text-[var(--text-primary)]">{formatMoney(log.amount)}</td><td className="px-3 py-3 text-[var(--text-primary)]">{log.status}</td></tr>{(log.remark || log.pricing_snapshot) && <tr><td colSpan={6} className="bg-[var(--surface)]/40 px-3 py-2 text-xs text-[var(--text-secondary)]">{log.remark && <div>{log.remark}</div>}{log.pricing_snapshot != null && <details className="mt-1"><summary className="cursor-pointer text-[var(--primary)]">定价快照</summary><pre className="mt-2 max-h-48 overflow-auto whitespace-pre-wrap break-all font-mono">{formatData(log.pricing_snapshot)}</pre></details>}</td></tr>}</React.Fragment>)}</tbody></table></div>}
+  {logs.length === 0 ? <div className="py-12 text-center text-sm text-[var(--text-secondary)]">暂无计费流水</div> : <div className="overflow-x-auto rounded-lg border border-[var(--border-soft)]"><table className="w-full min-w-[680px] text-left text-sm"><thead className="border-b border-[var(--border-soft)] bg-[var(--surface-muted)] text-xs font-semibold text-[var(--text-secondary)]"><tr><th className="px-3 py-3">时间</th><th className="px-3 py-3">阶段</th><th className="px-3 py-3">类型</th><th className="px-3 py-3">尝试 ID</th><th className="px-3 py-3 text-right">金额</th><th className="px-3 py-3">状态</th></tr></thead><tbody className="divide-y divide-[var(--border-soft)]">{logs.map(log => <React.Fragment key={log.id}><tr><td className="px-3 py-3 text-[var(--text-secondary)]">{formatDate(log.created_at)}</td><td className="px-3 py-3 text-[var(--text-primary)]">{log.phase || '-'}</td><td className="px-3 py-3 text-[var(--text-primary)]">{log.type}</td><td className="px-3 py-3 text-[var(--text-primary)]">{log.attempt_id || '-'}</td><td className="px-3 py-3 text-right font-semibold text-[var(--text-primary)]">{formatMoney(log.amount)}</td><td className="px-3 py-3 text-[var(--text-primary)]">{log.status}</td></tr>{(log.remark || log.pricing_snapshot) && <tr><td colSpan={6} className="bg-[var(--surface-muted)] px-3 py-2 text-xs text-[var(--text-secondary)]">{log.remark && <div>{log.remark}</div>}{log.pricing_snapshot != null && <details className="mt-1"><summary className="cursor-pointer text-[var(--primary)]">定价快照</summary><pre className="mt-2 max-h-48 overflow-auto whitespace-pre-wrap break-all font-mono">{formatData(log.pricing_snapshot)}</pre></details>}</td></tr>}</React.Fragment>)}</tbody></table></div>}
 </div>;
 
 const Payloads: React.FC<{ payloads: APICallPayload[] }> = ({ payloads }) => payloads.length === 0 ? <div className="py-16 text-center text-sm text-[var(--text-secondary)]">未保留请求或响应内容</div> : <div className="divide-y divide-[var(--border-soft)] border-y border-[var(--border-soft)]">{payloads.map(payload => <section key={payload.id} className="py-4">
-  <div className="flex flex-wrap items-center justify-between gap-2"><div><h3 className="text-sm font-bold text-[var(--text-primary)]">{payload.kind}</h3><p className="mt-1 text-xs text-[var(--text-secondary)]">{payload.content_type} · {payload.original_bytes} bytes{payload.attempt_id ? ` · 尝试 #${payload.attempt_id}` : ''}</p></div><div className="flex gap-2">{payload.encrypted && <span className="rounded-md bg-blue-100 px-2 py-1 text-xs font-semibold text-blue-700">已加密</span>}{payload.truncated && <span className="rounded-md bg-yellow-100 px-2 py-1 text-xs font-semibold text-yellow-700">已截断</span>}</div></div>
-  <pre className="mt-3 max-h-[32rem] overflow-auto rounded-lg border border-[var(--border-soft)] bg-[var(--surface)] p-4 whitespace-pre-wrap break-all font-mono text-xs leading-5 text-[var(--text-primary)]">{payload.data ? formatData(payload.data) : '(无内容)'}</pre>
+  <div className="flex flex-wrap items-center justify-between gap-2"><div><h3 className="text-sm font-bold text-[var(--text-primary)]">{PAYLOAD_KIND_LABELS[payload.kind] || payload.kind}</h3><p className="mt-1 text-xs text-[var(--text-secondary)]">{payload.content_type} · {payload.original_bytes} bytes{payload.attempt_id ? ` · 尝试 #${payload.attempt_id}` : ''}</p></div><div className="flex gap-2">{payload.encrypted && <span className="rounded-md bg-blue-100 px-2 py-1 text-xs font-semibold text-blue-700">已加密存储</span>}{payload.truncated && <span className="rounded-md bg-yellow-100 px-2 py-1 text-xs font-semibold text-yellow-700">已截断</span>}</div></div>
+  <pre className="mt-3 max-h-[32rem] overflow-auto whitespace-pre-wrap break-all rounded-lg border border-[var(--border-soft)] bg-[var(--surface-muted)] p-4 font-mono text-xs leading-5 text-[var(--text-primary)]">{payload.data ? formatData(payload.data) : '(无内容)'}</pre>
   {payload.expires_at && <div className="mt-2 text-xs text-[var(--text-secondary)]">过期时间：{formatDate(payload.expires_at)}</div>}
 </section>)}</div>;
 

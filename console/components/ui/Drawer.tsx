@@ -33,7 +33,7 @@ export const Drawer: React.FC<DrawerProps> = ({
       ariaLabel={title ? undefined : '侧边栏'}
       ariaLabelledby={title ? titleId : undefined}
       containerClassName="items-stretch justify-end"
-      panelClassName={`flex h-full w-full ${width} flex-col border-l border-[var(--border-soft)] bg-[var(--surface-card)] shadow-2xl ${panelClassName}`}
+      panelClassName={`flex h-full w-full ${width} flex-col border-l border-[var(--border-soft)] bg-[var(--surface-elevated)] shadow-2xl ${panelClassName}`}
     >
       {title && (
         <header className="flex items-start justify-between gap-4 border-b border-[var(--border-soft)] px-5 py-4">

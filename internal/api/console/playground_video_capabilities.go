@@ -11,7 +11,7 @@ import (
 func discoverPlaygroundVideoCapabilities(
 	ctx context.Context,
 	channels []video.VideoChannel,
-	keys map[uint]*video.VideoChannelKey,
+	keys map[uint][]*video.VideoChannelKey,
 ) map[uint]map[string]video.DiscoveredModelCapabilities {
 	type discoveryResult struct {
 		channelID    uint
@@ -21,25 +21,31 @@ func discoverPlaygroundVideoCapabilities(
 	pending := 0
 	for index := range channels {
 		channel := &channels[index]
-		key := keys[channel.ID]
-		if key == nil || playgroundVideoEngine == nil {
-			continue
-		}
-		adapter := playgroundVideoEngine.Registry().Get(channel.AdapterType, channel, key)
-		discoverer, ok := adapter.(video.CapabilityDiscoverer)
-		if !ok {
+		channelKeys := keys[channel.ID]
+		if len(channelKeys) == 0 || playgroundVideoEngine == nil {
 			continue
 		}
 		pending++
-		go func(channelID uint, discoverer video.CapabilityDiscoverer) {
+		go func(channelID uint, channel video.VideoChannel, channelKeys []*video.VideoChannelKey) {
 			discoveryContext, cancel := context.WithTimeout(ctx, 5*time.Second)
 			defer cancel()
-			capabilities, err := discoverer.DiscoverCapabilities(discoveryContext)
-			if err != nil {
-				capabilities = nil
+			merged := make(map[string]video.DiscoveredModelCapabilities)
+			for _, key := range channelKeys {
+				adapter := playgroundVideoEngine.Registry().Get(channel.AdapterType, &channel, key)
+				discoverer, ok := adapter.(video.CapabilityDiscoverer)
+				if !ok {
+					continue
+				}
+				capabilities, err := discoverer.DiscoverCapabilities(discoveryContext)
+				if err != nil {
+					continue
+				}
+				for model, capability := range capabilities {
+					merged[model] = mergeDiscoveredModelCapabilities(merged[model], capability)
+				}
 			}
-			results <- discoveryResult{channelID: channelID, capabilities: capabilities}
-		}(channel.ID, discoverer)
+			results <- discoveryResult{channelID: channelID, capabilities: merged}
+		}(channel.ID, *channel, channelKeys)
 	}
 	discovered := make(map[uint]map[string]video.DiscoveredModelCapabilities, pending)
 	for range pending {
@@ -49,6 +55,56 @@ func discoverPlaygroundVideoCapabilities(
 		}
 	}
 	return discovered
+}
+
+func mergeDiscoveredModelCapabilities(current, next video.DiscoveredModelCapabilities) video.DiscoveredModelCapabilities {
+	current.Resolutions = appendUnique(current.Resolutions, next.Resolutions...)
+	current.Ratios = appendUnique(current.Ratios, next.Ratios...)
+	current.TaskModes = appendUnique(current.TaskModes, next.TaskModes...)
+	current.DurationOptions = appendUniqueInts(current.DurationOptions, next.DurationOptions...)
+	if current.DurationMin == 0 || (next.DurationMin > 0 && next.DurationMin < current.DurationMin) {
+		current.DurationMin = next.DurationMin
+	}
+	if current.DurationMax == 0 || (next.DurationMax > 0 && next.DurationMax > current.DurationMax) {
+		current.DurationMax = next.DurationMax
+	}
+	if current.DurationMaxWithVideoReference == 0 || (next.DurationMaxWithVideoReference > 0 && next.DurationMaxWithVideoReference > current.DurationMaxWithVideoReference) {
+		current.DurationMaxWithVideoReference = next.DurationMaxWithVideoReference
+	}
+	current.ServiceTiers = appendUnique(current.ServiceTiers, next.ServiceTiers...)
+	return current
+}
+
+func appendUnique(values []string, additions ...string) []string {
+	seen := make(map[string]struct{}, len(values)+len(additions))
+	for _, value := range values {
+		seen[value] = struct{}{}
+	}
+	for _, value := range additions {
+		if value != "" {
+			if _, ok := seen[value]; !ok {
+				values = append(values, value)
+				seen[value] = struct{}{}
+			}
+		}
+	}
+	return values
+}
+
+func appendUniqueInts(values []int, additions ...int) []int {
+	seen := make(map[int]struct{}, len(values)+len(additions))
+	for _, value := range values {
+		seen[value] = struct{}{}
+	}
+	for _, value := range additions {
+		if value > 0 {
+			if _, ok := seen[value]; !ok {
+				values = append(values, value)
+				seen[value] = struct{}{}
+			}
+		}
+	}
+	return values
 }
 
 func playgroundVideoModelAvailable(availableUntil string) bool {
@@ -66,8 +122,12 @@ func restrictPlaygroundVideoOptions(
 	options.Resolutions = intersectOptionalStrings(options.Resolutions, capability.Resolutions)
 	options.Ratios = intersectOptionalStrings(options.Ratios, capability.Ratios)
 	options.TaskTypes = restrictPlaygroundTaskTypes(options.TaskTypes, capability.TaskModes)
+	// Service tiers are channel execution controls, not model format
+	// capabilities. Keep the channel's configured choices even when an
+	// upstream capability response omits the optional queue fields.
 	options.DurationMin = stricterMinimum(options.DurationMin, capability.DurationMin)
 	options.DurationMax = stricterMaximum(options.DurationMax, capability.DurationMax)
+	options.DurationMaxWithVideoReference = stricterMaximum(options.DurationMaxWithVideoReference, capability.DurationMaxWithVideoReference)
 	options.DurationOptions = filterDurationOptions(capability.DurationOptions, options.DurationMin, options.DurationMax)
 	if len(options.DurationOptions) == 0 && capability.SupportsSmartDuration != nil && *capability.SupportsSmartDuration &&
 		options.DurationMin > 0 && options.DurationMax >= options.DurationMin {

@@ -34,19 +34,30 @@ const (
 
 // VideoChannel 视频渠道
 type VideoChannel struct {
-	ID            uint           `gorm:"primarykey" json:"id"`
-	Name          string         `gorm:"type:varchar(64);not null;comment:渠道名称" json:"name"`
-	AdapterType   string         `gorm:"type:varchar(32);not null;comment:协议实现(seedance原生协议/generic声明式协议)" json:"adapter_type"`
-	BaseURL       string         `gorm:"type:varchar(256);not null;comment:上游地址" json:"base_url"`
-	Status        string         `gorm:"type:varchar(16);default:'active';comment:状态" json:"status"`
-	Priority      int            `gorm:"default:0;comment:选路优先级(降序)" json:"priority"`
-	Models        datatypes.JSON `gorm:"type:json;not null;comment:支持模型列表" json:"models"`
-	Capabilities  datatypes.JSON `gorm:"type:json;comment:能力声明" json:"capabilities"`
-	Pricing       datatypes.JSON `gorm:"type:json;comment:计费配置" json:"pricing"`
-	AssetResolver string         `gorm:"type:varchar(32);default:'direct_url';comment:素材解析器类型" json:"asset_resolver"`
-	ExtraConfig   datatypes.JSON `gorm:"type:json;comment:适配器附加配置" json:"extra_config"`
-	CreatedAt     time.Time      `gorm:"comment:创建时间" json:"created_at"`
-	UpdatedAt     time.Time      `gorm:"comment:更新时间" json:"updated_at"`
+	ID                    uint            `gorm:"primarykey" json:"id"`
+	Name                  string          `gorm:"type:varchar(64);not null;comment:渠道名称" json:"name"`
+	AdapterType           string          `gorm:"type:varchar(32);not null;comment:协议实现(seedance原生协议/generic声明式协议)" json:"adapter_type"`
+	AdapterProfile        string          `gorm:"type:varchar(32);not null;default:'';comment:适配器配置版本" json:"adapter_profile"`
+	BaseURL               string          `gorm:"type:varchar(256);not null;comment:上游地址" json:"base_url"`
+	Status                string          `gorm:"type:varchar(16);default:'active';comment:状态" json:"status"`
+	Priority              int             `gorm:"default:0;comment:选路优先级(降序)" json:"priority"`
+	RequestTimeoutSeconds int             `gorm:"column:request_timeout_seconds;not null;default:30;comment:上游请求超时(秒)" json:"request_timeout_seconds"`
+	Models                datatypes.JSON  `gorm:"type:json;not null;comment:支持模型列表" json:"models"`
+	Capabilities          datatypes.JSON  `gorm:"type:json;comment:能力声明" json:"capabilities"`
+	SupportsFirstFrame    *bool           `gorm:"column:supports_first_frame;not null;default:false;comment:支持首帧" json:"supports_first_frame,omitempty"`
+	SupportsLastFrame     *bool           `gorm:"column:supports_last_frame;not null;default:false;comment:支持尾帧" json:"supports_last_frame,omitempty"`
+	SupportsAudio         *bool           `gorm:"column:supports_audio;not null;default:false;comment:支持生成音频" json:"supports_audio,omitempty"`
+	SupportsWebSearch     *bool           `gorm:"column:supports_web_search;not null;default:false;comment:支持联网增强" json:"supports_web_search,omitempty"`
+	CancelMode            string          `gorm:"column:cancel_mode;type:varchar(16);not null;default:'disabled';comment:取消策略(disabled/local_only/provider)" json:"cancel_mode"`
+	Pricing               datatypes.JSON  `gorm:"type:json;comment:计费配置" json:"pricing"`
+	PricingMode           string          `gorm:"column:pricing_mode;type:varchar(24);not null;default:'fixed';comment:计费模式(fixed/upstream_estimate)" json:"pricing_mode"`
+	FixedPrice            decimal.Decimal `gorm:"column:fixed_price;type:decimal(10,4);not null;default:0;comment:固定价格" json:"fixed_price"`
+	MarkupRatio           decimal.Decimal `gorm:"column:markup_ratio;type:decimal(4,2);not null;default:1;comment:加价系数" json:"markup_ratio"`
+	AssetResolver         string          `gorm:"type:varchar(32);default:'direct_url';comment:素材解析器类型" json:"asset_resolver"`
+	ResultStorageEnabled  *bool           `gorm:"column:result_storage_enabled;not null;default:false;comment:是否转存生成结果" json:"result_storage_enabled,omitempty"`
+	ExtraConfig           datatypes.JSON  `gorm:"type:json;comment:适配器附加配置" json:"extra_config"`
+	CreatedAt             time.Time       `gorm:"comment:创建时间" json:"created_at"`
+	UpdatedAt             time.Time       `gorm:"comment:更新时间" json:"updated_at"`
 }
 
 func (VideoChannel) TableName() string { return "video_channels" }
@@ -80,6 +91,7 @@ type VideoTask struct {
 	Status           VideoTaskStatus `gorm:"type:varchar(16);not null;index:idx_token_status;index:idx_status_created;comment:状态" json:"status"`
 	Progress         int             `gorm:"default:0;comment:进度(0-100)" json:"progress"`
 	TaskMode         string          `gorm:"type:varchar(16);not null;comment:任务模式" json:"task_mode"`
+	ServiceTier      string          `gorm:"type:varchar(24);not null;default:'standard';comment:视频执行档位" json:"service_tier"`
 	Prompt           string          `gorm:"type:text;comment:提示词" json:"prompt"`
 	Resolution       string          `gorm:"type:varchar(16);comment:分辨率" json:"resolution"`
 	Ratio            string          `gorm:"type:varchar(16);comment:比例" json:"ratio"`
@@ -93,6 +105,7 @@ type VideoTask struct {
 	RoutePlan        datatypes.JSON  `gorm:"type:json;comment:不可变视频选路快照" json:"route_plan"`
 	ProviderTaskID   string          `gorm:"type:varchar(128);comment:上游任务ID" json:"provider_task_id"`
 	ProviderResponse datatypes.JSON  `gorm:"type:json;comment:上游原始响应" json:"-"`
+	ProviderMetadata datatypes.JSON  `gorm:"type:json;comment:结构化上游任务元数据" json:"provider_metadata,omitempty"`
 	EstimatedCost    decimal.Decimal `gorm:"type:decimal(10,4);comment:预估费用" json:"estimated_cost"`
 	MarkupRatio      decimal.Decimal `gorm:"type:decimal(4,2);comment:加价系数" json:"markup_ratio"`
 	FinalCost        decimal.Decimal `gorm:"type:decimal(10,4);comment:最终费用" json:"final_cost"`

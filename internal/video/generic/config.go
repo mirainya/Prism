@@ -4,9 +4,11 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	"net/http"
 	"net/url"
 	"regexp"
+	"strconv"
 	"strings"
 	"time"
 
@@ -29,14 +31,23 @@ type operationConfig struct {
 }
 
 type requestConfig struct {
-	Fields             map[string]string   `json:"fields"`
-	ContentPath        string              `json:"content_path"`
-	ContentFields      map[string]string   `json:"content_fields"`
-	ContentProjections []contentProjection `json:"content_projections"`
-	IncludeContent     *bool               `json:"include_content"`
-	FixedBody          map[string]any      `json:"fixed_body"`
-	ParamsMode         string              `json:"params_mode"`
-	RequestIDHeader    string              `json:"request_id_header"`
+	Fields             map[string]string            `json:"fields"`
+	TaskModeMap        map[string]string            `json:"task_mode_map"`
+	ContentRoleMap     map[string]map[string]string `json:"content_role_map"`
+	ContentPath        string                       `json:"content_path"`
+	ContentFields      map[string]string            `json:"content_fields"`
+	ContentProjections []contentProjection          `json:"content_projections"`
+	IncludeContent     *bool                        `json:"include_content"`
+	FixedBody          map[string]any               `json:"fixed_body"`
+	ParamsMode         string                       `json:"params_mode"`
+	RequestIDHeader    string                       `json:"request_id_header"`
+}
+
+type serviceTierConfig struct {
+	Label            string         `json:"label"`
+	SurchargePercent float64        `json:"surcharge_percent"`
+	AddsResolutions  []string       `json:"adds_resolutions"`
+	RequestParams    map[string]any `json:"request_params"`
 }
 
 // contentProjection selects one content item and writes one of its values to
@@ -54,46 +65,70 @@ type contentProjection struct {
 }
 
 type responseConfig struct {
-	Root                string            `json:"root"`
-	SuccessCodePath     string            `json:"success_code_path"`
-	SuccessCodeValues   []string          `json:"success_code_values"`
-	SuccessCodeOptional bool              `json:"success_code_optional"`
-	EstimatedCostPaths  []string          `json:"estimated_cost_paths"`
-	TaskIDPaths         []string          `json:"task_id_paths"`
-	StatusPaths         []string          `json:"status_paths"`
-	ProgressPaths       []string          `json:"progress_paths"`
-	VideoURLPaths       []string          `json:"video_url_paths"`
-	ThumbnailURLPaths   []string          `json:"thumbnail_url_paths"`
-	DurationPaths       []string          `json:"duration_paths"`
-	ErrorPaths          []string          `json:"error_paths"`
-	StatusMap           map[string]string `json:"status_map"`
-	SubmitDefaultStatus string            `json:"submit_default_status"`
-	PollDefaultStatus   string            `json:"poll_default_status"`
-	UnknownStatus       string            `json:"unknown_status"`
+	Root                          string            `json:"root"`
+	SuccessCodePath               string            `json:"success_code_path"`
+	SuccessCodeValues             []string          `json:"success_code_values"`
+	SuccessCodeOptional           bool              `json:"success_code_optional"`
+	EstimatedCostPaths            []string          `json:"estimated_cost_paths"`
+	ActualCostPaths               []string          `json:"actual_cost_paths"`
+	UnitCostPaths                 []string          `json:"unit_cost_paths"`
+	UnitsPaths                    []string          `json:"units_paths"`
+	BillingModePaths              []string          `json:"billing_mode_paths"`
+	BillingTierPaths              []string          `json:"billing_tier_paths"`
+	PricingSourcePaths            []string          `json:"pricing_source_paths"`
+	CurrencyPaths                 []string          `json:"currency_paths"`
+	TaskIDPaths                   []string          `json:"task_id_paths"`
+	StatusPaths                   []string          `json:"status_paths"`
+	ProgressPaths                 []string          `json:"progress_paths"`
+	VideoURLPaths                 []string          `json:"video_url_paths"`
+	ThumbnailURLPaths             []string          `json:"thumbnail_url_paths"`
+	DurationPaths                 []string          `json:"duration_paths"`
+	ErrorPaths                    []string          `json:"error_paths"`
+	QueueStatusPaths              []string          `json:"queue_status_paths"`
+	QueuePositionPaths            []string          `json:"queue_position_paths"`
+	QueueLimitPaths               []string          `json:"queue_limit_paths"`
+	PriorityQueuePaths            []string          `json:"priority_queue_paths"`
+	PointsVIPPaths                []string          `json:"points_vip_paths"`
+	PrioritySurchargePercentPaths []string          `json:"priority_surcharge_percent_paths"`
+	StatusMap                     map[string]string `json:"status_map"`
+	SubmitDefaultStatus           string            `json:"submit_default_status"`
+	PollDefaultStatus             string            `json:"poll_default_status"`
+	UnknownStatus                 string            `json:"unknown_status"`
 }
 
 type capabilityDiscoveryConfig struct {
-	Enabled          bool                `json:"enabled"`
-	Method           string              `json:"method"`
-	Path             string              `json:"path"`
-	Root             string              `json:"root"`
-	PlatformPath     string              `json:"platform_path"`
-	Fields           map[string]string   `json:"fields"`
-	DefaultTaskModes []string            `json:"default_task_modes"`
-	TaskModeMap      map[string][]string `json:"task_mode_map"`
+	Enabled          bool                                  `json:"enabled"`
+	Method           string                                `json:"method"`
+	Path             string                                `json:"path"`
+	Root             string                                `json:"root"`
+	PlatformPath     string                                `json:"platform_path"`
+	Fields           map[string]string                     `json:"fields"`
+	DefaultTaskModes []string                              `json:"default_task_modes"`
+	TaskModeMap      map[string][]string                   `json:"task_mode_map"`
+	ServiceTiers     map[string]serviceTierDiscoveryConfig `json:"service_tiers"`
+}
+
+type serviceTierDiscoveryConfig struct {
+	EnabledPath string `json:"enabled_path"`
+	PresentPath string `json:"present_path"`
 }
 
 type parameterOption struct {
-	Label string `json:"label"`
-	Value any    `json:"value"`
+	Label           string   `json:"label"`
+	Value           any      `json:"value"`
+	AddsResolutions []string `json:"adds_resolutions"`
 }
 
 type parameterRule struct {
-	Name    string            `json:"name"`
-	Label   string            `json:"label"`
-	Type    string            `json:"type"`
-	Default any               `json:"default"`
-	Options []parameterOption `json:"options"`
+	Name          string            `json:"name"`
+	Label         string            `json:"label"`
+	Type          string            `json:"type"`
+	Default       any               `json:"default"`
+	Min           *float64          `json:"min"`
+	Max           *float64          `json:"max"`
+	Options       []parameterOption `json:"options"`
+	TaskModes     []string          `json:"task_modes"`
+	ConflictsWith []string          `json:"conflicts_with"`
 }
 
 type taskModeValidationRule struct {
@@ -104,27 +139,28 @@ type taskModeValidationRule struct {
 }
 
 type validationRule struct {
-	DurationMin                 int                               `json:"duration_min"`
-	DurationMax                 int                               `json:"duration_max"`
-	Resolutions                 []string                          `json:"resolutions"`
-	Ratios                      []string                          `json:"ratios"`
-	TaskModes                   []string                          `json:"task_modes"`
-	RequireMedia                bool                              `json:"require_media"`
-	RequireVisualMediaWithAudio bool                              `json:"require_visual_media_with_audio"`
-	AllowGeneratedAudio         *bool                             `json:"allow_generated_audio"`
-	AllowedRoles                []string                          `json:"allowed_roles"`
-	MaxImages                   int                               `json:"max_images"`
-	MaxVideos                   int                               `json:"max_videos"`
-	MaxAudios                   int                               `json:"max_audios"`
-	MaxMedia                    int                               `json:"max_media"`
-	MediaDurationMin            float64                           `json:"media_duration_min"`
-	MediaDurationMax            float64                           `json:"media_duration_max"`
-	MaxVideoDuration            float64                           `json:"max_video_duration_total"`
-	MaxAudioDuration            float64                           `json:"max_audio_duration_total"`
-	Parameters                  []parameterRule                   `json:"parameters"`
-	ForbiddenParameters         []string                          `json:"forbidden_parameters"`
-	TaskModeRules               map[string]taskModeValidationRule `json:"task_mode_rules"`
-	AvailableUntil              string                            `json:"available_until"`
+	DurationMin                   int                               `json:"duration_min"`
+	DurationMax                   int                               `json:"duration_max"`
+	DurationMaxWithVideoReference int                               `json:"duration_max_with_video_reference"`
+	Resolutions                   []string                          `json:"resolutions"`
+	Ratios                        []string                          `json:"ratios"`
+	TaskModes                     []string                          `json:"task_modes"`
+	RequireMedia                  bool                              `json:"require_media"`
+	RequireVisualMediaWithAudio   bool                              `json:"require_visual_media_with_audio"`
+	AllowGeneratedAudio           *bool                             `json:"allow_generated_audio"`
+	AllowedRoles                  []string                          `json:"allowed_roles"`
+	MaxImages                     int                               `json:"max_images"`
+	MaxVideos                     int                               `json:"max_videos"`
+	MaxAudios                     int                               `json:"max_audios"`
+	MaxMedia                      int                               `json:"max_media"`
+	MediaDurationMin              float64                           `json:"media_duration_min"`
+	MediaDurationMax              float64                           `json:"media_duration_max"`
+	MaxVideoDuration              float64                           `json:"max_video_duration_total"`
+	MaxAudioDuration              float64                           `json:"max_audio_duration_total"`
+	Parameters                    []parameterRule                   `json:"parameters"`
+	ForbiddenParameters           []string                          `json:"forbidden_parameters"`
+	TaskModeRules                 map[string]taskModeValidationRule `json:"task_mode_rules"`
+	AvailableUntil                string                            `json:"available_until"`
 }
 
 type validationConfig struct {
@@ -137,21 +173,23 @@ type localCancelConfig struct {
 }
 
 type adapterConfig struct {
-	Profile        string                    `json:"profile"`
-	AuthLocation   string                    `json:"auth_location"`
-	AuthKey        string                    `json:"auth_key"`
-	AuthHeader     string                    `json:"auth_header"`
-	AuthPrefix     *string                   `json:"auth_prefix"`
-	TimeoutSeconds int                       `json:"timeout_seconds"`
-	Submit         operationConfig           `json:"submit"`
-	Estimate       operationConfig           `json:"estimate"`
-	Poll           operationConfig           `json:"poll"`
-	Cancel         operationConfig           `json:"cancel"`
-	Capabilities   capabilityDiscoveryConfig `json:"capabilities"`
-	Request        requestConfig             `json:"request"`
-	Response       responseConfig            `json:"response"`
-	Validation     validationConfig          `json:"validation"`
-	LocalCancel    localCancelConfig         `json:"local_cancel"`
+	Profile        string                       `json:"profile"`
+	AuthLocation   string                       `json:"auth_location"`
+	AuthKey        string                       `json:"auth_key"`
+	AuthHeader     string                       `json:"auth_header"`
+	AuthPrefix     *string                      `json:"auth_prefix"`
+	TimeoutSeconds int                          `json:"timeout_seconds"`
+	Submit         operationConfig              `json:"submit"`
+	Estimate       operationConfig              `json:"estimate"`
+	Poll           operationConfig              `json:"poll"`
+	Cancel         operationConfig              `json:"cancel"`
+	Actions        map[string]operationConfig   `json:"actions"`
+	Capabilities   capabilityDiscoveryConfig    `json:"capabilities"`
+	Request        requestConfig                `json:"request"`
+	ServiceTiers   map[string]serviceTierConfig `json:"service_tiers"`
+	Response       responseConfig               `json:"response"`
+	Validation     validationConfig             `json:"validation"`
+	LocalCancel    localCancelConfig            `json:"local_cancel"`
 }
 
 func (c *adapterConfig) defaults() {
@@ -185,12 +223,29 @@ func (c *adapterConfig) defaults() {
 	c.Estimate.Path = strings.TrimSpace(c.Estimate.Path)
 	c.Poll.Path = strings.TrimSpace(c.Poll.Path)
 	c.Cancel.Path = strings.TrimSpace(c.Cancel.Path)
+	if c.Actions != nil {
+		normalizedActions := make(map[string]operationConfig, len(c.Actions))
+		for name, operation := range c.Actions {
+			name = strings.ToLower(strings.TrimSpace(name))
+			operation.Method = normalizeMethod(operation.Method, http.MethodPost)
+			operation.Path = strings.TrimSpace(operation.Path)
+			operation.TaskIDBodyPath = strings.TrimSpace(operation.TaskIDBodyPath)
+			normalizedActions[name] = operation
+		}
+		c.Actions = normalizedActions
+	}
 	c.Capabilities.Path = strings.TrimSpace(c.Capabilities.Path)
 	c.Capabilities.Root = strings.TrimSpace(c.Capabilities.Root)
 	c.Capabilities.PlatformPath = strings.TrimSpace(c.Capabilities.PlatformPath)
 	c.Capabilities.Fields = normalizeMappings(c.Capabilities.Fields)
 	c.Capabilities.DefaultTaskModes = normalizeStrings(c.Capabilities.DefaultTaskModes)
 	c.Capabilities.TaskModeMap = normalizeStringLists(c.Capabilities.TaskModeMap)
+	for name, tier := range c.Capabilities.ServiceTiers {
+		delete(c.Capabilities.ServiceTiers, name)
+		tier.EnabledPath = strings.TrimSpace(tier.EnabledPath)
+		tier.PresentPath = strings.TrimSpace(tier.PresentPath)
+		c.Capabilities.ServiceTiers[strings.ToLower(strings.TrimSpace(name))] = tier
+	}
 	c.Submit.TaskIDBodyPath = strings.TrimSpace(c.Submit.TaskIDBodyPath)
 	c.Estimate.TaskIDBodyPath = strings.TrimSpace(c.Estimate.TaskIDBodyPath)
 	c.Poll.TaskIDBodyPath = strings.TrimSpace(c.Poll.TaskIDBodyPath)
@@ -209,6 +264,11 @@ func (c *adapterConfig) defaults() {
 	}
 	c.Request.Fields = normalizeMappings(c.Request.Fields)
 	c.Request.ContentFields = normalizeMappings(c.Request.ContentFields)
+	c.Request.TaskModeMap = normalizeMappings(c.Request.TaskModeMap)
+	for mode, mappings := range c.Request.ContentRoleMap {
+		delete(c.Request.ContentRoleMap, mode)
+		c.Request.ContentRoleMap[strings.TrimSpace(mode)] = normalizeMappings(mappings)
+	}
 	c.Request.ContentPath = strings.TrimSpace(c.Request.ContentPath)
 	if c.Request.ContentPath == "" {
 		c.Request.ContentPath = "content"
@@ -235,6 +295,22 @@ func (c *adapterConfig) defaults() {
 	}
 	if c.Request.RequestIDHeader == "" {
 		c.Request.RequestIDHeader = "X-Request-ID"
+	}
+	if c.ServiceTiers != nil {
+		normalizedTiers := make(map[string]serviceTierConfig, len(c.ServiceTiers))
+		for name, tier := range c.ServiceTiers {
+			name = strings.ToLower(strings.TrimSpace(name))
+			if name == "" {
+				continue
+			}
+			tier.Label = strings.TrimSpace(tier.Label)
+			if tier.Label == "" {
+				tier.Label = name
+			}
+			tier.AddsResolutions = normalizeStrings(tier.AddsResolutions)
+			normalizedTiers[name] = tier
+		}
+		c.ServiceTiers = normalizedTiers
 	}
 	if len(c.Response.SuccessCodeValues) == 0 && c.Response.SuccessCodePath != "" {
 		c.Response.SuccessCodeValues = []string{"0"}
@@ -285,11 +361,14 @@ func (c *adapterConfig) defaults() {
 			parameter.Name = strings.TrimSpace(parameter.Name)
 			parameter.Label = strings.TrimSpace(parameter.Label)
 			parameter.Type = strings.ToLower(strings.TrimSpace(parameter.Type))
+			parameter.TaskModes = normalizeStrings(parameter.TaskModes)
+			parameter.ConflictsWith = normalizeStrings(parameter.ConflictsWith)
 			if parameter.Label == "" {
 				parameter.Label = parameter.Name
 			}
 			for optionIndex := range parameter.Options {
 				parameter.Options[optionIndex].Label = strings.TrimSpace(parameter.Options[optionIndex].Label)
+				parameter.Options[optionIndex].AddsResolutions = normalizeStrings(parameter.Options[optionIndex].AddsResolutions)
 			}
 		}
 		c.Validation.Models[modelName] = rule
@@ -351,6 +430,22 @@ func parseConfig(channel *video.VideoChannel) (adapterConfig, error) {
 		return adapterConfig{}, fmt.Errorf("parse generic adapter config: %w", err)
 	}
 	config.defaults()
+	config.Profile = channel.EffectiveAdapterProfile()
+	config.TimeoutSeconds = channel.EffectiveRequestTimeoutSeconds()
+	switch channel.EffectiveCancelMode() {
+	case video.CancelModeProvider:
+		config.Cancel.Enabled = true
+		enabled := true
+		config.LocalCancel.Enabled = &enabled
+	case video.CancelModeLocalOnly:
+		config.Cancel.Enabled = false
+		enabled := true
+		config.LocalCancel.Enabled = &enabled
+	default:
+		config.Cancel.Enabled = false
+		disabled := false
+		config.LocalCancel.Enabled = &disabled
+	}
 	if err := config.validate(channel.BaseURL); err != nil {
 		return adapterConfig{}, err
 	}
@@ -361,7 +456,13 @@ func parseConfig(channel *video.VideoChannel) (adapterConfig, error) {
 }
 
 func channelUsesUpstreamEstimate(channel *video.VideoChannel) bool {
-	if channel == nil || len(channel.Pricing) == 0 || string(channel.Pricing) == "null" {
+	if channel == nil {
+		return false
+	}
+	if mode := strings.TrimSpace(channel.PricingMode); mode != "" {
+		return mode == video.PricingModeUpstreamEstimate
+	}
+	if len(channel.Pricing) == 0 || string(channel.Pricing) == "null" {
 		return false
 	}
 	var pricing struct {
@@ -410,11 +511,34 @@ func (c adapterConfig) validate(baseURL string) error {
 	if err := validateOperation("cancel", c.Cancel, c.Cancel.Enabled, true); err != nil {
 		return err
 	}
+	for name, operation := range c.Actions {
+		if name == "" {
+			return errors.New("generic adapter actions contains an empty name")
+		}
+		if err := validateOperation("actions."+name, operation, true, true); err != nil {
+			return err
+		}
+	}
 	if err := validateCapabilityDiscovery(c.Capabilities); err != nil {
 		return err
 	}
 	if err := validateRequestConfig(c.Request); err != nil {
 		return err
+	}
+	for tier, definition := range c.ServiceTiers {
+		if tier != "standard" && tier != "priority" && tier != "vip" {
+			return fmt.Errorf("generic adapter service_tiers has invalid tier %q", tier)
+		}
+		for name := range definition.RequestParams {
+			if strings.TrimSpace(name) == "" {
+				return errors.New("generic adapter service_tiers request_params contains an empty key")
+			}
+		}
+		for _, resolution := range definition.AddsResolutions {
+			if strings.TrimSpace(resolution) == "" {
+				return errors.New("generic adapter service_tiers adds_resolutions contains an empty value")
+			}
+		}
 	}
 	if err := validateResponseConfig(c.Response); err != nil {
 		return err
@@ -464,12 +588,14 @@ func validateCapabilityDiscovery(config capabilityDiscoveryConfig) error {
 	allowedFields := map[string]bool{
 		"model": true, "platform": true, "resolutions": true, "ratios": true,
 		"supported_modes": true, "duration_options": true, "duration_min": true, "duration_max": true,
-		"supports_smart_duration": true,
-		"allow_generated_audio":   true, "require_visual_media_with_audio": true,
+		"duration_max_with_video_reference": true,
+		"supports_smart_duration":           true,
+		"allow_generated_audio":             true, "require_visual_media_with_audio": true,
 		"supports_cancel": true, "max_images": true, "max_videos": true,
 		"max_audios": true, "max_media": true, "media_duration_min": true,
 		"media_duration_max": true, "max_video_duration_total": true,
 		"max_audio_duration_total": true,
+		"service_tiers":            true,
 	}
 	if err := validateMappings("capabilities.fields", config.Fields, allowedFields); err != nil {
 		return err
@@ -484,6 +610,18 @@ func validateCapabilityDiscovery(config capabilityDiscoveryConfig) error {
 		for _, mode := range taskModes {
 			if mode == "" {
 				return errors.New("generic adapter capabilities task_mode_map contains an empty task mode")
+			}
+		}
+	}
+	for name, tier := range config.ServiceTiers {
+		if name == "" || (tier.EnabledPath == "" && tier.PresentPath == "" && name != "standard") {
+			return fmt.Errorf("generic adapter capabilities service tier %q is invalid", name)
+		}
+		for _, path := range []string{tier.EnabledPath, tier.PresentPath} {
+			if path != "" {
+				if err := validateJSONFieldPath(path); err != nil {
+					return fmt.Errorf("generic adapter capabilities service tier %q: %w", name, err)
+				}
 			}
 		}
 	}
@@ -528,12 +666,28 @@ func validateRequestConfig(config requestConfig) error {
 	}
 	allowedContentFields := map[string]bool{
 		"type": true, "role": true, "text": true, "url": true, "provider_object": true, "duration": true,
+		"client_ref_id": true,
 	}
 	if err := validateMappings("request.fields", config.Fields, allowedFields); err != nil {
 		return err
 	}
 	if err := validateMappings("request.content_fields", config.ContentFields, allowedContentFields); err != nil {
 		return err
+	}
+	for mode, upstream := range config.TaskModeMap {
+		if mode == "" || upstream == "" {
+			return errors.New("generic adapter request.task_mode_map contains an empty entry")
+		}
+	}
+	for mode, mappings := range config.ContentRoleMap {
+		if mode == "" {
+			return errors.New("generic adapter request.content_role_map contains an empty mode")
+		}
+		for role, upstream := range mappings {
+			if role == "" || upstream == "" {
+				return errors.New("generic adapter request.content_role_map contains an empty role mapping")
+			}
+		}
 	}
 	if err := validateJSONFieldPath(config.ContentPath); err != nil {
 		return fmt.Errorf("generic adapter request.content_path: %w", err)
@@ -666,6 +820,7 @@ func validTaskStatus(status string) bool {
 
 func validateRule(model string, rule validationRule) error {
 	if rule.DurationMin < 0 || rule.DurationMax < 0 || rule.DurationMax > 3600 ||
+		rule.DurationMaxWithVideoReference < 0 || rule.DurationMaxWithVideoReference > 3600 ||
 		(rule.DurationMax > 0 && rule.DurationMin > rule.DurationMax) {
 		return fmt.Errorf("generic adapter validation for %s has invalid duration bounds", model)
 	}
@@ -714,10 +869,29 @@ func validateRule(model string, rule validationRule) error {
 			return fmt.Errorf("generic adapter validation for %s has duplicate parameter %q", model, parameter.Name)
 		}
 		seenParameters[parameter.Name] = struct{}{}
-		if parameter.Type != "select" {
-			return fmt.Errorf("generic adapter validation for %s parameter %q must use select type", model, parameter.Name)
+		if parameter.Type != "select" && parameter.Type != "number" && parameter.Type != "integer" {
+			return fmt.Errorf("generic adapter validation for %s parameter %q has unsupported type %q", model, parameter.Name, parameter.Type)
 		}
-		if len(parameter.Options) == 0 {
+		if parameter.Min != nil && parameter.Max != nil && *parameter.Min > *parameter.Max {
+			return fmt.Errorf("generic adapter validation for %s parameter %q has invalid numeric bounds", model, parameter.Name)
+		}
+		if parameter.Type == "select" && (parameter.Min != nil || parameter.Max != nil) {
+			return fmt.Errorf("generic adapter validation for %s parameter %q cannot combine select options with numeric bounds", model, parameter.Name)
+		}
+		if parameter.Type != "select" && len(parameter.Options) > 0 {
+			return fmt.Errorf("generic adapter validation for %s parameter %q numeric types cannot declare options", model, parameter.Name)
+		}
+		for _, mode := range parameter.TaskModes {
+			if mode == "" {
+				return fmt.Errorf("generic adapter validation for %s parameter %q has an empty task mode", model, parameter.Name)
+			}
+		}
+		for _, conflict := range parameter.ConflictsWith {
+			if !jsonFieldSegment.MatchString(conflict) || conflict == parameter.Name {
+				return fmt.Errorf("generic adapter validation for %s parameter %q has an invalid conflict", model, parameter.Name)
+			}
+		}
+		if parameter.Type == "select" && len(parameter.Options) == 0 {
 			return fmt.Errorf("generic adapter validation for %s parameter %q requires options", model, parameter.Name)
 		}
 		seenOptions := make(map[string]struct{}, len(parameter.Options))
@@ -734,17 +908,33 @@ func validateRule(model string, rule validationRule) error {
 				return fmt.Errorf("generic adapter validation for %s parameter %q has duplicate options", model, parameter.Name)
 			}
 			seenOptions[key] = struct{}{}
+			for _, resolution := range option.AddsResolutions {
+				if resolution == "" {
+					return fmt.Errorf("generic adapter validation for %s parameter %q has an empty added resolution", model, parameter.Name)
+				}
+			}
 		}
 		if parameter.Default != nil {
 			if !validParameterValue(parameter.Default) {
 				return fmt.Errorf("generic adapter validation for %s parameter %q has an invalid default", model, parameter.Name)
 			}
-			encoded, err := json.Marshal(parameter.Default)
-			if err != nil {
-				return fmt.Errorf("generic adapter validation for %s parameter %q has an invalid default", model, parameter.Name)
+			if parameter.Type == "select" {
+				encoded, err := json.Marshal(parameter.Default)
+				if err != nil {
+					return fmt.Errorf("generic adapter validation for %s parameter %q has an invalid default", model, parameter.Name)
+				}
+				if _, exists := seenOptions[string(encoded)]; !exists {
+					return fmt.Errorf("generic adapter validation for %s parameter %q default is not an option", model, parameter.Name)
+				}
+			} else if !validNumericParameter(parameter.Default, parameter.Type, parameter.Min, parameter.Max) {
+				return fmt.Errorf("generic adapter validation for %s parameter %q default is outside numeric bounds", model, parameter.Name)
 			}
-			if _, exists := seenOptions[string(encoded)]; !exists {
-				return fmt.Errorf("generic adapter validation for %s parameter %q default is not an option", model, parameter.Name)
+		}
+	}
+	for _, parameter := range rule.Parameters {
+		for _, conflict := range parameter.ConflictsWith {
+			if _, exists := seenParameters[conflict]; !exists {
+				return fmt.Errorf("generic adapter validation for %s parameter %q conflicts with undeclared parameter %q", model, parameter.Name, conflict)
 			}
 		}
 	}
@@ -761,4 +951,24 @@ func validParameterValue(value any) bool {
 	default:
 		return false
 	}
+}
+
+func validNumericParameter(value any, parameterType string, min, max *float64) bool {
+	if !validParameterValue(value) {
+		return false
+	}
+	number, err := strconv.ParseFloat(fmt.Sprint(value), 64)
+	if err != nil || math.IsNaN(number) || math.IsInf(number, 0) {
+		return false
+	}
+	if parameterType == "integer" && number != math.Trunc(number) {
+		return false
+	}
+	if min != nil && number < *min {
+		return false
+	}
+	if max != nil && number > *max {
+		return false
+	}
+	return true
 }

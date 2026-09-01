@@ -16,10 +16,89 @@ import (
 var uploadImageEditBytes = filestorage.TransferBytes
 var downloadImageEditURL = downloadToBase64
 
-// resolveFileParams prepares reference images according to endpoint image_edit config.
+// MaterializeFileParams uploads embedded image data and returns task parameters
+// that only reference stored URLs. Provider-specific conversion happens later.
+func MaterializeFileParams(
+	ctx context.Context,
+	requestParams map[string]any,
+	mappedParams map[string]any,
+	endpoint *model.Endpoint,
+	capabilityCode string,
+) (map[string]any, map[string]any, error) {
+	if endpoint == nil || endpoint.ImageEdit() == nil {
+		return requestParams, mappedParams, nil
+	}
+
+	uploaded := make(map[string]string)
+	convert := func(field, value string) (string, error) {
+		if imageURL, ok := uploaded[value]; ok {
+			return imageURL, nil
+		}
+		data, contentType, embedded, err := decodeInternalImage(value)
+		if err != nil {
+			return "", fmt.Errorf("decode reference image for field %s: %w", field, err)
+		}
+		if !embedded {
+			return value, nil
+		}
+		imageURL, err := uploadImageEditBytes(ctx, data, contentType, capabilityCode)
+		if err != nil {
+			return "", fmt.Errorf("upload reference image for field %s: %w", field, err)
+		}
+		uploaded[value] = imageURL
+		return imageURL, nil
+	}
+
+	storedRequest, err := materializeImageFields(requestParams, endpoint.ImageEdit().FileField, convert)
+	if err != nil {
+		return nil, nil, err
+	}
+	storedMapped, err := materializeImageFields(mappedParams, endpoint.ImageEdit().FileField, convert)
+	if err != nil {
+		return nil, nil, err
+	}
+	return storedRequest, storedMapped, nil
+}
+
+func materializeImageFields(
+	params map[string]any,
+	configuredField string,
+	convert func(string, string) (string, error),
+) (map[string]any, error) {
+	if params == nil {
+		return nil, nil
+	}
+	result := make(map[string]any, len(params))
+	for key, value := range params {
+		result[key] = value
+	}
+	fields := []string{configuredField, "image_urls", "image", "images", "mask"}
+	seen := make(map[string]struct{}, len(fields))
+	for _, field := range fields {
+		if field == "" {
+			continue
+		}
+		if _, exists := seen[field]; exists {
+			continue
+		}
+		seen[field] = struct{}{}
+		value, exists := result[field]
+		if !exists || !hasImageEditValue(value) {
+			continue
+		}
+		converted, err := convertImageEditValue(field, value, convert)
+		if err != nil {
+			return nil, err
+		}
+		result[field] = converted
+	}
+	return result, nil
+}
+
+// ResolveFileParams prepares reference images according to endpoint image_edit config.
 // URL mode uploads internal images and emits public URLs. Multipart mode converts
 // public URLs to the internal file representation used by BaseProvider.
-func resolveFileParams(ctx context.Context, params map[string]any, endpoint *model.Endpoint, capabilityCode string) (map[string]any, error) {
+func ResolveFileParams(ctx context.Context, params map[string]any, endpoint *model.Endpoint, capabilityCode string) (map[string]any, error) {
 	ie := endpoint.ImageEdit()
 	if ie == nil {
 		return params, nil

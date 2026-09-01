@@ -77,7 +77,6 @@ export const ROUTE_GROUPS: RouteGroup[] = [
     roles: ['admin'],
     children: [
       { path: '/video-channels', name: '视频渠道', icon: <Film size={20} />, roles: ['admin'] },
-      { path: '/video-tasks', name: '视频任务', icon: <Video size={20} />, roles: ['admin'] },
     ],
   },
   {
@@ -100,6 +99,7 @@ export const ROUTE_GROUPS: RouteGroup[] = [
       { path: '/calls', name: '调用记录', icon: <Activity size={20} />, roles: ['user', 'admin'] },
       { path: '/observability', name: '审计与流水', icon: <ScrollText size={20} />, roles: ['user', 'admin'] },
       { path: '/logs', name: '异步任务', icon: <FileText size={20} />, roles: ['user', 'admin'] },
+      { path: '/video-tasks', name: '视频任务', icon: <Video size={20} />, roles: ['admin'] },
       { path: '/chat-logs', name: '对话记录', icon: <MessageSquare size={20} />, roles: ['user', 'admin'] },
     ],
   },

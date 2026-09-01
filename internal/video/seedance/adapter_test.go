@@ -93,7 +93,7 @@ func TestAdapterSupportsDirectAndEnvelopeResponses(t *testing.T) {
 	}))
 	defer server.Close()
 
-	adapter := NewAdapter(&video.VideoChannel{BaseURL: server.URL}, &video.VideoChannelKey{APIKey: "secret"})
+	adapter := NewAdapter(&video.VideoChannel{BaseURL: server.URL, CancelMode: video.CancelModeProvider}, &video.VideoChannelKey{APIKey: "secret"})
 
 	request, err := adapter.BuildRequest(context.Background(), &video.GenerateRequest{Model: "seedance-2.0", Prompt: "test", TaskID: "request-1"})
 	if err != nil {
@@ -125,7 +125,7 @@ func TestAdapterSupportsDirectAndEnvelopeResponses(t *testing.T) {
 
 func TestAdapterOnlyCancelsSubmittedUpstreamTasks(t *testing.T) {
 	adapter := NewAdapter(
-		&video.VideoChannel{BaseURL: "https://provider.example"},
+		&video.VideoChannel{BaseURL: "https://provider.example", CancelMode: video.CancelModeProvider},
 		&video.VideoChannelKey{APIKey: "secret"},
 	).(video.Canceller)
 	if !adapter.CanCancel(video.VideoTaskStatusSubmitted) {
@@ -135,6 +135,34 @@ func TestAdapterOnlyCancelsSubmittedUpstreamTasks(t *testing.T) {
 		if adapter.CanCancel(status) {
 			t.Fatalf("status %q should not be cancellable", status)
 		}
+	}
+}
+
+func TestAdapterCancellationModes(t *testing.T) {
+	tests := []struct {
+		name           string
+		mode           string
+		allowQueued    bool
+		allowSubmitted bool
+	}{
+		{name: "disabled", mode: video.CancelModeDisabled},
+		{name: "local only", mode: video.CancelModeLocalOnly, allowQueued: true},
+		{name: "provider", mode: video.CancelModeProvider, allowQueued: true, allowSubmitted: true},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			adapter := NewAdapter(
+				&video.VideoChannel{BaseURL: "https://provider.example", CancelMode: test.mode},
+				&video.VideoChannelKey{APIKey: "secret"},
+			)
+			localPolicy := adapter.(video.LocalCancellationPolicy)
+			if got := localPolicy.CanCancelLocal(&video.VideoTask{Status: video.VideoTaskStatusQueued}); got != test.allowQueued {
+				t.Fatalf("queued cancellable=%t, want %t", got, test.allowQueued)
+			}
+			if got := adapter.(video.Canceller).CanCancel(video.VideoTaskStatusSubmitted); got != test.allowSubmitted {
+				t.Fatalf("submitted cancellable=%t, want %t", got, test.allowSubmitted)
+			}
+		})
 	}
 }
 

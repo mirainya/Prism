@@ -2,6 +2,7 @@ package video
 
 import (
 	"context"
+	"encoding/json"
 	"testing"
 
 	"github.com/glebarez/sqlite"
@@ -10,6 +11,41 @@ import (
 	"github.com/shopspring/decimal"
 	"gorm.io/gorm"
 )
+
+func TestRecordCallPayloadBestEffortStoresUpstreamRequest(t *testing.T) {
+	db, err := gorm.Open(sqlite.Open("file:"+t.Name()+"?mode=memory&cache=shared"), &gorm.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := db.AutoMigrate(&model.APICall{}, &model.APICallAttempt{}, &model.APICallPayload{}); err != nil {
+		t.Fatal(err)
+	}
+	model.SetDB(db)
+	call := &model.APICall{ID: "call_video_payload", RetainPayload: true}
+	if err := db.Create(call).Error; err != nil {
+		t.Fatal(err)
+	}
+	attempt := &model.APICallAttempt{CallID: call.ID, AttemptNo: 1}
+	if err := db.Create(attempt).Error; err != nil {
+		t.Fatal(err)
+	}
+
+	RecordCallPayloadBestEffort(call.ID, attempt.ID, model.APICallPayloadUpstreamRequest, map[string]any{
+		"model": "minimax-h3", "seed": 7,
+	})
+
+	var payload model.APICallPayload
+	if err := db.Where("call_id = ? AND kind = ?", call.ID, model.APICallPayloadUpstreamRequest).First(&payload).Error; err != nil {
+		t.Fatal(err)
+	}
+	var body map[string]any
+	if err := json.Unmarshal(payload.Data, &body); err != nil {
+		t.Fatalf("decode payload: %v", err)
+	}
+	if body["model"] != "minimax-h3" || body["seed"] != float64(7) || payload.AttemptID != attempt.ID {
+		t.Fatalf("unexpected payload: body=%v attempt=%d", body, payload.AttemptID)
+	}
+}
 
 func TestFailTaskRefundsReservationAndFailsCall(t *testing.T) {
 	db, err := gorm.Open(sqlite.Open("file:"+t.Name()+"?mode=memory&cache=shared"), &gorm.Config{})

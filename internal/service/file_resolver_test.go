@@ -29,7 +29,7 @@ func TestResolveFileParamsURLModeUploadsInternalImages(t *testing.T) {
 	}
 	t.Cleanup(func() { uploadImageEditBytes = previousUploader })
 
-	resolved, err := resolveFileParams(context.Background(), map[string]any{
+	resolved, err := ResolveFileParams(context.Background(), map[string]any{
 		"image_urls": []any{encoded, "https://images.example/existing.png"},
 	}, endpoint, "gpt-image-2-duomi")
 	if err != nil {
@@ -38,6 +38,75 @@ func TestResolveFileParamsURLModeUploadsInternalImages(t *testing.T) {
 	images, ok := resolved["image_urls"].([]any)
 	if !ok || len(images) != 2 || images[0] != "https://storage.example/reference.png" ||
 		images[1] != "https://images.example/existing.png" {
+		t.Fatalf("image_urls = %#v", resolved["image_urls"])
+	}
+}
+
+func TestMaterializeFileParamsStoresURLsInRequestAndMappedParams(t *testing.T) {
+	pngData := []byte("\x89PNG\r\n\x1a\nreference")
+	encoded := "data:image/png;base64," + base64.StdEncoding.EncodeToString(pngData)
+	endpoint := &model.Endpoint{ExtraConfig: datatypes.JSON(`{
+		"image_edit":{"enabled":true,"input_mode":"multipart","file_field":"image"}
+	}`)}
+
+	uploadCalls := 0
+	previousUploader := uploadImageEditBytes
+	uploadImageEditBytes = func(_ context.Context, data []byte, contentType, capabilityCode string) (string, error) {
+		uploadCalls++
+		if !bytes.Equal(data, pngData) || contentType != "image/png" || capabilityCode != "gpt-image" {
+			t.Fatalf("upload metadata = %q %q %q", data, contentType, capabilityCode)
+		}
+		return "https://storage.example/reference.png", nil
+	}
+	t.Cleanup(func() { uploadImageEditBytes = previousUploader })
+
+	requestParams, mappedParams, err := MaterializeFileParams(
+		context.Background(),
+		map[string]any{"prompt": "edit", "image_urls": []any{encoded}},
+		map[string]any{"prompt": "edit", "image": []any{encoded}},
+		endpoint,
+		"gpt-image",
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if uploadCalls != 1 {
+		t.Fatalf("upload calls = %d, want 1", uploadCalls)
+	}
+	requestImages, ok := requestParams["image_urls"].([]any)
+	if !ok || len(requestImages) != 1 || requestImages[0] != "https://storage.example/reference.png" {
+		t.Fatalf("request image_urls = %#v", requestParams["image_urls"])
+	}
+	mappedImages, ok := mappedParams["image"].([]any)
+	if !ok || len(mappedImages) != 1 || mappedImages[0] != "https://storage.example/reference.png" {
+		t.Fatalf("mapped image = %#v", mappedParams["image"])
+	}
+}
+
+func TestResolveFileParamsURLModeUploadsDataURI(t *testing.T) {
+	pngData := []byte("\x89PNG\r\n\x1a\nreference")
+	encoded := "data:image/png;base64," + base64.StdEncoding.EncodeToString(pngData)
+	endpoint := &model.Endpoint{ExtraConfig: datatypes.JSON(`{
+		"image_edit":{"enabled":true,"input_mode":"url","file_field":"image_urls"}
+	}`)}
+
+	previousUploader := uploadImageEditBytes
+	uploadImageEditBytes = func(_ context.Context, data []byte, contentType, _ string) (string, error) {
+		if !bytes.Equal(data, pngData) || contentType != "image/png" {
+			t.Fatalf("uploaded data = %q, content type = %q", data, contentType)
+		}
+		return "https://storage.example/data-uri.png", nil
+	}
+	t.Cleanup(func() { uploadImageEditBytes = previousUploader })
+
+	resolved, err := ResolveFileParams(context.Background(), map[string]any{
+		"image_urls": []any{encoded},
+	}, endpoint, "gpt-image-2-duomi")
+	if err != nil {
+		t.Fatal(err)
+	}
+	images, ok := resolved["image_urls"].([]any)
+	if !ok || len(images) != 1 || images[0] != "https://storage.example/data-uri.png" {
 		t.Fatalf("image_urls = %#v", resolved["image_urls"])
 	}
 }
@@ -55,7 +124,7 @@ func TestResolveFileParamsURLModeRewritesCanonicalField(t *testing.T) {
 	}
 	t.Cleanup(func() { uploadImageEditBytes = previousUploader })
 
-	resolved, err := resolveFileParams(context.Background(), map[string]any{
+	resolved, err := ResolveFileParams(context.Background(), map[string]any{
 		"image": []any{encoded},
 	}, endpoint, "gpt-image-2-duomi")
 	if err != nil {
@@ -76,7 +145,7 @@ func TestResolveFileParamsMultipartModeKeepsUploadedImage(t *testing.T) {
 		"image_edit":{"enabled":true,"input_mode":"multipart","edit_path":"/v1/images/edits","file_field":"image"}
 	}`)}
 
-	resolved, err := resolveFileParams(context.Background(), map[string]any{
+	resolved, err := ResolveFileParams(context.Background(), map[string]any{
 		"image_urls": []any{encoded},
 	}, endpoint, "gpt-image")
 	if err != nil {
@@ -110,7 +179,7 @@ func TestResolveFileParamsMultipartModeDownloadsStoredImageAndMask(t *testing.T)
 	}
 	t.Cleanup(func() { downloadImageEditURL = previousDownloader })
 
-	resolved, err := resolveFileParams(context.Background(), map[string]any{
+	resolved, err := ResolveFileParams(context.Background(), map[string]any{
 		"image_urls": []any{"https://storage.example/reference.png"},
 		"mask":       []any{"https://storage.example/mask.png"},
 	}, endpoint, "gpt-image")

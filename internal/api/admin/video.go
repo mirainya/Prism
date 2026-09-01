@@ -3,10 +3,12 @@ package admin
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/url"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -17,6 +19,7 @@ import (
 	"github.com/mirainya/Prism/internal/video"
 	"github.com/mirainya/Prism/internal/video/generic"
 	pkgErrors "github.com/mirainya/Prism/pkg/errors"
+	"github.com/shopspring/decimal"
 	"gorm.io/datatypes"
 )
 
@@ -117,16 +120,228 @@ func buildDiscoveredVideoModelOptions(rawModels []byte, discovered map[string]vi
 }
 
 type createVideoChannelRequest struct {
-	Name          string         `json:"name" binding:"required"`
-	AdapterType   string         `json:"adapter_type" binding:"required"`
-	BaseURL       string         `json:"base_url" binding:"required"`
-	Status        string         `json:"status"`
-	Priority      int            `json:"priority"`
-	Models        datatypes.JSON `json:"models"`
-	Capabilities  datatypes.JSON `json:"capabilities"`
-	Pricing       datatypes.JSON `json:"pricing"`
-	AssetResolver string         `json:"asset_resolver"`
-	ExtraConfig   datatypes.JSON `json:"extra_config"`
+	Name                  string         `json:"name" binding:"required"`
+	AdapterType           string         `json:"adapter_type" binding:"required"`
+	AdapterProfile        string         `json:"adapter_profile"`
+	BaseURL               string         `json:"base_url" binding:"required"`
+	Status                string         `json:"status"`
+	Priority              int            `json:"priority"`
+	RequestTimeoutSeconds int            `json:"request_timeout_seconds"`
+	Models                datatypes.JSON `json:"models"`
+	Capabilities          datatypes.JSON `json:"capabilities"`
+	SupportsFirstFrame    *bool          `json:"supports_first_frame"`
+	SupportsLastFrame     *bool          `json:"supports_last_frame"`
+	SupportsAudio         *bool          `json:"supports_audio"`
+	SupportsWebSearch     *bool          `json:"supports_web_search"`
+	CancelMode            string         `json:"cancel_mode"`
+	Pricing               datatypes.JSON `json:"pricing"`
+	PricingMode           string         `json:"pricing_mode"`
+	FixedPrice            *float64       `json:"fixed_price"`
+	MarkupRatio           *float64       `json:"markup_ratio"`
+	AssetResolver         string         `json:"asset_resolver"`
+	ResultStorageEnabled  *bool          `json:"result_storage_enabled"`
+	ExtraConfig           datatypes.JSON `json:"extra_config"`
+}
+
+func normalizeFormalVideoChannelSettings(req *createVideoChannelRequest) error {
+	if req == nil {
+		return nil
+	}
+	var pricing struct {
+		Mode        string   `json:"mode"`
+		FixedPrice  *float64 `json:"fixed_price"`
+		MarkupRatio *float64 `json:"markup_ratio"`
+	}
+	if len(req.Pricing) > 0 && string(req.Pricing) != "null" {
+		if err := json.Unmarshal(req.Pricing, &pricing); err != nil {
+			return fmt.Errorf("invalid video pricing: %w", err)
+		}
+	}
+	if strings.TrimSpace(req.PricingMode) == "" {
+		req.PricingMode = strings.TrimSpace(pricing.Mode)
+	}
+	if req.PricingMode == "" {
+		req.PricingMode = "fixed"
+	}
+	if req.FixedPrice == nil {
+		value := 0.0
+		if pricing.FixedPrice != nil {
+			value = *pricing.FixedPrice
+		}
+		req.FixedPrice = &value
+	}
+	if req.MarkupRatio == nil {
+		value := 1.0
+		if pricing.MarkupRatio != nil {
+			value = *pricing.MarkupRatio
+		}
+		req.MarkupRatio = &value
+	}
+
+	var capabilities map[string]bool
+	if len(req.Capabilities) > 0 && string(req.Capabilities) != "null" {
+		if err := json.Unmarshal(req.Capabilities, &capabilities); err != nil || capabilities == nil {
+			return fmt.Errorf("capabilities must be a JSON boolean object")
+		}
+	}
+	if req.SupportsFirstFrame == nil {
+		value := capabilities["first_frame"]
+		req.SupportsFirstFrame = &value
+	}
+	if req.SupportsLastFrame == nil {
+		value := capabilities["last_frame"]
+		req.SupportsLastFrame = &value
+	}
+	if req.SupportsAudio == nil {
+		value := capabilities["audio"]
+		req.SupportsAudio = &value
+	}
+	if req.SupportsWebSearch == nil {
+		value := capabilities["web_search"]
+		req.SupportsWebSearch = &value
+	}
+
+	var extra struct {
+		Adapter struct {
+			Profile        string `json:"profile"`
+			TimeoutSeconds int    `json:"timeout_seconds"`
+			Cancel         struct {
+				Enabled bool `json:"enabled"`
+			} `json:"cancel"`
+			LocalCancel struct {
+				Enabled *bool `json:"enabled"`
+			} `json:"local_cancel"`
+		} `json:"adapter"`
+		ResultStorage struct {
+			Enabled bool `json:"enabled"`
+		} `json:"result_storage"`
+	}
+	if len(req.ExtraConfig) > 0 && string(req.ExtraConfig) != "null" {
+		if err := json.Unmarshal(req.ExtraConfig, &extra); err != nil {
+			return fmt.Errorf("extra_config must be a JSON object")
+		}
+	}
+	if req.AdapterProfile == "" {
+		req.AdapterProfile = extra.Adapter.Profile
+	}
+	if req.AdapterType == video.AdapterTypeGeneric && strings.TrimSpace(req.AdapterProfile) == "" {
+		req.AdapterProfile = generic.ProfileJSONTaskV1
+	}
+	if req.RequestTimeoutSeconds <= 0 {
+		req.RequestTimeoutSeconds = extra.Adapter.TimeoutSeconds
+	}
+	if req.RequestTimeoutSeconds <= 0 {
+		req.RequestTimeoutSeconds = 30
+	}
+	if req.CancelMode == "" {
+		switch {
+		case extra.Adapter.Cancel.Enabled:
+			req.CancelMode = video.CancelModeProvider
+		case extra.Adapter.LocalCancel.Enabled != nil && *extra.Adapter.LocalCancel.Enabled:
+			req.CancelMode = video.CancelModeLocalOnly
+		default:
+			req.CancelMode = video.CancelModeDisabled
+		}
+		if req.AdapterType == video.AdapterTypeSeedance && capabilities["cancel"] {
+			req.CancelMode = video.CancelModeProvider
+		}
+	}
+	if req.ResultStorageEnabled == nil {
+		value := extra.ResultStorage.Enabled
+		req.ResultStorageEnabled = &value
+	}
+	if req.CancelMode != video.CancelModeDisabled && req.CancelMode != video.CancelModeLocalOnly && req.CancelMode != video.CancelModeProvider {
+		return fmt.Errorf("unsupported video cancel mode %q", req.CancelMode)
+	}
+	if req.PricingMode != "fixed" && req.PricingMode != "upstream_estimate" {
+		return fmt.Errorf("unsupported video pricing mode %q", req.PricingMode)
+	}
+	if req.RequestTimeoutSeconds < 1 || req.RequestTimeoutSeconds > 300 {
+		return fmt.Errorf("video request timeout must be between 1 and 300 seconds")
+	}
+	if *req.FixedPrice < 0 || *req.MarkupRatio < 0 {
+		return fmt.Errorf("video pricing cannot contain negative values")
+	}
+	return nil
+}
+
+func stripPromotedVideoChannelJSON(req *createVideoChannelRequest) error {
+	if req == nil {
+		return nil
+	}
+	var err error
+	if req.Capabilities, err = stripVideoChannelJSONKeys(req.Capabilities,
+		"first_frame", "last_frame", "audio", "web_search", "cancel"); err != nil {
+		return fmt.Errorf("strip promoted capabilities: %w", err)
+	}
+	if req.Pricing, err = stripVideoChannelJSONKeys(req.Pricing,
+		"mode", "fixed_price", "markup_ratio"); err != nil {
+		return fmt.Errorf("strip promoted pricing: %w", err)
+	}
+	if len(req.ExtraConfig) == 0 || string(req.ExtraConfig) == "null" {
+		return nil
+	}
+	var extra map[string]any
+	if err := json.Unmarshal(req.ExtraConfig, &extra); err != nil || extra == nil {
+		return fmt.Errorf("extra_config must be a JSON object")
+	}
+	if adapter, ok := extra["adapter"].(map[string]any); ok {
+		delete(adapter, "profile")
+		delete(adapter, "timeout_seconds")
+		stripNestedVideoChannelJSONKey(adapter, "cancel", "enabled")
+		stripNestedVideoChannelJSONKey(adapter, "local_cancel", "enabled")
+		if len(adapter) == 0 {
+			delete(extra, "adapter")
+		}
+	}
+	if resultStorage, ok := extra["result_storage"].(map[string]any); ok {
+		delete(resultStorage, "enabled")
+		if len(resultStorage) == 0 {
+			delete(extra, "result_storage")
+		}
+	}
+	encoded, err := json.Marshal(extra)
+	if err != nil {
+		return fmt.Errorf("encode extra_config: %w", err)
+	}
+	if len(extra) == 0 {
+		req.ExtraConfig = nil
+	} else {
+		req.ExtraConfig = datatypes.JSON(encoded)
+	}
+	return nil
+}
+
+func stripVideoChannelJSONKeys(raw datatypes.JSON, keys ...string) (datatypes.JSON, error) {
+	if len(raw) == 0 || string(raw) == "null" {
+		return nil, nil
+	}
+	var object map[string]any
+	if err := json.Unmarshal(raw, &object); err != nil || object == nil {
+		return nil, fmt.Errorf("value must be a JSON object")
+	}
+	for _, key := range keys {
+		delete(object, key)
+	}
+	if len(object) == 0 {
+		return nil, nil
+	}
+	encoded, err := json.Marshal(object)
+	if err != nil {
+		return nil, err
+	}
+	return datatypes.JSON(encoded), nil
+}
+
+func stripNestedVideoChannelJSONKey(parent map[string]any, objectKey, fieldKey string) {
+	nested, ok := parent[objectKey].(map[string]any)
+	if !ok {
+		return
+	}
+	delete(nested, fieldKey)
+	if len(nested) == 0 {
+		delete(parent, objectKey)
+	}
 }
 
 func validateVideoChannelRequest(req *createVideoChannelRequest) error {
@@ -140,6 +355,12 @@ func validateVideoChannelRequest(req *createVideoChannelRequest) error {
 	req.BaseURL = parsed.String()
 	req.Name = strings.TrimSpace(req.Name)
 	req.AdapterType = strings.TrimSpace(req.AdapterType)
+	if err := normalizeFormalVideoChannelSettings(req); err != nil {
+		return err
+	}
+	if err := stripPromotedVideoChannelJSON(req); err != nil {
+		return err
+	}
 	if req.AdapterType != video.AdapterTypeSeedance && req.AdapterType != video.AdapterTypeGeneric {
 		return fmt.Errorf("unsupported video adapter type %q", req.AdapterType)
 	}
@@ -178,12 +399,15 @@ func validateVideoChannelRequest(req *createVideoChannelRequest) error {
 			return fmt.Errorf("%s must be a JSON object", name)
 		}
 	}
-	if err := validateVideoPricing(req.Pricing, req.AdapterType); err != nil {
+	if err := validateVideoPricing(req.PricingMode, *req.FixedPrice, *req.MarkupRatio, req.AdapterType); err != nil {
 		return err
 	}
 	resolverChannel := &video.VideoChannel{
-		BaseURL: req.BaseURL, Pricing: req.Pricing,
-		AssetResolver: req.AssetResolver, ExtraConfig: req.ExtraConfig,
+		AdapterType: req.AdapterType, AdapterProfile: req.AdapterProfile,
+		BaseURL: req.BaseURL, Pricing: req.Pricing, PricingMode: req.PricingMode,
+		FixedPrice: decimal.NewFromFloat(*req.FixedPrice), MarkupRatio: decimal.NewFromFloat(*req.MarkupRatio),
+		RequestTimeoutSeconds: req.RequestTimeoutSeconds, CancelMode: req.CancelMode,
+		AssetResolver: req.AssetResolver, ResultStorageEnabled: req.ResultStorageEnabled, ExtraConfig: req.ExtraConfig,
 	}
 	if req.AdapterType == video.AdapterTypeGeneric {
 		if err := generic.ValidateChannelConfig(resolverChannel); err != nil {
@@ -206,27 +430,14 @@ func emptyJSONObject(raw datatypes.JSON) bool {
 	return json.Unmarshal(raw, &object) == nil && len(object) == 0
 }
 
-func validateVideoPricing(raw datatypes.JSON, adapterType string) error {
-	var pricing struct {
-		Mode        string  `json:"mode"`
-		FixedPrice  float64 `json:"fixed_price"`
-		MarkupRatio float64 `json:"markup_ratio"`
+func validateVideoPricing(mode string, fixedPrice, markupRatio float64, adapterType string) error {
+	if mode != video.PricingModeFixed && mode != video.PricingModeUpstreamEstimate {
+		return fmt.Errorf("unsupported video pricing mode %q", mode)
 	}
-	if len(raw) > 0 && string(raw) != "null" {
-		if err := json.Unmarshal(raw, &pricing); err != nil {
-			return fmt.Errorf("invalid pricing: %w", err)
-		}
-	}
-	if pricing.Mode == "" {
-		pricing.Mode = "fixed"
-	}
-	if pricing.Mode != "fixed" && pricing.Mode != "upstream_estimate" {
-		return fmt.Errorf("unsupported video pricing mode %q", pricing.Mode)
-	}
-	if pricing.FixedPrice < 0 || pricing.MarkupRatio < 0 {
+	if fixedPrice < 0 || markupRatio < 0 {
 		return fmt.Errorf("video pricing cannot contain negative values")
 	}
-	if pricing.Mode == "upstream_estimate" && adapterType != video.AdapterTypeGeneric {
+	if mode == video.PricingModeUpstreamEstimate && adapterType != video.AdapterTypeGeneric {
 		return fmt.Errorf("upstream_estimate pricing requires the generic adapter")
 	}
 	return nil
@@ -243,16 +454,27 @@ func CreateVideoChannel(c *gin.Context) {
 		return
 	}
 	ch := video.VideoChannel{
-		Name:          req.Name,
-		AdapterType:   req.AdapterType,
-		BaseURL:       req.BaseURL,
-		Status:        req.Status,
-		Priority:      req.Priority,
-		Models:        req.Models,
-		Capabilities:  req.Capabilities,
-		Pricing:       req.Pricing,
-		AssetResolver: req.AssetResolver,
-		ExtraConfig:   req.ExtraConfig,
+		Name:                  req.Name,
+		AdapterType:           req.AdapterType,
+		AdapterProfile:        req.AdapterProfile,
+		BaseURL:               req.BaseURL,
+		Status:                req.Status,
+		Priority:              req.Priority,
+		RequestTimeoutSeconds: req.RequestTimeoutSeconds,
+		Models:                req.Models,
+		Capabilities:          req.Capabilities,
+		SupportsFirstFrame:    req.SupportsFirstFrame,
+		SupportsLastFrame:     req.SupportsLastFrame,
+		SupportsAudio:         req.SupportsAudio,
+		SupportsWebSearch:     req.SupportsWebSearch,
+		CancelMode:            req.CancelMode,
+		Pricing:               req.Pricing,
+		PricingMode:           req.PricingMode,
+		FixedPrice:            decimal.NewFromFloat(*req.FixedPrice),
+		MarkupRatio:           decimal.NewFromFloat(*req.MarkupRatio),
+		AssetResolver:         req.AssetResolver,
+		ResultStorageEnabled:  req.ResultStorageEnabled,
+		ExtraConfig:           req.ExtraConfig,
 	}
 	if ch.Status == "" {
 		ch.Status = "active"
@@ -287,16 +509,27 @@ func UpdateVideoChannel(c *gin.Context) {
 		return
 	}
 	updates := map[string]any{
-		"name":           req.Name,
-		"adapter_type":   req.AdapterType,
-		"base_url":       req.BaseURL,
-		"status":         req.Status,
-		"priority":       req.Priority,
-		"models":         req.Models,
-		"capabilities":   req.Capabilities,
-		"pricing":        req.Pricing,
-		"asset_resolver": req.AssetResolver,
-		"extra_config":   req.ExtraConfig,
+		"name":                    req.Name,
+		"adapter_type":            req.AdapterType,
+		"adapter_profile":         req.AdapterProfile,
+		"base_url":                req.BaseURL,
+		"status":                  req.Status,
+		"priority":                req.Priority,
+		"request_timeout_seconds": req.RequestTimeoutSeconds,
+		"models":                  req.Models,
+		"capabilities":            req.Capabilities,
+		"supports_first_frame":    req.SupportsFirstFrame,
+		"supports_last_frame":     req.SupportsLastFrame,
+		"supports_audio":          req.SupportsAudio,
+		"supports_web_search":     req.SupportsWebSearch,
+		"cancel_mode":             req.CancelMode,
+		"pricing":                 req.Pricing,
+		"pricing_mode":            req.PricingMode,
+		"fixed_price":             decimal.NewFromFloat(*req.FixedPrice),
+		"markup_ratio":            decimal.NewFromFloat(*req.MarkupRatio),
+		"asset_resolver":          req.AssetResolver,
+		"result_storage_enabled":  req.ResultStorageEnabled,
+		"extra_config":            req.ExtraConfig,
 	}
 	if err := model.DB().Model(&ch).Updates(updates).Error; err != nil {
 		resp.InternalError(c, pkgErrors.ErrInternalError)
@@ -494,6 +727,34 @@ func hasActiveVideoTasks(column string, id uint) (bool, error) {
 
 // ========== Video Tasks ==========
 
+type videoTaskListItem struct {
+	ID             string                `json:"id"`
+	CallID         string                `json:"call_id"`
+	UserID         uint                  `json:"user_id"`
+	TokenID        uint                  `json:"token_id"`
+	Model          string                `json:"model"`
+	VendorModel    string                `json:"vendor_model"`
+	Status         video.VideoTaskStatus `json:"status"`
+	Progress       int                   `json:"progress"`
+	TaskMode       string                `json:"task_mode"`
+	ServiceTier    string                `json:"service_tier"`
+	Resolution     string                `json:"resolution"`
+	Ratio          string                `json:"ratio"`
+	Duration       int                   `json:"duration"`
+	GenerateAudio  bool                  `json:"generate_audio"`
+	ChannelID      uint                  `json:"channel_id"`
+	KeyID          uint                  `json:"key_id"`
+	AdapterType    string                `json:"adapter_type"`
+	ProviderTaskID string                `json:"provider_task_id"`
+	EstimatedCost  decimal.Decimal       `json:"estimated_cost"`
+	FinalCost      decimal.Decimal       `json:"final_cost"`
+	BillingStatus  string                `json:"billing_status"`
+	ErrorMessage   string                `json:"error_message"`
+	CreatedAt      time.Time             `json:"created_at"`
+	SubmittedAt    *time.Time            `json:"submitted_at"`
+	CompletedAt    *time.Time            `json:"completed_at"`
+}
+
 func ListVideoTasks(c *gin.Context) {
 	page, pageSize := 1, 20
 	if v := c.Query("page"); v != "" {
@@ -509,20 +770,90 @@ func ListVideoTasks(c *gin.Context) {
 		}
 	}
 
-	db := model.DB().Model(&video.VideoTask{})
+	snapshotAt := time.Now()
+	if value := strings.TrimSpace(c.Query("snapshot_at")); value != "" {
+		parsed, err := time.Parse(time.RFC3339Nano, value)
+		if err != nil {
+			resp.BadRequest(c, pkgErrors.WithMessage(pkgErrors.ErrInvalidParams, "invalid snapshot_at"))
+			return
+		}
+		snapshotAt = parsed
+	}
+
+	db := model.DB().Model(&video.VideoTask{}).Where("created_at <= ?", snapshotAt)
+	if keyword := strings.TrimSpace(c.Query("keyword")); keyword != "" {
+		pattern := "%" + keyword + "%"
+		db = db.Where("id LIKE ? OR call_id LIKE ? OR provider_task_id LIKE ?", pattern, pattern, pattern)
+	}
 	if status := c.Query("status"); status != "" {
 		db = db.Where("status = ?", status)
 	}
-	if model_ := c.Query("model"); model_ != "" {
-		db = db.Where("model = ?", model_)
+	if modelName := strings.TrimSpace(c.Query("model")); modelName != "" {
+		db = db.Where("model LIKE ?", "%"+modelName+"%")
+	}
+	if taskMode := strings.TrimSpace(c.Query("task_mode")); taskMode != "" {
+		db = db.Where("task_mode = ?", taskMode)
+	}
+	if serviceTier := strings.TrimSpace(c.Query("service_tier")); serviceTier != "" {
+		db = db.Where("service_tier = ?", serviceTier)
+	}
+	for _, filter := range []struct {
+		query  string
+		column string
+	}{
+		{query: "channel_id", column: "channel_id"},
+		{query: "user_id", column: "user_id"},
+		{query: "token_id", column: "token_id"},
+	} {
+		value := strings.TrimSpace(c.Query(filter.query))
+		if value == "" {
+			continue
+		}
+		parsed, err := strconv.ParseUint(value, 10, 64)
+		if err != nil || parsed == 0 {
+			resp.BadRequest(c, pkgErrors.WithMessage(pkgErrors.ErrInvalidParams, "invalid "+filter.query))
+			return
+		}
+		db = db.Where(filter.column+" = ?", parsed)
+	}
+	if value := strings.TrimSpace(c.Query("start_date")); value != "" {
+		start, err := time.ParseInLocation("2006-01-02", value, time.Local)
+		if err != nil {
+			resp.BadRequest(c, pkgErrors.WithMessage(pkgErrors.ErrInvalidParams, "invalid start_date"))
+			return
+		}
+		db = db.Where("created_at >= ?", start)
+	}
+	if value := strings.TrimSpace(c.Query("end_date")); value != "" {
+		end, err := time.ParseInLocation("2006-01-02", value, time.Local)
+		if err != nil {
+			resp.BadRequest(c, pkgErrors.WithMessage(pkgErrors.ErrInvalidParams, "invalid end_date"))
+			return
+		}
+		db = db.Where("created_at < ?", end.AddDate(0, 0, 1))
 	}
 
 	var total int64
-	db.Count(&total)
+	if err := db.Count(&total).Error; err != nil {
+		resp.InternalError(c, pkgErrors.ErrInternalError)
+		return
+	}
 
-	var tasks []video.VideoTask
-	db.Order("created_at DESC").Offset((page - 1) * pageSize).Limit(pageSize).Find(&tasks)
-	resp.Success(c, gin.H{"total": total, "items": tasks})
+	var tasks []videoTaskListItem
+	if err := db.Select(
+		"id", "call_id", "user_id", "token_id", "model", "vendor_model", "status", "progress",
+		"task_mode", "service_tier", "resolution", "ratio", "duration", "generate_audio",
+		"channel_id", "key_id", "adapter_type", "provider_task_id", "estimated_cost", "final_cost",
+		"billing_status", "error_message", "created_at", "submitted_at", "completed_at",
+	).Order("created_at DESC, id DESC").Offset((page - 1) * pageSize).Limit(pageSize).Find(&tasks).Error; err != nil {
+		resp.InternalError(c, pkgErrors.ErrInternalError)
+		return
+	}
+	resp.Success(c, gin.H{
+		"total":       total,
+		"items":       tasks,
+		"snapshot_at": snapshotAt.Format(time.RFC3339Nano),
+	})
 }
 
 func GetVideoTask(c *gin.Context) {
@@ -532,7 +863,32 @@ func GetVideoTask(c *gin.Context) {
 		resp.NotFound(c, pkgErrors.ErrTaskNotFound)
 		return
 	}
-	resp.Success(c, task)
+	callPayloads := make([]service.APICallPayloadDetail, 0)
+	if task.CallID != "" {
+		detail, err := service.NewAPICallService().GetCallDetail(task.CallID, task.UserID, true)
+		if err != nil && !errors.Is(err, service.ErrAPICallNotFound) {
+			resp.InternalError(c, pkgErrors.ErrInternalError)
+			return
+		}
+		if detail != nil {
+			for _, payload := range detail.Payloads {
+				if payload.Kind == model.APICallPayloadRequest || payload.Kind == model.APICallPayloadUpstreamRequest {
+					callPayloads = append(callPayloads, payload)
+				}
+			}
+		}
+	}
+	resp.Success(c, struct {
+		video.VideoTask
+		ProviderResponse datatypes.JSON                 `json:"provider_response"`
+		PollCount        int                            `json:"poll_count"`
+		CallPayloads     []service.APICallPayloadDetail `json:"call_payloads"`
+	}{
+		VideoTask:        task,
+		ProviderResponse: task.ProviderResponse,
+		PollCount:        task.PollCount,
+		CallPayloads:     callPayloads,
+	})
 }
 
 // ========== Video Stats ==========

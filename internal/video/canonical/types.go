@@ -9,12 +9,14 @@ const (
 	TaskKindFirstFrame     TaskKind = "first_frame_to_video"
 	TaskKindFirstLastFrame TaskKind = "first_last_frame_to_video"
 	TaskKindMultimodal     TaskKind = "multimodal_video"
+	TaskKindVideoEdit      TaskKind = "video_edit"
 	TaskKindVideoExtension TaskKind = "video_extension"
 )
 
 // Reference is a public, provider-neutral media reference.
 // Exactly one of AssetID and URL is expected at the API boundary.
 type Reference struct {
+	ID              string   `json:"id,omitempty"`
 	Type            string   `json:"type"`
 	Role            string   `json:"role"`
 	AssetID         string   `json:"asset_id,omitempty"`
@@ -41,6 +43,7 @@ type VideoSpec struct {
 	Resolution      string          `json:"resolution,omitempty"`
 	AspectRatio     string          `json:"aspect_ratio,omitempty"`
 	GenerateAudio   *bool           `json:"generate_audio,omitempty"`
+	ServiceTier     string          `json:"service_tier,omitempty"`
 	References      []Reference     `json:"references,omitempty"`
 	ProviderOptions ProviderOptions `json:"provider_options,omitempty"`
 	CallbackURL     string          `json:"callback_url,omitempty"`
@@ -51,18 +54,23 @@ func (s *VideoSpec) InferredTaskKind() TaskKind {
 	if s == nil || len(s.References) == 0 {
 		return TaskKindTextToVideo
 	}
-	hasFirst, hasLast, hasSourceVideo := false, false, false
+	hasFirst, hasLast, hasEditSource, hasExtensionSource := false, false, false, false
 	for _, reference := range s.References {
 		switch reference.Role {
 		case "first_frame":
 			hasFirst = true
 		case "last_frame":
 			hasLast = true
+		case "edit_source":
+			hasEditSource = true
 		case "source_video":
-			hasSourceVideo = true
+			hasExtensionSource = true
 		}
 	}
-	if hasSourceVideo {
+	if hasEditSource {
+		return TaskKindVideoEdit
+	}
+	if hasExtensionSource {
 		return TaskKindVideoExtension
 	}
 	if hasFirst && hasLast && len(s.References) == 2 {

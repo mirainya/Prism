@@ -154,6 +154,25 @@ func (s *TaskService) GetTaskByNoUserAndToken(taskNo string, userID, tokenID uin
 	return &task, nil
 }
 
+// GetTaskSummaryByNoUserAndToken reads polling fields without loading large request payloads.
+func (s *TaskService) GetTaskSummaryByNoUserAndToken(taskNo string, userID, tokenID uint) (*model.Task, error) {
+	var task model.Task
+	err := model.DB().Select(
+		"id", "task_no", "status", "progress", "result", "error_message", "cost",
+		"vendor_task_id", "created_at", "started_at", "completed_at",
+	).Where(
+		"task_no = ? AND user_id = ? AND token_id = ?",
+		taskNo, userID, tokenID,
+	).First(&task).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return nil, ErrTaskNotFound
+	}
+	if err != nil {
+		return nil, err
+	}
+	return &task, nil
+}
+
 func (s *TaskService) GetTaskByID(id uint) (*model.Task, error) {
 	var task model.Task
 	err := model.DB().Where("id = ?", id).First(&task).Error
@@ -176,6 +195,50 @@ func (s *TaskService) GetTaskByVendorID(vendorTaskID string) (*model.Task, error
 		return nil, err
 	}
 	return &task, nil
+}
+
+// SaveTaskFileParams replaces embedded image data with durable storage URLs
+// while the submit worker still owns the task.
+func (s *TaskService) SaveTaskFileParams(
+	taskID uint,
+	leaseOwner string,
+	requestParams map[string]any,
+	mappedParams map[string]any,
+) error {
+	requestParamsJSON, err := json.Marshal(requestParams)
+	if err != nil {
+		return fmt.Errorf("marshal request params: %w", err)
+	}
+	mappedParamsJSON, err := json.Marshal(mappedParams)
+	if err != nil {
+		return fmt.Errorf("marshal mapped params: %w", err)
+	}
+
+	result := model.DB().Model(&model.Task{}).
+		Where("id = ? AND worker_lease_owner = ? AND status IN ?", taskID, leaseOwner,
+			[]model.TaskStatus{model.TaskStatusPending, model.TaskStatusProcessing}).
+		Updates(map[string]any{
+			"request_params": datatypes.JSON(requestParamsJSON),
+			"mapped_params":  datatypes.JSON(mappedParamsJSON),
+		})
+	if result.Error != nil {
+		return result.Error
+	}
+	if result.RowsAffected > 0 {
+		return nil
+	}
+
+	var count int64
+	if err := model.DB().Model(&model.Task{}).
+		Where("id = ? AND worker_lease_owner = ? AND status IN ?", taskID, leaseOwner,
+			[]model.TaskStatus{model.TaskStatusPending, model.TaskStatusProcessing}).
+		Count(&count).Error; err != nil {
+		return err
+	}
+	if count == 0 {
+		return ErrTaskNotExecutable
+	}
+	return nil
 }
 
 func (s *TaskService) UpdateTaskStatus(taskID uint, status model.TaskStatus, vendorTaskID string) error {

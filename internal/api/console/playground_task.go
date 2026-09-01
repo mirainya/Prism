@@ -69,15 +69,17 @@ func PlaygroundGetTask(c *gin.Context) {
 	}
 
 	taskNo := c.Param("task_no")
-	task, err := capabilityService.GetTaskForToken(c.Request.Context(), taskNo, token.UserID, token.ID)
+	includeParams := c.Query("include_params") == "true"
+	var task *model.Task
+	var err error
+	if includeParams {
+		task, err = capabilityService.GetTaskForToken(c.Request.Context(), taskNo, token.UserID, token.ID)
+	} else {
+		task, err = capabilityService.GetTaskSummaryForToken(c.Request.Context(), taskNo, token.UserID, token.ID)
+	}
 	if err != nil {
 		resp.ErrorMsg(c, http.StatusNotFound, 404, "task not found")
 		return
-	}
-
-	var rawParams any
-	if len(task.RequestParams) > 0 {
-		_ = json.Unmarshal(task.RequestParams, &rawParams)
 	}
 
 	var result any
@@ -93,20 +95,28 @@ func PlaygroundGetTask(c *gin.Context) {
 		"result":     result,
 		"error":      task.ErrorMessage,
 		"cost":       task.Cost,
-		"raw_params": rawParams,
 		"created_at": task.CreatedAt,
 	}
+	if includeParams {
+		var rawParams any
+		if len(task.RequestParams) > 0 {
+			_ = json.Unmarshal(task.RequestParams, &rawParams)
+		}
+		detail["raw_params"] = rawParams
+	}
 	if middleware.GetUserRole(c) == string(model.UserRoleAdmin) {
-		var mappedParams any
-		if len(task.MappedParams) > 0 {
-			_ = json.Unmarshal(task.MappedParams, &mappedParams)
+		if includeParams {
+			var mappedParams any
+			if len(task.MappedParams) > 0 {
+				_ = json.Unmarshal(task.MappedParams, &mappedParams)
+			}
+			var vendorResponse any
+			if len(task.VendorResponse) > 0 {
+				_ = json.Unmarshal(task.VendorResponse, &vendorResponse)
+			}
+			detail["mapped_params"] = mappedParams
+			detail["vendor_response"] = vendorResponse
 		}
-		var vendorResponse any
-		if len(task.VendorResponse) > 0 {
-			_ = json.Unmarshal(task.VendorResponse, &vendorResponse)
-		}
-		detail["mapped_params"] = mappedParams
-		detail["vendor_response"] = vendorResponse
 		detail["vendor_task_id"] = task.VendorTaskID
 	}
 

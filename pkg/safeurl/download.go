@@ -21,14 +21,25 @@ type Result struct {
 }
 
 func Download(ctx context.Context, rawURL string, maxBytes int64) (*Result, error) {
+	return download(ctx, rawURL, maxBytes, nil)
+}
+
+// DownloadTrusted downloads a provider result from an explicitly configured
+// host allowlist. This is only for provider-owned result URLs whose DNS may
+// resolve to a cloud egress address inside the server network.
+func DownloadTrusted(ctx context.Context, rawURL string, maxBytes int64, trustedHosts []string) (*Result, error) {
+	return download(ctx, rawURL, maxBytes, trustedHosts)
+}
+
+func download(ctx context.Context, rawURL string, maxBytes int64, trustedHosts []string) (*Result, error) {
 	if maxBytes <= 0 {
 		return nil, errors.New("maxBytes must be positive")
 	}
-	parsed, err := parseAndValidate(ctx, rawURL)
+	parsed, err := parseAndValidateWithTrustedHosts(ctx, rawURL, trustedHosts)
 	if err != nil {
 		return nil, err
 	}
-	client := NewClient(45 * time.Second)
+	client := newClient(45*time.Second, trustedHosts)
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, parsed.String(), nil)
 	if err != nil {
 		return nil, err
@@ -69,6 +80,16 @@ func Validate(ctx context.Context, rawURL string) error {
 // connect time and for every redirect. Callers should still call Validate for
 // the initial URL so malformed or unsafe input is rejected before execution.
 func NewClient(timeout time.Duration) *http.Client {
+	return newClient(timeout, nil)
+}
+
+// NewTrustedClient is the redirect-safe client variant for configured
+// provider result hosts. User-controlled URLs must use NewClient instead.
+func NewTrustedClient(timeout time.Duration, trustedHosts []string) *http.Client {
+	return newClient(timeout, trustedHosts)
+}
+
+func newClient(timeout time.Duration, trustedHosts []string) *http.Client {
 	transport := http.DefaultTransport.(*http.Transport).Clone()
 	transport.Proxy = nil
 	dialer := &net.Dialer{Timeout: 10 * time.Second}
@@ -77,7 +98,7 @@ func NewClient(timeout time.Duration) *http.Client {
 		if err != nil {
 			return nil, err
 		}
-		addresses, err := resolvePublicAddresses(ctx, host)
+		addresses, err := resolveAddresses(ctx, host, trustedHosts)
 		if err != nil {
 			return nil, err
 		}
@@ -88,17 +109,21 @@ func NewClient(timeout time.Duration) *http.Client {
 		if len(via) >= 5 {
 			return errors.New("too many redirects")
 		}
-		return validateResolvedURL(req.Context(), req.URL)
+		return validateResolvedURLWithTrustedHosts(req.Context(), req.URL, trustedHosts)
 	}
 	return client
 }
 
 func parseAndValidate(ctx context.Context, rawURL string) (*url.URL, error) {
+	return parseAndValidateWithTrustedHosts(ctx, rawURL, nil)
+}
+
+func parseAndValidateWithTrustedHosts(ctx context.Context, rawURL string, trustedHosts []string) (*url.URL, error) {
 	parsed, err := url.Parse(rawURL)
 	if err != nil {
 		return nil, err
 	}
-	if err := validateResolvedURL(ctx, parsed); err != nil {
+	if err := validateResolvedURLWithTrustedHosts(ctx, parsed, trustedHosts); err != nil {
 		return nil, err
 	}
 	return parsed, nil
@@ -115,14 +140,22 @@ func validateURL(value *url.URL) error {
 }
 
 func validateResolvedURL(ctx context.Context, value *url.URL) error {
+	return validateResolvedURLWithTrustedHosts(ctx, value, nil)
+}
+
+func validateResolvedURLWithTrustedHosts(ctx context.Context, value *url.URL, trustedHosts []string) error {
 	if err := validateURL(value); err != nil {
 		return err
 	}
-	_, err := resolvePublicAddresses(ctx, value.Hostname())
+	_, err := resolveAddresses(ctx, value.Hostname(), trustedHosts)
 	return err
 }
 
 func resolvePublicAddresses(ctx context.Context, host string) ([]net.IPAddr, error) {
+	return resolveAddresses(ctx, host, nil)
+}
+
+func resolveAddresses(ctx context.Context, host string, trustedHosts []string) ([]net.IPAddr, error) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
@@ -139,12 +172,37 @@ func resolvePublicAddresses(ctx context.Context, host string) ([]net.IPAddr, err
 	if len(addresses) == 0 {
 		return nil, ErrUnsafeURL
 	}
+	trusted := trustedHost(host, trustedHosts)
 	for _, address := range addresses {
-		if !isPublicIP(address.IP) {
+		if !isPublicIP(address.IP) && !trusted {
 			return nil, ErrUnsafeURL
 		}
 	}
 	return addresses, nil
+}
+
+func trustedHost(host string, trustedHosts []string) bool {
+	host = strings.TrimSuffix(strings.ToLower(strings.TrimSpace(host)), ".")
+	if host == "" {
+		return false
+	}
+	for _, configured := range trustedHosts {
+		configured = strings.TrimSuffix(strings.ToLower(strings.TrimSpace(configured)), ".")
+		if configured == "" {
+			continue
+		}
+		if strings.HasPrefix(configured, "*.") {
+			suffix := strings.TrimPrefix(configured, "*")
+			if strings.HasSuffix(host, suffix) && host != strings.TrimPrefix(suffix, ".") {
+				return true
+			}
+			continue
+		}
+		if host == configured {
+			return true
+		}
+	}
+	return false
 }
 
 func isPublicIP(ip net.IP) bool {

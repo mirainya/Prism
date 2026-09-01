@@ -2,7 +2,7 @@ import { request } from './request';
 
 export type APICallStatus = 'received' | 'in_progress' | 'completed' | 'failed' | 'cancelled';
 export type APICallAttemptStatus = 'started' | 'completed' | 'failed' | 'cancelled';
-export type APICallRouteKind = 'gateway_v2' | 'capability';
+export type APICallRouteKind = 'gateway_v2' | 'capability' | 'video';
 
 export interface APICall {
   id: string;

@@ -6,7 +6,6 @@ import {
   Ban,
   Braces,
   CheckCircle2,
-  ChevronLeft,
   ChevronRight,
   CircleDot,
   ExternalLink,
@@ -22,10 +21,11 @@ import {
 } from 'lucide-react';
 import { fetchCapabilities, fetchTaskDetail, fetchTaskLogs, TaskListParams } from '../services/api';
 import { Capability, TaskDetail, TaskLog, UserRole } from '../types';
-import { Drawer, Select } from '../components/ui';
+import { Drawer, Pagination, Select } from '../components/ui';
+import { PageHeader } from '../components/shell';
 
-const PAGE_SIZE = 20;
-const INPUT_CLASS = 'w-full min-w-0 rounded-lg border border-[var(--border-soft)] bg-[var(--surface-card)] px-3 py-2 text-sm text-[var(--text-primary)] outline-none transition focus:border-[var(--primary)] focus:ring-2 focus:ring-[var(--primary)]/20';
+const DEFAULT_PAGE_SIZE = 20;
+const INPUT_CLASS = 'w-full min-w-0 rounded-lg border border-[var(--border-soft)] bg-[var(--surface-card)] px-3 py-2 text-sm text-[var(--text-primary)] outline-none transition placeholder:text-[var(--text-tertiary)] focus:border-[var(--primary)] focus:ring-2 focus:ring-[var(--focus-ring)]';
 
 type FilterDraft = {
   task_no: string;
@@ -200,6 +200,48 @@ const StatusBadge: React.FC<{ status: string }> = ({ status }) => {
   );
 };
 
+const TASK_TABLE_SKELETON = [
+  ['w-40', 'w-32', 'w-24', 'w-36', 'w-16', 'w-32'],
+  ['w-36', 'w-40', 'w-28', 'w-28', 'w-14', 'w-36'],
+  ['w-44', 'w-28', 'w-24', 'w-40', 'w-16', 'w-28'],
+  ['w-40', 'w-36', 'w-28', 'w-32', 'w-14', 'w-32'],
+  ['w-36', 'w-32', 'w-24', 'w-36', 'w-16', 'w-28'],
+];
+
+const TaskTableSkeleton: React.FC = () => (
+  <>
+    {TASK_TABLE_SKELETON.map((widths, rowIndex) => (
+      <tr key={rowIndex} aria-hidden="true">
+        {widths.map((width, columnIndex) => (
+          <td key={columnIndex} className="px-4 py-4">
+            <div className={`candy-skeleton h-3 rounded-md ${width}`} />
+            {columnIndex < 3 && <div className="candy-skeleton mt-2 h-2.5 w-20 rounded-md opacity-70" />}
+          </td>
+        ))}
+        <td className="px-3 py-4"><div className="candy-skeleton h-5 w-5 rounded-md" /></td>
+      </tr>
+    ))}
+  </>
+);
+
+const TaskDetailSkeleton: React.FC = () => (
+  <div role="status" aria-label="异步任务详情加载中" className="space-y-6">
+    {[0, 1, 2].map(section => (
+      <section key={section}>
+        <div className="candy-skeleton mb-3 h-4 w-24 rounded-md" />
+        <div className="grid gap-x-6 border-y border-[var(--border-soft)] md:grid-cols-2 xl:grid-cols-3">
+          {[0, 1, 2, 3, 4, 5].map(item => (
+            <div key={item} className="space-y-2 border-b border-[var(--border-soft)] py-3 last:border-b-0 md:px-3">
+              <div className="candy-skeleton h-2.5 w-16 rounded-md" />
+              <div className="candy-skeleton h-3 w-28 rounded-md" />
+            </div>
+          ))}
+        </div>
+      </section>
+    ))}
+  </div>
+);
+
 const Info: React.FC<{ label: string; children: React.ReactNode; mono?: boolean }> = ({ label, children, mono }) => (
   <div className="min-w-0 border-b border-[var(--border-soft)] py-3 last:border-b-0 md:px-3">
     <div className="text-xs font-medium text-[var(--text-secondary)]">{label}</div>
@@ -322,6 +364,7 @@ const Logs: React.FC = () => {
   const [logs, setLogs] = useState<TaskLog[]>([]);
   const [total, setTotal] = useState(0);
   const [page, setPage] = useState(1);
+  const [pageSize, setPageSize] = useState(DEFAULT_PAGE_SIZE);
   const [isLoading, setIsLoading] = useState(true);
   const [loadError, setLoadError] = useState('');
   const [refreshKey, setRefreshKey] = useState(0);
@@ -354,7 +397,7 @@ const Logs: React.FC = () => {
     // snapshot_at 冻结首次查询视图，后台任务持续写入时翻页仍不会重复或跳项。
     fetchTaskLogs({
       page,
-      page_size: PAGE_SIZE,
+      page_size: pageSize,
       ...filters,
       snapshot_at: snapshotAt.current || undefined,
     }).then(response => {
@@ -362,7 +405,7 @@ const Logs: React.FC = () => {
       setLogs(response.items || []);
       setTotal(response.total || 0);
       snapshotAt.current = response.snapshot_at || snapshotAt.current;
-      const lastPage = Math.max(1, Math.ceil((response.total || 0) / PAGE_SIZE));
+      const lastPage = Math.max(1, Math.ceil((response.total || 0) / pageSize));
       if (page > lastPage) setPage(lastPage);
     }).catch(error => {
       if (!active || requestNo !== listRequest.current) return;
@@ -374,9 +417,8 @@ const Logs: React.FC = () => {
     });
 
     return () => { active = false; };
-  }, [filters, page, refreshKey]);
+  }, [filters, page, pageSize, refreshKey]);
 
-  const totalPages = Math.max(1, Math.ceil(total / PAGE_SIZE));
 
   const updateDraft = <K extends keyof FilterDraft>(key: K, value: FilterDraft[K]) => {
     setDraft(current => ({ ...current, [key]: value }));
@@ -406,6 +448,12 @@ const Logs: React.FC = () => {
     snapshotAt.current = '';
     setPage(1);
     setRefreshKey(value => value + 1);
+  };
+
+  const changePageSize = (value: number) => {
+    snapshotAt.current = '';
+    setPageSize(value);
+    setPage(1);
   };
 
   const openDetails = async (task: TaskLog) => {
@@ -442,15 +490,25 @@ const Logs: React.FC = () => {
   };
 
   return (
-    <div className="space-y-5">
-      <header className="flex items-center justify-between gap-3">
-        <h1 className="flex items-center gap-2 text-xl font-bold text-[var(--text-primary)] md:text-2xl"><Activity size={23} />异步任务</h1>
-        <button type="button" title="刷新" aria-label="刷新" onClick={refresh} className="flex h-9 w-9 items-center justify-center rounded-lg border border-[var(--border-soft)] bg-[var(--surface-card)] text-[var(--text-primary)] hover:bg-[var(--surface)]">
-          <RefreshCw size={17} className={isLoading ? 'animate-spin' : ''} />
-        </button>
-      </header>
+    <div className="space-y-4">
+      <PageHeader
+        icon={Activity}
+        title="异步任务"
+        meta={isLoading ? '正在同步任务数据' : `共 ${total} 条记录`}
+        actions={(
+          <button
+            type="button"
+            title="刷新"
+            aria-label="刷新"
+            onClick={refresh}
+            className="flex h-9 w-9 items-center justify-center rounded-lg border border-[var(--border-soft)] bg-[var(--surface-card)] text-[var(--text-secondary)] shadow-[var(--shadow-soft)] transition hover:border-[var(--primary)] hover:text-[var(--primary)]"
+          >
+            <RefreshCw size={17} className={isLoading ? 'animate-spin' : ''} />
+          </button>
+        )}
+      />
 
-      <section className="rounded-lg border border-[var(--border-soft)] bg-[var(--surface-card)] p-4">
+      <section className="rounded-lg border border-[var(--border-soft)] bg-[var(--surface-card)] p-4 shadow-[var(--shadow-soft)]">
         <form onSubmit={event => { event.preventDefault(); search(); }}>
           <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
             <label className="text-xs font-semibold text-[var(--text-secondary)]">任务 ID
@@ -475,17 +533,22 @@ const Logs: React.FC = () => {
             </label>
           </div>
           <div className="mt-4 flex justify-end gap-2">
-            <button type="button" onClick={reset} className="flex items-center gap-2 rounded-lg border border-[var(--border-soft)] px-3 py-2 text-sm font-medium text-[var(--text-secondary)] hover:bg-[var(--surface)]"><RotateCcw size={15} />重置</button>
-            <button type="submit" className="flex items-center gap-2 rounded-lg bg-[var(--primary)] px-4 py-2 text-sm font-semibold text-white hover:opacity-90"><Search size={15} />查询</button>
+            <button type="button" onClick={reset} className="flex items-center gap-2 rounded-lg border border-[var(--border-soft)] px-3 py-2 text-sm font-medium text-[var(--text-secondary)] transition hover:bg-[var(--surface-muted)] hover:text-[var(--text-primary)]"><RotateCcw size={15} />重置</button>
+            <button type="submit" className="flex items-center gap-2 rounded-lg [background:var(--brand-gradient)] px-4 py-2 text-sm font-semibold text-white shadow-[0_5px_14px_var(--glow-color)] transition hover:brightness-[0.98]"><Search size={15} />查询</button>
           </div>
         </form>
       </section>
 
-      <section className="overflow-hidden rounded-lg border border-[var(--border-soft)] bg-[var(--surface-card)]">
+      <section aria-busy={isLoading} className="relative overflow-hidden rounded-lg border border-[var(--border-soft)] bg-[var(--surface-card)] shadow-[var(--shadow-soft)]">
+        {isLoading && (
+          <div className="absolute inset-x-0 top-0 z-10 h-1 overflow-hidden bg-[var(--border-soft)]">
+            <div className="candy-skeleton h-full w-2/5" />
+          </div>
+        )}
         {loadError && <div className="flex items-center gap-2 border-b border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700"><AlertTriangle size={16} />{loadError}</div>}
         <div className="overflow-x-auto">
           <table className="w-full min-w-[1040px] text-left">
-            <thead className="border-b border-[var(--border-soft)] bg-[var(--surface)]/60 text-xs text-[var(--text-secondary)]">
+            <thead className="border-b border-[var(--border-soft)] bg-[var(--surface-muted)] text-xs font-semibold text-[var(--text-secondary)]">
               <tr>
                 <th className="px-4 py-3">时间 / 任务 ID</th>
                 <th className="px-4 py-3">能力 / 渠道</th>
@@ -497,14 +560,12 @@ const Logs: React.FC = () => {
               </tr>
             </thead>
             <tbody className="divide-y divide-[var(--border-soft)]">
-              {isLoading ? Array.from({ length: 7 }).map((_, index) => (
-                <tr key={index} className="animate-pulse"><td colSpan={7} className="px-4 py-4"><div className="h-4 rounded bg-[var(--primary-lighter)]" /></td></tr>
-              )) : logs.length === 0 ? (
+              {isLoading ? <TaskTableSkeleton /> : logs.length === 0 ? (
                 <tr><td colSpan={7} className="px-4 py-16 text-center text-sm text-[var(--text-secondary)]">暂无异步任务</td></tr>
               ) : logs.map(log => {
                 const progress = clampProgress(log.progress);
                 return (
-                  <tr key={log.id} tabIndex={0} onClick={() => openDetails(log)} onKeyDown={event => { if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); openDetails(log); } }} className="cursor-pointer transition hover:bg-[var(--primary-lighter)]/50 focus:bg-[var(--primary-lighter)]/50 focus:outline-none">
+                  <tr key={log.id} tabIndex={0} onClick={() => openDetails(log)} onKeyDown={event => { if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); openDetails(log); } }} className="cursor-pointer transition hover:bg-[var(--surface-tint)] focus:bg-[var(--surface-tint)] focus:outline-none">
                     <td className="px-4 py-3">
                       <div className="text-sm text-[var(--text-primary)]">{formatDate(log.created_at)}</div>
                       <div className="mt-1 max-w-56 truncate font-mono text-[11px] text-[var(--text-secondary)]" title={log.task_no}>{log.task_no}</div>
@@ -516,7 +577,7 @@ const Logs: React.FC = () => {
                     <td className="px-4 py-3">
                       <StatusBadge status={log.status} />
                       <div className="mt-2 flex w-36 items-center gap-2">
-                        <div className="h-1.5 min-w-0 flex-1 overflow-hidden rounded-full bg-[var(--border-soft)]"><div className="h-full bg-[var(--primary)]" style={{ width: `${progress}%` }} /></div>
+                        <div className="h-1.5 min-w-0 flex-1 overflow-hidden rounded-full bg-[var(--border-soft)]"><div className="h-full [background:var(--brand-gradient)]" style={{ width: `${progress}%` }} /></div>
                         <span className="w-9 text-right text-xs text-[var(--text-secondary)]">{progress}%</span>
                       </div>
                       {log.error && <div className="mt-1 max-w-48 truncate text-xs text-red-600" title={log.error}>{log.error}</div>}
@@ -534,16 +595,10 @@ const Logs: React.FC = () => {
             </tbody>
           </table>
         </div>
-        <footer className="flex items-center justify-between border-t border-[var(--border-soft)] px-4 py-3 text-sm text-[var(--text-secondary)]">
-          <span>共 {total} 条，第 {page}/{totalPages} 页</span>
-          <div className="flex gap-1">
-            <button type="button" title="上一页" aria-label="上一页" disabled={page <= 1 || isLoading} onClick={() => setPage(value => Math.max(1, value - 1))} className="rounded-lg p-2 hover:bg-[var(--surface)] disabled:cursor-not-allowed disabled:opacity-40"><ChevronLeft size={17} /></button>
-            <button type="button" title="下一页" aria-label="下一页" disabled={page >= totalPages || isLoading} onClick={() => setPage(value => Math.min(totalPages, value + 1))} className="rounded-lg p-2 hover:bg-[var(--surface)] disabled:cursor-not-allowed disabled:opacity-40"><ChevronRight size={17} /></button>
-          </div>
-        </footer>
+        <Pagination page={page} pageSize={pageSize} total={total} loading={isLoading} onPageChange={setPage} onPageSizeChange={changePageSize} />
       </section>
 
-      <Drawer open={isDrawerOpen} onClose={closeDetails} title="异步任务详情" subtitle={<span className="font-mono">{selectedTask?.task_no || '加载中'}</span>} panelClassName="bg-[var(--surface)]">
+      <Drawer open={isDrawerOpen} onClose={closeDetails} title="异步任务详情" subtitle={<span className="font-mono">{selectedTask?.task_no || '加载中'}</span>} panelClassName="bg-[var(--surface-card)]">
             {selectedTask && (
               <div role="tablist" className="flex overflow-x-auto border-b border-[var(--border-soft)] px-4">
                 {DETAIL_TABS.filter(tab => !tab.adminOnly || admin).map(tab => {
@@ -558,7 +613,7 @@ const Logs: React.FC = () => {
             )}
             <div className="flex-1 overflow-y-auto p-5">
               {loadingDetail ? (
-                <div className="space-y-4 animate-pulse"><div className="h-24 rounded-lg bg-[var(--primary-lighter)]" /><div className="h-48 rounded-lg bg-[var(--primary-lighter)]" /></div>
+                <TaskDetailSkeleton />
               ) : detailError ? (
                 <div className="flex items-center gap-2 rounded-lg border border-red-200 bg-red-50 p-4 text-sm text-red-700"><AlertTriangle size={17} />{detailError}</div>
               ) : selectedTask && activeTab === 'overview' ? (

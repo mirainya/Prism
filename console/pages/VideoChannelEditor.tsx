@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useState } from 'react';
-import { ArrowLeft, Braces, Check, Plus, RefreshCw, Save, Trash2 } from 'lucide-react';
+import { ArrowLeft, Braces, Check, ChevronRight, CircleDollarSign, FileCog, Image, Layers3, Plus, RefreshCw, Save, Settings2, Trash2 } from 'lucide-react';
 import { useNavigate, useParams } from 'react-router-dom';
 import JsonEditor from '../components/ui/JsonEditor';
 import { ConfirmDialog, Select } from '../components/ui';
@@ -13,16 +13,20 @@ import {
   updateVideoChannel,
 } from '../services/videoApi';
 
-type CapabilityKey = 'first_frame' | 'last_frame' | 'cancel' | 'audio' | 'web_search';
+type CapabilityKey = 'first_frame' | 'last_frame' | 'audio' | 'web_search';
 
 interface ChannelForm {
   name: string;
   adapterType: string;
+  adapterProfile: string;
   baseURL: string;
   status: string;
   priority: number;
+  requestTimeoutSeconds: number;
   models: VideoModelMapping[];
   capabilities: Record<string, boolean>;
+  cancelMode: string;
+  resultStorageEnabled: boolean;
   pricingMode: string;
   fixedPrice: string;
   markupRatio: string;
@@ -31,18 +35,17 @@ interface ChannelForm {
 }
 
 const BASE_SECTION_IDS = [
-  { id: 'basic', label: '基础配置' },
-  { id: 'models', label: '模型与能力' },
-  { id: 'pricing', label: '计费' },
-  { id: 'assets', label: '素材交付' },
+  { id: 'basic', label: '基础配置', icon: Settings2 },
+  { id: 'models', label: '模型与能力', icon: Layers3 },
+  { id: 'pricing', label: '计费', icon: CircleDollarSign },
+  { id: 'assets', label: '素材交付', icon: Image },
 ];
 
-const ADAPTER_SECTION = { id: 'adapter', label: '协议映射' };
+const ADAPTER_SECTION = { id: 'adapter', label: '协议映射', icon: FileCog };
 
 const CAPABILITY_OPTIONS: Array<{ key: CapabilityKey; label: string }> = [
   { key: 'first_frame', label: '首帧' },
   { key: 'last_frame', label: '尾帧' },
-  { key: 'cancel', label: '取消任务' },
   { key: 'audio', label: '生成音频' },
   { key: 'web_search', label: '网络搜索' },
 ];
@@ -53,11 +56,15 @@ const labelClass = 'block text-xs font-semibold text-[var(--text-secondary)] mb-
 const emptyForm = (): ChannelForm => ({
   name: '',
   adapterType: '',
+  adapterProfile: '',
   baseURL: '',
   status: 'active',
   priority: 0,
+  requestTimeoutSeconds: 30,
   models: [],
   capabilities: {},
+  cancelMode: 'disabled',
+  resultStorageEnabled: false,
   pricingMode: 'fixed',
   fixedPrice: '0',
   markupRatio: '1',
@@ -95,17 +102,32 @@ const prettyObject = (value: unknown) => JSON.stringify(asObject(value), null, 2
 
 const channelToForm = (channel: VideoChannel): ChannelForm => {
   const pricing = asObject(channel.pricing);
+  const legacyCapabilities = asObject(channel.capabilities) as Record<string, boolean>;
+  const capabilities: Record<string, boolean> = {
+    first_frame: channel.supports_first_frame ?? Boolean(legacyCapabilities.first_frame),
+    last_frame: channel.supports_last_frame ?? Boolean(legacyCapabilities.last_frame),
+    audio: channel.supports_audio ?? Boolean(legacyCapabilities.audio),
+    web_search: channel.supports_web_search ?? Boolean(legacyCapabilities.web_search),
+  };
+  const extra = asObject(channel.extra_config);
+  const adapter = asObject(extra.adapter);
+  const localCancel = asObject(adapter.local_cancel);
+  const cancelMode = String(channel.cancel_mode || (asObject(adapter.cancel).enabled ? 'provider' : localCancel.enabled ? 'local_only' : 'disabled'));
   return {
     name: channel.name || '',
     adapterType: channel.adapter_type || '',
+    adapterProfile: channel.adapter_profile || String(adapter.profile || ''),
     baseURL: channel.base_url || '',
     status: channel.status || 'active',
     priority: channel.priority || 0,
+    requestTimeoutSeconds: channel.request_timeout_seconds || Number(adapter.timeout_seconds || 30),
     models: asModels(channel.models),
-    capabilities: asObject(channel.capabilities) as Record<string, boolean>,
-    pricingMode: String(pricing.mode || 'fixed'),
-    fixedPrice: String(pricing.fixed_price ?? 0),
-    markupRatio: String(pricing.markup_ratio ?? 1),
+    capabilities,
+    cancelMode,
+    resultStorageEnabled: channel.result_storage_enabled ?? Boolean(asObject(extra.result_storage).enabled),
+    pricingMode: String(channel.pricing_mode || pricing.mode || 'fixed'),
+    fixedPrice: String(channel.fixed_price ?? pricing.fixed_price ?? 0),
+    markupRatio: String(channel.markup_ratio ?? pricing.markup_ratio ?? 1),
     assetResolver: channel.asset_resolver || 'direct_url',
     extraConfig: prettyObject(channel.extra_config),
   };
@@ -119,6 +141,26 @@ const parseJSONObject = (label: string, value: string) => {
     throw new Error(`${label}必须是 JSON 对象`);
   }
   return parsed;
+};
+
+const stripFormalSettings = (config: Record<string, any>) => {
+  const adapter = asObject(config.adapter);
+  delete adapter.profile;
+  delete adapter.timeout_seconds;
+  const cancel = asObject(adapter.cancel);
+  delete cancel.enabled;
+  if (Object.keys(cancel).length) adapter.cancel = cancel;
+  else delete adapter.cancel;
+  const localCancel = asObject(adapter.local_cancel);
+  delete localCancel.enabled;
+  if (Object.keys(localCancel).length) adapter.local_cancel = localCancel;
+  else delete adapter.local_cancel;
+  if (Object.keys(adapter).length) config.adapter = adapter;
+  const resultStorage = asObject(config.result_storage);
+  delete resultStorage.enabled;
+  if (Object.keys(resultStorage).length) config.result_storage = resultStorage;
+  else delete config.result_storage;
+  return config;
 };
 
 const Section: React.FC<{ id: string; title: string; children: React.ReactNode }> = ({ id, title, children }) => (
@@ -168,6 +210,7 @@ const VideoChannelEditor: React.FC = () => {
   const [discardDialogOpen, setDiscardDialogOpen] = useState(false);
   const [error, setError] = useState('');
   const [fieldErrors, setFieldErrors] = useState<Record<string, string>>({});
+  const contentScrollRef = React.useRef<HTMLDivElement | null>(null);
   const sectionIds = useMemo(
     () => form.adapterType === 'generic' ? [...BASE_SECTION_IDS, ADAPTER_SECTION] : BASE_SECTION_IDS,
     [form.adapterType],
@@ -216,6 +259,7 @@ const VideoChannelEditor: React.FC = () => {
   }, [dirty]);
 
   useEffect(() => {
+    const container = contentScrollRef.current;
     const sections = sectionIds
       .map(section => document.getElementById(section.id))
       .filter((section): section is HTMLElement => Boolean(section));
@@ -224,7 +268,7 @@ const VideoChannelEditor: React.FC = () => {
         .filter(entry => entry.isIntersecting)
         .sort((a, b) => a.boundingClientRect.top - b.boundingClientRect.top)[0];
       if (visible?.target.id) setActiveSection(visible.target.id);
-    }, { rootMargin: '-15% 0px -70% 0px', threshold: 0 });
+    }, { root: container, rootMargin: '-12% 0px -70% 0px', threshold: 0 });
     sections.forEach(section => observer.observe(section));
     return () => observer.disconnect();
   }, [loading, sectionIds]);
@@ -283,7 +327,10 @@ const VideoChannelEditor: React.FC = () => {
 
   const scrollTo = (id: string) => {
     setActiveSection(id);
-    document.getElementById(id)?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    const container = contentScrollRef.current;
+    const section = document.getElementById(id);
+    if (!container || !section) return;
+    container.scrollTo({ top: Math.max(0, section.offsetTop - 16), behavior: 'smooth' });
   };
 
   const handleSubmit = async (event: React.FormEvent) => {
@@ -292,7 +339,7 @@ const VideoChannelEditor: React.FC = () => {
     const nextErrors: Record<string, string> = {};
     let extraConfig: Record<string, any> = {};
     if (form.adapterType === 'generic') {
-      try { extraConfig = parseJSONObject('协议配置', form.extraConfig); } catch (err: any) { nextErrors.extraConfig = err.message; }
+      try { extraConfig = stripFormalSettings(parseJSONObject('协议配置', form.extraConfig)); } catch (err: any) { nextErrors.extraConfig = err.message; }
     }
     if (!form.models.length) nextErrors.models = '至少添加一个模型';
     if (!form.name.trim()) nextErrors.name = '请输入渠道名称';
@@ -308,17 +355,22 @@ const VideoChannelEditor: React.FC = () => {
     const payload: Partial<VideoChannel> = {
       name: form.name.trim(),
       adapter_type: form.adapterType,
+      adapter_profile: form.adapterProfile.trim(),
       base_url: form.baseURL.trim(),
       status: form.status,
       priority: form.priority,
+      request_timeout_seconds: form.requestTimeoutSeconds,
       models: form.models,
-      capabilities: form.capabilities,
-      pricing: {
-        mode: form.pricingMode,
-        fixed_price: Number(form.fixedPrice),
-        markup_ratio: Number(form.markupRatio),
-      },
+      supports_first_frame: form.capabilities.first_frame,
+      supports_last_frame: form.capabilities.last_frame,
+      supports_audio: form.capabilities.audio,
+      supports_web_search: form.capabilities.web_search,
+      cancel_mode: form.cancelMode,
+      pricing_mode: form.pricingMode,
+      fixed_price: Number(form.fixedPrice),
+      markup_ratio: Number(form.markupRatio),
       asset_resolver: form.assetResolver,
+      result_storage_enabled: form.resultStorageEnabled,
       extra_config: extraConfig,
     };
 
@@ -340,43 +392,61 @@ const VideoChannelEditor: React.FC = () => {
 
   return (
     <>
-      <form onSubmit={handleSubmit} className="-mt-2 md:-mt-4">
-      <div className="sticky top-0 z-30 -mx-4 md:-mx-8 px-4 md:px-8 py-3 bg-[var(--surface)]/95 backdrop-blur border-b border-[var(--border-soft)]">
-        <div className="max-w-7xl mx-auto flex items-center justify-between gap-3">
+      <form onSubmit={handleSubmit} className="flex h-[calc(100dvh-5.5rem)] min-h-0 flex-col gap-3 md:h-[calc(100dvh-8rem)]">
+      <div className="editor-toolbar editor-toolbar-top z-30 flex-shrink-0">
+        <div className="mx-auto flex min-h-14 w-full max-w-[1800px] items-center justify-between gap-3 px-4 py-2.5 md:min-h-16 md:px-5">
           <div className="flex items-center gap-3 min-w-0">
-            <button type="button" onClick={goBack} title="返回视频渠道" className="w-9 h-9 shrink-0 inline-flex items-center justify-center rounded-lg border border-[var(--border-soft)] bg-[var(--surface-card)] text-[var(--text-secondary)] hover:text-[var(--text-primary)]">
+            <button type="button" onClick={goBack} title="返回视频渠道" className="editor-toolbar-back">
               <ArrowLeft size={18} />
             </button>
+            <span className="editor-toolbar-mark" aria-hidden="true">
+              <Settings2 size={17} strokeWidth={2.2} />
+            </span>
             <div className="min-w-0">
               <div className="flex items-center gap-2">
-                <h1 className="text-lg md:text-xl font-bold text-[var(--text-primary)] truncate">{isCreate ? '新建视频渠道' : form.name || '编辑视频渠道'}</h1>
-                {dirty && <span className="shrink-0 px-2 py-0.5 text-[10px] font-bold rounded bg-amber-100 text-amber-700">未保存</span>}
+                <h1 className="editor-toolbar-title">{isCreate ? '新建视频渠道' : form.name || '编辑视频渠道'}</h1>
+                {dirty && <span className="editor-toolbar-dirty">未保存</span>}
               </div>
-              <p className="text-xs text-[var(--text-secondary)] truncate">{form.baseURL || '未设置 Base URL'}</p>
+              <p className="editor-toolbar-meta">{form.baseURL || '未设置 Base URL'}</p>
             </div>
           </div>
           <div className="flex items-center gap-2 shrink-0">
-            <button type="button" onClick={goBack} className="hidden sm:inline-flex h-9 items-center px-4 rounded-lg text-sm font-semibold text-[var(--text-secondary)] hover:bg-[var(--primary-lighter)]">取消</button>
-            <button type="submit" disabled={saving} className="h-9 inline-flex items-center gap-2 px-4 rounded-lg bg-[var(--primary)] text-white text-sm font-bold hover:opacity-90 disabled:opacity-50">
+            <button type="button" onClick={goBack} className="editor-toolbar-cancel hidden sm:inline-flex">取消</button>
+            <button type="submit" disabled={saving} className="editor-toolbar-primary">
               <Save size={16} />{saving ? '保存中...' : '保存'}
             </button>
           </div>
         </div>
       </div>
 
-      {error && <div className="mt-4 px-4 py-3 rounded-lg border border-red-200 bg-red-50 text-sm text-red-600">{error}</div>}
+      {error && <div className="flex-shrink-0 rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-600">{error}</div>}
 
-      <div className="mt-5 grid grid-cols-1 lg:grid-cols-[180px_minmax(0,1fr)] gap-5 items-start">
-        <nav className="lg:sticky lg:top-20 flex lg:flex-col gap-1 overflow-x-auto p-1 rounded-lg border border-[var(--border-soft)] bg-[var(--surface-card)]">
-          {sectionIds.map(section => (
-            <button key={section.id} type="button" onClick={() => scrollTo(section.id)}
-              className={`h-9 px-3 rounded-md text-sm font-semibold text-left whitespace-nowrap transition-colors ${activeSection === section.id ? 'bg-[var(--primary-lighter)] text-[var(--primary)]' : 'text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[var(--surface)]'}`}>
-              {section.label}
-            </button>
-          ))}
+      <div className="flex min-h-0 flex-1 flex-col gap-3 lg:grid lg:grid-cols-[220px_minmax(0,1fr)] lg:grid-rows-[minmax(0,1fr)] lg:gap-5">
+        <nav aria-label="渠道配置导航" className="flex flex-shrink-0 gap-1.5 overflow-x-auto rounded-2xl border border-[var(--border-soft)] bg-[var(--surface-card)] p-2.5 shadow-sm lg:h-full lg:flex-col lg:overflow-y-auto">
+          <div className="hidden lg:flex items-center justify-between px-3 pt-1 pb-2">
+            <span className="text-[11px] font-bold tracking-[0.08em] text-[var(--text-muted)] uppercase">配置导航</span>
+            <span className="text-[11px] font-semibold text-[var(--text-muted)]">{sectionIds.length} 项</span>
+          </div>
+          {sectionIds.map((section, index) => {
+            const Icon = section.icon;
+            const active = activeSection === section.id;
+            return (
+              <button key={section.id} type="button" onClick={() => scrollTo(section.id)} aria-current={active ? 'location' : undefined}
+                className={`group relative flex h-12 min-w-max items-center gap-3 rounded-xl px-3 text-left whitespace-nowrap transition-all ${active
+                  ? 'bg-[var(--primary-lighter)] text-[var(--primary)] shadow-[inset_3px_0_0_var(--primary)]'
+                  : 'text-[var(--text-secondary)] hover:bg-[var(--surface)] hover:text-[var(--text-primary)]'}`}>
+                <span className={`flex h-8 w-8 shrink-0 items-center justify-center rounded-lg transition-colors ${active ? 'bg-[var(--surface-card)] text-[var(--primary)]' : 'bg-[var(--surface)] text-[var(--text-muted)] group-hover:text-[var(--text-primary)]'}`}>
+                  <Icon size={17} strokeWidth={active ? 2.3 : 2} />
+                </span>
+                <span className="flex-1 text-sm font-bold">{section.label}</span>
+                <span className={`text-[10px] font-bold tabular-nums ${active ? 'text-[var(--primary)]/70' : 'text-[var(--text-muted)]'}`}>{String(index + 1).padStart(2, '0')}</span>
+                <ChevronRight size={15} className={`shrink-0 transition-transform ${active ? 'translate-x-0.5 opacity-100' : 'opacity-0 group-hover:opacity-60'}`} />
+              </button>
+            );
+          })}
         </nav>
 
-        <div className="min-w-0 rounded-lg border border-[var(--border-soft)] bg-[var(--surface-card)] px-4 md:px-7">
+        <div ref={contentScrollRef} className="editor-content min-h-0 min-w-0 flex-1 overflow-y-auto overscroll-contain rounded-2xl border border-[var(--border-soft)] bg-[var(--surface-card)] px-4 md:px-7">
           <Section id="basic" title="基础配置">
             <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
               <div>
@@ -389,6 +459,7 @@ const VideoChannelEditor: React.FC = () => {
                 <Select value={form.adapterType} onChange={value => {
                   setForm(current => ({
                     ...current, adapterType: value,
+                    adapterProfile: value === 'generic' ? (current.adapterProfile || 'json_task_v1') : '',
                     pricingMode: value === 'generic' ? current.pricingMode : 'fixed',
                   }));
                   setFieldErrors(current => ({ ...current, adapterType: '' }));
@@ -415,6 +486,18 @@ const VideoChannelEditor: React.FC = () => {
                 <label className={labelClass}>优先级</label>
                 <input type="number" value={form.priority} onChange={event => updateForm('priority', Number(event.target.value))} className={inputClass} />
               </div>
+              <div>
+                <label className={labelClass}>请求超时（秒）</label>
+                <input type="number" min="1" max="300" value={form.requestTimeoutSeconds} onChange={event => updateForm('requestTimeoutSeconds', Number(event.target.value))} className={inputClass} />
+              </div>
+              {form.adapterType === 'generic' && (
+                <div>
+                  <label className={labelClass}>适配器版本</label>
+                  <Select value={form.adapterProfile} onChange={value => updateForm('adapterProfile', value)} options={[
+                    { value: 'json_task_v1', label: 'JSON Task V1' },
+                  ]} />
+                </div>
+              )}
             </div>
           </Section>
 
@@ -499,6 +582,14 @@ const VideoChannelEditor: React.FC = () => {
                 })}
               </div>
             </div>
+            <div className="mt-6 max-w-md">
+              <label className={labelClass}>取消策略</label>
+              <Select value={form.cancelMode} onChange={value => updateForm('cancelMode', value)} options={[
+                { value: 'disabled', label: '不支持取消' },
+                { value: 'local_only', label: '仅取消本地排队任务' },
+                { value: 'provider', label: '调用上游取消' },
+              ]} />
+            </div>
           </Section>
 
           <Section id="pricing" title="计费">
@@ -532,12 +623,18 @@ const VideoChannelEditor: React.FC = () => {
           </Section>
 
           <Section id="assets" title="素材交付">
-            <div className="max-w-md">
-              <label className={labelClass}>交付方式</label>
-              <Select value={form.assetResolver} onChange={value => updateForm('assetResolver', value)} options={[
-                { value: 'direct_url', label: '直接使用素材 URL' },
-                { value: 'presigned_upload', label: '上传至上游存储' },
-              ]} />
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
+              <div>
+                <label className={labelClass}>素材处理</label>
+                <Select value={form.assetResolver} onChange={value => updateForm('assetResolver', value)} options={[
+                  { value: 'direct_url', label: '直接使用素材 URL' },
+                  { value: 'presigned_upload', label: '上传至上游存储' },
+                ]} />
+              </div>
+              <label className="h-10 mt-[22px] px-3 flex items-center justify-between gap-3 rounded-lg border border-[var(--border-soft)] bg-[var(--surface)] cursor-pointer">
+                <span className="text-sm font-medium text-[var(--text-primary)]">转存生成结果</span>
+                <input type="checkbox" checked={form.resultStorageEnabled} onChange={event => updateForm('resultStorageEnabled', event.target.checked)} className="w-4 h-4 accent-[var(--primary)]" />
+              </label>
             </div>
           </Section>
 
@@ -549,14 +646,14 @@ const VideoChannelEditor: React.FC = () => {
         </div>
       </div>
 
-      <div className="sticky bottom-0 z-20 mt-5 -mx-4 md:-mx-8 px-4 md:px-8 py-3 bg-[var(--surface)]/95 backdrop-blur border-t border-[var(--border-soft)]">
-        <div className="max-w-7xl mx-auto flex items-center justify-between gap-3">
-          <span className="inline-flex items-center gap-1.5 text-xs text-[var(--text-secondary)]">
-            {!dirty && <Check size={14} className="text-green-600" />}{dirty ? '有未保存的修改' : '已保存'}
+      <div className="editor-actionbar z-20 flex-shrink-0">
+        <div className="mx-auto flex min-h-14 w-full max-w-[1800px] items-center justify-between gap-3 px-4 py-2.5 md:min-h-16 md:px-5">
+          <span className={`editor-save-status ${dirty ? 'editor-save-status-dirty' : ''}`}>
+            {!dirty && <Check size={14} />}{dirty ? '有未保存的修改' : '已保存'}
           </span>
           <div className="flex items-center gap-2">
-            <button type="button" onClick={goBack} className="h-9 px-4 rounded-lg text-sm font-semibold text-[var(--text-secondary)] hover:bg-[var(--primary-lighter)]">取消</button>
-            <button type="submit" disabled={saving} className="h-9 inline-flex items-center gap-2 px-5 rounded-lg bg-[var(--primary)] text-white text-sm font-bold hover:opacity-90 disabled:opacity-50">
+            <button type="button" onClick={goBack} className="editor-toolbar-cancel">取消</button>
+            <button type="submit" disabled={saving} className="editor-toolbar-primary editor-toolbar-primary-wide">
               <Save size={16} />{saving ? '保存中...' : '保存渠道'}
             </button>
           </div>

@@ -418,8 +418,9 @@ export const playgroundListTasks = async (
     };
 };
 
-export const playgroundGetTask = async (tokenId: string, taskNo: string): Promise<PlaygroundTaskDetail> => {
-    const data = await request<any>(`/playground/${tokenId}/tasks/${taskNo}`);
+export const playgroundGetTask = async (tokenId: string, taskNo: string, includeParams = false): Promise<PlaygroundTaskDetail> => {
+    const suffix = includeParams ? '?include_params=true' : '';
+    const data = await request<any>(`/playground/${tokenId}/tasks/${taskNo}${suffix}`);
     return {
         taskId: data.task_id,
         taskNo: data.task_no,
@@ -453,6 +454,7 @@ export interface VideoCreateParams {
     duration?: number;
     generate_audio?: boolean;
     task_mode?: string;
+    service_tier?: 'standard' | 'priority' | 'vip';
     content?: VideoContentItem[];
     params?: Record<string, string | number | boolean>;
 }
@@ -462,11 +464,19 @@ export interface VideoEstimate {
     base_cost: string;
     markup_ratio: string;
     pricing_mode: 'fixed' | 'upstream_estimate';
+    service_tier?: string;
+    unit_cost?: number;
+    units?: number;
+    billing_mode?: string;
+    billing_tier?: string;
+    pricing_source?: string;
+    currency?: string;
 }
 
 export interface VideoContentItem {
     type: 'image_url' | 'video_url' | 'audio_url';
-    role: 'first_frame' | 'last_frame' | 'reference_image' | 'reference_video' | 'reference_audio';
+    role: 'first_frame' | 'last_frame' | 'reference_image' | 'reference_video' | 'reference_audio' | 'source_video' | 'edit_source';
+    client_ref_id?: string;
     url?: string;
     asset_id?: string;
     duration_seconds?: number;
@@ -487,6 +497,13 @@ export interface VideoTask {
     channel_id?: number;
     model: string;
     status: string;
+    service_tier?: string;
+    queue_status?: string;
+    queue_position?: number;
+    queue_limit?: number;
+    priority_queue?: boolean;
+    h_channel_points_vip?: boolean;
+    priority_surcharge_percent?: number;
     progress: number;
     prompt: string;
     resolution?: string;
@@ -503,8 +520,11 @@ export interface PlaygroundVideoModelOptions {
     ratios?: string[];
     duration_min?: number;
     duration_max?: number;
+    duration_max_with_video_reference?: number;
     duration_options?: number[];
-    task_types?: Array<'text' | 'first_frame' | 'first_last_frame' | 'multimodal' | 'video_extension'>;
+    task_types?: Array<'text' | 'first_frame' | 'first_last_frame' | 'multimodal' | 'video_edit' | 'video_extension'>;
+    service_tiers?: Array<'standard' | 'priority' | 'vip'>;
+    service_tier_options?: PlaygroundVideoServiceTierOption[];
     require_visual_media_with_audio?: boolean;
     allow_generated_audio?: boolean;
     allowed_roles?: VideoContentItem['role'][];
@@ -521,17 +541,29 @@ export interface PlaygroundVideoModelOptions {
     cancel_statuses: string[];
 }
 
+export interface PlaygroundVideoServiceTierOption {
+    value: 'standard' | 'priority' | 'vip';
+    label: string;
+    adds_resolutions?: string[];
+    surcharge_percent?: number;
+}
+
 export interface PlaygroundVideoParameterOption {
     label: string;
     value: string | number | boolean;
+    adds_resolutions?: string[];
 }
 
 export interface PlaygroundVideoParameter {
     name: string;
     label: string;
-    type: 'select';
+    type: 'select' | 'number' | 'integer';
     default?: string | number | boolean;
+    min?: number;
+    max?: number;
     options: PlaygroundVideoParameterOption[];
+    task_modes?: string[];
+    conflicts_with?: string[];
 }
 
 export interface PlaygroundVideoChannelOption {
@@ -547,12 +579,45 @@ export interface PlaygroundVideoModelsResponse {
     channels?: PlaygroundVideoChannelOption[];
 }
 
+const normalizeVideoModelOptions = (value: PlaygroundVideoModelOptions | null | undefined): PlaygroundVideoModelOptions => {
+    const options: PlaygroundVideoModelOptions = value || { allow_local_cancel: false, cancel_statuses: [] };
+    return {
+        ...options,
+        allow_local_cancel: Boolean(options.allow_local_cancel),
+        cancel_statuses: Array.isArray(options.cancel_statuses) ? options.cancel_statuses.filter(Boolean) : [],
+        parameters: Array.isArray(options.parameters)
+            ? options.parameters.filter(Boolean).map(parameter => ({
+                ...parameter,
+                options: Array.isArray(parameter.options) ? parameter.options.filter(Boolean) : [],
+            }))
+            : [],
+        service_tier_options: Array.isArray(options.service_tier_options)
+            ? options.service_tier_options.filter(Boolean)
+            : [],
+        task_types: Array.isArray(options.task_types) ? options.task_types.filter(Boolean) : [],
+        allowed_roles: Array.isArray(options.allowed_roles) ? options.allowed_roles.filter(Boolean) : [],
+        resolutions: Array.isArray(options.resolutions) ? options.resolutions.filter(Boolean) : [],
+        ratios: Array.isArray(options.ratios) ? options.ratios.filter(Boolean) : [],
+    };
+};
+
 export const playgroundListVideoModels = async (tokenId: string): Promise<PlaygroundVideoModelsResponse> => {
     const data = await request<PlaygroundVideoModelsResponse>(`/playground/${tokenId}/videos/models`);
+    const payload: PlaygroundVideoModelsResponse = data || { models: [] };
+    const modelOptions = Object.fromEntries(
+        Object.entries(payload.model_options || {}).map(([model, options]) => [model, normalizeVideoModelOptions(options as PlaygroundVideoModelOptions)]),
+    );
+    const channels = (payload.channels || []).filter(Boolean).map(channel => ({
+        ...channel,
+        models: Array.isArray(channel.models) ? channel.models.filter(Boolean) : [],
+        model_options: Object.fromEntries(
+            Object.entries(channel.model_options || {}).map(([model, options]) => [model, normalizeVideoModelOptions(options as PlaygroundVideoModelOptions)]),
+        ),
+    }));
     return {
-        models: data.models || [],
-        model_options: data.model_options || {},
-        channels: data.channels || [],
+        models: Array.isArray(payload.models) ? payload.models.filter(Boolean) : [],
+        model_options: modelOptions,
+        channels,
     };
 };
 
@@ -611,4 +676,8 @@ export const playgroundGetVideo = async (tokenId: string, taskId: string): Promi
 
 export const playgroundCancelVideo = async (tokenId: string, taskId: string): Promise<void> => {
     await request(`/playground/${tokenId}/videos/generations/${taskId}/cancel`, { method: 'POST' });
+};
+
+export const playgroundPriorityQueueVideo = async (tokenId: string, taskId: string): Promise<void> => {
+    await request(`/playground/${tokenId}/videos/generations/${taskId}/priority-queue`, { method: 'POST' });
 };

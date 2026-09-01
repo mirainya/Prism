@@ -16,13 +16,24 @@ export interface VideoChannel {
   id: number;
   name: string;
   adapter_type: string;
+  adapter_profile?: string;
   base_url: string;
   status: string;
   priority: number;
+  request_timeout_seconds?: number;
   models: VideoModelMapping[] | string[] | string;
   capabilities: any;
+  supports_first_frame?: boolean;
+  supports_last_frame?: boolean;
+  supports_audio?: boolean;
+  supports_web_search?: boolean;
+  cancel_mode?: string;
   pricing: any;
+  pricing_mode?: string;
+  fixed_price?: number | string;
+  markup_ratio?: number | string;
   asset_resolver: string;
+  result_storage_enabled?: boolean;
   extra_config: any;
   created_at?: string;
   updated_at?: string;
@@ -40,6 +51,20 @@ export interface VideoChannelKey {
   total_calls: number;
 }
 
+export interface VideoCallPayload {
+  id: number;
+  call_id: string;
+  attempt_id: number;
+  kind: string;
+  content_type: string;
+  data: string;
+  encrypted: boolean;
+  truncated: boolean;
+  original_bytes: number;
+  expires_at?: string | null;
+  created_at: string;
+}
+
 export interface VideoTask {
   id: string;
   call_id: string;
@@ -52,6 +77,7 @@ export interface VideoTask {
   status: string;
   progress: number;
   task_mode: string;
+  service_tier: string;
   prompt: string;
   resolution: string;
   ratio: string;
@@ -62,6 +88,8 @@ export interface VideoTask {
   adapter_type: string;
   provider_task_id: string;
   provider_response?: any;
+  provider_metadata?: any;
+  route_plan?: any;
   estimated_cost: number | string;
   markup_ratio: number | string;
   final_cost: number | string;
@@ -70,6 +98,7 @@ export interface VideoTask {
   error_message: string;
   poll_count: number;
   callback_url: string;
+  call_payloads?: VideoCallPayload[];
   created_at: string;
   submitted_at?: string;
   completed_at?: string;
@@ -80,6 +109,22 @@ export interface VideoStats {
   keys: number;
   total_tasks: number;
   active_tasks: number;
+}
+
+export interface VideoTaskListParams {
+  page?: number;
+  page_size?: number;
+  keyword?: string;
+  status?: string;
+  model?: string;
+  task_mode?: string;
+  service_tier?: string;
+  channel_id?: number;
+  user_id?: number;
+  token_id?: number;
+  start_date?: string;
+  end_date?: string;
+  snapshot_at?: string;
 }
 
 // ===== Channels =====
@@ -118,13 +163,12 @@ export const deleteVideoKey = (id: number) =>
 
 // ===== Tasks =====
 
-export const fetchVideoTasks = (params: { page?: number; page_size?: number; status?: string; model?: string }) => {
+export const fetchVideoTasks = (params: VideoTaskListParams) => {
   const qs = new URLSearchParams();
-  if (params.page) qs.set('page', String(params.page));
-  if (params.page_size) qs.set('page_size', String(params.page_size));
-  if (params.status) qs.set('status', params.status);
-  if (params.model) qs.set('model', params.model);
-  return request<{ total: number; items: VideoTask[] }>(`/admin/video/tasks?${qs.toString()}`);
+  Object.entries(params).forEach(([key, value]) => {
+    if (value !== undefined && value !== '') qs.set(key, String(value));
+  });
+  return request<{ total: number; items: VideoTask[]; snapshot_at?: string }>(`/admin/video/tasks?${qs.toString()}`);
 };
 
 export const getVideoTask = (id: string) =>

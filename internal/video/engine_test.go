@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/glebarez/sqlite"
+	"github.com/shopspring/decimal"
 	"gorm.io/datatypes"
 	"gorm.io/gorm"
 )
@@ -101,7 +102,7 @@ func TestValidateContentInfersReferencesAndCapabilities(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(content) != 1 || mode != "references" || !caps.FirstFrame {
+	if len(content) != 1 || mode != "first_frame" || !caps.FirstFrame {
 		t.Fatalf("content=%#v mode=%q caps=%#v", content, mode, caps)
 	}
 }
@@ -141,7 +142,7 @@ func TestValidateContentAllowsMediaWithoutDuration(t *testing.T) {
 	_, mode, _, err := engine.validateContent(context.Background(), 7, "", []ContentItem{
 		{Type: "video_url", Role: "reference_video", URL: "https://1.1.1.1/video.mp4"},
 	})
-	if err != nil || mode != "references" {
+	if err != nil || mode != "multimodal" {
 		t.Fatalf("mode=%q error=%v", mode, err)
 	}
 }
@@ -236,7 +237,7 @@ func TestValidateContentAllowsAudioWithoutVisualReference(t *testing.T) {
 	_, mode, _, err := engine.validateContent(context.Background(), 7, "", []ContentItem{
 		{Type: "audio_url", Role: "reference_audio", URL: "https://1.1.1.1/audio.mp3"},
 	})
-	if err != nil || mode != "references" {
+	if err != nil || mode != "multimodal" {
 		t.Fatalf("mode=%q error=%v", mode, err)
 	}
 }
@@ -244,10 +245,21 @@ func TestValidateContentAllowsAudioWithoutVisualReference(t *testing.T) {
 func TestValidateContentAllowsVideoExtension(t *testing.T) {
 	engine := &Engine{db: newAssetTestService(t).db}
 	_, mode, _, err := engine.validateContent(context.Background(), 7, "video_extension", []ContentItem{
-		{Type: "video_url", Role: "reference_video", URL: "https://1.1.1.1/video.mp4", DurationSeconds: 8},
+		{Type: "video_url", Role: "source_video", URL: "https://1.1.1.1/video.mp4", DurationSeconds: 8},
 	})
 	if err != nil || mode != "video_extension" {
 		t.Fatalf("mode=%q error=%v", mode, err)
+	}
+}
+
+func TestValidateContentAllowsVideoEditWithSupportingMedia(t *testing.T) {
+	engine := &Engine{db: newAssetTestService(t).db}
+	content, mode, _, err := engine.validateContent(context.Background(), 7, "video_edit", []ContentItem{
+		{Type: "video_url", Role: "edit_source", URL: "https://1.1.1.1/video.mp4", DurationSeconds: 8},
+		{Type: "image_url", Role: "reference_image", URL: "https://1.1.1.1/image.png"},
+	})
+	if err != nil || mode != "video_edit" || content[0].ClientRefID != "ref_1" || content[1].ClientRefID != "ref_2" {
+		t.Fatalf("content=%#v mode=%q error=%v", content, mode, err)
 	}
 }
 
@@ -271,6 +283,26 @@ func TestVideoPriceUsesUpstreamEstimateAndMarkup(t *testing.T) {
 	}
 	if snapshot["upstream_estimated_cost"] != "1.25" || snapshot["reserved_cost"] != "1.5" {
 		t.Fatalf("snapshot=%#v", snapshot)
+	}
+}
+
+func TestVideoPriceFormalSettingsTakePrecedence(t *testing.T) {
+	db := newAssetTestService(t).db
+	adapter := &priceTestAdapter{cost: 99}
+	channel := &VideoChannel{
+		PricingMode:   PricingModeFixed,
+		FixedPrice:    decimal.RequireFromString("2.50"),
+		MarkupRatio:   decimal.RequireFromString("1.20"),
+		Pricing:       []byte(`{"mode":"upstream_estimate","fixed_price":99,"markup_ratio":9}`),
+		AssetResolver: "direct_url",
+	}
+	result, err := videoPrice(context.Background(), db, channel, &VideoChannelKey{}, adapter, &GenerateRequest{TaskID: "estimate-formal"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if adapter.called || result.PricingMode != PricingModeFixed || result.BaseCost.String() != "2.5" ||
+		result.EstimatedCost.String() != "3" || result.MarkupRatio.String() != "1.2" {
+		t.Fatalf("result=%#v called=%v", result, adapter.called)
 	}
 }
 

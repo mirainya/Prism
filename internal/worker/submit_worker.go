@@ -244,8 +244,29 @@ func submitTaskUpstream(
 		return provider.SubmitResult{}, nil, nil, nil
 	}
 
+	var requestParams map[string]any
+	if err := json.Unmarshal(task.RequestParams, &requestParams); err != nil {
+		return provider.SubmitResult{}, nil, nil, fmt.Errorf("decode request params: %w", err)
+	}
 	var mappedParams map[string]any
-	_ = json.Unmarshal(task.MappedParams, &mappedParams)
+	if err := json.Unmarshal(task.MappedParams, &mappedParams); err != nil {
+		return provider.SubmitResult{}, nil, nil, fmt.Errorf("decode mapped params: %w", err)
+	}
+	requestParams, mappedParams, err = materializeTaskFileParams(
+		ctx, requestParams, mappedParams, endpoint, endpoint.ModelCode,
+	)
+	if err != nil {
+		return provider.SubmitResult{}, nil, nil, fmt.Errorf("materialize file params: %w", err)
+	}
+	if endpoint.ImageEdit() != nil {
+		if err := taskService.SaveTaskFileParams(task.ID, lease.Owner(), requestParams, mappedParams); err != nil {
+			return provider.SubmitResult{}, nil, nil, fmt.Errorf("save file params: %w", err)
+		}
+	}
+	mappedParams, err = resolveTaskFileParams(ctx, mappedParams, endpoint, endpoint.ModelCode)
+	if err != nil {
+		return provider.SubmitResult{}, nil, nil, fmt.Errorf("resolve file params: %w", err)
+	}
 	if endpoint.InteractionMode == model.ModeCallback {
 		if mappedParams == nil {
 			mappedParams = make(map[string]any)

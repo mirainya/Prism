@@ -44,3 +44,25 @@ func TestClientRejectsPrivateRedirect(t *testing.T) {
 		t.Fatalf("redirect error = %v, want ErrUnsafeURL", err)
 	}
 }
+
+func TestTrustedHostAllowsPrivateProviderDNS(t *testing.T) {
+	value, err := url.Parse("http://localhost/result.mp4")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := validateResolvedURLWithTrustedHosts(context.Background(), value, []string{"localhost"}); err != nil {
+		t.Fatalf("trusted provider host error = %v", err)
+	}
+	if err := validateResolvedURLWithTrustedHosts(context.Background(), value, []string{"other.example"}); !errors.Is(err, ErrUnsafeURL) {
+		t.Fatalf("untrusted provider host error = %v, want ErrUnsafeURL", err)
+	}
+}
+
+func TestTrustedHostWildcard(t *testing.T) {
+	if !trustedHost("bucket.cos.example.com", []string{"*.cos.example.com"}) {
+		t.Fatal("wildcard trusted host did not match subdomain")
+	}
+	if trustedHost("cos.example.com", []string{"*.cos.example.com"}) {
+		t.Fatal("wildcard trusted host matched base domain")
+	}
+}

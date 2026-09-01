@@ -2,7 +2,6 @@ package video
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"math/rand"
@@ -125,26 +124,19 @@ func (r *Router) channelSupportsModel(ch *VideoChannel, model string) bool {
 }
 
 func (r *Router) channelMeetsCaps(ch *VideoChannel, caps RequiredCaps) bool {
-	if ch.Capabilities == nil {
-		return !caps.FirstFrame && !caps.LastFrame && !caps.Cancel && !caps.Audio && !caps.WebSearch
-	}
-	var declared map[string]bool
-	if err := json.Unmarshal(ch.Capabilities, &declared); err != nil {
+	if caps.FirstFrame && !ch.Capability("first_frame") {
 		return false
 	}
-	if caps.FirstFrame && !declared["first_frame"] {
+	if caps.LastFrame && !ch.Capability("last_frame") {
 		return false
 	}
-	if caps.LastFrame && !declared["last_frame"] {
+	if caps.Cancel && !ch.Capability("cancel") {
 		return false
 	}
-	if caps.Cancel && !declared["cancel"] {
+	if caps.Audio && !ch.Capability("audio") {
 		return false
 	}
-	if caps.Audio && !declared["audio"] {
-		return false
-	}
-	if caps.WebSearch && !declared["web_search"] {
+	if caps.WebSearch && !ch.Capability("web_search") {
 		return false
 	}
 	return true

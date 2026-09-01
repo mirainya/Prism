@@ -10,10 +10,26 @@ import (
 
 	"github.com/mirainya/Prism/internal/model"
 	"github.com/mirainya/Prism/internal/service"
+	"github.com/mirainya/Prism/pkg/logger"
 	"github.com/mirainya/Prism/pkg/queue"
+	"go.uber.org/zap"
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
 )
+
+func RecordCallPayloadBestEffort(callID string, attemptID uint, kind string, value any) {
+	if callID == "" || kind == "" || value == nil {
+		return
+	}
+	data, err := json.Marshal(value)
+	if err != nil {
+		logger.Error("encode video call payload", zap.String("call_id", callID), zap.String("kind", kind), zap.Error(err))
+		return
+	}
+	service.NewAPICallService().RecordPayloadBestEffort(&model.APICallPayload{
+		CallID: callID, AttemptID: attemptID, Kind: kind, ContentType: "application/json", Data: data,
+	})
+}
 
 func StartCallAttempt(ctx context.Context, task *VideoTask, channel *VideoChannel, key *VideoChannelKey, adapter Adapter) (*model.APICallAttempt, error) {
 	if task == nil || channel == nil || key == nil {

@@ -720,7 +720,7 @@ func recoverSynchronousSubmit(taskID uint, lease **TaskWorkerLease, cause error)
 // doSubmit executes one upstream submit without changing task state or account counters.
 func (s *UnifiedService) doSubmit(ctx context.Context, lease *TaskWorkerLease, task *model.Task, endpoint *model.Endpoint, channel *model.Channel, account *model.ChannelAccount, mappedParams map[string]any, eventSink chan<- []byte) (provider.SubmitResult, *model.APICallAttempt, *TaskSubmitCheckpoint, error) {
 	// multipart 端点：将参数中的文件 URL 下载并转为 @base64:filename:data 格式
-	resolvedParams, err := resolveFileParams(ctx, mappedParams, endpoint, endpoint.ModelCode)
+	resolvedParams, err := ResolveFileParams(ctx, mappedParams, endpoint, endpoint.ModelCode)
 	if err != nil {
 		return provider.SubmitResult{}, nil, nil, fmt.Errorf("resolve file params: %w", err)
 	}
@@ -763,6 +763,12 @@ func (s *UnifiedService) GetTask(ctx context.Context, taskNo string, userID uint
 func (s *UnifiedService) GetTaskForToken(ctx context.Context, taskNo string, userID, tokenID uint) (*model.Task, error) {
 	taskSvc := NewTaskService()
 	return taskSvc.GetTaskByNoUserAndToken(taskNo, userID, tokenID)
+}
+
+// GetTaskSummaryForToken omits large request and vendor payloads for status polling.
+func (s *UnifiedService) GetTaskSummaryForToken(ctx context.Context, taskNo string, userID, tokenID uint) (*model.Task, error) {
+	taskSvc := NewTaskService()
+	return taskSvc.GetTaskSummaryByNoUserAndToken(taskNo, userID, tokenID)
 }
 
 // CancelTask 取消任务

@@ -18,3 +18,14 @@ func DocsListModels(c *gin.Context) {
 	}
 	resp.Success(c, result)
 }
+
+// DocsListVideos returns the current public video protocol capabilities.
+// Credentials and upstream task details are intentionally excluded.
+func DocsListVideos(c *gin.Context) {
+	result, err := listVideoModels(c.Request.Context())
+	if err != nil {
+		resp.ErrorMsg(c, http.StatusInternalServerError, 500, err.Error())
+		return
+	}
+	resp.Success(c, result)
+}

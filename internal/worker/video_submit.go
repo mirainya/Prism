@@ -101,7 +101,8 @@ func HandleVideoSubmit(ctx context.Context, t *asynq.Task) error {
 		Model: vendorModel, Prompt: task.Prompt, Resolution: task.Resolution,
 		Ratio: task.Ratio, Duration: task.Duration, Audio: task.GenerateAudio,
 		TaskMode: task.TaskMode, TaskID: task.ID, TokenID: task.TokenID,
-		Channel: channel, Key: key,
+		ServiceTier: task.ServiceTier,
+		Channel:     channel, Key: key,
 	}
 	if len(task.ContentJSON) > 0 {
 		if err := json.Unmarshal(task.ContentJSON, &genReq.Content); err != nil {
@@ -124,6 +125,7 @@ func HandleVideoSubmit(ctx context.Context, t *asynq.Task) error {
 	if err != nil {
 		return videoSubmitFail(ctx, db, &task, "build request: "+err.Error())
 	}
+	video.RecordCallPayloadBestEffort(task.CallID, attemptID, model.APICallPayloadUpstreamRequest, providerRequest.Body)
 	previousCheckpoint, err := video.DecodeVideoSubmitCheckpoint(task.SubmitCheckpoint)
 	if err != nil {
 		return videoSubmitFail(ctx, db, &task, "decode submit checkpoint: "+err.Error())
@@ -148,12 +150,19 @@ func HandleVideoSubmit(ctx context.Context, t *asynq.Task) error {
 		return videoSubmitFail(ctx, db, &task, "submit: "+err.Error())
 	}
 	eng.Router().RecordSuccess(ctx, key.ID)
+	if err := video.SaveProviderMetadata(ctx, task.ID, result.Metadata); err != nil {
+		return fmt.Errorf("save video provider metadata: %w", err)
+	}
 	if err := lease.Check(); err != nil {
 		return fmt.Errorf("check video submit lease: %w", err)
 	}
 
 	if result.Status == video.VideoTaskStatusCompleted {
-		completed, err := video.CompleteTask(ctx, task.ID, result.ProviderTaskID, result.Result, 0)
+		materialized, err := video.MaterializeGenerationResult(ctx, channel, result.Result)
+		if err != nil {
+			return videoSubmitFail(ctx, db, &task, err.Error())
+		}
+		completed, err := video.CompleteTask(ctx, task.ID, result.ProviderTaskID, materialized, 0)
 		if err != nil {
 			return fmt.Errorf("complete video task: %w", err)
 		}

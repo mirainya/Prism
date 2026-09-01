@@ -12,6 +12,7 @@ func TestVideoSpecInferredTaskKind(t *testing.T) {
 		{name: "first frame", references: []Reference{{Role: "first_frame"}}, want: TaskKindFirstFrame},
 		{name: "first and last frame", references: []Reference{{Role: "first_frame"}, {Role: "last_frame"}}, want: TaskKindFirstLastFrame},
 		{name: "multimodal", references: []Reference{{Role: "reference_image"}}, want: TaskKindMultimodal},
+		{name: "video edit", references: []Reference{{Role: "edit_source"}}, want: TaskKindVideoEdit},
 		{name: "video extension", references: []Reference{{Role: "source_video"}}, want: TaskKindVideoExtension},
 	}
 	for _, test := range tests {
