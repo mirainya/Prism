@@ -1,5 +1,5 @@
-import React, { useEffect, useState } from 'react';
-import { Plus, Search, RefreshCw, Edit3, Trash2, Shield, ChevronDown, ChevronRight, Key, Cpu, X, Power, Copy, GripVertical, ScanSearch } from 'lucide-react';
+import React, { useEffect, useMemo, useState } from 'react';
+import { Plus, Search, RefreshCw, Edit3, Trash2, Shield, ChevronDown, ChevronRight, Key, Cpu, X, Power, Copy, GripVertical, ScanSearch, Layers3, CircleCheck, KeyRound, Boxes } from 'lucide-react';
 import { DndContext, PointerSensor, closestCenter, useSensor, useSensors, DragStartEvent, DragEndEvent } from '@dnd-kit/core';
 import { SortableContext, arrayMove, useSortable, verticalListSortingStrategy } from '@dnd-kit/sortable';
 import { CSS } from '@dnd-kit/utilities';
@@ -24,11 +24,12 @@ import { ChannelModal, AccountModal } from './ChannelModals';
 import ChannelCapabilityModal from './capabilities/ChannelCapabilityModal';
 import AccountEndpointModelImportModal from './capabilities/AccountEndpointModelImportModal';
 import { getEndpointOperationLabel } from './capabilities/CapabilityEndpointList';
-import { useAppDialog } from '../components/ui';
+import { Select, useAppDialog } from '../components/ui';
+import { PageHeader, SummaryStrip } from '../components/shell';
 
 const STATUS_MAP: Record<number, { label: string; color: string }> = {
-  1: { label: '已启用', color: 'bg-green-100 text-green-700' },
-  0: { label: '已禁用', color: 'bg-[var(--primary-lighter)] text-[var(--text-primary)]' },
+  1: { label: '已启用', color: 'bg-emerald-50 text-emerald-700' },
+  0: { label: '已禁用', color: 'bg-[var(--surface-muted)] text-[var(--text-secondary)]' },
 };
 
 // formatCircuitCountdown 距离熔断到期的剩余时间(人类可读)
@@ -105,7 +106,7 @@ const ChannelRow: React.FC<{
 
   return (
     <>
-      <tr ref={setNodeRef} style={rowStyle} className="hover:bg-[var(--surface)] transition-colors group border-b border-[var(--border-soft)]">
+      <tr ref={setNodeRef} style={rowStyle} className={`group border-b border-[var(--border-soft)] transition-colors ${expanded ? 'bg-[var(--surface-tint)]' : 'hover:bg-[var(--surface-muted)]'}`}>
         <td className="px-3 md:px-6 py-3 md:py-4">
           <div className="flex items-center gap-1">
             {canDrag && (
@@ -115,14 +116,14 @@ const ChannelRow: React.FC<{
                 <GripVertical size={14} />
               </span>
             )}
-            <button onClick={onToggle} className="p-1 hover:bg-[var(--primary-lighter)] rounded">
+            <button onClick={onToggle} className="flex h-7 w-7 items-center justify-center rounded-lg text-[var(--text-secondary)] hover:bg-[var(--primary-lighter)] hover:text-[var(--primary)]" title={expanded ? '收起详情' : '展开详情'}>
               {expanded ? <ChevronDown size={16} /> : <ChevronRight size={16} />}
             </button>
           </div>
         </td>
         <td className="px-3 md:px-6 py-3 md:py-4">
           <div className="flex items-center gap-2 md:gap-3">
-            <div className="w-8 h-8 md:w-10 md:h-10 rounded-xl bg-indigo-100 flex items-center justify-center text-[var(--primary)] font-bold uppercase text-xs flex-shrink-0">
+            <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-[var(--primary-lighter)] text-xs font-extrabold uppercase text-[var(--primary)]">
               {channel.type.substring(0, 2)}
             </div>
             <div className="min-w-0">
@@ -135,7 +136,8 @@ const ChannelRow: React.FC<{
           </div>
         </td>
         <td className="px-3 md:px-6 py-3 md:py-4">
-          <span className={`px-2 py-1 rounded-full text-[10px] font-bold uppercase tracking-wider ${status.color}`}>
+          <span className={`inline-flex items-center gap-1.5 rounded-full px-2 py-1 text-[10px] font-bold ${status.color}`}>
+            <span className={`h-1.5 w-1.5 rounded-full ${channel.status === 1 ? 'bg-emerald-500' : 'bg-[var(--text-tertiary)]'}`} />
             {status.label}
           </span>
         </td>
@@ -143,7 +145,7 @@ const ChannelRow: React.FC<{
           <span className="text-sm font-semibold text-[var(--text-primary)]">{channel.accountsCount}</span>
         </td>
         <td className="px-3 md:px-6 py-3 md:py-4 text-right">
-          <div className="flex items-center justify-end gap-1 md:opacity-0 md:group-hover:opacity-100 transition-opacity">
+          <div className="flex items-center justify-end gap-1 opacity-70 transition-opacity group-hover:opacity-100">
             <button onClick={onToggleStatus} className={`p-1.5 md:p-2 rounded-lg ${channel.status === 1 ? 'text-yellow-600 hover:bg-yellow-50' : 'text-green-600 hover:bg-green-50'}`} title={channel.status === 1 ? '禁用' : '启用'}>
               <Power size={14} />
             </button>
@@ -159,9 +161,9 @@ const ChannelRow: React.FC<{
       {expanded && (
         <tr>
           <td colSpan={5} className="bg-[var(--surface)]/50 px-3 md:px-6 py-3 md:py-4">
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-4 md:gap-6">
+            <div className="grid grid-cols-1 md:grid-cols-2 md:divide-x md:divide-[var(--border-soft)]">
               {/* 账号列表(点击选中 → 右侧过滤该 key 的模型) */}
-              <div className="bg-[var(--surface-card)] rounded-xl p-4 border border-[var(--border-soft)]">
+              <div className="min-w-0 p-2 md:p-4">
                 <div className="flex items-center justify-between mb-3">
                   <h4 className="text-sm font-bold text-[var(--text-primary)] flex items-center gap-2">
                     <Key size={14} /> 账号 (Key)
@@ -223,9 +225,9 @@ const ChannelRow: React.FC<{
               </div>
 
               {/* 右侧: 能力端点(image/video),跟随选中 key */}
-              <div className="space-y-4">
+              <div className="min-w-0">
                 {/* 能力端点(image/video),跟随选中 key */}
-                <div className="bg-[var(--surface-card)] rounded-xl p-4 border border-[var(--border-soft)]">
+                <div className="p-2 md:p-4">
                   <div className="flex items-center justify-between mb-3">
                     <h4 className="text-sm font-bold text-[var(--text-primary)] flex items-center gap-2">
                         <Cpu size={14}/> 能力端点 <span className="text-[10px] font-normal px-1.5 py-0.5 rounded bg-[var(--primary-lighter)] text-[var(--text-secondary)]">图像/视频</span>
@@ -300,6 +302,8 @@ const Channels: React.FC = () => {
   const [isLoading, setIsLoading] = useState(true);
   const [expandedChannels, setExpandedChannels] = useState<Set<string>>(new Set());
   const [searchTerm, setSearchTerm] = useState('');
+  const [statusFilter, setStatusFilter] = useState('all');
+  const [typeFilter, setTypeFilter] = useState('');
   const [capabilityDefs, setCapabilityDefs] = useState<Capability[]>([]);
 
   // Modal states
@@ -428,13 +432,32 @@ const Channels: React.FC = () => {
         }
     };
 
-  const filteredChannels = channels.filter(ch =>
-    ch.name.toLowerCase().includes(searchTerm.toLowerCase()) ||
-    ch.type.toLowerCase().includes(searchTerm.toLowerCase())
-  );
+  const typeOptions = useMemo(() => Array.from(new Set(channels.map(channel => channel.type).filter(Boolean)))
+    .sort()
+    .map(type => ({ label: type, value: type })), [channels]);
+
+  const channelStats = useMemo(() => ({
+    total: channels.length,
+    enabled: channels.filter(channel => channel.status === 1).length,
+    accounts: channels.reduce((sum, channel) => sum + (channel.accountsCount || 0), 0),
+    types: typeOptions.length,
+  }), [channels, typeOptions]);
+
+  const filteredChannels = useMemo(() => {
+    const keyword = searchTerm.trim().toLowerCase();
+    return channels.filter(channel => {
+      const matchesKeyword = !keyword
+        || channel.name.toLowerCase().includes(keyword)
+        || channel.type.toLowerCase().includes(keyword);
+      const matchesStatus = statusFilter === 'all'
+        || (statusFilter === 'enabled' ? channel.status === 1 : channel.status !== 1);
+      return matchesKeyword && matchesStatus && (!typeFilter || channel.type === typeFilter);
+    });
+  }, [channels, searchTerm, statusFilter, typeFilter]);
 
   const sensors = useSensors(useSensor(PointerSensor, { activationConstraint: { distance: 5 } }));
-  const canDrag = !searchTerm.trim();
+  const filterActive = Boolean(searchTerm.trim()) || statusFilter !== 'all' || Boolean(typeFilter);
+  const canDrag = !filterActive;
 
   const handleDragStart = (_e: DragStartEvent) => {
     setExpandedChannels(new Set()); // 拖拽时收起展开行，避免行错位
@@ -456,47 +479,89 @@ const Channels: React.FC = () => {
   };
 
   return (
-    <div className="space-y-4 md:space-y-6">
-      <div className="flex items-start sm:items-center justify-between gap-3 flex-wrap">
-        <div>
-          <h1 className="text-xl md:text-2xl font-bold text-[var(--text-primary)]">能力渠道</h1>
-          <p className="text-[var(--text-secondary)] mt-1 text-sm hidden sm:block">配置图像/视频等能力端点的上游服务商与账号池</p>
-        </div>
-        <button
-          onClick={() => setChannelModal({ open: true, channel: null })}
-          className="flex items-center gap-2 px-4 md:px-6 py-2 bg-[var(--primary)] text-white rounded-lg text-sm font-bold hover:opacity-90 transition-all shadow-sm"
-        >
-          <Plus size={18} />
-          <span className="hidden sm:inline">新建渠道</span><span className="sm:hidden">新建</span>
-        </button>
-      </div>
+    <div className="space-y-4">
+      <PageHeader
+        icon={Layers3}
+        title="能力渠道"
+        meta="管理异步能力的上游服务、账号池与模型端点"
+        actions={(
+          <>
+            <button
+              type="button"
+              onClick={() => loadData()}
+              disabled={isLoading}
+              title="刷新"
+              aria-label="刷新能力渠道"
+              className="flex h-9 w-9 items-center justify-center rounded-lg border border-[var(--border-soft)] bg-[var(--surface-card)] text-[var(--text-secondary)] shadow-[var(--shadow-soft)] transition hover:border-[var(--primary)] hover:text-[var(--primary)] disabled:opacity-60"
+            >
+              <RefreshCw size={17} className={isLoading ? 'animate-spin' : ''} />
+            </button>
+            <button
+              type="button"
+              onClick={() => setChannelModal({ open: true, channel: null })}
+              className="inline-flex h-9 items-center gap-2 rounded-lg [background:var(--brand-gradient)] px-3.5 text-sm font-bold text-white shadow-[0_6px_16px_var(--glow-color)] transition hover:-translate-y-0.5"
+            >
+              <Plus size={17} />
+              <span className="hidden sm:inline">新建渠道</span><span className="sm:hidden">新建</span>
+            </button>
+          </>
+        )}
+      />
 
-      <div className="bg-[var(--surface-card)] rounded-2xl shadow-sm border border-[var(--border-soft)] overflow-hidden">
-        <div className="p-3 md:p-4 border-b border-[var(--border-soft)] flex items-center gap-3 md:gap-4 bg-[var(--surface)]/50">
-          <div className="relative flex-1">
+      <SummaryStrip items={[
+        { label: '渠道总数', value: channelStats.total, icon: Layers3, color: 'var(--candy-pink)' },
+        { label: '启用渠道', value: channelStats.enabled, icon: CircleCheck, color: 'var(--candy-mint)', note: channelStats.total ? `${Math.round(channelStats.enabled / channelStats.total * 100)}%` : '0%' },
+        { label: '账号总数', value: channelStats.accounts, icon: KeyRound, color: 'var(--candy-blue)' },
+        { label: '渠道类型', value: channelStats.types, icon: Boxes, color: 'var(--candy-yellow)' },
+      ]} />
+
+      <section className="overflow-hidden rounded-lg border border-[var(--border-soft)] bg-[var(--surface-card)] shadow-[var(--shadow-soft)]">
+        <div className="grid gap-3 border-b border-[var(--border-soft)] bg-[var(--surface-muted)] p-3 sm:grid-cols-[minmax(240px,1fr)_160px_160px_auto] md:p-4">
+          <div className="relative min-w-0">
             <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-[var(--text-secondary)]" size={16} />
             <input
               type="text"
               value={searchTerm}
               onChange={e => setSearchTerm(e.target.value)}
-              placeholder="搜索..."
-              className="w-full pl-9 pr-3 py-2 bg-[var(--surface-card)] border border-[var(--border-soft)] rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-[var(--primary)] focus:border-transparent"
+              placeholder="搜索渠道名称或类型"
+              className="h-9 w-full rounded-lg border border-[var(--border-soft)] bg-[var(--surface-card)] pl-9 pr-3 text-sm outline-none transition focus:border-[var(--primary)] focus:ring-2 focus:ring-[var(--focus-ring)]"
             />
           </div>
+          <Select
+            value={typeFilter}
+            onChange={setTypeFilter}
+            placeholder="全部类型"
+            options={[{ label: '全部类型', value: '' }, ...typeOptions]}
+          />
+          <Select
+            value={statusFilter}
+            onChange={setStatusFilter}
+            options={[
+              { label: '全部状态', value: 'all' },
+              { label: '仅启用', value: 'enabled' },
+              { label: '仅禁用', value: 'disabled' },
+            ]}
+          />
           <button
-            onClick={() => loadData()}
-            className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold text-[var(--text-secondary)] hover:text-[var(--text-primary)] transition-colors flex-shrink-0"
+            type="button"
+            onClick={() => { setSearchTerm(''); setTypeFilter(''); setStatusFilter('all'); }}
+            disabled={!filterActive}
+            className="h-9 rounded-lg px-3 text-xs font-bold text-[var(--text-secondary)] transition hover:bg-[var(--surface-tint)] hover:text-[var(--primary)] disabled:opacity-40"
           >
-            <RefreshCw size={14} className={isLoading ? 'animate-spin' : ''} />
-            <span className="hidden sm:inline">刷新</span>
+            重置
           </button>
+        </div>
+
+        <div className="flex items-center justify-between border-b border-[var(--border-soft)] px-4 py-2 text-xs text-[var(--text-secondary)]">
+          <span>显示 {filteredChannels.length} / {channels.length} 个渠道</span>
+          <span>{canDrag ? '可拖拽调整顺序' : '筛选时暂停排序'}</span>
         </div>
 
         <div className="overflow-x-auto">
           <DndContext sensors={sensors} collisionDetection={closestCenter} onDragStart={handleDragStart} onDragEnd={handleDragEnd}>
           <table className="w-full text-left min-w-[480px]">
             <thead>
-              <tr className="border-b border-[var(--border-soft)]">
+              <tr className="border-b border-[var(--border-soft)] bg-[var(--surface-muted)]">
                 <th className="px-3 md:px-6 py-3 md:py-4 w-10"></th>
                 <th className="px-3 md:px-6 py-3 md:py-4 text-xs font-bold text-[var(--text-secondary)] uppercase tracking-wider">名称 / 类型</th>
                 <th className="px-3 md:px-6 py-3 md:py-4 text-xs font-bold text-[var(--text-secondary)] uppercase tracking-wider">状态</th>
@@ -512,14 +577,15 @@ const Channels: React.FC = () => {
                     <td className="px-6 py-4"><div className="h-4 bg-[var(--primary-lighter)] rounded w-48"></div></td>
                     <td className="px-6 py-4"><div className="h-4 bg-[var(--primary-lighter)] rounded w-20"></div></td>
                     <td className="px-6 py-4"><div className="h-4 bg-[var(--primary-lighter)] rounded w-12 mx-auto"></div></td>
-                    <td className="px-6 py-4"><div className="h-4 bg-[var(--primary-lighter)] rounded w-12 mx-auto"></div></td>
                     <td className="px-6 py-4"><div className="h-4 bg-[var(--primary-lighter)] rounded w-10 ml-auto"></div></td>
                   </tr>
                 ))
               ) : filteredChannels.length === 0 ? (
                 <tr>
-                  <td colSpan={5} className="px-6 py-12 text-center text-[var(--text-secondary)]">
-                    暂无渠道数据
+                  <td colSpan={5} className="px-6 py-14 text-center text-[var(--text-secondary)]">
+                    <Layers3 size={28} className="mx-auto mb-3 text-[var(--text-tertiary)]" />
+                    <div className="font-semibold text-[var(--text-primary)]">{channels.length ? '没有匹配的渠道' : '暂无能力渠道'}</div>
+                    <div className="mt-1 text-xs">{channels.length ? '调整搜索或筛选条件' : '新建渠道后即可配置账号与能力端点'}</div>
                   </td>
                 </tr>
               ) : (
@@ -554,7 +620,7 @@ const Channels: React.FC = () => {
           </table>
           </DndContext>
         </div>
-      </div>
+      </section>
 
       {/* Modals */}
       <ChannelModal

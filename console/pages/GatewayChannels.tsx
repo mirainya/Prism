@@ -1,5 +1,5 @@
-import React, { useEffect, useState } from 'react';
-import { Plus, RefreshCw, Edit3, Trash2, ChevronDown, ChevronRight, Key, Power, Download, MessageSquare, GripVertical, Server, Search, Check, Activity, Loader2 } from 'lucide-react';
+import React, { useEffect, useMemo, useState } from 'react';
+import { Plus, RefreshCw, Edit3, Trash2, ChevronDown, ChevronRight, Key, Power, Download, MessageSquare, GripVertical, Server, Search, Check, Activity, Loader2, CircleCheck, Boxes, Network } from 'lucide-react';
 import { DndContext, PointerSensor, closestCenter, useSensor, useSensors, DragEndEvent } from '@dnd-kit/core';
 import { SortableContext, arrayMove, useSortable, verticalListSortingStrategy } from '@dnd-kit/sortable';
 import { CSS } from '@dnd-kit/utilities';
@@ -10,7 +10,8 @@ import {
   fetchGwAbilities, deleteGwAbility, updateGwAbility, fetchGwAbilityTransports, upsertGwAbilityTransport, probeGwAbilityTransport,
 } from '../services/gatewayApi';
 import { GwChannelModal, GwKeyModal, GwPullModal } from './gateway_channels/GwChannelModals';
-import { Modal, useAppDialog } from '../components/ui';
+import { Modal, Select, useAppDialog } from '../components/ui';
+import { PageHeader, SummaryStrip } from '../components/shell';
 
 const PROTOCOL_COLORS: Record<string, string> = {
   openai: 'bg-emerald-100 text-emerald-700',
@@ -528,7 +529,7 @@ const ChannelRow: React.FC<{
           </span>
         </td>
         <td className="px-3 md:px-6 py-3 md:py-4 text-right">
-          <div className="flex items-center justify-end gap-1 md:opacity-0 md:group-hover:opacity-100 transition-opacity">
+          <div className="flex items-center justify-end gap-1 opacity-70 transition-opacity group-hover:opacity-100">
             <button onClick={onToggleStatus} className={`p-1.5 md:p-2 rounded-lg ${channel.status === 1 ? 'text-yellow-600 hover:bg-yellow-50' : 'text-green-600 hover:bg-green-50'}`} title={channel.status === 1 ? '禁用' : '启用'}>
               <Power size={14} />
             </button>
@@ -553,6 +554,9 @@ const GatewayChannels: React.FC = () => {
   const [channels, setChannels] = useState<GwChannel[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [expanded, setExpanded] = useState<Set<number>>(new Set());
+  const [searchTerm, setSearchTerm] = useState('');
+  const [statusFilter, setStatusFilter] = useState('all');
+  const [protocolFilter, setProtocolFilter] = useState('');
   // per-channel 重载信号: 增删 key/import 后 +1 触发对应 ChannelDetail 刷新
   const [reloadSignals, setReloadSignals] = useState<Record<number, number>>({});
 
@@ -616,7 +620,34 @@ const GatewayChannels: React.FC = () => {
 
   const sensors = useSensors(useSensor(PointerSensor, { activationConstraint: { distance: 5 } }));
 
+  const protocolOptions = useMemo(() => Array.from(new Set(channels.map(channel => channel.protocol).filter(Boolean)))
+    .sort()
+    .map(protocol => ({ label: protocol, value: protocol })), [channels]);
+
+  const channelStats = useMemo(() => ({
+    total: channels.length,
+    enabled: channels.filter(channel => channel.status === 1).length,
+    protocols: protocolOptions.length,
+    customHeaders: channels.filter(channel => Object.keys(channel.extra_headers || {}).length > 0).length,
+  }), [channels, protocolOptions]);
+
+  const filteredChannels = useMemo(() => {
+    const keyword = searchTerm.trim().toLowerCase();
+    return channels.filter(channel => {
+      const matchesKeyword = !keyword
+        || channel.name.toLowerCase().includes(keyword)
+        || channel.base_url.toLowerCase().includes(keyword)
+        || channel.protocol.toLowerCase().includes(keyword);
+      const matchesStatus = statusFilter === 'all'
+        || (statusFilter === 'enabled' ? channel.status === 1 : channel.status !== 1);
+      return matchesKeyword && matchesStatus && (!protocolFilter || channel.protocol === protocolFilter);
+    });
+  }, [channels, searchTerm, statusFilter, protocolFilter]);
+
+  const filterActive = Boolean(searchTerm.trim()) || statusFilter !== 'all' || Boolean(protocolFilter);
+
   const handleDragEnd = async (e: DragEndEvent) => {
+    if (filterActive) return;
     const { active, over } = e;
     if (!over || active.id === over.id) return;
     const oldIndex = channels.findIndex(c => String(c.id) === active.id);
@@ -632,29 +663,87 @@ const GatewayChannels: React.FC = () => {
   };
 
   return (
-    <div className="space-y-4 md:space-y-6">
-      <div className="flex items-start sm:items-center justify-between gap-3 flex-wrap">
-        <div>
-          <h1 className="text-xl md:text-2xl font-bold text-[var(--text-primary)]">网关渠道</h1>
-          <p className="text-[var(--text-secondary)] mt-1 text-sm hidden sm:block">Chat 路由:一渠道一协议,渠道→Key→模型能力</p>
-        </div>
-        <button onClick={() => setChannelModal({ open: true, channel: null })}
-          className="flex items-center gap-2 px-4 md:px-6 py-2 bg-[var(--primary)] text-white rounded-lg text-sm font-bold hover:opacity-90 transition-all shadow-sm">
-          <Plus size={18} /><span className="hidden sm:inline">新建渠道</span><span className="sm:hidden">新建</span>
-        </button>
-      </div>
+    <div className="space-y-4">
+      <PageHeader
+        icon={Network}
+        title="网关渠道"
+        meta="管理对话协议、上游地址、密钥与模型能力"
+        actions={(
+          <>
+            <button
+              type="button"
+              onClick={() => load()}
+              disabled={isLoading}
+              title="刷新"
+              aria-label="刷新网关渠道"
+              className="flex h-9 w-9 items-center justify-center rounded-lg border border-[var(--border-soft)] bg-[var(--surface-card)] text-[var(--text-secondary)] shadow-[var(--shadow-soft)] transition hover:border-[var(--primary)] hover:text-[var(--primary)] disabled:opacity-60"
+            >
+              <RefreshCw size={17} className={isLoading ? 'animate-spin' : ''} />
+            </button>
+            <button
+              type="button"
+              onClick={() => setChannelModal({ open: true, channel: null })}
+              className="inline-flex h-9 items-center gap-2 rounded-lg [background:var(--brand-gradient)] px-3.5 text-sm font-bold text-white shadow-[0_6px_16px_var(--glow-color)] transition hover:-translate-y-0.5"
+            >
+              <Plus size={17} /><span className="hidden sm:inline">新建渠道</span><span className="sm:hidden">新建</span>
+            </button>
+          </>
+        )}
+      />
 
-      <div className="bg-[var(--surface-card)] rounded-2xl shadow-sm border border-[var(--border-soft)] overflow-hidden">
-        <div className="p-3 md:p-4 border-b border-[var(--border-soft)] flex items-center justify-end bg-[var(--surface)]/50">
-          <button onClick={() => load()} className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold text-[var(--text-secondary)] hover:text-[var(--text-primary)]">
-            <RefreshCw size={14} className={isLoading ? 'animate-spin' : ''} /><span className="hidden sm:inline">刷新</span>
+      <SummaryStrip items={[
+        { label: '渠道总数', value: channelStats.total, icon: Server, color: 'var(--candy-pink)' },
+        { label: '启用渠道', value: channelStats.enabled, icon: CircleCheck, color: 'var(--candy-mint)', note: channelStats.total ? `${Math.round(channelStats.enabled / channelStats.total * 100)}%` : '0%' },
+        { label: '协议类型', value: channelStats.protocols, icon: Boxes, color: 'var(--candy-blue)' },
+        { label: '自定义请求头', value: channelStats.customHeaders, icon: Activity, color: 'var(--candy-yellow)' },
+      ]} />
+
+      <section className="overflow-hidden rounded-lg border border-[var(--border-soft)] bg-[var(--surface-card)] shadow-[var(--shadow-soft)]">
+        <div className="grid gap-3 border-b border-[var(--border-soft)] bg-[var(--surface-muted)] p-3 sm:grid-cols-[minmax(240px,1fr)_180px_160px_auto] md:p-4">
+          <div className="relative min-w-0">
+            <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-[var(--text-secondary)]" size={16} />
+            <input
+              type="text"
+              value={searchTerm}
+              onChange={event => setSearchTerm(event.target.value)}
+              placeholder="搜索名称、地址或协议"
+              className="h-9 w-full rounded-lg border border-[var(--border-soft)] bg-[var(--surface-card)] pl-9 pr-3 text-sm outline-none transition focus:border-[var(--primary)] focus:ring-2 focus:ring-[var(--focus-ring)]"
+            />
+          </div>
+          <Select
+            value={protocolFilter}
+            onChange={setProtocolFilter}
+            placeholder="全部协议"
+            options={[{ label: '全部协议', value: '' }, ...protocolOptions]}
+          />
+          <Select
+            value={statusFilter}
+            onChange={setStatusFilter}
+            options={[
+              { label: '全部状态', value: 'all' },
+              { label: '仅启用', value: 'enabled' },
+              { label: '仅禁用', value: 'disabled' },
+            ]}
+          />
+          <button
+            type="button"
+            onClick={() => { setSearchTerm(''); setProtocolFilter(''); setStatusFilter('all'); }}
+            disabled={!filterActive}
+            className="h-9 rounded-lg px-3 text-xs font-bold text-[var(--text-secondary)] transition hover:bg-[var(--surface-tint)] hover:text-[var(--primary)] disabled:opacity-40"
+          >
+            重置
           </button>
+        </div>
+
+        <div className="flex items-center justify-between border-b border-[var(--border-soft)] px-4 py-2 text-xs text-[var(--text-secondary)]">
+          <span>显示 {filteredChannels.length} / {channels.length} 个渠道</span>
+          <span>{filterActive ? '筛选时暂停排序' : '可拖拽调整顺序'}</span>
         </div>
         <div className="overflow-x-auto">
           <DndContext sensors={sensors} collisionDetection={closestCenter} onDragStart={() => setExpanded(new Set())} onDragEnd={handleDragEnd}>
             <table className="w-full text-left min-w-[560px]">
               <thead>
-                <tr className="border-b border-[var(--border-soft)]">
+                <tr className="border-b border-[var(--border-soft)] bg-[var(--surface-muted)]">
                   <th className="px-3 md:px-6 py-3 md:py-4 w-10"></th>
                   <th className="px-3 md:px-6 py-3 md:py-4 text-xs font-bold text-[var(--text-secondary)] uppercase tracking-wider">名称 / BaseURL</th>
                   <th className="px-3 md:px-6 py-3 md:py-4 text-xs font-bold text-[var(--text-secondary)] uppercase tracking-wider">协议</th>
@@ -673,12 +762,16 @@ const GatewayChannels: React.FC = () => {
                       <td className="px-6 py-4"><div className="h-4 bg-[var(--primary-lighter)] rounded w-10 ml-auto"></div></td>
                     </tr>
                   ))
-                ) : channels.length === 0 ? (
-                  <tr><td colSpan={5} className="px-6 py-12 text-center text-[var(--text-secondary)]">暂无渠道数据</td></tr>
+                ) : filteredChannels.length === 0 ? (
+                  <tr><td colSpan={5} className="px-6 py-14 text-center text-[var(--text-secondary)]">
+                    <Network size={28} className="mx-auto mb-3 text-[var(--text-tertiary)]" />
+                    <div className="font-semibold text-[var(--text-primary)]">{channels.length ? '没有匹配的网关渠道' : '暂无网关渠道'}</div>
+                    <div className="mt-1 text-xs">{channels.length ? '调整搜索或筛选条件' : '新建渠道后即可配置协议、密钥与模型能力'}</div>
+                  </td></tr>
                 ) : (
-                  <SortableContext items={channels.map(c => String(c.id))} strategy={verticalListSortingStrategy}>
-                    {channels.map(ch => (
-                      <ChannelRow key={ch.id} channel={ch} canDrag expanded={expanded.has(ch.id)}
+                  <SortableContext items={filteredChannels.map(c => String(c.id))} strategy={verticalListSortingStrategy}>
+                    {filteredChannels.map(ch => (
+                      <ChannelRow key={ch.id} channel={ch} canDrag={!filterActive} expanded={expanded.has(ch.id)}
                         onToggle={() => toggle(ch.id)}
                         onEdit={() => setChannelModal({ open: true, channel: ch })}
                         onDelete={() => handleDeleteChannel(ch.id)}
@@ -695,7 +788,7 @@ const GatewayChannels: React.FC = () => {
             </table>
           </DndContext>
         </div>
-      </div>
+      </section>
 
       <GwChannelModal isOpen={channelModal.open} channel={channelModal.channel}
         onClose={() => setChannelModal({ open: false, channel: null })} onSave={handleSaveChannel} />
