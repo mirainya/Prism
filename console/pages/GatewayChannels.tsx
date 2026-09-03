@@ -168,41 +168,43 @@ const ChannelDetail: React.FC<{
   const selectedKey = keys.find(k => k.id === selectedKeyId) || null;
 
   return (
-    <div className="grid grid-cols-1 md:grid-cols-2 gap-4 md:gap-6">
+    <>
+    <div className="channel-detail-grid">
       {/* 左: keys */}
-      <div className="bg-[var(--surface-card)] rounded-xl p-4 border border-[var(--border-soft)]">
-        <div className="flex items-center justify-between mb-3">
-          <h4 className="text-sm font-bold text-[var(--text-primary)] flex items-center gap-2">
+      <div className="channel-detail-pane">
+        <div className="channel-detail-header">
+          <h4 className="channel-detail-title">
             <Key size={14} /> Key
+            <span className="rounded-full bg-[var(--primary-lighter)] px-1.5 py-0.5 text-[10px] text-[var(--primary)]">{keys.length}</span>
           </h4>
-          <button onClick={onAddKey} className="text-xs text-[var(--primary)] hover:opacity-80 flex items-center gap-1">
+          <button onClick={onAddKey} className="channel-detail-action">
             <Plus size={14} /> 添加
           </button>
         </div>
         {keys.length === 0 ? (
-          <p className="text-xs text-[var(--text-secondary)] text-center py-4">暂无 Key</p>
+          <div className="channel-detail-empty">暂无 Key</div>
         ) : (
-          <div className="space-y-2">
+          <div className="channel-detail-list">
             {keys.map(k => {
               const isSel = selectedKeyId === k.id;
               return (
                 <div key={k.id} onClick={() => handleSelectKey(k.id)}
-                  className={`flex items-center justify-between p-2 rounded-lg group/k gap-2 cursor-pointer transition-all ${isSel ? 'bg-[var(--primary-lighter)] ring-2 ring-[var(--primary)]' : 'bg-[var(--surface)] hover:bg-[var(--primary-lighter)]/40'}`}>
+                  className={`channel-detail-item group/k cursor-pointer ${isSel ? 'channel-detail-item-selected' : ''}`}>
                   <div className="min-w-0 flex-1">
                     <div className="flex items-center gap-2">
                       <span className="text-sm font-medium text-[var(--text-primary)]">{k.name || `key#${k.id}`}</span>
                       <span className={`px-1.5 py-0.5 rounded text-[10px] font-bold ${k.status === 1 ? 'bg-green-100 text-green-700' : 'bg-[var(--primary-lighter)] text-[var(--text-secondary)]'}`}>
                         {k.status === 1 ? '启用' : '禁用'}
                       </span>
-                      {isSel && <span className="text-[10px] text-[var(--primary)] font-medium">← 查看模型</span>}
+                      {isSel && <span className="text-[10px] font-medium text-[var(--primary)]">已选</span>}
                     </div>
                     <div className="text-xs text-[var(--text-secondary)] font-mono break-all mt-1">{maskApiKey(k.api_key)}</div>
                     <div className="text-xs text-[var(--text-secondary)] mt-1">权重: {k.weight} | 并发: {k.current_conc}/{k.max_conc || '∞'}</div>
                   </div>
-                  <div className="flex items-center gap-1 md:opacity-0 md:group-hover/k:opacity-100 shrink-0">
-                    <button onClick={e => { e.stopPropagation(); onPullKey(k); }} className="p-1 hover:bg-gray-200 rounded" title="拉取该 key 的上游模型"><Download size={12} /></button>
-                    <button onClick={e => { e.stopPropagation(); onEditKey(k); }} className="p-1 hover:bg-gray-200 rounded"><Edit3 size={12} /></button>
-                    <button onClick={e => { e.stopPropagation(); handleDeleteKey(k.id); }} className="p-1 hover:bg-red-100 text-red-500 rounded"><Trash2 size={12} /></button>
+                  <div className="flex shrink-0 items-center gap-1 md:opacity-0 md:group-hover/k:opacity-100">
+                    <button onClick={e => { e.stopPropagation(); onPullKey(k); }} className="channel-icon-button text-[var(--text-secondary)] hover:bg-sky-50 hover:text-sky-600" title="拉取该 Key 的上游模型"><Download size={12} /></button>
+                    <button onClick={e => { e.stopPropagation(); onEditKey(k); }} className="channel-icon-button text-[var(--text-secondary)] hover:bg-[var(--primary-lighter)] hover:text-[var(--primary)]" title="编辑"><Edit3 size={12} /></button>
+                    <button onClick={e => { e.stopPropagation(); handleDeleteKey(k.id); }} className="channel-icon-button text-[var(--text-secondary)] hover:bg-red-50 hover:text-red-600" title="删除"><Trash2 size={12} /></button>
                   </div>
                 </div>
               );
@@ -212,51 +214,51 @@ const ChannelDetail: React.FC<{
       </div>
 
       {/* 右: 该 key 的 abilities */}
-      <div className="bg-[var(--surface-card)] rounded-xl p-4 border border-[var(--border-soft)]">
-        <div className="flex items-center justify-between mb-3">
-          <h4 className="text-sm font-bold text-[var(--text-primary)] flex items-center gap-2">
+      <div className="channel-detail-pane">
+        <div className="channel-detail-header">
+          <h4 className="channel-detail-title">
             <MessageSquare size={14} /> 模型能力
             {selectedKey && <span className="text-xs font-normal text-[var(--text-secondary)]">· {selectedKey.name || `key#${selectedKey.id}`}</span>}
           </h4>
           {selectedKey && (
-            <button onClick={() => onPullKey(selectedKey)} className="text-xs text-[var(--primary)] hover:opacity-80 flex items-center gap-1">
+            <button onClick={() => onPullKey(selectedKey)} className="channel-detail-action">
               <Download size={14} /> 拉取
             </button>
           )}
         </div>
         {!selectedKey ? (
-          <p className="text-xs text-[var(--text-secondary)] text-center py-4">← 选择一个 Key 查看/拉取其模型</p>
+          <div className="channel-detail-empty">选择左侧 Key 查看模型</div>
         ) : abLoading ? (
-          <p className="text-xs text-[var(--text-secondary)] text-center py-4">加载中...</p>
+          <div className="channel-detail-empty">加载中...</div>
         ) : abilities.length === 0 ? (
-          <p className="text-xs text-[var(--text-secondary)] text-center py-4">该 Key 暂无模型，点「拉取」导入</p>
+          <div className="channel-detail-empty">暂无模型，可从上游拉取</div>
         ) : (() => {
           const kw = abSearch.trim().toLowerCase();
           const filtered = kw
             ? abilities.filter(ab => ab.model_name.toLowerCase().includes(kw) || (ab.vendor_model || '').toLowerCase().includes(kw))
             : abilities;
           return (
-            <div className="space-y-2">
+            <div>
               {abilities.length > 6 && (
-                <div className="relative">
+                <div className="channel-detail-search relative">
                   <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 text-[var(--text-secondary)]" size={13} />
                   <input value={abSearch} onChange={e => setAbSearch(e.target.value)} placeholder="搜索模型..."
-                    className="w-full pl-8 pr-2 py-1.5 bg-[var(--surface)] border border-[var(--border-soft)] rounded-lg text-xs focus:outline-none focus:ring-1 focus:ring-[var(--primary)]" />
+                    className="w-full rounded-lg border border-[var(--border-soft)] bg-[var(--surface)] py-1.5 pl-8 pr-2 text-xs focus:outline-none focus:ring-1 focus:ring-[var(--primary)]" />
                 </div>
               )}
-              <div className="text-[10px] text-[var(--text-secondary)] px-1">共 {abilities.length} 个模型{kw && ` · 命中 ${filtered.length}`}</div>
-              <div className="border border-[var(--border-soft)] rounded-lg overflow-hidden divide-y divide-[var(--border-soft)] max-h-80 overflow-y-auto">
+              <div className="px-3 py-1.5 text-[10px] text-[var(--text-secondary)]">共 {abilities.length} 个模型{kw && ` · 命中 ${filtered.length}`}</div>
+              <div className="channel-detail-list">
                 {/* 表头 */}
-                <div className="flex items-center gap-2 px-2.5 py-1.5 bg-[var(--surface)]/70 text-[10px] font-bold text-[var(--text-secondary)] uppercase tracking-wider sticky top-0">
+                <div className="sticky top-0 flex items-center gap-2 border-y border-[var(--border-soft)] bg-[var(--surface-muted-solid)] px-3 py-1.5 text-[10px] font-bold text-[var(--text-secondary)]">
                   <span className="flex-1 min-w-0">模型 / 上游名</span>
                   <span className="w-10 text-center">优先级</span>
                   <span className="w-12 text-center">状态</span>
                   <span className="w-14 text-right">操作</span>
                 </div>
                 {filtered.length === 0 ? (
-                  <div className="px-2.5 py-4 text-center text-xs text-[var(--text-secondary)]">无匹配模型</div>
+                  <div className="channel-detail-empty">无匹配模型</div>
                 ) : filtered.map(ab => (
-                  <div key={ab.id} className={`flex items-center gap-2 px-2.5 py-1.5 text-xs group/ab hover:bg-[var(--surface)]/60 ${ab.status !== 1 ? 'opacity-55' : ''}`}>
+                  <div key={ab.id} className={`channel-detail-item min-h-0 py-1.5 text-xs group/ab ${ab.status !== 1 ? 'opacity-55' : ''}`}>
                     <div className="flex-1 min-w-0">
                       <div className="font-medium text-[var(--text-primary)] truncate">{ab.model_name}</div>
                       {ab.vendor_model && ab.vendor_model !== ab.model_name && (
@@ -280,10 +282,11 @@ const ChannelDetail: React.FC<{
           );
         })()}
       </div>
+    </div>
       {editingAb && (
         <AbilityEditModal key={editingAb.id} isOpen={editingAbOpen} ability={editingAb} onClose={() => setEditingAbOpen(false)} onSave={handleSaveAbility} />
       )}
-    </div>
+    </>
   );
 };
 
@@ -496,7 +499,7 @@ const ChannelRow: React.FC<{
 
   return (
     <>
-      <tr ref={setNodeRef} style={rowStyle} className="hover:bg-[var(--surface)] transition-colors group border-b border-[var(--border-soft)]">
+      <tr ref={setNodeRef} style={rowStyle} className={`channel-data-row group ${expanded ? 'channel-data-row-expanded' : ''}`}>
         <td className="px-3 md:px-6 py-3 md:py-4">
           <div className="flex items-center gap-1">
             {canDrag && (
@@ -504,43 +507,44 @@ const ChannelRow: React.FC<{
                 <GripVertical size={14} />
               </span>
             )}
-            <button onClick={onToggle} className="p-1 hover:bg-[var(--primary-lighter)] rounded">
+            <button onClick={onToggle} className="channel-expand-button" title={expanded ? '收起详情' : '展开详情'}>
               {expanded ? <ChevronDown size={16} /> : <ChevronRight size={16} />}
             </button>
           </div>
         </td>
         <td className="px-3 md:px-6 py-3 md:py-4">
           <div className="flex items-center gap-2 md:gap-3">
-            <div className="w-8 h-8 md:w-10 md:h-10 rounded-xl bg-indigo-100 flex items-center justify-center text-[var(--primary)] flex-shrink-0">
+            <div className="channel-provider-mark">
               <Server size={16} />
             </div>
             <div className="min-w-0">
               <div className="text-sm font-bold text-[var(--text-primary)] truncate">{channel.name}</div>
-              <div className="text-xs text-[var(--text-secondary)] font-mono truncate">{channel.base_url}</div>
+              <div className="max-w-md truncate font-mono text-xs text-[var(--text-secondary)]" title={channel.base_url}>{channel.base_url}</div>
             </div>
           </div>
         </td>
         <td className="px-3 md:px-6 py-3 md:py-4">
-          <span className={`px-2 py-1 rounded-full text-[10px] font-bold uppercase tracking-wider ${protoColor}`}>{channel.protocol}</span>
+          <span className={`inline-flex rounded-full px-2.5 py-1 text-[10px] font-extrabold ring-1 ring-inset ring-black/5 ${protoColor}`}>{channel.protocol}</span>
         </td>
         <td className="px-3 md:px-6 py-3 md:py-4">
-          <span className={`px-2 py-1 rounded-full text-[10px] font-bold ${channel.status === 1 ? 'bg-green-100 text-green-700' : 'bg-[var(--primary-lighter)] text-[var(--text-secondary)]'}`}>
+          <span className={`inline-flex items-center gap-1.5 rounded-full px-2 py-1 text-[10px] font-bold ${channel.status === 1 ? 'bg-emerald-50 text-emerald-700' : 'bg-[var(--surface-muted)] text-[var(--text-secondary)]'}`}>
+            <span className={`h-1.5 w-1.5 rounded-full ${channel.status === 1 ? 'bg-emerald-500' : 'bg-[var(--text-tertiary)]'}`} />
             {channel.status === 1 ? '已启用' : '已禁用'}
           </span>
         </td>
         <td className="px-3 md:px-6 py-3 md:py-4 text-right">
-          <div className="flex items-center justify-end gap-1 opacity-70 transition-opacity group-hover:opacity-100">
-            <button onClick={onToggleStatus} className={`p-1.5 md:p-2 rounded-lg ${channel.status === 1 ? 'text-yellow-600 hover:bg-yellow-50' : 'text-green-600 hover:bg-green-50'}`} title={channel.status === 1 ? '禁用' : '启用'}>
+          <div className="channel-row-actions">
+            <button onClick={onToggleStatus} className={`channel-icon-button ${channel.status === 1 ? 'text-amber-600 hover:bg-amber-50' : 'text-emerald-600 hover:bg-emerald-50'}`} title={channel.status === 1 ? '禁用' : '启用'}>
               <Power size={14} />
             </button>
-            <button onClick={onEdit} className="p-1.5 md:p-2 text-[var(--text-secondary)] hover:text-[var(--primary)] hover:bg-[var(--primary-lighter)] rounded-lg" title="编辑"><Edit3 size={14} /></button>
-            <button onClick={onDelete} className="p-1.5 md:p-2 text-[var(--text-secondary)] hover:text-red-600 hover:bg-red-50 rounded-lg" title="删除"><Trash2 size={14} /></button>
+            <button onClick={onEdit} className="channel-icon-button text-[var(--text-secondary)] hover:bg-[var(--primary-lighter)] hover:text-[var(--primary)]" title="编辑"><Edit3 size={14} /></button>
+            <button onClick={onDelete} className="channel-icon-button text-[var(--text-secondary)] hover:bg-red-50 hover:text-red-600" title="删除"><Trash2 size={14} /></button>
           </div>
         </td>
       </tr>
       {expanded && (
-        <tr>
-          <td colSpan={5} className="bg-[var(--surface)]/50 px-3 md:px-6 py-3 md:py-4">
+        <tr className="channel-detail-row">
+          <td colSpan={5}>
             <ChannelDetail channel={channel} onAddKey={onAddKey} onEditKey={onEditKey} onPullKey={onPullKey} reloadSignal={reloadSignal} />
           </td>
         </tr>
@@ -741,14 +745,14 @@ const GatewayChannels: React.FC = () => {
         </div>
         <div className="overflow-x-auto">
           <DndContext sensors={sensors} collisionDetection={closestCenter} onDragStart={() => setExpanded(new Set())} onDragEnd={handleDragEnd}>
-            <table className="w-full text-left min-w-[560px]">
+            <table className="channel-data-table w-full min-w-[560px] text-left">
               <thead>
-                <tr className="border-b border-[var(--border-soft)] bg-[var(--surface-muted)]">
+                <tr>
                   <th className="px-3 md:px-6 py-3 md:py-4 w-10"></th>
-                  <th className="px-3 md:px-6 py-3 md:py-4 text-xs font-bold text-[var(--text-secondary)] uppercase tracking-wider">名称 / BaseURL</th>
-                  <th className="px-3 md:px-6 py-3 md:py-4 text-xs font-bold text-[var(--text-secondary)] uppercase tracking-wider">协议</th>
-                  <th className="px-3 md:px-6 py-3 md:py-4 text-xs font-bold text-[var(--text-secondary)] uppercase tracking-wider">状态</th>
-                  <th className="px-3 md:px-6 py-3 md:py-4 text-xs font-bold text-[var(--text-secondary)] uppercase tracking-wider text-right">操作</th>
+                  <th className="px-3 md:px-6">名称 / Base URL</th>
+                  <th className="px-3 md:px-6">协议</th>
+                  <th className="px-3 md:px-6">状态</th>
+                  <th className="px-3 text-right md:px-6">操作</th>
                 </tr>
               </thead>
               <tbody>

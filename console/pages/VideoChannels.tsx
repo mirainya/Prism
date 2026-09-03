@@ -20,6 +20,11 @@ const ADAPTER_LABELS: Record<string, string> = {
   seedance: 'Seedance 官方协议',
 };
 
+const ADAPTER_BADGES: Record<string, string> = {
+  generic: 'bg-sky-50 text-sky-700',
+  seedance: 'bg-violet-50 text-violet-700',
+};
+
 const ChannelKeys: React.FC<{ channelId: number; reloadSignal: number; onAddKey: () => void; onEditKey: (k: VideoChannelKey) => void }> = ({ channelId, reloadSignal, onAddKey, onEditKey }) => {
   const [keys, setKeys] = useState<VideoChannelKey[]>([]);
   const [loading, setLoading] = useState(true);
@@ -50,20 +55,24 @@ const ChannelKeys: React.FC<{ channelId: number; reloadSignal: number; onAddKey:
     load();
   };
 
-  if (loading) return <div className="py-4 text-center text-xs text-[var(--text-secondary)]">加载中...</div>;
-
   return (
-    <div className="p-3 md:p-4">
-      <div className="flex items-center justify-between mb-3">
-        <h4 className="text-sm font-bold text-[var(--text-primary)] flex items-center gap-2"><Key size={14} /> API Keys</h4>
-        <button onClick={onAddKey} className="text-xs text-[var(--primary)] hover:opacity-80 flex items-center gap-1"><Plus size={14} /> 添加</button>
+    <div className="channel-detail-grid channel-detail-grid-single">
+      <div className="channel-detail-pane">
+      <div className="channel-detail-header">
+        <h4 className="channel-detail-title">
+          <Key size={14} /> API Keys
+          {!loading && <span className="rounded-full bg-[var(--primary-lighter)] px-1.5 py-0.5 text-[10px] text-[var(--primary)]">{keys.length}</span>}
+        </h4>
+        <button onClick={onAddKey} className="channel-detail-action"><Plus size={14} /> 添加</button>
       </div>
-      {keys.length === 0 ? (
-        <p className="text-xs text-[var(--text-secondary)] text-center py-4">暂无 Key，点击添加</p>
+      {loading ? (
+        <div className="channel-detail-empty">加载中...</div>
+      ) : keys.length === 0 ? (
+        <div className="channel-detail-empty">暂无 Key</div>
       ) : (
-        <div className="space-y-2">
+        <div className="channel-detail-list">
           {keys.map(k => (
-            <div key={k.id} className="group flex items-center justify-between rounded-lg border border-[var(--border-soft)] bg-[var(--surface-card)] p-3 transition hover:border-[var(--border-strong)]">
+            <div key={k.id} className="channel-detail-item group">
               <div className="min-w-0 flex-1">
                 <div className="flex items-center gap-2">
                   <span className="text-sm font-medium text-[var(--text-primary)]">{k.label || `Key #${k.id}`}</span>
@@ -76,15 +85,16 @@ const ChannelKeys: React.FC<{ channelId: number; reloadSignal: number; onAddKey:
                   权重: {k.weight} | 并发: {k.current_concurrency}/{k.max_concurrency || '∞'} | 调用: {k.total_calls}
                 </div>
               </div>
-              <div className="flex items-center gap-1 md:opacity-0 md:group-hover:opacity-100 shrink-0">
-                <button onClick={() => handleToggle(k)} className="p-1.5 hover:bg-gray-200 rounded" title={k.status === 'active' ? '禁用' : '启用'}><Power size={13} /></button>
-                <button onClick={() => onEditKey(k)} className="p-1.5 hover:bg-gray-200 rounded"><Edit3 size={13} /></button>
-                <button onClick={() => setDeleteTarget(k)} className="p-1.5 hover:bg-red-100 text-red-500 rounded" title="删除 Key"><Trash2 size={13} /></button>
+              <div className="flex shrink-0 items-center gap-1 md:opacity-0 md:group-hover:opacity-100">
+                <button onClick={() => handleToggle(k)} className="channel-icon-button text-[var(--text-secondary)] hover:bg-amber-50 hover:text-amber-600" title={k.status === 'active' ? '禁用' : '启用'}><Power size={13} /></button>
+                <button onClick={() => onEditKey(k)} className="channel-icon-button text-[var(--text-secondary)] hover:bg-[var(--primary-lighter)] hover:text-[var(--primary)]" title="编辑"><Edit3 size={13} /></button>
+                <button onClick={() => setDeleteTarget(k)} className="channel-icon-button text-[var(--text-secondary)] hover:bg-red-50 hover:text-red-600" title="删除 Key"><Trash2 size={13} /></button>
               </div>
             </div>
           ))}
         </div>
       )}
+      </div>
       <ConfirmDialog
         open={Boolean(deleteTarget)}
         title="删除 API Key？"
@@ -254,14 +264,14 @@ const VideoChannels: React.FC = () => {
         </div>
 
         <div className="overflow-x-auto">
-          <table className="w-full text-left min-w-[520px]">
+          <table className="channel-data-table w-full min-w-[520px] text-left">
             <thead>
-              <tr className="border-b border-[var(--border-soft)] bg-[var(--surface-muted)]">
+              <tr>
                 <th className="px-3 md:px-6 py-3 md:py-4 w-10"></th>
-                <th className="px-3 md:px-6 py-3 md:py-4 text-xs font-bold text-[var(--text-secondary)] uppercase tracking-wider">名称 / BaseURL</th>
-                <th className="px-3 md:px-6 py-3 md:py-4 text-xs font-bold text-[var(--text-secondary)] uppercase tracking-wider">协议</th>
-                <th className="px-3 md:px-6 py-3 md:py-4 text-xs font-bold text-[var(--text-secondary)] uppercase tracking-wider">状态</th>
-                <th className="px-3 md:px-6 py-3 md:py-4 text-xs font-bold text-[var(--text-secondary)] uppercase tracking-wider text-right">操作</th>
+                <th className="px-3 md:px-6">名称 / Base URL</th>
+                <th className="px-3 md:px-6">协议</th>
+                <th className="px-3 md:px-6">状态</th>
+                <th className="px-3 text-right md:px-6">操作</th>
               </tr>
             </thead>
             <tbody>
@@ -284,21 +294,21 @@ const VideoChannels: React.FC = () => {
               ) : (
                 filteredChannels.map(ch => (
                   <React.Fragment key={ch.id}>
-                    <tr className={`cursor-pointer border-b border-[var(--border-soft)] transition-colors ${expanded.has(ch.id) ? 'bg-[var(--surface-tint)]' : 'hover:bg-[var(--surface-muted)]'}`} onClick={() => toggle(ch.id)}>
+                    <tr className={`channel-data-row group cursor-pointer ${expanded.has(ch.id) ? 'channel-data-row-expanded' : ''}`} onClick={() => toggle(ch.id)}>
                       <td className="px-3 md:px-6 py-3 md:py-4">
                         <button
                           type="button"
                           onClick={event => { event.stopPropagation(); toggle(ch.id); }}
                           title={expanded.has(ch.id) ? '收起详情' : '展开详情'}
                           aria-label={expanded.has(ch.id) ? '收起详情' : '展开详情'}
-                          className="flex h-7 w-7 items-center justify-center rounded-lg text-[var(--text-secondary)] hover:bg-[var(--primary-lighter)] hover:text-[var(--primary)]"
+                          className="channel-expand-button"
                         >
                           {expanded.has(ch.id) ? <ChevronDown size={16} /> : <ChevronRight size={16} />}
                         </button>
                       </td>
                       <td className="px-3 md:px-6 py-3 md:py-4">
                         <div className="flex items-center gap-3">
-                          <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-[var(--primary-lighter)] text-[var(--primary)]"><Film size={17} /></span>
+                          <span className="channel-provider-mark"><Film size={17} /></span>
                           <div className="min-w-0">
                             <div className="font-bold text-[var(--text-primary)]">{ch.name}</div>
                             <div className="mt-0.5 max-w-xs truncate font-mono text-xs text-[var(--text-secondary)]" title={ch.base_url}>{ch.base_url}</div>
@@ -306,7 +316,7 @@ const VideoChannels: React.FC = () => {
                         </div>
                       </td>
                       <td className="px-3 md:px-6 py-3 md:py-4">
-                        <span className="px-2 py-1 rounded-md text-xs font-bold bg-blue-100 text-blue-700">
+                        <span className={`inline-flex rounded-full px-2.5 py-1 text-xs font-bold ring-1 ring-inset ring-black/5 ${ADAPTER_BADGES[ch.adapter_type] || 'bg-[var(--surface-muted)] text-[var(--text-secondary)]'}`}>
                           {ADAPTER_LABELS[ch.adapter_type] || ch.adapter_type}
                         </span>
                       </td>
@@ -317,16 +327,16 @@ const VideoChannels: React.FC = () => {
                         </span>
                       </td>
                       <td className="px-3 md:px-6 py-3 md:py-4 text-right">
-                        <div className="flex items-center justify-end gap-1">
+                        <div className="channel-row-actions">
                           <button onClick={e => { e.stopPropagation(); navigate(`/video-channels/${ch.id}/edit`); }}
-                            className="p-1.5 hover:bg-gray-200 rounded" title="编辑"><Edit3 size={14} /></button>
+                            className="channel-icon-button text-[var(--text-secondary)] hover:bg-[var(--primary-lighter)] hover:text-[var(--primary)]" title="编辑"><Edit3 size={14} /></button>
                           <button onClick={e => { e.stopPropagation(); setDeleteTarget(ch); }}
-                            className="p-1.5 hover:bg-red-100 text-red-500 rounded" title="删除"><Trash2 size={14} /></button>
+                            className="channel-icon-button text-[var(--text-secondary)] hover:bg-red-50 hover:text-red-600" title="删除"><Trash2 size={14} /></button>
                         </div>
                       </td>
                     </tr>
                     {expanded.has(ch.id) && (
-                      <tr className="border-b border-[var(--border-soft)]">
+                      <tr className="channel-detail-row">
                         <td colSpan={5} className="bg-[var(--surface)]/30">
                           <ChannelKeys
                             channelId={ch.id}

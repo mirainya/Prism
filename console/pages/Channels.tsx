@@ -106,7 +106,7 @@ const ChannelRow: React.FC<{
 
   return (
     <>
-      <tr ref={setNodeRef} style={rowStyle} className={`group border-b border-[var(--border-soft)] transition-colors ${expanded ? 'bg-[var(--surface-tint)]' : 'hover:bg-[var(--surface-muted)]'}`}>
+      <tr ref={setNodeRef} style={rowStyle} className={`channel-data-row group ${expanded ? 'channel-data-row-expanded' : ''}`}>
         <td className="px-3 md:px-6 py-3 md:py-4">
           <div className="flex items-center gap-1">
             {canDrag && (
@@ -116,14 +116,14 @@ const ChannelRow: React.FC<{
                 <GripVertical size={14} />
               </span>
             )}
-            <button onClick={onToggle} className="flex h-7 w-7 items-center justify-center rounded-lg text-[var(--text-secondary)] hover:bg-[var(--primary-lighter)] hover:text-[var(--primary)]" title={expanded ? '收起详情' : '展开详情'}>
+            <button onClick={onToggle} className="channel-expand-button" title={expanded ? '收起详情' : '展开详情'}>
               {expanded ? <ChevronDown size={16} /> : <ChevronRight size={16} />}
             </button>
           </div>
         </td>
         <td className="px-3 md:px-6 py-3 md:py-4">
           <div className="flex items-center gap-2 md:gap-3">
-            <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-[var(--primary-lighter)] text-xs font-extrabold uppercase text-[var(--primary)]">
+            <div className="channel-provider-mark text-xs font-extrabold uppercase">
               {channel.type.substring(0, 2)}
             </div>
             <div className="min-w-0">
@@ -145,53 +145,53 @@ const ChannelRow: React.FC<{
           <span className="text-sm font-semibold text-[var(--text-primary)]">{channel.accountsCount}</span>
         </td>
         <td className="px-3 md:px-6 py-3 md:py-4 text-right">
-          <div className="flex items-center justify-end gap-1 opacity-70 transition-opacity group-hover:opacity-100">
-            <button onClick={onToggleStatus} className={`p-1.5 md:p-2 rounded-lg ${channel.status === 1 ? 'text-yellow-600 hover:bg-yellow-50' : 'text-green-600 hover:bg-green-50'}`} title={channel.status === 1 ? '禁用' : '启用'}>
+          <div className="channel-row-actions">
+            <button onClick={onToggleStatus} className={`channel-icon-button ${channel.status === 1 ? 'text-amber-600 hover:bg-amber-50' : 'text-emerald-600 hover:bg-emerald-50'}`} title={channel.status === 1 ? '禁用' : '启用'}>
               <Power size={14} />
             </button>
-            <button onClick={onEdit} className="p-1.5 md:p-2 text-[var(--text-secondary)] hover:text-[var(--primary)] hover:bg-[var(--primary-lighter)] rounded-lg" title="编辑">
+            <button onClick={onEdit} className="channel-icon-button text-[var(--text-secondary)] hover:bg-[var(--primary-lighter)] hover:text-[var(--primary)]" title="编辑">
               <Edit3 size={14} />
             </button>
-            <button onClick={onDelete} className="p-1.5 md:p-2 text-[var(--text-secondary)] hover:text-red-600 hover:bg-red-50 rounded-lg" title="删除">
+            <button onClick={onDelete} className="channel-icon-button text-[var(--text-secondary)] hover:bg-red-50 hover:text-red-600" title="删除">
               <Trash2 size={14} />
             </button>
           </div>
         </td>
       </tr>
       {expanded && (
-        <tr>
-          <td colSpan={5} className="bg-[var(--surface)]/50 px-3 md:px-6 py-3 md:py-4">
-            <div className="grid grid-cols-1 md:grid-cols-2 md:divide-x md:divide-[var(--border-soft)]">
+        <tr className="channel-detail-row">
+          <td colSpan={5}>
+            <div className="channel-detail-grid">
               {/* 账号列表(点击选中 → 右侧过滤该 key 的模型) */}
-              <div className="min-w-0 p-2 md:p-4">
-                <div className="flex items-center justify-between mb-3">
-                  <h4 className="text-sm font-bold text-[var(--text-primary)] flex items-center gap-2">
+              <div className="channel-detail-pane">
+                <div className="channel-detail-header">
+                  <h4 className="channel-detail-title">
                     <Key size={14} /> 账号 (Key)
                     <span className={`rounded px-1.5 py-0.5 text-[10px] font-medium ${discoveryEnabled ? 'bg-sky-50 text-sky-700' : 'bg-gray-100 text-gray-600'}`}>
                       {discoveryEnabled ? '模型发现' : '手动配置'}
                     </span>
                   </h4>
-                  <button onClick={onAddAccount} className="text-xs text-[var(--primary)] hover:text-[var(--primary)] flex items-center gap-1">
+                  <button onClick={onAddAccount} className="channel-detail-action">
                     <Plus size={14} /> 添加
                   </button>
                 </div>
                 {accounts.length === 0 ? (
-                  <p className="text-xs text-[var(--text-secondary)] text-center py-4">暂无账号</p>
+                  <div className="channel-detail-empty">暂无账号</div>
                 ) : (
-                  <div className="space-y-2">
+                  <div className="channel-detail-list">
                     {accounts.map(acc => {
                       const isSelected = selectedAccountId === acc.id;
                       return (
                       <div key={acc.id}
                         onClick={() => handleSelectKey(acc.id)}
-                        className={`flex items-center justify-between p-2 rounded-lg group/acc gap-2 cursor-pointer transition-all ${isSelected ? 'bg-[var(--primary-lighter)] ring-2 ring-[var(--primary)]' : 'bg-[var(--surface)] hover:bg-[var(--primary-lighter)]/40'}`}>
+                        className={`channel-detail-item group/acc cursor-pointer ${isSelected ? 'channel-detail-item-selected' : ''}`}>
                         <div className="min-w-0 flex-1">
                           <div className="flex items-center gap-2">
                             <span className="text-sm font-medium text-[var(--text-primary)]">{acc.name}</span>
                             <span className={`px-1.5 py-0.5 rounded text-[10px] font-bold ${acc.status === 1 ? 'bg-green-100 text-green-700' : 'bg-[var(--primary-lighter)] text-[var(--text-secondary)]'}`}>
                               {acc.status === 1 ? '启用' : '禁用'}
                             </span>
-                            {isSelected && <span className="text-[10px] text-[var(--primary)] font-medium">← 查看模型</span>}
+                            {isSelected && <span className="text-[10px] font-medium text-[var(--primary)]">已选</span>}
                           </div>
                           <div className="text-xs text-[var(--text-secondary)] font-mono break-all mt-1">{acc.apiKey || acc.maskedKey || '-'}</div>
                           <div className={`text-xs mt-1 ${acc.maxTasks > 0 && acc.currentTasks >= acc.maxTasks ? 'text-red-500 font-bold' : 'text-[var(--text-secondary)]'}`}>权重: {acc.weight} | 并发: {acc.currentTasks}/{acc.maxTasks || '∞'}</div>
@@ -210,11 +210,11 @@ const ChannelRow: React.FC<{
                         <div className="flex items-center gap-1 shrink-0">
                           {discoveryEnabled && <button type="button" disabled={acc.status !== 1} onClick={e => { e.stopPropagation(); onDiscoverAccount(acc); }} className="inline-flex items-center gap-1 rounded px-2 py-1 text-xs font-medium text-sky-700 hover:bg-sky-50 disabled:cursor-not-allowed disabled:opacity-40" title="发现上游模型"><ScanSearch size={12} /><span className="hidden lg:inline">发现模型</span></button>}
                           <div className="flex items-center gap-1 md:opacity-0 md:group-hover/acc:opacity-100">
-                          <button onClick={e => { e.stopPropagation(); handleCopyApiKey(acc.id, acc.apiKey || acc.maskedKey || ''); }} className="p-1 hover:bg-gray-200 rounded" title="复制 API Key"><Copy size={12} /></button>
+                          <button onClick={e => { e.stopPropagation(); handleCopyApiKey(acc.id, acc.apiKey || acc.maskedKey || ''); }} className="channel-icon-button text-[var(--text-secondary)] hover:bg-sky-50 hover:text-sky-600" title="复制 API Key"><Copy size={12} /></button>
                           {copiedAccountId === acc.id && <span className="text-[10px] font-medium text-green-600 px-1">已复制</span>}
-                          <button onClick={e => { e.stopPropagation(); onToggleAccountStatus(acc); }} className="p-1 hover:bg-gray-200 rounded"><Power size={12} /></button>
-                          <button onClick={e => { e.stopPropagation(); onEditAccount(acc); }} className="p-1 hover:bg-gray-200 rounded"><Edit3 size={12} /></button>
-                          <button onClick={e => { e.stopPropagation(); onDeleteAccount(acc.id); }} className="p-1 hover:bg-red-100 text-red-500 rounded"><Trash2 size={12} /></button>
+                          <button onClick={e => { e.stopPropagation(); onToggleAccountStatus(acc); }} className="channel-icon-button text-[var(--text-secondary)] hover:bg-amber-50 hover:text-amber-600" title={acc.status === 1 ? '禁用' : '启用'}><Power size={12} /></button>
+                          <button onClick={e => { e.stopPropagation(); onEditAccount(acc); }} className="channel-icon-button text-[var(--text-secondary)] hover:bg-[var(--primary-lighter)] hover:text-[var(--primary)]" title="编辑"><Edit3 size={12} /></button>
+                          <button onClick={e => { e.stopPropagation(); onDeleteAccount(acc.id); }} className="channel-icon-button text-[var(--text-secondary)] hover:bg-red-50 hover:text-red-600" title="删除"><Trash2 size={12} /></button>
                           </div>
                         </div>
                       </div>
@@ -225,30 +225,30 @@ const ChannelRow: React.FC<{
               </div>
 
               {/* 右侧: 能力端点(image/video),跟随选中 key */}
-              <div className="min-w-0">
+              <div className="channel-detail-pane">
                 {/* 能力端点(image/video),跟随选中 key */}
-                <div className="p-2 md:p-4">
-                  <div className="flex items-center justify-between mb-3">
-                    <h4 className="text-sm font-bold text-[var(--text-primary)] flex items-center gap-2">
+                <div>
+                  <div className="channel-detail-header">
+                    <h4 className="channel-detail-title">
                         <Cpu size={14}/> 能力端点 <span className="text-[10px] font-normal px-1.5 py-0.5 rounded bg-[var(--primary-lighter)] text-[var(--text-secondary)]">图像/视频</span>
                         {selectedAccount && <span className="text-xs font-normal text-[var(--text-secondary)]">· {selectedAccount.name}</span>}
                     </h4>
                       {selectedAccount && (
                         <button onClick={() => onAddCapability(selectedAccount)}
-                                className="text-xs text-[var(--primary)] hover:text-[var(--primary)] flex items-center gap-1">
+                                className="channel-detail-action">
                           <Plus size={14} /> 手动添加
                         </button>
                       )}
                   </div>
                     {!selectedAccount ? (
-                        <p className="text-xs text-[var(--text-secondary)] text-center py-4">← 选择一个账号查看/添加其能力端点</p>
+                        <div className="channel-detail-empty">选择左侧账号查看能力端点</div>
                     ) : keyCapabilities.length === 0 ? (
-                        <p className="text-xs text-[var(--text-secondary)] text-center py-4">该 key 暂无能力端点</p>
+                        <div className="channel-detail-empty">该 Key 暂无能力端点</div>
                   ) : (
-                    <div className="space-y-2">
+                    <div className="channel-detail-list">
                         {keyCapabilities.map(c => (
                             <div key={c.id}
-                                 className="flex items-center justify-between p-2 bg-[var(--surface)] rounded-lg group/cap gap-2">
+                                 className="channel-detail-item group/cap">
                           <div className="min-w-0 flex-1">
                               <div className="flex items-center gap-2 flex-wrap">
                                   <span className="text-sm font-medium text-[var(--text-primary)]">{c.name || c.model || c.capabilityCode}</span>
@@ -271,13 +271,13 @@ const ChannelRow: React.FC<{
                                 {c.capabilityCode}{c.model ? ` → ${c.model}` : ''} | ¥{c.price}
                             </div>
                           </div>
-                                <div className="flex items-center gap-1 md:opacity-0 md:group-hover/cap:opacity-100 shrink-0">
+                                <div className="flex shrink-0 items-center gap-1 md:opacity-0 md:group-hover/cap:opacity-100">
                                     <button onClick={() => onToggleCapabilityStatus(c)}
-                                            className="p-1 hover:bg-gray-200 rounded"><Power size={12}/></button>
-                                    <button onClick={() => onEditCapability(c)} className="p-1 hover:bg-gray-200 rounded">
+                                            className="channel-icon-button text-[var(--text-secondary)] hover:bg-amber-50 hover:text-amber-600" title={c.status === 1 ? '禁用' : '启用'}><Power size={12}/></button>
+                                    <button onClick={() => onEditCapability(c)} className="channel-icon-button text-[var(--text-secondary)] hover:bg-[var(--primary-lighter)] hover:text-[var(--primary)]" title="编辑">
                                         <Edit3 size={12}/></button>
                                     <button onClick={() => onDeleteCapability(c.id)}
-                                            className="p-1 hover:bg-red-100 text-red-500 rounded"><Trash2 size={12}/>
+                                            className="channel-icon-button text-[var(--text-secondary)] hover:bg-red-50 hover:text-red-600" title="删除"><Trash2 size={12}/>
                                     </button>
                           </div>
                         </div>
@@ -559,14 +559,14 @@ const Channels: React.FC = () => {
 
         <div className="overflow-x-auto">
           <DndContext sensors={sensors} collisionDetection={closestCenter} onDragStart={handleDragStart} onDragEnd={handleDragEnd}>
-          <table className="w-full text-left min-w-[480px]">
+          <table className="channel-data-table w-full min-w-[480px] text-left">
             <thead>
-              <tr className="border-b border-[var(--border-soft)] bg-[var(--surface-muted)]">
+              <tr>
                 <th className="px-3 md:px-6 py-3 md:py-4 w-10"></th>
-                <th className="px-3 md:px-6 py-3 md:py-4 text-xs font-bold text-[var(--text-secondary)] uppercase tracking-wider">名称 / 类型</th>
-                <th className="px-3 md:px-6 py-3 md:py-4 text-xs font-bold text-[var(--text-secondary)] uppercase tracking-wider">状态</th>
-                <th className="px-3 md:px-6 py-3 md:py-4 text-xs font-bold text-[var(--text-secondary)] uppercase tracking-wider text-center hidden sm:table-cell">账号数</th>
-                <th className="px-3 md:px-6 py-3 md:py-4 text-xs font-bold text-[var(--text-secondary)] uppercase tracking-wider text-right">操作</th>
+                <th className="px-3 md:px-6">名称 / 类型</th>
+                <th className="px-3 md:px-6">状态</th>
+                <th className="hidden px-3 text-center sm:table-cell md:px-6">账号数</th>
+                <th className="px-3 text-right md:px-6">操作</th>
               </tr>
             </thead>
             <tbody>
