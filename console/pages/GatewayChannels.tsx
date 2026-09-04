@@ -376,7 +376,8 @@ const AbilityEditModal: React.FC<{
 
   return (
     <Modal open={isOpen} onClose={onClose} title="编辑模型能力" width="max-w-md">
-        <div className="space-y-4">
+      <div className="modal-form">
+        <div className="modal-scroll-body space-y-4">
           <div>
             <label className="block text-xs font-bold text-[var(--text-secondary)] mb-1">对外模型名(model_name,路由标识)</label>
             <input value={modelName} onChange={e => setModelName(e.target.value)}
@@ -389,7 +390,7 @@ const AbilityEditModal: React.FC<{
               className="w-full px-3 py-2 bg-[var(--surface-card)] border border-[var(--border-soft)] rounded-lg text-sm font-mono focus:outline-none focus:ring-2 focus:ring-[var(--primary)]" />
             <p className="text-[10px] text-[var(--text-secondary)] mt-1">上游真实模型名。留空则用模型名本身发给上游。</p>
           </div>
-          <div className="grid grid-cols-2 gap-3">
+          <div className="modal-grid-responsive grid grid-cols-2 gap-3">
             <div>
               <label className="block text-xs font-bold text-[var(--text-secondary)] mb-1">优先级(降序)</label>
               <input type="number" value={priority} onChange={e => setPriority(e.target.value)}
@@ -454,7 +455,7 @@ const AbilityEditModal: React.FC<{
               <button onClick={() => setPriceMode('request')} className={`flex-1 py-2 rounded-lg text-xs font-bold border ${priceMode === 'request' ? 'bg-[var(--primary-lighter)] text-[var(--primary)] border-[var(--primary)]' : 'bg-[var(--surface)] text-[var(--text-secondary)] border-[var(--border-soft)]'}`}>按次</button>
             </div>
           </div>
-          <div className="grid grid-cols-2 gap-3">
+          <div className="modal-grid-responsive grid grid-cols-2 gap-3">
             <div>
               <label className="block text-xs font-bold text-[var(--text-secondary)] mb-1">{priceMode === 'request' ? '每次价格' : '输入价格'}</label>
               <input value={inputPrice} onChange={e => setInputPrice(e.target.value)}
@@ -466,15 +467,15 @@ const AbilityEditModal: React.FC<{
                 className="w-full px-3 py-2 bg-[var(--surface-card)] border border-[var(--border-soft)] rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-[var(--primary)] disabled:opacity-50" />
             </div>
           </div>
+          {error && <div className="pt-2 text-xs text-red-600">{error}</div>}
         </div>
-		{error && <div className="pt-2 text-xs text-red-600">{error}</div>}
-        <div className="flex justify-end gap-2 border-t border-[var(--border-soft)] pt-4">
-          <button onClick={onClose} className="px-4 py-2 text-sm font-semibold text-[var(--text-secondary)] hover:text-[var(--text-primary)]">取消</button>
-		  <button onClick={handleSubmit} disabled={saving || transportLoading}
-            className="flex items-center gap-1.5 px-5 py-2 bg-[var(--primary)] text-white rounded-lg text-sm font-bold hover:opacity-90 disabled:opacity-50">
+        <div className="modal-footer">
+          <button onClick={onClose} className="modal-button modal-button-secondary">取消</button>
+		  <button onClick={handleSubmit} disabled={saving || transportLoading} className="modal-button modal-button-primary">
             <Check size={16} /> {saving ? '保存中...' : '保存'}
           </button>
         </div>
+      </div>
     </Modal>
   );
 };

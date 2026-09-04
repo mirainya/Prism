@@ -72,43 +72,44 @@ export const ChannelConfigEditor: React.FC<{
     }
 
     return (
-        <div className="space-y-4 max-h-80 overflow-y-auto">
+        <div className="channel-priority-editor">
             {capabilities.map(cap => (
-                <div key={cap.code} className="border border-[var(--border-soft)] rounded-lg p-3">
+                <section key={cap.code} className="channel-priority-group">
                     <div className="flex items-center justify-between mb-2">
-                        <span className="font-medium text-[var(--text-primary)]">{cap.name}</span>
-                        <span className="text-xs text-[var(--text-secondary)]">{cap.code}</span>
+                        <span className="text-sm font-bold text-[var(--text-primary)]">{cap.name}</span>
+                        <code className="text-[11px] text-[var(--text-tertiary)]">{cap.code}</code>
                     </div>
-                    <div className="space-y-2">
+                    <div>
                         {getPriorities(cap.code).map((p, idx) => (
                             <div key={p.channelId}
-                                 className="flex items-center gap-2 bg-[var(--surface)] rounded-lg px-3 py-2">
-                                <span className="text-sm text-[var(--text-secondary)] w-6">{idx + 1}.</span>
-                                <span className="flex-1 text-sm">{getName(cap.code, p.channelId)}</span>
-                                <button onClick={() => moveUp(cap.code, p.channelId)} disabled={idx === 0}
-                                        className="p-1 hover:bg-gray-200 rounded disabled:opacity-30">
+                                 className="channel-priority-row">
+                                <span className="channel-priority-rank">{idx + 1}</span>
+                                <span className="min-w-0 flex-1 truncate text-sm text-[var(--text-primary)]">{getName(cap.code, p.channelId)}</span>
+                                <button type="button" title="上移" onClick={() => moveUp(cap.code, p.channelId)} disabled={idx === 0}
+                                        className="modal-icon-button disabled:opacity-25">
                                     <ChevronUp size={14}/>
                                 </button>
-                                <button onClick={() => moveDown(cap.code, p.channelId)}
+                                <button type="button" title="下移" onClick={() => moveDown(cap.code, p.channelId)}
                                         disabled={idx === getPriorities(cap.code).length - 1}
-                                        className="p-1 hover:bg-gray-200 rounded disabled:opacity-30">
+                                        className="modal-icon-button disabled:opacity-25">
                                     <ChevronDown size={14}/>
                                 </button>
-                                <button onClick={() => removeChannel(cap.code, p.channelId)}
-                                        className="p-1 hover:bg-red-100 text-red-500 rounded">
+                                <button type="button" title="移除" onClick={() => removeChannel(cap.code, p.channelId)}
+                                        className="modal-icon-button modal-icon-button-danger">
                                     <X size={14}/>
                                 </button>
                             </div>
                         ))}
                         {getAvailable(cap.code).length > 0 && (
                             <Select
+                                className="channel-priority-select"
                                 value=""
                                 onChange={v => { if (v) addChannel(cap.code, Number(v)); }}
                                 options={[{ label: '+ 添加渠道', value: '' }, ...getAvailable(cap.code).map(ch => ({ label: `${ch.channelName}${ch.model ? ` (${ch.model})` : ''} - ¥${ch.price}`, value: String(ch.channelId) }))]}
                             />
                         )}
                     </div>
-                </div>
+                </section>
             ))}
         </div>
     );

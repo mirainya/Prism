@@ -59,7 +59,8 @@ const MetaModal: React.FC<{
 
   return (
     <Modal open={isOpen} onClose={onClose} title="编辑模型元数据" width="max-w-md">
-      <div className="space-y-4">
+      <div className="modal-form">
+       <div className="modal-scroll-body space-y-4">
         <div>
           <label className="block text-sm font-medium text-[var(--text-primary)] mb-1">模型 <code className="text-xs px-1.5 py-0.5 bg-[var(--primary-lighter)] rounded">{model.model_name}</code></label>
         </div>
@@ -92,9 +93,10 @@ const MetaModal: React.FC<{
           <label className="block text-sm font-medium text-[var(--text-primary)] mb-1">思考模式</label>
           <ThinkingConfigEditor value={thinking} provider="" onChange={setThinking} />
         </div>
-        <div className="flex justify-end gap-3 pt-4">
-          <button onClick={onClose} className="px-4 py-2 text-sm font-bold text-[var(--text-secondary)] bg-[var(--primary-lighter)] rounded-lg hover:bg-gray-200">取消</button>
-          <button onClick={handleSave} disabled={saving} className="px-4 py-2 text-sm font-bold text-white bg-[var(--primary)] rounded-lg hover:opacity-90 disabled:opacity-50">{saving ? '保存中...' : '保存'}</button>
+       </div>
+        <div className="modal-footer">
+          <button onClick={onClose} className="modal-button modal-button-secondary">取消</button>
+          <button onClick={handleSave} disabled={saving} className="modal-button modal-button-primary">{saving ? '保存中...' : '保存'}</button>
         </div>
       </div>
     </Modal>
@@ -362,9 +364,9 @@ const GatewayModels: React.FC = () => {
           确认删除模型 <code className="px-1.5 py-0.5 bg-[var(--primary-lighter)] rounded text-[var(--text-primary)]">{confirmModal.modelName}</code>？<br />
           将移除所有路由能力和元数据，不可撤销。
         </p>
-        <div className="flex justify-end gap-3 pt-2">
-          <button onClick={() => setConfirmModal({ open: false, modelName: '' })} className="px-4 py-2 text-sm font-bold text-[var(--text-secondary)] bg-[var(--primary-lighter)] rounded-lg hover:bg-gray-200">取消</button>
-          <button onClick={doDeleteModel} className="px-4 py-2 text-sm font-bold text-white bg-red-500 rounded-lg hover:opacity-90">删除</button>
+        <div className="modal-footer">
+          <button onClick={() => setConfirmModal({ open: false, modelName: '' })} className="modal-button modal-button-secondary">取消</button>
+          <button onClick={doDeleteModel} className="modal-button modal-button-danger">删除</button>
         </div>
       </Modal>
     </div>

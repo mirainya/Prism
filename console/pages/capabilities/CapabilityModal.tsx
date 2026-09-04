@@ -144,11 +144,11 @@ const CapabilityModal: React.FC<{
                     </div>
                   </div>
 
-                    <div className="capability-modal-footer flex justify-end gap-3 pt-4">
+                    <div className="capability-modal-footer">
                         <button type="button" onClick={onClose}
-                                className="capability-secondary-button rounded-lg px-4 py-2 text-sm font-bold transition-colors">取消</button>
+                                className="modal-button modal-button-secondary">取消</button>
                         <button type="submit" disabled={loading || !!jsonError}
-                                className="capability-primary-button rounded-lg px-4 py-2 text-sm font-bold text-white transition-colors disabled:opacity-50">
+                                className="modal-button modal-button-primary">
                             {loading ? '保存中...' : '保存'}
                         </button>
                     </div>

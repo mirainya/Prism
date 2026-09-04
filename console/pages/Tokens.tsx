@@ -286,9 +286,10 @@ const Tokens: React.FC = () => {
       </div>
 
         {/* 创建令牌弹窗 */}
-        <Modal open={showCreateModal} onClose={closeModal} title="创建新令牌">
+        <Modal open={showCreateModal} onClose={closeModal} title="创建新令牌" width="max-w-xl">
             {newTokenKey ? (
-              <div className="space-y-4">
+              <div className="modal-form">
+                <div className="modal-scroll-body space-y-4">
                 <div className="p-4 bg-amber-50 border border-amber-300 rounded-xl">
                     <div className="flex items-center gap-2 mb-2">
                         <AlertCircle size={16} className="text-amber-600" />
@@ -311,7 +312,7 @@ const Tokens: React.FC = () => {
                           setTimeout(() => setCopiedId(null), 2000);
                         });
                       }}
-                      className="mt-2 w-full py-2 flex items-center justify-center gap-2 bg-green-600 text-white rounded-lg hover:bg-green-700 text-sm font-medium"
+                      className="modal-button modal-button-primary mt-2 w-full"
                     >
                       {copiedId === 'new' ? (
                         <><CheckCircle2 size={16} /> 已复制</>
@@ -320,15 +321,14 @@ const Tokens: React.FC = () => {
                       )}
                     </button>
                 </div>
-                <button
-                  onClick={closeModal}
-                  className="w-full py-3 bg-[var(--primary)] text-white rounded-lg font-bold hover:opacity-90"
-                >
-                  我已保存，关闭
-                </button>
+                </div>
+                <div className="modal-footer">
+                  <button onClick={closeModal} className="modal-button modal-button-secondary">我已保存，关闭</button>
+                </div>
               </div>
             ) : (
-              <div className="space-y-4">
+              <div className="modal-form">
+               <div className="modal-scroll-body space-y-4">
                 <div>
                   <label className="block text-sm font-medium text-[var(--text-primary)] mb-1">令牌名称</label>
                   <input
@@ -353,7 +353,7 @@ const Tokens: React.FC = () => {
                 </div>
 
                   {/* 渠道配置区域 */}
-                  <div className="border-t pt-4">
+                  <div className="modal-section">
                       <button
                           type="button"
                           onClick={async () => {
@@ -388,11 +388,10 @@ const Tokens: React.FC = () => {
                       )}
                   </div>
 
-                <button
-                  onClick={handleCreate}
-                  disabled={isCreating || !newTokenName.trim()}
-                  className="w-full py-3 bg-[var(--primary)] text-white rounded-lg font-bold hover:opacity-90 disabled:opacity-50 flex items-center justify-center gap-2"
-                >
+                </div>
+                <div className="modal-footer">
+                  <button type="button" onClick={closeModal} className="modal-button modal-button-secondary">取消</button>
+                  <button onClick={handleCreate} disabled={isCreating || !newTokenName.trim()} className="modal-button modal-button-primary">
                   {isCreating ? (
                     <div className="animate-spin rounded-full h-5 w-5 border-b-2 border-white"></div>
                   ) : (
@@ -401,14 +400,16 @@ const Tokens: React.FC = () => {
                       创建令牌
                     </>
                   )}
-                </button>
+                  </button>
+                </div>
               </div>
             )}
         </Modal>
 
         {/* 充值弹窗 */}
             <Modal open={showRechargeModal} onClose={() => setShowRechargeModal(false)} title="充值余额" width="max-w-md">
-                    <div className="space-y-4">
+                    <div className="modal-form">
+                      <div className="modal-scroll-body space-y-4">
                         <div className="p-4 bg-[var(--surface)] rounded-xl">
                             <p className="text-sm text-[var(--text-secondary)]">为令牌充值</p>
                             <p className="text-lg font-bold text-[var(--text-primary)] mt-1">{rechargeTokenName}</p>
@@ -426,11 +427,10 @@ const Tokens: React.FC = () => {
                                 autoFocus
                             />
                         </div>
-                        <button
-                            onClick={handleRecharge}
-                            disabled={isRecharging || !rechargeAmount || parseFloat(rechargeAmount) <= 0}
-                            className="w-full py-3 bg-green-600 text-white rounded-lg font-bold hover:bg-green-700 disabled:opacity-50 flex items-center justify-center gap-2"
-                        >
+                      </div>
+                      <div className="modal-footer">
+                        <button type="button" onClick={() => setShowRechargeModal(false)} className="modal-button modal-button-secondary">取消</button>
+                        <button onClick={handleRecharge} disabled={isRecharging || !rechargeAmount || parseFloat(rechargeAmount) <= 0} className="modal-button modal-button-primary">
                             {isRecharging ? (
                                 <div className="animate-spin rounded-full h-5 w-5 border-b-2 border-white"></div>
                             ) : (
@@ -440,12 +440,14 @@ const Tokens: React.FC = () => {
                                 </>
                             )}
                         </button>
+                      </div>
                     </div>
             </Modal>
 
         {/* 编辑令牌弹窗 */}
-            <Modal open={showEditModal} onClose={() => setShowEditModal(false)} title="编辑令牌">
-                    <div className="space-y-4">
+            <Modal open={showEditModal} onClose={() => setShowEditModal(false)} title="编辑令牌" width="max-w-xl">
+                    <div className="modal-form">
+                      <div className="modal-scroll-body space-y-4">
                         <div>
                             <label className="block text-sm font-medium text-[var(--text-primary)] mb-1">令牌名称</label>
                             <input
@@ -457,7 +459,7 @@ const Tokens: React.FC = () => {
                             />
                         </div>
 
-                        <div className="border-t pt-4">
+                        <div className="modal-section">
                             <h4 className="font-medium text-[var(--text-primary)] mb-2">渠道优先级配置</h4>
                             <p className="text-xs text-[var(--text-secondary)] mb-3">为每个能力配置渠道调用顺序，调用时将按优先级选择可用渠道</p>
                             <ChannelConfigEditor
@@ -468,11 +470,10 @@ const Tokens: React.FC = () => {
                             />
                         </div>
 
-                        <button
-                            onClick={handleSaveEdit}
-                            disabled={isEditing || !editTokenName.trim()}
-                            className="w-full py-3 bg-[var(--primary)] text-white rounded-lg font-bold hover:opacity-90 disabled:opacity-50 flex items-center justify-center gap-2"
-                        >
+                      </div>
+                      <div className="modal-footer">
+                        <button type="button" onClick={() => setShowEditModal(false)} className="modal-button modal-button-secondary">取消</button>
+                        <button onClick={handleSaveEdit} disabled={isEditing || !editTokenName.trim()} className="modal-button modal-button-primary">
                             {isEditing ? (
                                 <div className="animate-spin rounded-full h-5 w-5 border-b-2 border-white"></div>
                             ) : (
@@ -482,6 +483,7 @@ const Tokens: React.FC = () => {
                                 </>
                             )}
                         </button>
+                      </div>
                     </div>
             </Modal>
     </div>

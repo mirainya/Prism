@@ -163,7 +163,8 @@ const Users: React.FC = () => {
       </div>
 
             <Modal open={Boolean(rechargeTarget)} onClose={() => setRechargeTarget(null)} title="用户充值" width="max-w-sm">
-                    <div className="space-y-4">
+                    <div className="modal-form">
+                      <div className="modal-scroll-body space-y-4">
                     <p className="text-sm text-[var(--text-secondary)]">
                         为用户 <span className="font-bold text-[var(--text-primary)]">{rechargeTarget?.username}</span> 充值额度
                     </p>
@@ -179,16 +180,17 @@ const Users: React.FC = () => {
                         className="w-full px-4 py-2 border border-[var(--border-soft)] rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-[var(--primary)]"
                         autoFocus
                     />
-                    <div className="flex justify-end gap-3">
+                      </div>
+                    <div className="modal-footer">
                         <button
-                            className="px-4 py-2 text-sm font-bold text-[var(--text-secondary)] bg-[var(--primary-lighter)] rounded-lg hover:bg-gray-200 transition-colors"
+                            className="modal-button modal-button-secondary"
                             onClick={() => setRechargeTarget(null)}
                             disabled={isRecharging}
                         >
                             取消
                         </button>
                         <button
-                            className="px-4 py-2 text-sm font-bold text-white bg-[var(--primary)] rounded-lg hover:opacity-90 transition-colors disabled:opacity-50"
+                            className="modal-button modal-button-primary"
                             onClick={handleRecharge}
                             disabled={isRecharging}
                         >

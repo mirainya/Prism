@@ -35,8 +35,8 @@ export const ConfirmDialog: React.FC<ConfirmDialogProps> = ({
   const confirmRef = useRef<HTMLButtonElement>(null);
 
   const confirmClass = tone === 'danger'
-    ? 'bg-red-600 hover:bg-red-700 focus-visible:ring-red-500'
-    : 'bg-[var(--primary)] hover:opacity-90 focus-visible:ring-[var(--primary)]';
+    ? 'modal-button-danger focus-visible:ring-red-500'
+    : 'modal-button-primary focus-visible:ring-[var(--primary)]';
   const iconClass = tone === 'danger'
     ? 'bg-red-50 text-red-600 border-red-100'
     : tone === 'warning'
@@ -52,7 +52,7 @@ export const ConfirmDialog: React.FC<ConfirmDialogProps> = ({
       ariaDescribedby={descriptionId}
       dismissible={!busy}
       initialFocusRef={showCancel ? cancelRef : confirmRef}
-      panelClassName="w-full max-w-md overflow-hidden rounded-lg border border-[var(--border-soft)] bg-[var(--surface-card)] shadow-2xl"
+      panelClassName="modal-panel w-full max-w-md"
     >
       <div>
         <div className="flex items-start gap-4 px-5 py-5 sm:px-6">
@@ -68,19 +68,19 @@ export const ConfirmDialog: React.FC<ConfirmDialogProps> = ({
             title="关闭"
             disabled={busy}
             onClick={onCancel}
-            className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg text-[var(--text-secondary)] hover:bg-[var(--surface)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--primary)]/40 disabled:opacity-50"
+            className="modal-close shrink-0 text-[var(--text-secondary)] focus-visible:outline-none disabled:opacity-50"
           >
             <X size={17} />
           </button>
         </div>
-        <div className="flex flex-col-reverse gap-2 border-t border-[var(--border-soft)] bg-[var(--surface)]/60 px-5 py-4 sm:flex-row sm:justify-end sm:px-6">
+        <div className="flex flex-col-reverse gap-2 border-t border-[var(--border-soft)] bg-[var(--surface-tint)] px-5 py-4 sm:flex-row sm:justify-end sm:px-6">
           {showCancel && (
             <button
               ref={cancelRef}
               type="button"
               disabled={busy}
               onClick={onCancel}
-              className="h-10 rounded-lg border border-[var(--border-soft)] bg-[var(--surface-card)] px-4 text-sm font-semibold text-[var(--text-secondary)] hover:text-[var(--text-primary)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--primary)] focus-visible:ring-offset-2 disabled:opacity-50"
+              className="modal-button modal-button-secondary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--primary)] focus-visible:ring-offset-2"
             >
               {cancelLabel}
             </button>
@@ -90,7 +90,7 @@ export const ConfirmDialog: React.FC<ConfirmDialogProps> = ({
             type="button"
             disabled={busy}
             onClick={onConfirm}
-            className={`inline-flex h-10 items-center justify-center gap-2 rounded-lg px-4 text-sm font-bold text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-offset-2 disabled:opacity-50 ${confirmClass}`}
+            className={`modal-button text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-offset-2 ${confirmClass}`}
           >
             {busy && <LoaderCircle size={16} className="animate-spin" />}
             {busy ? '处理中...' : confirmLabel}

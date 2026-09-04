@@ -8,7 +8,7 @@ export const FieldMappingRow: React.FC<{
     onChange: (value: string) => void;
     onRemove: () => void;
 }> = ({stdField, stdName, vendorField, onChange, onRemove}) => (
-    <div className="flex items-center gap-2 mb-2">
+    <div className="modal-mapping-row flex items-center gap-2 mb-2">
         <div className="flex-1 px-3 py-2 bg-[var(--surface)] rounded-lg text-sm">
             <span className="text-[var(--text-secondary)]">{stdName}</span>
             <code className="ml-2 text-xs text-[var(--text-secondary)]">{stdField}</code>
@@ -34,7 +34,7 @@ export const ValueMappingRow: React.FC<{
     onChange: (value: string) => void;
     onRemove: () => void;
 }> = ({stdValue, vendorValue, onChange, onRemove}) => (
-    <div className="flex items-center gap-2 mb-2">
+    <div className="modal-mapping-row flex items-center gap-2 mb-2">
         <div className="w-32 px-3 py-2 bg-[var(--surface)] rounded-lg text-sm text-[var(--text-secondary)]">{stdValue}</div>
         <span className="text-[var(--text-secondary)]">→</span>
         <input
@@ -58,7 +58,7 @@ export const FixedParamRow: React.FC<{
     onValueChange: (value: string) => void;
     onRemove: () => void;
 }> = ({paramName, paramValue, onNameChange, onValueChange, onRemove}) => (
-    <div className="flex items-center gap-2 mb-2">
+    <div className="modal-mapping-row flex items-center gap-2 mb-2">
         <input
             type="text"
             value={paramName}

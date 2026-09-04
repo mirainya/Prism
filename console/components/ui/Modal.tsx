@@ -22,17 +22,17 @@ export const Modal: React.FC<ModalProps> = ({ open, onClose, title, children, wi
       motion={motion}
       ariaLabel={title ? undefined : '弹窗'}
       ariaLabelledby={title ? titleId : undefined}
-      panelClassName={`w-full ${width} max-h-[90vh] overflow-y-auto rounded-lg border border-[var(--border-soft)] bg-[var(--surface-card)] p-6 shadow-2xl ${panelClassName}`}
+      panelClassName={`modal-panel w-full ${width} ${panelClassName}`}
     >
         {title && (
-          <div className="modal-titlebar flex items-center justify-between mb-4">
+          <div className="modal-titlebar flex items-center justify-between">
             <h3 id={titleId} className="modal-title text-lg font-bold text-[var(--text-primary)]">{title}</h3>
-            <button type="button" onClick={onClose} title="关闭" className="modal-close p-2 hover:bg-[var(--primary-lighter)] rounded-lg text-[var(--text-secondary)] transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--primary)]/40">
+            <button type="button" onClick={onClose} title="关闭" className="modal-close text-[var(--text-secondary)] focus-visible:outline-none">
               <X size={18} />
             </button>
           </div>
         )}
-        {children}
+        <div className="modal-content">{children}</div>
     </Dialog>
   )
 }

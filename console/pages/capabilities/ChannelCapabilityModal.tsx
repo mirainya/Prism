@@ -310,17 +310,18 @@ const ChannelCapabilityModal: React.FC<{
     };
 
     return (
-        <Modal open={isOpen} onClose={onClose} title={channelCapability ? '编辑渠道能力配置' : '新建渠道能力配置'} width="max-w-3xl">
+        <Modal open={isOpen} onClose={onClose} title={channelCapability ? '编辑渠道能力配置' : '新建渠道能力配置'} width="max-w-3xl" panelClassName="channel-capability-modal">
                 <div className="flex border-b border-[var(--border-soft)] mb-4 overflow-x-auto">
                     {tabs.map(tab => (
                         <button key={tab.key} type="button" onClick={() => setActiveTab(tab.key as any)}
-                            className={`px-4 py-2 text-sm font-medium border-b-2 transition-colors whitespace-nowrap ${activeTab === tab.key ? 'border-indigo-600 text-[var(--primary)]' : 'border-transparent text-[var(--text-secondary)] hover:text-[var(--text-primary)]'}`}>
+                            className={`px-4 py-2 text-sm font-medium border-b-2 transition-colors whitespace-nowrap ${activeTab === tab.key ? 'border-[var(--primary)] text-[var(--primary)]' : 'border-transparent text-[var(--text-secondary)] hover:text-[var(--text-primary)]'}`}>
                             {tab.label}
                         </button>
                     ))}
                 </div>
 
-                <form onSubmit={handleSubmit} className="max-h-[70vh] overflow-y-auto">
+                <form onSubmit={handleSubmit} className="modal-form">
+                  <div className="modal-scroll-body">
                     {/* 基本信息 */}
                     {activeTab === 'basic' && (
                         <div className="space-y-4">
@@ -329,7 +330,7 @@ const ChannelCapabilityModal: React.FC<{
                                     {basicError}
                                 </div>
                             )}
-                            <div className="grid grid-cols-2 gap-4">
+                            <div className="modal-grid-responsive grid grid-cols-2 gap-4">
                                 <div>
                                     <label className="block text-sm font-medium text-[var(--text-primary)] mb-1">渠道 <span className="text-red-500">*</span></label>
                                     <Select value={String(form.channel_id)} onChange={v => {
@@ -392,7 +393,7 @@ const ChannelCapabilityModal: React.FC<{
                                     )}
                                 </div>
                             </div>
-                            <div className="grid grid-cols-3 gap-4">
+                            <div className="modal-grid-responsive grid grid-cols-3 gap-4">
                                 <div>
                                     <label className="block text-sm font-medium text-[var(--text-primary)] mb-1">结果模式</label>
                                     <Select value={form.result_mode} onChange={v => setForm({...form, result_mode: v})}
@@ -482,7 +483,7 @@ const ChannelCapabilityModal: React.FC<{
                                     className="w-full px-3 py-2 border border-[var(--border-soft)] rounded-lg focus:outline-none focus:ring-2 focus:ring-[var(--primary)]"
                                     placeholder="/api/v1/images/generate" required />
                             </div>
-                            <div className="grid grid-cols-2 gap-4">
+                            <div className="modal-grid-responsive grid grid-cols-2 gap-4">
                                 <div>
                                     <label className="block text-sm font-medium text-[var(--text-primary)] mb-1">请求方法</label>
                                     <Select value={form.request_method} onChange={v => setForm({...form, request_method: v})}
@@ -522,7 +523,7 @@ const ChannelCapabilityModal: React.FC<{
                                                 ))}
                                             </div>
                                         </div>
-                                        <div className={`grid gap-4 ${form.image_input_mode === 'multipart' ? 'grid-cols-2' : 'grid-cols-1'}`}>
+                                        <div className={`modal-grid-responsive grid gap-4 ${form.image_input_mode === 'multipart' ? 'grid-cols-2' : 'grid-cols-1'}`}>
                                             <div>
                                                 <label className="block text-sm font-medium text-[var(--text-primary)] mb-1">上游图片字段</label>
                                                 <input type="text" value={form.image_file_field}
@@ -546,7 +547,7 @@ const ChannelCapabilityModal: React.FC<{
                             <div className="border-t border-[var(--border-soft)] pt-4 mt-4">
                                 <h4 className="text-sm font-medium text-[var(--text-primary)] mb-3">认证配置</h4>
                             </div>
-                            <div className="grid grid-cols-3 gap-4">
+                            <div className="modal-grid-responsive grid grid-cols-3 gap-4">
                                 <div>
                                     <label className="block text-sm font-medium text-[var(--text-primary)] mb-1">认证位置</label>
                                     <Select value={form.auth_location} onChange={v => setForm({...form, auth_location: v})}
@@ -575,7 +576,7 @@ const ChannelCapabilityModal: React.FC<{
                                             placeholder="/api/v1/tasks/{task_id}" />
                                         <p className="text-xs text-[var(--text-secondary)] mt-1">支持 {'{task_id}'} 占位符</p>
                                     </div>
-                                    <div className="grid grid-cols-2 gap-4">
+                                    <div className="modal-grid-responsive grid grid-cols-2 gap-4">
                                         <div>
                                             <label className="block text-sm font-medium text-[var(--text-primary)] mb-1">轮询方法</label>
                                             <Select value={form.poll_method} onChange={v => setForm({...form, poll_method: v})}
@@ -590,7 +591,7 @@ const ChannelCapabilityModal: React.FC<{
                                             </div>
                                         </div>
                                     </div>
-                                    <div className="grid grid-cols-2 gap-4">
+                                    <div className="modal-grid-responsive grid grid-cols-2 gap-4">
                                         <div>
                                             <label className="block text-sm font-medium text-[var(--text-primary)] mb-1">轮询间隔 (秒)</label>
                                             <input type="number" value={form.poll_interval} onChange={e => setForm({...form, poll_interval: Number(e.target.value)})}
@@ -635,7 +636,7 @@ const ChannelCapabilityModal: React.FC<{
                                                     <div className="text-sm text-[var(--text-secondary)] text-center py-3 bg-[var(--surface)] rounded-lg">暂无固定参数</div>
                                                 ) : (
                                                     pollParamFixedParams.map((p, i) => (
-                                                        <div key={i} className="flex items-center gap-2 mb-2">
+                                                        <div key={i} className="modal-mapping-row flex items-center gap-2 mb-2">
                                                             <input type="text" value={p.name} onChange={e => { const newList = [...pollParamFixedParams]; newList[i].name = e.target.value; setPollParamFixedParams(newList); }}
                                                                 placeholder="参数名" className="flex-1 px-3 py-2 border border-[var(--border-soft)] rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-[var(--primary)]" />
                                                             <span className="text-[var(--text-secondary)]">=</span>
@@ -674,7 +675,7 @@ const ChannelCapabilityModal: React.FC<{
                     {activeTab === 'param' && (
                         <div className="space-y-6">
                             {paramFieldMappings.length === 0 && paramValueMappings.length === 0 && paramFixedParams.length === 0 && paramTypeConverts.length === 0 && (
-                                <div className="rounded-lg border border-blue-200 bg-blue-50 px-4 py-3 text-sm text-blue-700">
+                                <div className="rounded-lg border border-[var(--border-soft-solid)] bg-[var(--surface-tint-solid)] px-4 py-3 text-sm text-[var(--primary)]">
                                     当前为透传模式：请求参数将原样转发给上游 API，无需配置映射。如需自定义参数转换，请在下方添加。
                                 </div>
                             )}
@@ -707,7 +708,7 @@ const ChannelCapabilityModal: React.FC<{
                                     <div className="text-sm text-[var(--text-secondary)] text-center py-4 bg-[var(--surface)] rounded-lg">暂无值映射</div>
                                 ) : (
                                     paramValueMappings.map((m, i) => (
-                                        <div key={i} className="flex items-center gap-2 mb-2">
+                                        <div key={i} className="modal-mapping-row flex items-center gap-2 mb-2">
                                             <Select value={m.field} onChange={v => { const newList = [...paramValueMappings]; newList[i].field = v; setParamValueMappings(newList); }}
                                                 className="w-36"
                                                 options={[{ label: '选择字段', value: '' }, ...paramFieldMappings.map(fm => ({ label: STANDARD_PARAMS[fm.stdField]?.name || fm.stdField, value: fm.stdField }))]} />
@@ -747,7 +748,7 @@ const ChannelCapabilityModal: React.FC<{
                                     <div className="text-sm text-[var(--text-secondary)] text-center py-4 bg-[var(--surface)] rounded-lg">暂无类型转换</div>
                                 ) : (
                                     paramTypeConverts.map((tc, i) => (
-                                        <div key={i} className="flex items-center gap-2 mb-2">
+                                        <div key={i} className="modal-mapping-row flex items-center gap-2 mb-2">
                                             <Select value={tc.field} onChange={v => { const newList = [...paramTypeConverts]; newList[i].field = v; setParamTypeConverts(newList); }}
                                                 className="w-40"
                                                 options={[{ label: '选择字段', value: '' }, ...paramFieldMappings.map(m => ({ label: STANDARD_PARAMS[m.stdField]?.name || m.stdField, value: m.stdField }))]} />
@@ -770,7 +771,7 @@ const ChannelCapabilityModal: React.FC<{
                     {activeTab === 'response' && (
                         <div className="space-y-6">
                             {respFieldMappings.length === 0 && respValueMappings.length === 0 && respTypeConverts.length === 0 && !respSuccessCondition && (
-                                <div className="rounded-lg border border-blue-200 bg-blue-50 px-4 py-3 text-sm text-blue-700">
+                                <div className="rounded-lg border border-[var(--border-soft-solid)] bg-[var(--surface-tint-solid)] px-4 py-3 text-sm text-[var(--primary)]">
                                     当前为透传模式：上游 API 的响应将原样返回，无需配置映射。如需自定义响应转换，请在下方添加。
                                 </div>
                             )}
@@ -785,7 +786,7 @@ const ChannelCapabilityModal: React.FC<{
                                     <div className="text-sm text-[var(--text-secondary)] text-center py-4 bg-[var(--surface)] rounded-lg">暂无字段映射，请从上方添加</div>
                                 ) : (
                                     respFieldMappings.map((m, i) => (
-                                        <div key={m.stdField} className="flex items-center gap-2 mb-2">
+                                        <div key={m.stdField} className="modal-mapping-row flex items-center gap-2 mb-2">
                                             <div className="flex-1 px-3 py-2 bg-[var(--surface)] rounded-lg text-sm">
                                                 <span className="text-[var(--text-secondary)]">{STANDARD_RESPONSE[m.stdField]?.name || m.stdField}</span>
                                                 <code className="ml-2 text-xs text-[var(--text-secondary)]">{m.stdField}</code>
@@ -812,7 +813,7 @@ const ChannelCapabilityModal: React.FC<{
                                     <div className="text-sm text-[var(--text-secondary)] text-center py-4 bg-[var(--surface)] rounded-lg">暂无状态值映射</div>
                                 ) : (
                                     respValueMappings.map((m, i) => (
-                                        <div key={i} className="flex items-center gap-2 mb-2">
+                                        <div key={i} className="modal-mapping-row flex items-center gap-2 mb-2">
                                             <input type="text" value={m.vendorValue}
                                                 onChange={e => { const newList = [...respValueMappings]; newList[i].vendorValue = e.target.value; setRespValueMappings(newList); }}
                                                 className="flex-1 px-3 py-2 border border-[var(--border-soft)] rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-[var(--primary)]"
@@ -838,7 +839,7 @@ const ChannelCapabilityModal: React.FC<{
                                     <div className="text-sm text-[var(--text-secondary)] text-center py-4 bg-[var(--surface)] rounded-lg">暂无类型转换</div>
                                 ) : (
                                     respTypeConverts.map((tc, i) => (
-                                        <div key={i} className="flex items-center gap-2 mb-2">
+                                        <div key={i} className="modal-mapping-row flex items-center gap-2 mb-2">
                                             <Select value={tc.field} onChange={v => { const newList = [...respTypeConverts]; newList[i].field = v; setRespTypeConverts(newList); }}
                                                 className="w-40"
                                                 options={[{ label: '选择字段', value: '' }, ...respFieldMappings.map(m => ({ label: STANDARD_RESPONSE[m.stdField]?.name || m.stdField, value: m.stdField }))]} />
@@ -921,7 +922,7 @@ const ChannelCapabilityModal: React.FC<{
                                     <div className="text-sm text-[var(--text-secondary)] text-center py-4 bg-[var(--surface)] rounded-lg">暂无字段映射，请从上方添加</div>
                                 ) : (
                                     pollRespFieldMappings.map((m, i) => (
-                                        <div key={m.stdField} className="flex items-center gap-2 mb-2">
+                                        <div key={m.stdField} className="modal-mapping-row flex items-center gap-2 mb-2">
                                             <div className="flex-1 px-3 py-2 bg-[var(--surface)] rounded-lg text-sm">
                                                 <span className="text-[var(--text-secondary)]">{STANDARD_RESPONSE[m.stdField]?.name || m.stdField}</span>
                                                 <code className="ml-2 text-xs text-[var(--text-secondary)]">{m.stdField}</code>
@@ -947,7 +948,7 @@ const ChannelCapabilityModal: React.FC<{
                                     <div className="text-sm text-[var(--text-secondary)] text-center py-4 bg-[var(--surface)] rounded-lg">暂无状态值映射</div>
                                 ) : (
                                     pollRespValueMappings.map((m, i) => (
-                                        <div key={i} className="flex items-center gap-2 mb-2">
+                                        <div key={i} className="modal-mapping-row flex items-center gap-2 mb-2">
                                             <input type="text" value={m.vendorValue}
                                                 onChange={e => { const newList = [...pollRespValueMappings]; newList[i].vendorValue = e.target.value; setPollRespValueMappings(newList); }}
                                                 className="flex-1 px-3 py-2 border border-[var(--border-soft)] rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-[var(--primary)]"
@@ -973,7 +974,7 @@ const ChannelCapabilityModal: React.FC<{
                                     <div className="text-sm text-[var(--text-secondary)] text-center py-4 bg-[var(--surface)] rounded-lg">暂无类型转换</div>
                                 ) : (
                                     pollRespTypeConverts.map((tc, i) => (
-                                        <div key={i} className="flex items-center gap-2 mb-2">
+                                        <div key={i} className="modal-mapping-row flex items-center gap-2 mb-2">
                                             <Select value={tc.field} onChange={v => { const newList = [...pollRespTypeConverts]; newList[i].field = v; setPollRespTypeConverts(newList); }}
                                                 className="w-40"
                                                 options={[{ label: '选择字段', value: '' }, ...pollRespFieldMappings.map(m => ({ label: STANDARD_RESPONSE[m.stdField]?.name || m.stdField, value: m.stdField }))]} />
@@ -1067,7 +1068,7 @@ const ChannelCapabilityModal: React.FC<{
                                     <div className="text-sm text-[var(--text-secondary)] text-center py-4 bg-[var(--surface)] rounded-lg">暂无状态值映射</div>
                                 ) : (
                                     callbackStatusMappings.map((m, i) => (
-                                        <div key={i} className="flex items-center gap-2 mb-2">
+                                        <div key={i} className="modal-mapping-row flex items-center gap-2 mb-2">
                                             <input type="text" value={m.vendorValue}
                                                 onChange={e => { const newList = [...callbackStatusMappings]; newList[i].vendorValue = e.target.value; setCallbackStatusMappings(newList); }}
                                                 className="flex-1 px-3 py-2 border border-[var(--border-soft)] rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-[var(--primary)]"
@@ -1086,11 +1087,12 @@ const ChannelCapabilityModal: React.FC<{
                         </div>
                     )}
 
-                    <div className="flex justify-end gap-3 pt-6 mt-4 border-t border-[var(--border-soft)]">
+                  </div>
+                    <div className="modal-footer">
                         <button type="button" onClick={onClose}
-                            className="px-4 py-2 text-sm font-bold text-[var(--text-secondary)] bg-[var(--primary-lighter)] rounded-lg hover:bg-gray-200 transition-colors">取消</button>
+                            className="modal-button modal-button-secondary">取消</button>
                         <button type="submit" disabled={loading}
-                            className="px-4 py-2 text-sm font-bold text-white bg-[var(--primary)] rounded-lg hover:opacity-90 disabled:opacity-50 transition-colors">
+                            className="modal-button modal-button-primary">
                             {loading ? '保存中...' : '保存'}
                         </button>
                     </div>

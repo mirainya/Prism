@@ -105,7 +105,8 @@ const AccountEndpointModelImportModal: React.FC<{
 
   return (
     <Modal open={Boolean(accountId)} onClose={onClose} title={`发现上游模型 · ${accountName || accountId || ''}`} width="max-w-4xl">
-      <div className="space-y-3">
+      <div className="modal-form">
+       <div className="modal-scroll-body space-y-3">
         <div className="flex items-center justify-between text-xs text-[var(--text-secondary)]">
           <span>按当前 Key 请求渠道发现接口</span>
           <button type="button" onClick={load} disabled={loading} className="inline-flex items-center gap-1.5 text-[var(--primary)] disabled:opacity-50">
@@ -115,7 +116,7 @@ const AccountEndpointModelImportModal: React.FC<{
         {error && <div className="flex items-start gap-2 rounded-lg bg-red-50 p-2 text-xs text-red-700"><AlertCircle size={14} />{error}</div>}
         {result && <div className="rounded-lg bg-green-50 p-2 text-xs text-green-700">{result}</div>}
         {loading ? <div className="py-12 text-center text-sm text-[var(--text-secondary)]"><RefreshCw size={20} className="mx-auto mb-2 animate-spin" />读取中...</div> : models.length === 0 ? <div className="py-12 text-center text-sm text-[var(--text-secondary)]">未读取到模型</div> : (
-          <div className="max-h-[55vh] space-y-2 overflow-y-auto pr-1">
+          <div className="space-y-2 pr-1">
             {models.map(model => {
               const checked = selected.has(model.id);
               const draft = drafts[model.id] || { modelCode: model.model_code, name: model.id, operations: new Set(operations) };
@@ -134,7 +135,8 @@ const AccountEndpointModelImportModal: React.FC<{
             })}
           </div>
         )}
-        <div className="flex justify-end gap-2 border-t border-[var(--border-soft)] pt-3"><button type="button" onClick={onClose} className="px-4 py-2 text-sm text-[var(--text-secondary)]">关闭</button><button type="button" onClick={handleImport} disabled={loading || importing || selected.size === 0} className="inline-flex items-center gap-1.5 rounded-lg bg-[var(--primary)] px-4 py-2 text-sm font-bold text-white disabled:opacity-50"><Download size={15} />导入选中 ({selected.size})</button></div>
+       </div>
+        <div className="modal-footer"><button type="button" onClick={onClose} className="modal-button modal-button-secondary">关闭</button><button type="button" onClick={handleImport} disabled={loading || importing || selected.size === 0} className="modal-button modal-button-primary"><Download size={15} />导入选中 ({selected.size})</button></div>
       </div>
     </Modal>
   );

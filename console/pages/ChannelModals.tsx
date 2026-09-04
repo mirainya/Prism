@@ -86,7 +86,8 @@ export const ChannelModal: React.FC<{
 
   return (
     <Modal open={isOpen} onClose={onClose} title={channel ? '编辑渠道' : '新建渠道'}>
-        <form onSubmit={handleSubmit} className="space-y-4">
+        <form onSubmit={handleSubmit} className="modal-form">
+          <div className="modal-scroll-body space-y-4">
           <div>
             <label className="block text-sm font-medium text-[var(--text-primary)] mb-1">渠道标识</label>
             <input
@@ -132,9 +133,9 @@ export const ChannelModal: React.FC<{
             <label htmlFor="image_to_base64" className="text-sm text-[var(--text-primary)]">图片转 Base64</label>
             <span className="text-xs text-[var(--text-tertiary)]">上游无法访问图片 URL 时启用</span>
           </div>
-          <div className="rounded-lg border border-[var(--border-soft)] p-3 space-y-3">
+          <div className="modal-section space-y-3">
             <label className="flex items-center gap-2 text-sm font-medium text-[var(--text-primary)]"><input type="checkbox" checked={form.discoveryEnabled} onChange={e => { setForm({ ...form, discoveryEnabled: e.target.checked }); setDiscoveryError(''); }} />启用 Key 级模型发现</label>
-            {form.discoveryEnabled && <div className="grid gap-2 md:grid-cols-2">
+            {form.discoveryEnabled && <div className="modal-grid-responsive grid gap-2 md:grid-cols-2">
               <label className="text-xs text-[var(--text-secondary)]">模型列表路径<input value={form.discoveryPath} onChange={e => setForm({ ...form, discoveryPath: e.target.value })} className="mt-1 w-full rounded border border-[var(--border-soft)] px-2 py-1.5 text-sm" /></label>
               <label className="text-xs text-[var(--text-secondary)]">生成路径<input value={form.generationPath} onChange={e => setForm({ ...form, generationPath: e.target.value })} className="mt-1 w-full rounded border border-[var(--border-soft)] px-2 py-1.5 text-sm" /></label>
               <label className="text-xs text-[var(--text-secondary)]">编辑路径<input value={form.editPath} onChange={e => setForm({ ...form, editPath: e.target.value })} className="mt-1 w-full rounded border border-[var(--border-soft)] px-2 py-1.5 text-sm" /></label>
@@ -156,9 +157,10 @@ export const ChannelModal: React.FC<{
             />
             {jsonError && <p className="text-xs text-red-500 mt-1">{jsonError}</p>}
           </div>
-          <div className="flex justify-end gap-3 pt-4">
-            <button type="button" onClick={onClose} className="px-4 py-2 text-sm font-bold text-[var(--text-secondary)] bg-[var(--primary-lighter)] rounded-lg hover:bg-gray-200 transition-colors">取消</button>
-            <button type="submit" disabled={loading} className="px-4 py-2 text-sm font-bold text-white bg-[var(--primary)] rounded-lg hover:opacity-90 disabled:opacity-50 transition-colors">
+          </div>
+          <div className="modal-footer">
+            <button type="button" onClick={onClose} className="modal-button modal-button-secondary">取消</button>
+            <button type="submit" disabled={loading} className="modal-button modal-button-primary">
               {loading ? '保存中...' : '保存'}
             </button>
           </div>
@@ -223,7 +225,8 @@ export const AccountModal: React.FC<{
 
   return (
     <Modal open={isOpen} onClose={onClose} title={account ? '编辑账号' : '新建账号'}>
-        <form onSubmit={handleSubmit} className="space-y-4">
+        <form onSubmit={handleSubmit} className="modal-form">
+          <div className="modal-scroll-body space-y-4">
           <div>
             <label className="block text-sm font-medium text-[var(--text-primary)] mb-1">账号名称</label>
             <input
@@ -279,9 +282,10 @@ export const AccountModal: React.FC<{
             />
             {jsonError && <p className="text-xs text-red-500 mt-1">{jsonError}</p>}
           </div>
-          <div className="flex justify-end gap-3 pt-4">
-            <button type="button" onClick={onClose} className="px-4 py-2 text-sm font-bold text-[var(--text-secondary)] bg-[var(--primary-lighter)] rounded-lg hover:bg-gray-200 transition-colors">取消</button>
-            <button type="submit" disabled={loading} className="px-4 py-2 text-sm font-bold text-white bg-[var(--primary)] rounded-lg hover:opacity-90 disabled:opacity-50 transition-colors">
+          </div>
+          <div className="modal-footer">
+            <button type="button" onClick={onClose} className="modal-button modal-button-secondary">取消</button>
+            <button type="submit" disabled={loading} className="modal-button modal-button-primary">
               {loading ? '保存中...' : '保存'}
             </button>
           </div>

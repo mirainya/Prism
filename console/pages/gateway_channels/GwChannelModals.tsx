@@ -57,7 +57,8 @@ export const GwChannelModal: React.FC<{
 
   return (
     <Modal open={isOpen} onClose={onClose} title={channel ? '编辑渠道' : '新建渠道'} width="max-w-lg">
-      <div className="space-y-3">
+      <div className="modal-form">
+       <div className="modal-scroll-body space-y-3">
         {error && <div className="flex items-start gap-2 p-2 bg-red-50 text-red-700 rounded-lg text-xs"><AlertCircle size={14} className="mt-0.5 shrink-0" />{error}</div>}
         <div>
           <label className="block text-xs font-medium text-[var(--text-secondary)] mb-1">名称</label>
@@ -75,9 +76,10 @@ export const GwChannelModal: React.FC<{
           <label className="block text-xs font-medium text-[var(--text-secondary)] mb-1">额外请求头 (JSON, 可选)</label>
           <textarea value={extraHeaders} onChange={e => setExtraHeaders(e.target.value)} rows={3} className="w-full px-3 py-2 border border-[var(--border-soft)] rounded-lg text-xs font-mono focus:outline-none focus:ring-2 focus:ring-[var(--primary)]" placeholder='{"x-custom": "value"}' />
         </div>
-        <div className="flex items-center justify-end gap-2 pt-2 border-t border-[var(--border-soft)]">
-          <button onClick={onClose} className="px-4 py-2 text-sm text-[var(--text-secondary)] hover:text-[var(--text-primary)]">取消</button>
-          <button onClick={handleSave} disabled={saving} className="px-4 py-2 bg-[var(--primary)] text-white rounded-lg text-sm font-bold hover:opacity-90 disabled:opacity-50">{saving ? '保存中...' : '保存'}</button>
+       </div>
+        <div className="modal-footer">
+          <button onClick={onClose} className="modal-button modal-button-secondary">取消</button>
+          <button onClick={handleSave} disabled={saving} className="modal-button modal-button-primary">{saving ? '保存中...' : '保存'}</button>
         </div>
       </div>
     </Modal>
@@ -122,7 +124,8 @@ export const GwKeyModal: React.FC<{
 
   return (
     <Modal open={isOpen} onClose={onClose} title={channelKey ? '编辑 Key' : '添加 Key'} width="max-w-lg">
-      <div className="space-y-3">
+      <div className="modal-form">
+       <div className="modal-scroll-body space-y-3">
         {error && <div className="flex items-start gap-2 p-2 bg-red-50 text-red-700 rounded-lg text-xs"><AlertCircle size={14} className="mt-0.5 shrink-0" />{error}</div>}
         <div>
           <label className="block text-xs font-medium text-[var(--text-secondary)] mb-1">名称 (可选)</label>
@@ -132,7 +135,7 @@ export const GwKeyModal: React.FC<{
           <label className="block text-xs font-medium text-[var(--text-secondary)] mb-1">API Key</label>
           <input value={apiKey} onChange={e => setApiKey(e.target.value)} className="w-full px-3 py-2 border border-[var(--border-soft)] rounded-lg text-sm font-mono focus:outline-none focus:ring-2 focus:ring-[var(--primary)]" placeholder="sk-..." />
         </div>
-        <div className="grid grid-cols-2 gap-3">
+        <div className="modal-grid-responsive grid grid-cols-2 gap-3">
           <div>
             <label className="block text-xs font-medium text-[var(--text-secondary)] mb-1">权重</label>
             <input type="number" value={weight} onChange={e => setWeight(Number(e.target.value))} className="w-full px-3 py-2 border border-[var(--border-soft)] rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-[var(--primary)]" />
@@ -142,9 +145,10 @@ export const GwKeyModal: React.FC<{
             <input type="number" value={maxConc} onChange={e => setMaxConc(Number(e.target.value))} className="w-full px-3 py-2 border border-[var(--border-soft)] rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-[var(--primary)]" />
           </div>
         </div>
-        <div className="flex items-center justify-end gap-2 pt-2 border-t border-[var(--border-soft)]">
-          <button onClick={onClose} className="px-4 py-2 text-sm text-[var(--text-secondary)] hover:text-[var(--text-primary)]">取消</button>
-          <button onClick={handleSave} disabled={saving} className="px-4 py-2 bg-[var(--primary)] text-white rounded-lg text-sm font-bold hover:opacity-90 disabled:opacity-50">{saving ? '保存中...' : '保存'}</button>
+       </div>
+        <div className="modal-footer">
+          <button onClick={onClose} className="modal-button modal-button-secondary">取消</button>
+          <button onClick={handleSave} disabled={saving} className="modal-button modal-button-primary">{saving ? '保存中...' : '保存'}</button>
         </div>
       </div>
     </Modal>
@@ -222,7 +226,8 @@ export const GwPullModal: React.FC<{
 
   return (
     <Modal open={isOpen} onClose={onClose} title={`拉取上游模型${keyName ? ` · ${keyName}` : ''}`} width="max-w-2xl">
-      <div className="space-y-3">
+      <div className="modal-form">
+       <div className="modal-scroll-body space-y-3">
         <div className="flex items-center justify-between">
           <p className="text-xs text-[var(--text-secondary)]">用该 Key 调上游 <code className="px-1 bg-[var(--surface)] rounded">/v1/models</code>，勾选后写入路由能力(gw_abilities)</p>
           <button onClick={load} disabled={loading} className="flex items-center gap-1 text-xs text-[var(--primary)] hover:opacity-80 disabled:opacity-50">
@@ -242,7 +247,7 @@ export const GwPullModal: React.FC<{
               {allChecked ? '取消全选' : '全选'}
               <span className="text-[var(--text-secondary)]">({checked.size}/{items.length})</span>
             </button>
-            <div className="max-h-[45vh] overflow-y-auto space-y-1 pr-1">
+            <div className="space-y-1 pr-1">
               {items.map(m => {
                 const isChecked = checked.has(m.id);
                 return (
@@ -271,9 +276,10 @@ export const GwPullModal: React.FC<{
             </div>
           </>
         )}
-        <div className="flex items-center justify-end gap-2 pt-2 border-t border-[var(--border-soft)]">
-          <button onClick={onClose} className="px-4 py-2 text-sm text-[var(--text-secondary)] hover:text-[var(--text-primary)]">关闭</button>
-          <button onClick={handleImport} disabled={importing || loading || checked.size === 0} className="flex items-center gap-1.5 px-4 py-2 bg-[var(--primary)] text-white rounded-lg text-sm font-bold hover:opacity-90 disabled:opacity-50">
+       </div>
+        <div className="modal-footer">
+          <button onClick={onClose} className="modal-button modal-button-secondary">关闭</button>
+          <button onClick={handleImport} disabled={importing || loading || checked.size === 0} className="modal-button modal-button-primary">
             <Download size={15} className={importing ? 'animate-pulse' : ''} /> 导入选中 ({checked.size})
           </button>
         </div>

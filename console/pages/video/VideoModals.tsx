@@ -3,8 +3,8 @@ import { VideoChannelKey } from '../../services/videoApi';
 import { Modal, Select } from '../../components/ui';
 
 const inputClass = 'w-full px-3 py-2 rounded-lg border border-[var(--border-soft)] bg-[var(--surface)] text-sm focus:outline-none focus:ring-2 focus:ring-[var(--primary)]';
-const btnCancel = 'px-4 py-2 text-sm font-bold text-[var(--text-secondary)] bg-[var(--primary-lighter)] rounded-lg hover:bg-gray-200 transition-all';
-const btnSave = 'px-5 py-2 bg-[var(--primary)] text-white rounded-lg text-sm font-bold hover:opacity-90 disabled:opacity-50 transition-all';
+const btnCancel = 'modal-button modal-button-secondary';
+const btnSave = 'modal-button modal-button-primary';
 
 interface KeyModalProps {
   isOpen: boolean;
@@ -38,7 +38,8 @@ export const VideoKeyModal: React.FC<KeyModalProps> = ({ isOpen, channelKey, onC
 
   return (
     <Modal open={isOpen} onClose={onClose} title={channelKey ? '编辑 Key' : '添加 Key'} width="max-w-md">
-        <form onSubmit={handleSubmit} className="space-y-4">
+        <form onSubmit={handleSubmit} className="modal-form">
+          <div className="modal-scroll-body space-y-4">
           {!channelKey && (
             <div>
               <label className="block text-xs font-medium text-[var(--text-secondary)] mb-1">API Key</label>
@@ -49,7 +50,7 @@ export const VideoKeyModal: React.FC<KeyModalProps> = ({ isOpen, channelKey, onC
             <label className="block text-xs font-medium text-[var(--text-secondary)] mb-1">标签</label>
             <input value={form.label} onChange={event => setForm(current => ({ ...current, label: event.target.value }))} placeholder="可选" className={inputClass} />
           </div>
-          <div className="grid grid-cols-3 gap-4">
+          <div className="modal-grid-responsive grid grid-cols-3 gap-4">
             <div>
               <label className="block text-xs font-medium text-[var(--text-secondary)] mb-1">权重</label>
               <input type="number" value={form.weight} onChange={event => setForm(current => ({ ...current, weight: Number(event.target.value) }))} min={0} className={inputClass} />
@@ -64,7 +65,8 @@ export const VideoKeyModal: React.FC<KeyModalProps> = ({ isOpen, channelKey, onC
                 options={[{ label: '启用', value: 'active' }, { label: '停用', value: 'inactive' }]} />
             </div>
           </div>
-          <div className="flex justify-end gap-3 pt-2">
+          </div>
+          <div className="modal-footer">
             <button type="button" onClick={onClose} className={btnCancel}>取消</button>
             <button type="submit" disabled={saving} className={btnSave}>{saving ? '保存中...' : '保存'}</button>
           </div>
