@@ -54,6 +54,222 @@ body {
   border-radius: var(--radius-md);
 }
 
+/* 弹窗统一使用主题化遮罩，避免黑灰层压掉糖果色背景。 */
+.dialog-backdrop {
+  background: color-mix(in srgb, var(--text-primary) 30%, transparent);
+  -webkit-backdrop-filter: blur(9px) saturate(118%);
+  backdrop-filter: blur(9px) saturate(118%);
+}
+
+.modal-titlebar {
+  border-bottom: 1px solid color-mix(in srgb, var(--border-soft) 86%, transparent);
+  padding-bottom: 14px;
+}
+
+.modal-title {
+  letter-spacing: 0;
+}
+
+.modal-close {
+  display: inline-flex;
+  width: 32px;
+  height: 32px;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid transparent;
+  transition: color 0.16s ease, background 0.16s ease, border-color 0.16s ease, transform 0.16s ease;
+}
+
+.modal-close:hover {
+  border-color: color-mix(in srgb, var(--primary) 18%, var(--border-soft));
+  color: var(--primary);
+  background: var(--primary-lighter);
+  transform: rotate(4deg);
+}
+
+/* 能力编辑窗：单一滚动层、主题化字段与固定操作栏。 */
+.capability-modal-panel {
+  position: relative;
+  max-height: min(90vh, 860px);
+  overflow: hidden;
+  border-color: color-mix(in srgb, var(--primary) 16%, var(--border-soft-solid));
+  background: var(--surface-card-solid);
+  box-shadow: var(--shadow-floating);
+}
+
+.capability-modal-panel::before {
+  content: '';
+  position: absolute;
+  z-index: 2;
+  inset: 0 0 auto;
+  height: 3px;
+  background: var(--brand-gradient);
+}
+
+.capability-modal-form {
+  display: flex;
+  max-height: calc(min(90vh, 860px) - 92px);
+  min-height: 0;
+  flex-direction: column;
+  gap: 0;
+  overflow: hidden;
+}
+
+.capability-modal-body {
+  min-height: 0;
+  overflow-y: auto;
+  padding-right: 8px;
+  scrollbar-color: var(--primary) transparent;
+  scrollbar-width: thin;
+}
+
+.capability-modal-body::-webkit-scrollbar {
+  width: 6px;
+}
+
+.capability-modal-body::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.capability-modal-body::-webkit-scrollbar-thumb {
+  border: 1px solid color-mix(in srgb, var(--surface-card-solid) 45%, transparent);
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--primary) 82%, var(--primary-light));
+}
+
+.capability-modal-body::-webkit-scrollbar-thumb:hover {
+  background: var(--primary);
+}
+
+.capability-field-label {
+  color: var(--text-primary);
+  font-weight: 800;
+}
+
+.capability-field {
+  border: 1px solid var(--border-soft-solid);
+  outline: none;
+  color: var(--text-primary);
+  background: var(--surface-muted-solid);
+  transition: border-color 0.16s ease, box-shadow 0.16s ease, background 0.16s ease;
+}
+
+.capability-field:hover {
+  border-color: color-mix(in srgb, var(--primary-light) 38%, var(--border-soft-solid));
+  background: var(--surface-card-solid);
+}
+
+.capability-field:focus {
+  border-color: var(--primary-light);
+  background: var(--surface-card-solid);
+  box-shadow: 0 0 0 3px var(--focus-ring);
+}
+
+.capability-field::placeholder {
+  color: var(--text-tertiary);
+  opacity: 1;
+}
+
+.capability-textarea {
+  min-height: 92px;
+  resize: vertical;
+}
+
+.capability-field-help {
+  color: var(--text-secondary);
+  line-height: 1.5;
+}
+
+.capability-select > button {
+  min-height: 42px;
+  border-color: var(--border-soft-solid);
+  background: var(--surface-muted-solid);
+  transition: border-color 0.16s ease, box-shadow 0.16s ease, background 0.16s ease;
+}
+
+.capability-select > button:hover {
+  border-color: color-mix(in srgb, var(--primary-light) 38%, var(--border-soft-solid));
+  background: var(--surface-card-solid);
+}
+
+.capability-select > button:focus-visible {
+  border-color: var(--primary-light);
+  box-shadow: 0 0 0 3px var(--focus-ring);
+}
+
+.capability-json-editor {
+  border-color: var(--border-soft-solid) !important;
+  box-shadow: 0 5px 16px color-mix(in srgb, var(--primary) 5%, transparent);
+}
+
+.capability-json-editor .cm-editor {
+  color: var(--text-primary);
+  background: var(--surface-muted-solid);
+}
+
+.capability-json-editor .cm-scroller {
+  scrollbar-color: var(--primary) transparent;
+  scrollbar-width: thin;
+}
+
+.capability-json-editor .cm-gutters {
+  border-right: 1px solid var(--border-soft-solid);
+  color: var(--text-tertiary);
+  background: color-mix(in srgb, var(--primary-lighter) 58%, var(--surface-muted-solid));
+}
+
+.capability-json-editor .cm-activeLine,
+.capability-json-editor .cm-activeLineGutter {
+  background: color-mix(in srgb, var(--primary-lighter) 58%, transparent);
+}
+
+.capability-modal-footer {
+  flex: none;
+  border-top: 1px solid color-mix(in srgb, var(--border-soft) 86%, transparent);
+  margin-top: 16px;
+  padding: 14px 0 2px;
+  background: var(--surface-card-solid);
+}
+
+.capability-secondary-button {
+  border: 1px solid var(--border-soft-solid);
+  color: var(--text-secondary);
+  background: var(--surface-muted-solid);
+}
+
+.capability-secondary-button:hover {
+  border-color: color-mix(in srgb, var(--primary) 24%, var(--border-soft-solid));
+  color: var(--primary);
+  background: var(--primary-lighter);
+}
+
+.capability-primary-button {
+  min-width: 84px;
+  background: var(--brand-gradient);
+  box-shadow: 0 6px 14px var(--glow-color);
+}
+
+.capability-primary-button:hover:not(:disabled) {
+  box-shadow: 0 8px 18px var(--glow-color);
+  filter: saturate(1.04) brightness(1.02);
+}
+
+.capability-param-chip {
+  border: 1px solid var(--border-soft-solid);
+  color: var(--text-secondary);
+  background: var(--surface-muted-solid);
+}
+
+.capability-param-chip:hover {
+  border-color: color-mix(in srgb, var(--primary) 34%, var(--border-soft-solid));
+  color: var(--primary);
+  background: var(--primary-lighter);
+}
+
+.capability-chip-group {
+  color: var(--text-tertiary);
+}
+
 /* ===== 动画 ===== */
 @keyframes fade-slide-up {
   from { opacity: 0; transform: translateY(12px); }

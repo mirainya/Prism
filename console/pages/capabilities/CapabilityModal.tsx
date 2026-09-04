@@ -78,60 +78,62 @@ const CapabilityModal: React.FC<{
     }, {});
 
     return (
-        <Modal open={isOpen} onClose={onClose} title={capability ? '编辑能力' : '新建能力'} width="max-w-2xl">
-                <form onSubmit={handleSubmit} className="space-y-4 max-h-[70vh] overflow-y-auto">
-                    <div className="grid grid-cols-2 gap-4">
+        <Modal open={isOpen} onClose={onClose} title={capability ? '编辑能力' : '新建能力'} width="max-w-2xl" panelClassName="capability-modal-panel">
+                <form onSubmit={handleSubmit} className="capability-modal-form">
+                  <div className="capability-modal-body space-y-4">
+                    <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
                         <div>
-                            <label className="block text-sm font-medium text-[var(--text-primary)] mb-1">能力编码 *</label>
+                            <label className="capability-field-label block text-sm font-medium mb-1">能力编码 *</label>
                             <input type="text" value={form.code} onChange={e => setForm({...form, code: e.target.value})}
-                                className="w-full px-3 py-2 border border-[var(--border-soft)] rounded-lg focus:outline-none focus:ring-2 focus:ring-[var(--primary)]"
+                                className="capability-field w-full px-3 py-2 rounded-lg"
                                 placeholder="如: gpt_image2" required />
                         </div>
                         <div>
-                            <label className="block text-sm font-medium text-[var(--text-primary)] mb-1">能力名称 *</label>
+                            <label className="capability-field-label block text-sm font-medium mb-1">能力名称 *</label>
                             <input type="text" value={form.name} onChange={e => setForm({...form, name: e.target.value})}
-                                className="w-full px-3 py-2 border border-[var(--border-soft)] rounded-lg focus:outline-none focus:ring-2 focus:ring-[var(--primary)]"
+                                className="capability-field w-full px-3 py-2 rounded-lg"
                                 placeholder="如: ChatGPT生图" required />
                         </div>
                     </div>
-                    <div className="grid grid-cols-2 gap-4">
+                    <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
                         <div>
-                            <label className="block text-sm font-medium text-[var(--text-primary)] mb-1">类型 *</label>
+                            <label className="capability-field-label block text-sm font-medium mb-1">类型 *</label>
                             <Select value={form.type} onChange={v => setForm({...form, type: v})}
+                                className="capability-select"
                                 options={CAPABILITY_TYPES.filter(t => t.value !== 'video').map(t => ({ label: t.label, value: t.value }))} />
                         </div>
                         <div>
-                            <label className="block text-sm font-medium text-[var(--text-primary)] mb-1">描述</label>
+                            <label className="capability-field-label block text-sm font-medium mb-1">描述</label>
                             <input type="text" value={form.description} onChange={e => setForm({...form, description: e.target.value})}
-                                className="w-full px-3 py-2 border border-[var(--border-soft)] rounded-lg focus:outline-none focus:ring-2 focus:ring-[var(--primary)]"
+                                className="capability-field w-full px-3 py-2 rounded-lg"
                                 placeholder="能力描述" />
                         </div>
                     </div>
 
                     <div>
-                        <label className="block text-sm font-medium text-[var(--text-primary)] mb-1">模型别名</label>
+                        <label className="capability-field-label block text-sm font-medium mb-1">模型别名</label>
                         <textarea value={aliasesText} onChange={e => setAliasesText(e.target.value)} rows={3}
-                            className="w-full px-3 py-2 border border-[var(--border-soft)] rounded-lg focus:outline-none focus:ring-2 focus:ring-[var(--primary)]"
+                            className="capability-field capability-textarea w-full px-3 py-2 rounded-lg"
                             placeholder="每行一个上游模型名" />
-                        <p className="mt-1 text-xs text-[var(--text-secondary)]">请求中的模型名会按精确匹配后，再查找这里配置的别名。</p>
+                        <p className="capability-field-help mt-1 text-xs">请求中的模型名会按精确匹配后，再查找这里配置的别名。</p>
                     </div>
 
                     <div>
                         <div className="flex items-center justify-between mb-2">
-                            <label className="block text-sm font-medium text-[var(--text-primary)]">参数 Schema (JSON)</label>
+                            <label className="capability-field-label block text-sm font-medium">参数 Schema (JSON)</label>
                             {jsonError && <span className="text-xs text-red-500">{jsonError}</span>}
                         </div>
                         <JsonEditor value={paramJson} onChange={v => { setParamJson(v); validateJson(v); }}
-                            height="240px" placeholder='{"prompt": {"type": "string", "name": "描述", "required": true}}' />
+                            height="240px" className="capability-json-editor" placeholder='{"prompt": {"type": "string", "name": "描述", "required": true}}' />
                         <div className="mt-2">
-                            <p className="text-xs text-[var(--text-secondary)] mb-1.5">快速插入预设参数：</p>
+                            <p className="capability-field-help mb-1.5 text-xs">快速插入预设参数：</p>
                             <div className="space-y-1.5">
                                 {Object.entries(paramGroups).map(([group, items]) => (
                                     <div key={group} className="flex items-center gap-1.5 flex-wrap">
-                                        <span className="text-[10px] text-[var(--text-tertiary)] w-12 shrink-0">{group}</span>
+                                        <span className="capability-chip-group text-[10px] w-12 shrink-0">{group}</span>
                                         {items.map(([key, def]) => (
                                             <button key={key} type="button" onClick={() => insertParam(key)}
-                                                className="px-2 py-0.5 text-[11px] rounded border border-[var(--border-soft)] text-[var(--text-secondary)] hover:text-[var(--primary)] hover:border-indigo-300 hover:bg-[var(--primary-lighter)] transition-colors">
+                                                className="capability-param-chip rounded px-2 py-0.5 text-[11px] transition-colors">
                                                 {def.name}
                                             </button>
                                         ))}
@@ -140,12 +142,13 @@ const CapabilityModal: React.FC<{
                             </div>
                         </div>
                     </div>
+                  </div>
 
-                    <div className="flex justify-end gap-3 pt-4">
+                    <div className="capability-modal-footer flex justify-end gap-3 pt-4">
                         <button type="button" onClick={onClose}
-                                className="px-4 py-2 text-sm font-bold text-[var(--text-secondary)] bg-[var(--primary-lighter)] rounded-lg hover:bg-gray-200 transition-colors">取消</button>
+                                className="capability-secondary-button rounded-lg px-4 py-2 text-sm font-bold transition-colors">取消</button>
                         <button type="submit" disabled={loading || !!jsonError}
-                                className="px-4 py-2 text-sm font-bold text-white bg-[var(--primary)] rounded-lg hover:opacity-90 disabled:opacity-50 transition-colors">
+                                className="capability-primary-button rounded-lg px-4 py-2 text-sm font-bold text-white transition-colors disabled:opacity-50">
                             {loading ? '保存中...' : '保存'}
                         </button>
                     </div>

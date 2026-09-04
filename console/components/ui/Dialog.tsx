@@ -172,7 +172,7 @@ export const Dialog: React.FC<DialogProps> = ({
     >
       <div
         aria-hidden="true"
-        className={`absolute inset-0 bg-black/45 backdrop-blur-sm transition-opacity duration-200 ease-out motion-reduce:transition-none ${visible ? 'opacity-100' : 'opacity-0'}`}
+        className={`dialog-backdrop absolute inset-0 transition-opacity duration-200 ease-out motion-reduce:transition-none ${visible ? 'opacity-100' : 'opacity-0'}`}
         onClick={dismissible ? onClose : undefined}
       />
       <div

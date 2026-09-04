@@ -7,7 +7,8 @@ const JsonEditor: React.FC<{
     onChange: (val: string) => void;
     height?: string;
     placeholder?: string;
-}> = ({ value, onChange, height = '280px', placeholder }) => (
+    className?: string;
+}> = ({ value, onChange, height = '280px', placeholder, className = '' }) => (
     <CodeMirror
         value={value}
         height={height}
@@ -15,7 +16,7 @@ const JsonEditor: React.FC<{
         onChange={onChange}
         placeholder={placeholder}
         basicSetup={{ lineNumbers: true, foldGutter: true, bracketMatching: true, autocompletion: false }}
-        className="border border-[var(--border-soft)] rounded-lg overflow-hidden text-xs"
+        className={`border border-[var(--border-soft)] rounded-lg overflow-hidden text-xs ${className}`}
     />
 );
 
