@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"math/rand"
 	"os"
+	"sort"
 	"strings"
 
 	"github.com/mirainya/Prism/internal/gateway/security"
@@ -99,6 +100,9 @@ ORDER BY r.priority DESC, r.id`, activeRelease, modelName)
 		c.InputPrice, _ = decimal.NewFromString(inputPrice)
 		c.OutputPrice, _ = decimal.NewFromString(outputPrice)
 		transport := unifiedTransport(c.Protocol)
+		if containsUint(options.ExcludeChannels, uint(c.ChannelID)) || containsUint(options.ExcludeKeys, uint(c.CredentialID)) {
+			continue
+		}
 		if !transportAllowed(transport, options.AllowedTransports) || !supportsSemanticRequirements(semanticCapabilities(c.Capabilities), requirements) {
 			continue
 		}
@@ -110,7 +114,27 @@ ORDER BY r.priority DESC, r.id`, activeRelease, modelName)
 	if len(candidates) == 0 {
 		return nil, ErrModelNotFound
 	}
-	chosen := candidates[rand.Intn(len(candidates))]
+	sort.SliceStable(candidates, func(i, j int) bool {
+		leftRank := transportRank(unifiedTransport(candidates[i].Protocol), options.PreferredTransports)
+		rightRank := transportRank(unifiedTransport(candidates[j].Protocol), options.PreferredTransports)
+		if leftRank != rightRank {
+			return leftRank < rightRank
+		}
+		if candidates[i].Priority != candidates[j].Priority {
+			return candidates[i].Priority > candidates[j].Priority
+		}
+		return candidates[i].AbilityID < candidates[j].AbilityID
+	})
+	topRank := transportRank(unifiedTransport(candidates[0].Protocol), options.PreferredTransports)
+	topPriority := candidates[0].Priority
+	top := candidates[:0]
+	for _, candidate := range candidates {
+		if transportRank(unifiedTransport(candidate.Protocol), options.PreferredTransports) != topRank || candidate.Priority != topPriority {
+			break
+		}
+		top = append(top, candidate)
+	}
+	chosen := top[rand.Intn(len(top))]
 	apiKey, err := decryptUnifiedCredential(chosen)
 	if err != nil {
 		return nil, err
@@ -122,6 +146,15 @@ ORDER BY r.priority DESC, r.id`, activeRelease, modelName)
 		Transport: unifiedTransport(chosen.Protocol), TransportConfig: map[string]any{"request_path": chosen.RequestPath},
 		InputPrice: chosen.InputPrice, OutputPrice: chosen.OutputPrice,
 	}, nil
+}
+
+func containsUint(values []uint, target uint) bool {
+	for _, value := range values {
+		if value == target {
+			return true
+		}
+	}
+	return false
 }
 
 func decryptUnifiedCredential(c unifiedCandidate) (string, error) {
