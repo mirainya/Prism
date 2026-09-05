@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/mirainya/Prism/internal/gateway/canonical"
 	"github.com/mirainya/Prism/internal/gateway/execution"
 	"github.com/mirainya/Prism/internal/gateway/repository"
 	"github.com/mirainya/Prism/internal/gateway/routing"
@@ -31,7 +32,7 @@ func unifiedRoute(route *routing.RouteResult) bool {
 	return route != nil && route.ReleaseID != 0 && route.OperationContractID != 0 && route.ModelOperationID != 0 && route.SKUID != 0 && route.RouteID != 0 && route.OfferingID != 0 && route.ProductTransportID != 0 && route.CredentialPoolID != 0 && route.CredentialID != 0 && route.CredentialVersionID != 0 && route.PurposeGrantID != 0
 }
 
-func newUnifiedLifecycle(route *routing.RouteResult, publicID string, userID, tokenID uint, requestStore bool) (*unifiedLifecycle, error) {
+func newUnifiedLifecycle(route *routing.RouteResult, request canonical.Request, publicID string, userID, tokenID uint, requestStore bool) (*unifiedLifecycle, error) {
 	if !unifiedRoute(route) || strings.TrimSpace(publicID) == "" || userID == 0 || tokenID == 0 {
 		return nil, nil
 	}
@@ -61,6 +62,7 @@ func newUnifiedLifecycle(route *routing.RouteResult, publicID string, userID, to
 	if requestStore {
 		delivery = "managed_copy"
 	}
+	quotedAmount := estimate(route, request).String()
 	err = store.WithTx(context.Background(), func(tx *sql.Tx) error {
 		var existing uint64
 		if err := tx.QueryRowContext(context.Background(), "SELECT id FROM gw_api_calls WHERE public_id=? FOR UPDATE", publicID).Scan(&existing); err == nil {
@@ -73,7 +75,7 @@ func newUnifiedLifecycle(route *routing.RouteResult, publicID string, userID, to
 			PublicID: publicID, UserID: uint64(userID), TokenID: uint64(tokenID),
 			OperationContractID: uint64(route.OperationContractID), CatalogReleaseID: uint64(route.ReleaseID),
 			ModelOperationID: uint64(route.ModelOperationID), SKUID: uint64(route.SKUID), Currency: currency,
-			CurrencyVersion: uint32(currencyVersion), DeliveryMode: delivery,
+			CurrencyVersion: uint32(currencyVersion), DeliveryMode: delivery, QuotedAmount: quotedAmount,
 		})
 		if err != nil {
 			return err

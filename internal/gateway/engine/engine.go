@@ -163,11 +163,11 @@ type callLifecycle struct {
 	pendingUnifiedPayloads map[string][]byte
 }
 
-func (l *callLifecycle) startUnified(ctx context.Context, route *routing.RouteResult, userID, tokenID uint, store bool) {
+func (l *callLifecycle) startUnified(ctx context.Context, route *routing.RouteResult, request canonical.Request, userID, tokenID uint, store bool) {
 	if l == nil || !unifiedRoute(route) || l.unified != nil {
 		return
 	}
-	u, err := newUnifiedLifecycle(route, l.callID, userID, tokenID, store)
+	u, err := newUnifiedLifecycle(route, request, l.callID, userID, tokenID, store)
 	if err != nil {
 		logLedgerError("create unified gateway call", l.callID, 0, err)
 		return
@@ -1108,7 +1108,7 @@ func (e *Engine) executeSelected(
 		return nil, false, err
 	}
 	if ledger != nil {
-		ledger.startUnified(ctx, route, options.UserID, options.TokenID, request.Store != nil && *request.Store)
+		ledger.startUnified(ctx, route, request, options.UserID, options.TokenID, request.Store != nil && *request.Store)
 		ledger.startUnifiedAttempt(ctx, route, request.Background, fmt.Sprintf("credential:%d", route.CredentialID))
 	}
 	attempt, err := ledger.startAttempt(route, prepared)
