@@ -8,6 +8,35 @@ import (
 
 var ErrNotReady = errors.New("gateway runtime: deployment is not ready")
 
+// RequireConfiguredReadiness keeps the pre-migration empty database usable,
+// but refuses to start once any unified catalog data exists without a fully
+// proven active release. This prevents a partial cutover from falling back to
+// legacy execution paths.
+func RequireConfiguredReadiness(ctx context.Context, db *sql.DB) error {
+	if db == nil {
+		return ErrNotReady
+	}
+	var channels, releases uint64
+	if err := db.QueryRowContext(ctx, `SELECT COUNT(*) FROM gateway_channels`).Scan(&channels); err != nil {
+		return ErrNotReady
+	}
+	if err := db.QueryRowContext(ctx, `SELECT COUNT(*) FROM gw_catalog_releases`).Scan(&releases); err != nil {
+		return ErrNotReady
+	}
+	if channels == 0 && releases == 0 {
+		return nil
+	}
+	var releaseID sql.NullInt64
+	if err := db.QueryRowContext(ctx, `SELECT active_release_id FROM gw_catalog_runtime_state WHERE id=1`).Scan(&releaseID); err != nil || !releaseID.Valid || releaseID.Int64 <= 0 {
+		return ErrNotReady
+	}
+	var generationID uint64
+	if err := db.QueryRowContext(ctx, `SELECT id FROM gw_deployment_generations WHERE status='active' ORDER BY id DESC LIMIT 1`).Scan(&generationID); err != nil {
+		return ErrNotReady
+	}
+	return CheckReadiness(ctx, db, generationID, uint64(releaseID.Int64))
+}
+
 // CheckReadiness verifies the immutable deployment generation before traffic
 // is enabled. It is deliberately a read-only gate; activation remains an
 // explicit repository transaction.

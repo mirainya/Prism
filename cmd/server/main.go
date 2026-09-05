@@ -19,6 +19,7 @@ import (
 	"github.com/mirainya/Prism/internal/gateway"
 	"github.com/mirainya/Prism/internal/gateway/engine"
 	responsepipeline "github.com/mirainya/Prism/internal/gateway/responses"
+	gatewayruntime "github.com/mirainya/Prism/internal/gateway/runtime"
 	schemamigrate "github.com/mirainya/Prism/internal/migrate"
 	"github.com/mirainya/Prism/internal/model"
 	"github.com/mirainya/Prism/internal/provider"
@@ -99,6 +100,11 @@ func main() {
 	}
 	if err := schemamigrate.EnsureCurrent(context.Background(), db); err != nil {
 		log.Fatalf("database schema is not current: %v", err)
+	}
+	if sqlDB, err := db.DB(); err != nil {
+		log.Fatalf("failed to open runtime readiness database: %v", err)
+	} else if err := gatewayruntime.RequireConfiguredReadiness(context.Background(), sqlDB); err != nil {
+		log.Fatalf("unified gateway runtime is not ready: %v", err)
 	}
 	if config.C.Server.ShouldResetGatewayConcurrency() {
 		if err := model.DB().Model(&model.GwChannelKey{}).Where("current_conc <> 0").Update("current_conc", 0).Error; err != nil {
