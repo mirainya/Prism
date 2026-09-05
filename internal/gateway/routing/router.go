@@ -11,9 +11,9 @@ import (
 )
 
 // Router 基于 gw_* 表选路。
-type Router struct{}
+type Router struct{ unified *unifiedSelector }
 
-func NewRouter() *Router { return &Router{} }
+func NewRouter() *Router { return &Router{unified: &unifiedSelector{}} }
 
 var (
 	// ErrModelNotFound means no enabled route declares the requested model.
@@ -44,6 +44,9 @@ var (
 // Release 释放某 key 的并发占用(current_conc-1,不低于0)。请求结束时调用。
 func (r *Router) Release(keyID uint) {
 	if keyID == 0 {
+		return
+	}
+	if r.releaseUnified(keyID) {
 		return
 	}
 	result := model.DB().Model(&model.GwChannelKey{}).

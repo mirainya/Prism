@@ -1,6 +1,7 @@
 package routing
 
 import (
+	"context"
 	"encoding/json"
 	"math/rand"
 	"sort"
@@ -65,6 +66,9 @@ type transportCandidate struct {
 // Legacy abilities without gw_ability_transports rows are deliberately not
 // inferred here; their data migration must create the safe transport rows.
 func (r *Router) SelectTransport(modelName string, requirements RouteRequirements, options RouteOptions) (*RouteResult, error) {
+	if r.unifiedActive(context.Background()) {
+		return r.selectUnified(modelName, requirements, options)
+	}
 	var chosen *transportCandidate
 	err := model.DB().Transaction(func(tx *gorm.DB) error {
 		// 先区分“模型不存在”和“模型存在但当前不可用”，两者会映射成不同的公开 API 错误。
