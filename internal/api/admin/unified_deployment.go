@@ -12,20 +12,28 @@ import (
 )
 
 type deploymentGenerationRequest struct {
-	GenerationNo                    uint64 `json:"generation_no"`
-	SemanticVersion, SemanticDigest string
+	GenerationNo    uint64 `json:"generation_no"`
+	SemanticVersion string `json:"semantic_version"`
+	SemanticDigest  string `json:"semantic_digest"`
 }
-type deploymentMemberRequest struct{ InstanceID, Role string }
+type deploymentMemberRequest struct {
+	InstanceID string `json:"instance_id"`
+	Role       string `json:"role"`
+}
 type catalogReadinessRequest struct {
-	ReleaseID                                          uint64 `json:"release_id"`
-	ContentHash, SemanticDigest, AdapterDigest, Status string
-	ExpiresAt                                          time.Time `json:"expires_at"`
+	ReleaseID      uint64    `json:"release_id"`
+	ContentHash    string    `json:"content_hash"`
+	SemanticDigest string    `json:"semantic_digest"`
+	AdapterDigest  string    `json:"adapter_digest"`
+	Status         string    `json:"status"`
+	ExpiresAt      time.Time `json:"expires_at"`
 }
 type cryptoReadinessRequest struct {
-	KeyringID         uint64 `json:"keyring_id"`
-	KeyVersion        uint32 `json:"key_version"`
-	Operation, Status string
-	ExpiresAt         time.Time `json:"expires_at"`
+	KeyringID  uint64    `json:"keyring_id"`
+	KeyVersion uint32    `json:"key_version"`
+	Operation  string    `json:"operation"`
+	Status     string    `json:"status"`
+	ExpiresAt  time.Time `json:"expires_at"`
 }
 
 func deploymentStore() (*repository.Store, error) {
