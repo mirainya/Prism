@@ -44,3 +44,5 @@ export const retireUnifiedCatalog = (id: number) => request(`/admin/unified-gate
 export const fetchUnifiedCredentials = (page = 1) => request<UnifiedGatewayPage<UnifiedCredential>>(`/admin/unified-gateway/credentials${pageQuery(page)}`);
 export const fetchUnifiedCalls = (page = 1) => request<UnifiedGatewayPage<UnifiedCall>>(`/admin/unified-gateway/calls${pageQuery(page)}`);
 export const fetchUnifiedCallDetail = (id: number, page = 1) => request<UnifiedCallDetail>(`/admin/unified-gateway/calls/${id}${pageQuery(page)}`);
+export const createUnifiedDeployment = (data: { generation_no: number; semantic_version: string; semantic_digest: string }) => request<{ id: number }>('/admin/unified-gateway/deployments', { method: 'POST', body: JSON.stringify(data) });
+export const activateUnifiedDeployment = (id: number) => request(`/admin/unified-gateway/deployments/${id}/activate`, { method: 'POST' });

@@ -2,7 +2,7 @@ import React, { useEffect, useState } from 'react';
 import { Activity, AlertTriangle, CheckCircle2, Database, KeyRound, Layers3, RefreshCw, ShieldCheck } from 'lucide-react';
 import { PageHeader, SummaryStrip } from '../components/shell';
 import { Badge, Card } from '../components/ui';
-import { fetchUnifiedCallDetail, fetchUnifiedCalls, fetchUnifiedCatalog, fetchUnifiedCredentials, fetchUnifiedGatewayOverview, publishUnifiedCatalog, retireUnifiedCatalog, UnifiedCall, UnifiedCallDetail, UnifiedCatalogRelease, UnifiedCredential, UnifiedGatewayOverview } from '../services/unifiedGatewayApi';
+import { activateUnifiedDeployment, createUnifiedDeployment, fetchUnifiedCallDetail, fetchUnifiedCalls, fetchUnifiedCatalog, fetchUnifiedCredentials, fetchUnifiedGatewayOverview, publishUnifiedCatalog, retireUnifiedCatalog, UnifiedCall, UnifiedCallDetail, UnifiedCatalogRelease, UnifiedCredential, UnifiedGatewayOverview } from '../services/unifiedGatewayApi';
 
 const stateMeta: Record<string, { label: string; tone: 'success' | 'warning' | 'danger'; description: string }> = {
   legacy_runtime: { label: '旧路径运行中', tone: 'warning', description: '线上请求仍由旧网关表和旧写入路径处理。' },
@@ -14,12 +14,13 @@ const UnifiedGateway: React.FC = () => {
   const [data, setData] = useState<UnifiedGatewayOverview | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
-  const [tab, setTab] = useState<'overview' | 'catalog' | 'credentials' | 'calls'>('overview');
+  const [tab, setTab] = useState<'overview' | 'catalog' | 'credentials' | 'calls' | 'deployments'>('overview');
   const [catalog, setCatalog] = useState<UnifiedCatalogRelease[]>([]);
   const [credentials, setCredentials] = useState<UnifiedCredential[]>([]);
   const [calls, setCalls] = useState<UnifiedCall[]>([]);
   const [pageInfo, setPageInfo] = useState({ page: 1, pageSize: 20, total: 0 });
   const [selectedCall, setSelectedCall] = useState<UnifiedCallDetail | null>(null);
+  const [deploymentForm, setDeploymentForm] = useState({ generation_no: 1, semantic_version: '', semantic_digest: '' });
 
   const load = async () => {
     setLoading(true);
@@ -35,7 +36,7 @@ const UnifiedGateway: React.FC = () => {
 
   const loadTab = async (nextTab: typeof tab, page = 1) => {
     setTab(nextTab);
-    if (nextTab === 'overview') return;
+    if (nextTab === 'overview' || nextTab === 'deployments') return;
     try {
       if (nextTab === 'catalog') {
         const result = await fetchUnifiedCatalog(page);
@@ -63,6 +64,14 @@ const UnifiedGateway: React.FC = () => {
     } catch (err: any) {
       setError(err?.message || '更新目录状态失败');
     }
+  };
+
+  const createDeployment = async () => {
+    try { await createUnifiedDeployment(deploymentForm); await load(); } catch (err: any) { setError(err?.message || '创建部署代次失败'); }
+  };
+  const activateDeployment = async () => {
+    if (!data?.runtime.deployment_id) return;
+    try { await activateUnifiedDeployment(data.runtime.deployment_id); await load(); } catch (err: any) { setError(err?.message || '激活部署代次失败'); }
   };
 
   useEffect(() => { void load(); }, []);
@@ -97,12 +106,12 @@ const UnifiedGateway: React.FC = () => {
       ]} />
 
       <div className="flex flex-wrap gap-2 rounded-lg border border-[var(--border-soft)] bg-[var(--surface-card)] p-2">
-        {([['overview', '状态总览'], ['catalog', '目录发布版'], ['credentials', '凭据池'], ['calls', '统一调用']] as const).map(([key, label]) => (
+        {([['overview', '状态总览'], ['catalog', '目录发布版'], ['credentials', '凭据池'], ['calls', '统一调用'], ['deployments', '部署代次']] as const).map(([key, label]) => (
           <button key={key} type="button" onClick={() => void loadTab(key)} className={`rounded-lg px-3 py-2 text-sm font-bold transition ${tab === key ? '[background:var(--brand-gradient)] text-white shadow-[0_5px_12px_var(--glow-color)]' : 'text-[var(--text-secondary)] hover:bg-[var(--surface-muted)]'}`}>{label}</button>
         ))}
       </div>
 
-      {tab === 'overview' ? <div className="grid gap-4 xl:grid-cols-2">
+      {tab === 'deployments' ? <div className="grid gap-4 xl:grid-cols-2"><Card><SectionTitle icon={Layers3} title="创建部署代次" /><div className="space-y-3"><label className="block text-sm font-semibold">代次编号<input type="number" min={1} value={deploymentForm.generation_no} onChange={event => setDeploymentForm({ ...deploymentForm, generation_no: Number(event.target.value) })} className="mt-1 w-full rounded-lg border border-[var(--border-soft)] bg-[var(--surface-muted)] px-3 py-2" /></label><label className="block text-sm font-semibold">语义版本<input value={deploymentForm.semantic_version} onChange={event => setDeploymentForm({ ...deploymentForm, semantic_version: event.target.value })} className="mt-1 w-full rounded-lg border border-[var(--border-soft)] bg-[var(--surface-muted)] px-3 py-2" /></label><label className="block text-sm font-semibold">语义摘要<input value={deploymentForm.semantic_digest} onChange={event => setDeploymentForm({ ...deploymentForm, semantic_digest: event.target.value })} placeholder="64 位十六进制摘要" className="mt-1 w-full rounded-lg border border-[var(--border-soft)] bg-[var(--surface-muted)] px-3 py-2 font-mono text-xs" /></label><button type="button" onClick={() => void createDeployment()} className="rounded-lg bg-[var(--primary)] px-4 py-2 text-sm font-bold text-white">创建准备代次</button></div></Card><Card><SectionTitle icon={ShieldCheck} title="当前部署" /><div className="space-y-3 text-sm"><Info label="代次" value={data?.runtime.deployment_id ? `#${data.runtime.deployment_id}` : '未登记'} /><Info label="状态" value={data?.runtime.deployment_status || '未登记'} /><button type="button" disabled={!data?.runtime.deployment_id || data.runtime.deployment_status !== 'preparing'} onClick={() => void activateDeployment()} className="rounded-lg border border-[var(--border-soft)] px-4 py-2 font-bold disabled:opacity-40">激活当前代次</button></div></Card></div> : tab === 'overview' ? <div className="grid gap-4 xl:grid-cols-2">
         <Card>
           <SectionTitle icon={Activity} title="运行指针" />
           <div className="grid grid-cols-2 gap-3 text-sm">
