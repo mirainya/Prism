@@ -62,7 +62,11 @@ func (s *unifiedSelector) active(ctx context.Context) (bool, error) {
 	if err := db.QueryRowContext(ctx, `SELECT COUNT(*) FROM gw_offerings o LEFT JOIN gw_cost_plans cp ON cp.release_id=o.release_id AND cp.offering_id=o.id WHERE o.release_id=? AND cp.id IS NULL`, releaseID.Int64).Scan(&missingCostPlans); err != nil {
 		return false, err
 	}
-	if missingSellRates > 0 || missingCostPlans > 0 {
+	var missingCostRates uint64
+	if err := db.QueryRowContext(ctx, `SELECT COUNT(*) FROM gw_cost_plans cp LEFT JOIN gw_cost_rates cr ON cr.release_id=cp.release_id AND cr.cost_plan_id=cp.id WHERE cp.release_id=? AND cr.id IS NULL`, releaseID.Int64).Scan(&missingCostRates); err != nil {
+		return false, err
+	}
+	if missingSellRates > 0 || missingCostPlans > 0 || missingCostRates > 0 {
 		return false, nil
 	}
 	// A pointer update alone is not sufficient to enable traffic. Require an
@@ -138,6 +142,7 @@ JOIN gw_channel_transports ct ON ct.release_id=pt.release_id AND ct.id=pt.channe
 JOIN gateway_channels ch ON ch.id=p.channel_id AND ch.status='active'
 JOIN gw_offering_runtime_state ors ON ors.release_id=o.release_id AND ors.offering_id=o.id AND ors.state='active'
 JOIN gw_credentials c ON c.channel_id=ch.id AND c.credential_pool_id=o.credential_pool_id AND c.status='active'
+JOIN gw_credential_secret_identities si ON si.id=c.secret_identity_id AND si.channel_id=c.channel_id AND si.status='active'
 JOIN gw_credential_purpose_grants g ON g.credential_id=c.id AND g.purpose='execution' AND g.status='active'
 JOIN gw_credential_versions cv ON cv.credential_id=c.id AND cv.id=c.current_version_id AND cv.status='active'
 JOIN encrypted_blobs eb ON eb.id=cv.encrypted_blob_id
