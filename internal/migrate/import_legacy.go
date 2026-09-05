@@ -31,6 +31,44 @@ type ImportReport struct {
 	ReleaseID                                int64
 }
 
+// VerifyEncryptedCredentials reads every active credential blob through the
+// configured KEK and verifies its authenticated owner binding. It does not
+// expose plaintext and is safe to run repeatedly after deployment.
+func VerifyEncryptedCredentials(ctx context.Context, db *sql.DB, kek []byte) error {
+	if db == nil || len(kek) != security.KeySize {
+		return ErrImportRequiresKeyring
+	}
+	rows, err := db.QueryContext(ctx, `SELECT v.id,v.credential_id,b.id,b.nonce,b.ciphertext,w.kek_version,w.wrap_nonce,w.wrapped_dek FROM gw_credential_versions v JOIN encrypted_blobs b ON b.id=v.encrypted_blob_id JOIN encrypted_blob_key_wraps w ON w.encrypted_blob_id=b.id AND w.keyring_id=b.keyring_id ORDER BY v.id`)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	var checked int
+	for rows.Next() {
+		var versionID, credentialID, blobID int64
+		var nonce, ciphertext, wrapNonce, wrappedDEK []byte
+		var keyVersion int64
+		if err := rows.Scan(&versionID, &credentialID, &blobID, &nonce, &ciphertext, &keyVersion, &wrapNonce, &wrappedDEK); err != nil {
+			return err
+		}
+		aad, err := security.CanonicalAAD(uint64(blobID), "credential", 1, []byte(fmt.Sprintf("credential:%d", credentialID)))
+		if err != nil {
+			return err
+		}
+		if _, err = (security.Envelope{Version: security.EnvelopeVersion, AADVersion: 1, KEKVersion: uint32(keyVersion), Nonce: nonce, Ciphertext: ciphertext, WrapNonce: wrapNonce, WrappedDEK: wrappedDEK}).Open(aad, kek); err != nil {
+			return fmt.Errorf("credential version %d crypto verification failed: %w", versionID, err)
+		}
+		checked++
+	}
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	if checked == 0 {
+		return fmt.Errorf("no encrypted credential versions found")
+	}
+	return nil
+}
+
 type legacyChannel struct {
 	ID       int64
 	Name     string
@@ -83,6 +121,22 @@ func ImportLegacyGateway(ctx context.Context, db *sql.DB, options ImportOptions)
 	}
 	if len(channels) == 0 || len(keys) == 0 || len(abs) == 0 {
 		return ImportReport{}, fmt.Errorf("legacy import refused: source snapshot is incomplete (channels=%d keys=%d abilities=%d)", len(channels), len(keys), len(abs))
+	}
+	channelSet := make(map[int64]bool, len(channels))
+	for _, channel := range channels {
+		channelSet[channel.ID] = true
+	}
+	keySet := make(map[int64]bool, len(keys))
+	for _, key := range keys {
+		if !channelSet[key.ChannelID] {
+			return ImportReport{}, fmt.Errorf("legacy key %d references unavailable channel %d", key.ID, key.ChannelID)
+		}
+		keySet[key.ID] = true
+	}
+	for _, ability := range abs {
+		if !channelSet[ability.ChannelID] || !keySet[ability.KeyID] {
+			return ImportReport{}, fmt.Errorf("legacy ability %d references unavailable channel/key (%d/%d)", ability.ID, ability.ChannelID, ability.KeyID)
+		}
 	}
 
 	tx, err := db.BeginTx(ctx, nil)

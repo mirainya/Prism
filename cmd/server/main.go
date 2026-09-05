@@ -210,7 +210,7 @@ func main() {
 
 func runMigrationCommand(ctx context.Context, db *gorm.DB, args []string) error {
 	if len(args) != 1 {
-		return fmt.Errorf("usage: prism migrate <up|status|adopt|audit|import-legacy>")
+		return fmt.Errorf("usage: prism migrate <up|status|adopt|audit|import-legacy|verify-crypto>")
 	}
 	switch args[0] {
 	case "up":
@@ -289,8 +289,22 @@ func runMigrationCommand(ctx context.Context, db *gorm.DB, args []string) error 
 		}
 		fmt.Printf("imported channels=%d credentials=%d models=%d abilities=%d release_id=%d\n", report.Channels, report.Credentials, report.Models, report.Abilities, report.ReleaseID)
 		return nil
+	case "verify-crypto":
+		sqlDB, err := db.DB()
+		if err != nil {
+			return err
+		}
+		kek, err := migrationKey("PRISM_GATEWAY_KEK_B64")
+		if err != nil {
+			return err
+		}
+		if err := schemamigrate.VerifyEncryptedCredentials(ctx, sqlDB, kek); err != nil {
+			return err
+		}
+		fmt.Println("encrypted credential verification passed")
+		return nil
 	default:
-		return fmt.Errorf("unknown migration command %q; use up, status, adopt, audit, or import-legacy", args[0])
+		return fmt.Errorf("unknown migration command %q; use up, status, adopt, audit, import-legacy, or verify-crypto", args[0])
 	}
 }
 
