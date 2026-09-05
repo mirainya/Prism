@@ -9,6 +9,7 @@
 - `POST /api/admin/unified-gateway/catalog/:id/publish`：发布草稿。
 - `GET /api/admin/unified-gateway/calls`：分页查看统一调用。
 - `GET /api/admin/unified-gateway/calls/:id`：查看调用与分页 Attempt 元数据，不返回密文或原始正文。
+- `POST /api/admin/unified-gateway/catalog/:id/activate`：在指定部署代次和就绪证明通过后原子切换活动发布版。
 - `POST /api/admin/unified-gateway/deployments`：创建准备中的部署代次。
 - `POST /api/admin/unified-gateway/deployments/:id/members`：登记实例成员。
 - `POST /api/admin/unified-gateway/deployments/:id/members/:member_id/catalog-readiness`：上报目录摘要就绪。
@@ -23,4 +24,4 @@
 
 ## 迁移与上线
 
-生产环境先执行只读 `prism migrate audit`，确认旧路径为零、正式售价/成本/币种存在、活动发布版和部署代次均就绪，再执行停机导入和旧表清理。SSH、数据库凭据和加密密钥不得写入仓库或通过管理页面回显。
+生产环境先执行只读 `prism migrate audit` 和 `prism migrate audit-deep`。深度核对必须确认目标表完整、导入运行全部成功、无开放差异且历史源对象均有映射；随后由停机变更流程删除旧表和旧敏感字段，再激活部署代次与发布版。SSH、数据库凭据和加密密钥不得写入仓库或通过管理页面回显。

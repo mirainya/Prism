@@ -210,7 +210,7 @@ func main() {
 
 func runMigrationCommand(ctx context.Context, db *gorm.DB, args []string) error {
 	if len(args) != 1 {
-		return fmt.Errorf("usage: prism migrate <up|status|adopt|audit|import-legacy|verify-crypto>")
+		return fmt.Errorf("usage: prism migrate <up|status|adopt|audit|audit-deep|import-legacy|verify-crypto>")
 	}
 	switch args[0] {
 	case "up":
@@ -275,6 +275,17 @@ func runMigrationCommand(ctx context.Context, db *gorm.DB, args []string) error 
 			report.ReadyForCutover(),
 		)
 		return nil
+	case "audit-deep":
+		sqlDB, err := db.DB()
+		if err != nil {
+			return err
+		}
+		report, err := schemamigrate.DeepAudit(ctx, sqlDB)
+		if err != nil {
+			return err
+		}
+		fmt.Printf("missing_target_tables=%v legacy_tables=%v unmapped_channels=%d unmapped_keys=%d unmapped_abilities=%d open_issues=%d migration_runs=%d succeeded_runs=%d ready_for_cleanup=%t\n", report.MissingTargetTables, report.LegacyTablesPresent, report.UnmappedLegacyChannels, report.UnmappedLegacyKeys, report.UnmappedLegacyAbilities, report.OpenMigrationIssues, report.MigrationRunCount, report.SucceededMigrationRuns, report.ReadyForCleanup())
+		return nil
 	case "import-legacy":
 		sqlDB, err := db.DB()
 		if err != nil {
@@ -309,7 +320,7 @@ func runMigrationCommand(ctx context.Context, db *gorm.DB, args []string) error 
 		fmt.Println("encrypted credential verification passed")
 		return nil
 	default:
-		return fmt.Errorf("unknown migration command %q; use up, status, adopt, audit, import-legacy, or verify-crypto", args[0])
+		return fmt.Errorf("unknown migration command %q; use up, status, adopt, audit, audit-deep, import-legacy, or verify-crypto", args[0])
 	}
 }
 
