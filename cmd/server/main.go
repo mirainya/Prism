@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"database/sql"
+	"encoding/base64"
 	"fmt"
 	"log"
 	"net/http"
@@ -209,7 +210,7 @@ func main() {
 
 func runMigrationCommand(ctx context.Context, db *gorm.DB, args []string) error {
 	if len(args) != 1 {
-		return fmt.Errorf("usage: prism migrate <up|status|adopt|audit>")
+		return fmt.Errorf("usage: prism migrate <up|status|adopt|audit|import-legacy>")
 	}
 	switch args[0] {
 	case "up":
@@ -269,9 +270,40 @@ func runMigrationCommand(ctx context.Context, db *gorm.DB, args []string) error 
 			report.ReadyForCutover(),
 		)
 		return nil
+	case "import-legacy":
+		sqlDB, err := db.DB()
+		if err != nil {
+			return err
+		}
+		kek, err := migrationKey("PRISM_GATEWAY_KEK_B64")
+		if err != nil {
+			return err
+		}
+		hmacKey, err := migrationKey("PRISM_GATEWAY_HMAC_B64")
+		if err != nil {
+			return err
+		}
+		report, err := schemamigrate.ImportLegacyGateway(ctx, sqlDB, schemamigrate.ImportOptions{KEK: kek, HMACKey: hmacKey})
+		if err != nil {
+			return err
+		}
+		fmt.Printf("imported channels=%d credentials=%d models=%d abilities=%d release_id=%d\n", report.Channels, report.Credentials, report.Models, report.Abilities, report.ReleaseID)
+		return nil
 	default:
-		return fmt.Errorf("unknown migration command %q; use up, status, adopt, or audit", args[0])
+		return fmt.Errorf("unknown migration command %q; use up, status, adopt, audit, or import-legacy", args[0])
 	}
+}
+
+func migrationKey(name string) ([]byte, error) {
+	value := os.Getenv(name)
+	if value == "" {
+		return nil, fmt.Errorf("%s is required", name)
+	}
+	decoded, err := base64.StdEncoding.DecodeString(value)
+	if err != nil || len(decoded) != 32 {
+		return nil, fmt.Errorf("%s must be base64-encoded 32 bytes", name)
+	}
+	return decoded, nil
 }
 
 func nullInt64String(value sql.NullInt64) string {
