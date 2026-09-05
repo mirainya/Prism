@@ -175,6 +175,41 @@ func (l *unifiedLifecycle) startAttempt(ctx context.Context, route *routing.Rout
 	return err
 }
 
+func (l *unifiedLifecycle) reserve(ctx context.Context, userID, tokenID uint, route *routing.RouteResult, request canonical.Request) (*unifiedReservation, error) {
+	if l == nil || l.store == nil || l.callID == 0 || route == nil {
+		return nil, repository.ErrInvalidInput
+	}
+	currency := route.Currency
+	if currency == "" {
+		currency = strings.ToUpper(strings.TrimSpace(os.Getenv("PRISM_GATEWAY_CURRENCY")))
+	}
+	if currency == "" {
+		currency = "USD"
+	}
+	version := route.CurrencyVersion
+	if version == 0 {
+		version = 1
+	}
+	amount := estimate(route, request).RoundCeil(billingPrecision)
+	reservation := &unifiedReservation{store: l.store, callID: l.callID, amount: amount, route: route}
+	err := l.store.WithTx(ctx, func(tx *sql.Tx) error {
+		var accountID, windowID uint64
+		if err := tx.QueryRowContext(ctx, `SELECT id FROM billing_accounts WHERE user_id=? AND currency_code=? AND currency_version=? AND status='open' FOR UPDATE`, userID, currency, version).Scan(&accountID); err != nil {
+			return err
+		}
+		if err := tx.QueryRowContext(ctx, `SELECT id FROM token_budget_windows WHERE token_id=? AND window_start<=UTC_TIMESTAMP(3) AND (window_end IS NULL OR window_end>UTC_TIMESTAMP(3)) ORDER BY window_start DESC LIMIT 1 FOR UPDATE`, tokenID).Scan(&windowID); err != nil {
+			return err
+		}
+		id, err := l.store.ReserveBilling(ctx, tx, repository.ReservationInput{CallID: l.callID, TokenID: uint64(tokenID), BillingAccountID: accountID, BudgetWindowID: windowID, Amount: amount.String(), Currency: currency, CurrencyVersion: uint32(version)})
+		reservation.reservationID = id
+		return err
+	})
+	if err != nil {
+		return nil, err
+	}
+	return reservation, nil
+}
+
 func (l *unifiedLifecycle) finish(ctx context.Context, attemptState execution.AttemptState, callState execution.CallState, reason string) error {
 	if l == nil || l.store == nil || l.callID == 0 || l.attemptID == 0 {
 		return nil
