@@ -15,6 +15,7 @@ func RegisterRoutes(group *gin.RouterGroup) {
 	group.POST("/unified-gateway/deployments/:id/activate", ActivateUnifiedDeployment)
 	group.GET("/unified-gateway/credentials", UnifiedGatewayCredentials)
 	group.GET("/unified-gateway/calls", UnifiedGatewayCalls)
+	group.GET("/unified-gateway/calls/:id", UnifiedGatewayCallDetail)
 	// 用户管理
 	group.GET("/users", ListUsers)
 	group.PUT("/users/:id/role", UpdateUserRole)

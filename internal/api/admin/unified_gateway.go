@@ -250,6 +250,64 @@ func UnifiedGatewayCalls(c *gin.Context) {
 	resp.Success(c, unifiedGatewayPage{Items: items, Page: page, PageSize: size, Total: total})
 }
 
+func UnifiedGatewayCallDetail(c *gin.Context) {
+	id, err := resp.ParseUintParam(c, "id")
+	if err != nil {
+		return
+	}
+	page, size, ok := unifiedGatewayPagination(c)
+	if !ok {
+		return
+	}
+	db, err := model.DB().DB()
+	if err != nil {
+		resp.InternalError(c, pkgErrors.ErrInternalError)
+		return
+	}
+	ctx := c.Request.Context()
+	var call gin.H
+	var publicID, status, amount, currency, delivery string
+	var userID, tokenID, releaseID, operationID, skuID int64
+	var createdAt, updatedAt sql.NullTime
+	err = db.QueryRowContext(ctx, `SELECT public_id,user_id,token_id,status,catalog_release_id,model_operation_id,sku_id,quoted_amount,price_currency,delivery_mode,created_at,updated_at FROM gw_api_calls WHERE id=?`, id).Scan(&publicID, &userID, &tokenID, &status, &releaseID, &operationID, &skuID, &amount, &currency, &delivery, &createdAt, &updatedAt)
+	if err == sql.ErrNoRows {
+		resp.ErrorMsg(c, 404, 404, "call not found")
+		return
+	}
+	if err != nil {
+		resp.InternalError(c, pkgErrors.ErrInternalError)
+		return
+	}
+	call = gin.H{"id": id, "public_id": publicID, "user_id": userID, "token_id": tokenID, "status": status, "catalog_release_id": releaseID, "model_operation_id": operationID, "sku_id": skuID, "quoted_amount": amount, "price_currency": currency, "delivery_mode": delivery, "created_at": nullableTime(createdAt), "updated_at": nullableTime(updatedAt)}
+	var total int64
+	if err := db.QueryRowContext(ctx, "SELECT COUNT(*) FROM gw_api_call_attempts WHERE call_id=?", id).Scan(&total); err != nil {
+		resp.InternalError(c, pkgErrors.ErrInternalError)
+		return
+	}
+	rows, err := db.QueryContext(ctx, `SELECT id,attempt_no,state,catalog_release_id,sku_id,route_id,offering_id,credential_id,credential_version_id,purpose_grant_id,created_at,updated_at FROM gw_api_call_attempts WHERE call_id=? ORDER BY attempt_no DESC LIMIT ? OFFSET ?`, id, size, (page-1)*size)
+	if err != nil {
+		resp.InternalError(c, pkgErrors.ErrInternalError)
+		return
+	}
+	defer rows.Close()
+	attempts := make([]gin.H, 0, size)
+	for rows.Next() {
+		var aid, no, ar, as, routeID, offering, credential, version, grant int64
+		var ast string
+		var ca, ua sql.NullTime
+		if err := rows.Scan(&aid, &no, &ast, &ar, &as, &routeID, &offering, &credential, &version, &grant, &ca, &ua); err != nil {
+			resp.InternalError(c, pkgErrors.ErrInternalError)
+			return
+		}
+		attempts = append(attempts, gin.H{"id": aid, "attempt_no": no, "state": ast, "catalog_release_id": ar, "sku_id": as, "route_id": routeID, "offering_id": offering, "credential_id": credential, "credential_version_id": version, "purpose_grant_id": grant, "created_at": nullableTime(ca), "updated_at": nullableTime(ua)})
+	}
+	if err := rows.Err(); err != nil {
+		resp.InternalError(c, pkgErrors.ErrInternalError)
+		return
+	}
+	resp.Success(c, gin.H{"call": call, "attempts": unifiedGatewayPage{Items: attempts, Page: page, PageSize: size, Total: total}})
+}
+
 func UnifiedGatewayPublishCatalog(c *gin.Context) {
 	id, err := resp.ParseUintParam(c, "id")
 	if err != nil {
