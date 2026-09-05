@@ -16,8 +16,8 @@ import (
 )
 
 const (
-	EnvelopeVersion uint8 = 1
-	KeySize               = 32
+	EnvelopeVersion = uint8(1)
+	KeySize         = 32
 )
 
 var (

@@ -430,12 +430,6 @@ func legacyCredentialStatus(status int) string {
 	}
 	return "active"
 }
-func legacyVisibility(status int) string {
-	if status == 0 {
-		return "hidden"
-	}
-	return "visible"
-}
 func maxOne(v int64) int64 {
 	if v < 1 {
 		return 1

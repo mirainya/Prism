@@ -867,7 +867,7 @@ func PlaygroundGetVideo(c *gin.Context) {
 	if task.ErrorMessage != "" {
 		detail["error_message"] = task.ErrorMessage
 	}
-	if task.ResultJSON != nil && len(task.ResultJSON) > 2 {
+	if len(task.ResultJSON) > 2 {
 		var result any
 		if json.Unmarshal(task.ResultJSON, &result) == nil {
 			detail["result"] = result
@@ -877,7 +877,7 @@ func PlaygroundGetVideo(c *gin.Context) {
 		detail["completed_at"] = task.CompletedAt.Format(time.RFC3339)
 	}
 	if middleware.GetUserRole(c) == string(model.UserRoleAdmin) {
-		if task.ProviderResponse != nil && len(task.ProviderResponse) > 2 {
+		if len(task.ProviderResponse) > 2 {
 			var vendor any
 			if json.Unmarshal(task.ProviderResponse, &vendor) == nil {
 				detail["vendor_response"] = vendor
@@ -934,7 +934,7 @@ func PlaygroundListVideos(c *gin.Context) {
 			item["h_channel_points_vip"] = metadata.PointsVIP
 			item["priority_surcharge_percent"] = metadata.PrioritySurchargePercent
 		}
-		if t.ResultJSON != nil && len(t.ResultJSON) > 2 {
+		if len(t.ResultJSON) > 2 {
 			var result any
 			if json.Unmarshal(t.ResultJSON, &result) == nil {
 				item["result"] = result

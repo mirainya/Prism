@@ -139,20 +139,12 @@ func validateURL(value *url.URL) error {
 	return nil
 }
 
-func validateResolvedURL(ctx context.Context, value *url.URL) error {
-	return validateResolvedURLWithTrustedHosts(ctx, value, nil)
-}
-
 func validateResolvedURLWithTrustedHosts(ctx context.Context, value *url.URL, trustedHosts []string) error {
 	if err := validateURL(value); err != nil {
 		return err
 	}
 	_, err := resolveAddresses(ctx, value.Hostname(), trustedHosts)
 	return err
-}
-
-func resolvePublicAddresses(ctx context.Context, host string) ([]net.IPAddr, error) {
-	return resolveAddresses(ctx, host, nil)
 }
 
 func resolveAddresses(ctx context.Context, host string, trustedHosts []string) ([]net.IPAddr, error) {
