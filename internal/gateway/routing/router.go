@@ -1,6 +1,7 @@
 package routing
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 
@@ -55,6 +56,12 @@ func (r *Router) Release(keyID uint) {
 	if result.Error != nil {
 		logger.Error("failed to release gateway concurrency", zap.Uint("key_id", keyID), zap.Error(result.Error))
 	}
+}
+
+// UnifiedActive reports whether the published catalog and deployment
+// readiness gates currently permit new traffic.
+func (r *Router) UnifiedActive(ctx context.Context) bool {
+	return r.unifiedActive(ctx)
 }
 
 func parseStrMap(raw []byte) map[string]string {

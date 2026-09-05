@@ -223,3 +223,54 @@ func (s *Store) ResolveReservation(ctx context.Context, tx *sql.Tx, reservationI
 	_, err = tx.ExecContext(ctx, `INSERT INTO billing_events(billing_account_id,reservation_id,call_id,event_key,event_type,amount,currency_code,currency_version,state_version,created_at) VALUES (?,?,?,?,?,?,?,?,?,?)`, accountID, reservationID, callID, fmt.Sprintf("%s:%d", eventType, reservationID), eventType, value.String(), currency, currencyVersion, version+1, now)
 	return err
 }
+
+// SettleReservation settles only the measured amount and releases the
+// unused hold in the same transaction. Actual usage may not exceed the
+// original authorization; callers must create a new authorization first.
+func (s *Store) SettleReservation(ctx context.Context, tx *sql.Tx, reservationID uint64, actual string) error {
+	if tx == nil || reservationID == 0 {
+		return ErrInvalidInput
+	}
+	actualAmount, err := billing.ParseAmount(actual, 18, true)
+	if err != nil || actualAmount.Sign() < 0 {
+		return ErrInvalidInput
+	}
+	var callID, accountID, windowID uint64
+	var reserved, state, currency string
+	var version uint64
+	var currencyVersion uint32
+	if err := tx.QueryRowContext(ctx, `SELECT r.call_id,r.billing_account_id,r.budget_window_id,r.amount,r.state,r.state_version,a.currency_code,a.currency_version FROM billing_reservations r JOIN billing_accounts a ON a.id=r.billing_account_id WHERE r.id=? FOR UPDATE`, reservationID).Scan(&callID, &accountID, &windowID, &reserved, &state, &version, &currency, &currencyVersion); err == sql.ErrNoRows {
+		return ErrNotFound
+	} else if err != nil {
+		return err
+	}
+	if state != "active" {
+		if state == "settled" {
+			return nil
+		}
+		return ErrConflict
+	}
+	reservedAmount, err := billing.ParseAmount(reserved, 18, true)
+	if err != nil || actualAmount.Cmp(reservedAmount) > 0 {
+		return ErrConflict
+	}
+	now := nowUTC()
+	if _, err = tx.ExecContext(ctx, `UPDATE billing_accounts SET held_amount=held_amount-?,posted_balance=posted_balance-?,state_version=state_version+1,updated_at=? WHERE id=? AND held_amount>=? AND posted_balance>=?`, reservedAmount.String(), actualAmount.String(), now, accountID, reservedAmount.String(), actualAmount.String()); err != nil {
+		return err
+	}
+	if _, err = tx.ExecContext(ctx, `UPDATE token_budget_windows SET held_amount=held_amount-?,used_amount=used_amount+? WHERE id=? AND held_amount>=?`, reservedAmount.String(), actualAmount.String(), windowID, reservedAmount.String()); err != nil {
+		return err
+	}
+	if _, err = tx.ExecContext(ctx, `UPDATE billing_reservations SET state='settled',state_version=state_version+1,resolved_at=? WHERE id=? AND state='active' AND state_version=?`, now, reservationID, version); err != nil {
+		return err
+	}
+	if _, err = tx.ExecContext(ctx, `INSERT INTO billing_events(billing_account_id,reservation_id,call_id,event_key,event_type,amount,currency_code,currency_version,state_version,created_at) VALUES (?,?,?,?,?,?,?,?,?,?)`, accountID, reservationID, callID, fmt.Sprintf("reservation_settled:%d", reservationID), "reservation_settled", actualAmount.String(), currency, currencyVersion, version+1, now); err != nil {
+		return err
+	}
+	if refund := reservedAmount.Sub(actualAmount); refund.Sign() > 0 {
+		if _, err = tx.ExecContext(ctx, `INSERT INTO billing_events(billing_account_id,reservation_id,call_id,event_key,event_type,amount,currency_code,currency_version,state_version,created_at) VALUES (?,?,?,?,?,?,?,?,?,?)`, accountID, reservationID, callID, fmt.Sprintf("reservation_refund:%d", reservationID), "refund", refund.String(), currency, currencyVersion, version+2, now); err != nil {
+			return err
+		}
+	}
+	return nil
+}

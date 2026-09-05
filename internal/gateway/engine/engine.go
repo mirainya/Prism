@@ -112,7 +112,7 @@ type StreamResult struct {
 	AttemptID uint
 
 	stream              transport.EventStream
-	reservation         *Reservation
+	reservation         reservationLifecycle
 	requestLog          *RequestLog
 	ledger              *callLifecycle
 	keepCallOpenOnError bool
@@ -163,14 +163,14 @@ type callLifecycle struct {
 	pendingUnifiedPayloads map[string][]byte
 }
 
-func (l *callLifecycle) startUnified(ctx context.Context, route *routing.RouteResult, request canonical.Request, userID, tokenID uint, store bool) {
+func (l *callLifecycle) startUnified(ctx context.Context, route *routing.RouteResult, request canonical.Request, userID, tokenID uint, store bool) error {
 	if l == nil || !unifiedRoute(route) || l.unified != nil {
-		return
+		return nil
 	}
 	u, err := newUnifiedLifecycle(route, request, l.callID, userID, tokenID, store)
 	if err != nil {
 		logLedgerError("create unified gateway call", l.callID, 0, err)
-		return
+		return err
 	}
 	l.mu.Lock()
 	l.unified = u
@@ -180,21 +180,24 @@ func (l *callLifecycle) startUnified(ctx context.Context, route *routing.RouteRe
 	for kind, data := range pending {
 		u.recordPayload(ctx, kind, data)
 	}
+	return nil
 }
 
-func (l *callLifecycle) startUnifiedAttempt(ctx context.Context, route *routing.RouteResult, asynchronous bool, scopeKey string) {
+func (l *callLifecycle) startUnifiedAttempt(ctx context.Context, route *routing.RouteResult, asynchronous bool, scopeKey string) error {
 	if l == nil {
-		return
+		return nil
 	}
 	l.mu.Lock()
 	u := l.unified
 	l.mu.Unlock()
 	if u == nil {
-		return
+		return nil
 	}
 	if err := u.startAttempt(ctx, route, asynchronous, scopeKey); err != nil {
 		logLedgerError("start unified gateway attempt", l.callID, 0, err)
+		return err
 	}
+	return nil
 }
 
 func (l *callLifecycle) finishUnified(ctx context.Context, attemptState execution.AttemptState, callState execution.CallState, reason string) {
@@ -210,6 +213,19 @@ func (l *callLifecycle) finishUnified(ctx context.Context, attemptState executio
 	if err := u.finish(ctx, attemptState, callState, reason); err != nil {
 		logLedgerError("finish unified gateway lifecycle", l.callID, 0, err)
 	}
+}
+
+func (l *callLifecycle) reserveUnified(ctx context.Context, userID, tokenID uint, route *routing.RouteResult, request canonical.Request) (reservationLifecycle, error) {
+	if l == nil {
+		return nil, nil
+	}
+	l.mu.Lock()
+	u := l.unified
+	l.mu.Unlock()
+	if u == nil {
+		return nil, nil
+	}
+	return u.reserve(ctx, userID, tokenID, route, request)
 }
 
 const (
@@ -1108,8 +1124,15 @@ func (e *Engine) executeSelected(
 		return nil, false, err
 	}
 	if ledger != nil {
-		ledger.startUnified(ctx, route, request, options.UserID, options.TokenID, request.Store != nil && *request.Store)
-		ledger.startUnifiedAttempt(ctx, route, request.Background, fmt.Sprintf("credential:%d", route.CredentialID))
+		if err := ledger.startUnified(ctx, route, request, options.UserID, options.TokenID, request.Store != nil && *request.Store); err != nil {
+			e.selector.Release(route.KeyID)
+			return nil, false, err
+		}
+		if err := ledger.startUnifiedAttempt(ctx, route, request.Background, fmt.Sprintf("credential:%d", route.CredentialID)); err != nil {
+			ledger.finishUnified(ctx, execution.AttemptNotCreated, execution.CallFailed, "attempt_not_created")
+			e.selector.Release(route.KeyID)
+			return nil, false, err
+		}
 	}
 	attempt, err := ledger.startAttempt(route, prepared)
 	if err != nil {
@@ -1122,15 +1145,16 @@ func (e *Engine) executeSelected(
 	}
 	ledger.recordPayload(attemptID, model.APICallPayloadUpstreamRequest, prepared.Body)
 	billingContext := callBillingContext(options.CallID, attemptID, route)
-	reservation, err := reserveWithBillingContext(
-		e.billing,
-		options.TokenID,
-		options.UserID,
-		route,
-		request,
-		options.BillingKey,
-		billingContext,
-	)
+	var reservation reservationLifecycle
+	if unifiedReservation, unifiedErr := ledger.reserveUnified(ctx, options.UserID, options.TokenID, route, request); unifiedErr != nil {
+		ledger.failAttempt(attemptID, unifiedErr, nil, "")
+		e.selector.Release(route.KeyID)
+		return nil, false, unifiedErr
+	} else if unifiedReservation != nil {
+		reservation = unifiedReservation
+	} else {
+		reservation, err = reserveWithBillingContext(e.billing, options.TokenID, options.UserID, route, request, options.BillingKey, billingContext)
+	}
 	if err != nil {
 		ledger.failAttempt(attemptID, err, nil, "")
 		e.selector.Release(route.KeyID)

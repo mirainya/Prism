@@ -1,11 +1,14 @@
 package engine
 
 import (
+	"context"
+	"database/sql"
 	"encoding/json"
 	"fmt"
 	"unicode/utf8"
 
 	"github.com/mirainya/Prism/internal/gateway/canonical"
+	"github.com/mirainya/Prism/internal/gateway/repository"
 	"github.com/mirainya/Prism/internal/gateway/routing"
 	"github.com/mirainya/Prism/internal/model"
 	"github.com/mirainya/Prism/internal/service"
@@ -26,6 +29,42 @@ type Reservation struct {
 	amount          decimal.Decimal
 	key             string
 	billingContext  service.BillingContext
+}
+
+type reservationLifecycle interface {
+	Cancel() error
+	Settle(*canonical.Usage) error
+	Retain() error
+}
+
+type unifiedReservation struct {
+	store                 *repository.Store
+	callID, reservationID uint64
+	amount                decimal.Decimal
+	route                 *routing.RouteResult
+}
+
+func (r *unifiedReservation) Cancel() error { return r.resolve("released", "reservation_released") }
+func (r *unifiedReservation) Retain() error { return r.resolve("settled", "reservation_settled") }
+func (r *unifiedReservation) Settle(u *canonical.Usage) error {
+	if r == nil || r.store == nil || r.reservationID == 0 {
+		return nil
+	}
+	actual := decimal.Zero
+	if u != nil {
+		actual = cost(r.route, int64(u.InputTokens), int64(u.OutputTokens)).RoundCeil(billingPrecision)
+	}
+	return r.store.WithTx(context.Background(), func(tx *sql.Tx) error {
+		return r.store.SettleReservation(context.Background(), tx, r.reservationID, actual.String())
+	})
+}
+func (r *unifiedReservation) resolve(target, event string) error {
+	if r == nil || r.store == nil || r.reservationID == 0 {
+		return nil
+	}
+	return r.store.WithTx(context.Background(), func(tx *sql.Tx) error {
+		return r.store.ResolveReservation(context.Background(), tx, r.reservationID, target, event)
+	})
 }
 
 func Reserve(b *service.BillingService, tokenID, userID uint, route *routing.RouteResult, req canonical.Request, key string) (*Reservation, error) {
