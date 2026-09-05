@@ -69,6 +69,11 @@ func (r *Router) SelectTransport(modelName string, requirements RouteRequirement
 	if r.unifiedActive(context.Background()) {
 		return r.selectUnified(modelName, requirements, options)
 	}
+	if r.unified.configured(context.Background()) {
+		// Once target catalog data exists, legacy routing is no longer a safe
+		// fallback. An unpublished or unready target must fail closed.
+		return nil, ErrNoRoute
+	}
 	var chosen *transportCandidate
 	err := model.DB().Transaction(func(tx *gorm.DB) error {
 		// 先区分“模型不存在”和“模型存在但当前不可用”，两者会映射成不同的公开 API 错误。

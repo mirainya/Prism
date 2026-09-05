@@ -93,6 +93,21 @@ func (s *unifiedSelector) active(ctx context.Context) (bool, error) {
 	return cryptoMembers == members && badKeys == 0, nil
 }
 
+func (s *unifiedSelector) configured(ctx context.Context) bool {
+	db, err := model.DB().DB()
+	if err != nil {
+		return false
+	}
+	var count uint64
+	if err := db.QueryRowContext(ctx, `SELECT COUNT(*) FROM gw_catalog_releases`).Scan(&count); err == nil && count > 0 {
+		return true
+	}
+	if err := db.QueryRowContext(ctx, `SELECT COUNT(*) FROM gateway_channels`).Scan(&count); err == nil && count > 0 {
+		return true
+	}
+	return false
+}
+
 func (s *unifiedSelector) selectTransport(modelName string, requirements RouteRequirements, options RouteOptions) (*RouteResult, error) {
 	db, err := model.DB().DB()
 	if err != nil {
