@@ -49,7 +49,7 @@ func TestUnifiedGatewayOverviewReportsLegacyAndTargetCounts(t *testing.T) {
 	if w.Code != 200 {
 		t.Fatalf("status=%d body=%s", w.Code, w.Body.String())
 	}
-	if got := w.Body.String(); !strings.Contains(got, `"state":"legacy_runtime"`) || !strings.Contains(got, `"channels":2`) || !strings.Contains(got, `"abilities":1`) {
+	if got := w.Body.String(); !strings.Contains(got, `"state":"legacy_runtime"`) || !strings.Contains(got, `"ready_for_cutover":false`) || !strings.Contains(got, `"channels":2`) || !strings.Contains(got, `"abilities":1`) {
 		t.Fatalf("unexpected response=%s", got)
 	}
 }

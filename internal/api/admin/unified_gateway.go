@@ -56,9 +56,11 @@ func UnifiedGatewayOverview(c *gin.Context) {
 	} else if legacyChannels > 0 || legacyAbilities > 0 {
 		state = "legacy_runtime"
 	}
+	readyForCutover := legacyChannels == 0 && legacyAbilities == 0 && targetChannels > 0 && targetModels > 0 && targetCredentials > 0 && targetReleases > 0 && activeRelease.Valid && deploymentStatus == "active"
 
 	resp.Success(c, gin.H{
-		"state": state,
+		"state":             state,
+		"ready_for_cutover": readyForCutover,
 		"runtime": gin.H{
 			"active_release_id":     activeReleaseValue,
 			"release_state_version": releaseVersion,
