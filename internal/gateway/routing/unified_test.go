@@ -29,3 +29,26 @@ func TestUnifiedKeyMarkerDoesNotReleaseLegacyConcurrency(t *testing.T) {
 		t.Fatal("legacy key was incorrectly marked as unified")
 	}
 }
+
+func TestUnifiedAttemptExclusionUsesCredentialAndTransport(t *testing.T) {
+	attempts := []TransportAttempt{{KeyID: 7, Transport: model.UpstreamTransportAnthropic}}
+	if !excludedUnifiedAttempt(attempts, 7, model.UpstreamTransportAnthropic) {
+		t.Fatal("matching unified attempt was not excluded")
+	}
+	if excludedUnifiedAttempt(attempts, 8, model.UpstreamTransportAnthropic) {
+		t.Fatal("different credential was excluded")
+	}
+	if excludedUnifiedAttempt(attempts, 7, model.UpstreamTransportOpenAIChat) {
+		t.Fatal("different transport was excluded")
+	}
+}
+
+func TestWeightedUnifiedCandidateAcceptsNonPositiveWeights(t *testing.T) {
+	candidates := []unifiedCandidate{{AbilityID: 1, Weight: 0}, {AbilityID: 2, Weight: -1}}
+	for i := 0; i < 20; i++ {
+		chosen := weightedUnifiedCandidate(candidates)
+		if chosen.AbilityID != 1 && chosen.AbilityID != 2 {
+			t.Fatalf("unexpected candidate %d", chosen.AbilityID)
+		}
+	}
+}

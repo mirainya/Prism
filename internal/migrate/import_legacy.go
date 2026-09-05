@@ -285,6 +285,9 @@ func ImportLegacyGateway(ctx context.Context, db *sql.DB, options ImportOptions)
 		if err != nil {
 			return ImportReport{}, err
 		}
+		if _, err = tx.ExecContext(ctx, `INSERT INTO gw_offering_runtime_state (release_id,offering_id,state,state_version,reason_code,updated_at) VALUES (?,?, 'active',1,'legacy_import',?)`, releaseID, offeringID, now); err != nil {
+			return ImportReport{}, err
+		}
 		if _, err = insertID(ctx, tx, `INSERT INTO gw_routes (release_id,sku_id,offering_id,priority,weight,created_at) VALUES (?,?,?,?,?,?)`, releaseID, skuIDs[ability.ModelName], offeringID, maxZero(ability.Priority), 1, now); err != nil {
 			return ImportReport{}, err
 		}

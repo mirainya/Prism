@@ -21,15 +21,15 @@ const unifiedKeyMarker uint = 1 << 31
 type unifiedSelector struct{}
 
 type unifiedCandidate struct {
-	AbilityID, CredentialID, ChannelID, PoolID, VersionID uint64
-	VendorModel, Protocol, BaseURL, TransportCode         string
-	Priority, Weight                                      int
-	RequestPath                                           string
-	Nonce, Ciphertext, WrapNonce, WrappedDEK              []byte
-	BlobID                                                uint64
-	KEKVersion                                            uint32
-	InputPrice, OutputPrice                               decimal.Decimal
-	Capabilities                                          []byte
+	AbilityID, CredentialID, ChannelID, PoolID, VersionID, OfferingID uint64
+	VendorModel, Protocol, BaseURL, TransportCode                     string
+	Priority, Weight                                                  int64
+	RequestPath                                                       string
+	Nonce, Ciphertext, WrapNonce, WrappedDEK                          []byte
+	BlobID                                                            uint64
+	KEKVersion                                                        uint32
+	InputPrice, OutputPrice                                           decimal.Decimal
+	Capabilities                                                      []byte
 }
 
 func (s *unifiedSelector) active(ctx context.Context) (bool, error) {
@@ -41,7 +41,31 @@ func (s *unifiedSelector) active(ctx context.Context) (bool, error) {
 	if err := db.QueryRowContext(ctx, `SELECT active_release_id FROM gw_catalog_runtime_state WHERE id=1`).Scan(&releaseID); err != nil {
 		return false, err
 	}
-	return releaseID.Valid && releaseID.Int64 > 0, nil
+	if !releaseID.Valid || releaseID.Int64 <= 0 {
+		return false, nil
+	}
+	// A pointer update alone is not sufficient to enable traffic. Require an
+	// active deployment generation whose every member has a fresh, matching
+	// catalog and crypto readiness record.
+	var generationID uint64
+	if err := db.QueryRowContext(ctx, `SELECT id FROM gw_deployment_generations WHERE status='active' ORDER BY id DESC LIMIT 1`).Scan(&generationID); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return false, nil
+		}
+		return false, err
+	}
+	var members, ready uint64
+	if err := db.QueryRowContext(ctx, `SELECT COUNT(*) FROM gw_deployment_members WHERE deployment_generation_id=?`, generationID).Scan(&members); err != nil || members == 0 {
+		return false, err
+	}
+	if err := db.QueryRowContext(ctx, `SELECT COUNT(*) FROM gw_catalog_readiness r JOIN gw_deployment_members m ON m.id=r.deployment_member_id JOIN gw_catalog_releases c ON c.id=r.release_id WHERE r.deployment_generation_id=? AND r.release_id=? AND r.status='ready' AND r.expires_at>UTC_TIMESTAMP(3) AND r.adapter_digest<>'' AND r.content_hash=c.content_hash AND r.semantic_digest=c.semantic_digest`, generationID, releaseID.Int64).Scan(&ready); err != nil || ready != members {
+		return false, err
+	}
+	var cryptoMembers, badKeys uint64
+	if err := db.QueryRowContext(ctx, `SELECT COUNT(DISTINCT deployment_member_id),COUNT(CASE WHEN status<>'ready' OR expires_at<=UTC_TIMESTAMP(3) THEN 1 END) FROM crypto_key_readiness WHERE deployment_generation_id=?`, generationID).Scan(&cryptoMembers, &badKeys); err != nil {
+		return false, err
+	}
+	return cryptoMembers == members && badKeys == 0, nil
 }
 
 func (s *unifiedSelector) selectTransport(modelName string, requirements RouteRequirements, options RouteOptions) (*RouteResult, error) {
@@ -60,8 +84,20 @@ func (s *unifiedSelector) selectTransport(modelName string, requirements RouteRe
 	if activeRelease == 0 {
 		return nil, ErrNoRoute
 	}
+	var declared uint64
+	if err := db.QueryRowContext(ctx, `SELECT COUNT(*)
+FROM gw_catalog_releases rel
+JOIN gw_catalog_models cm ON cm.release_id=rel.id
+JOIN gw_catalog_model_names cmn ON cmn.release_id=cm.release_id AND cmn.catalog_model_id=cm.id
+JOIN gw_model_names mn ON mn.id=cmn.model_name_id AND mn.model_id=cm.model_id
+WHERE rel.id=? AND rel.status='published' AND mn.api_name=?`, activeRelease, modelName).Scan(&declared); err != nil {
+		return nil, err
+	}
+	if declared == 0 {
+		return nil, ErrModelNotFound
+	}
 	rows, err := db.QueryContext(ctx, `
-SELECT mo.id, ch.id, o.credential_pool_id, c.id, cv.id, eb.id,
+SELECT mo.id, ch.id, o.credential_pool_id, c.id, cv.id, o.id, eb.id,
        p.vendor_model, ch.protocol, ct.base_url, ct.transport_code,
        r.priority, r.weight, ct.request_path,
        eb.nonce, eb.ciphertext, w.wrap_nonce, w.wrapped_dek, w.kek_version,
@@ -78,6 +114,7 @@ JOIN gw_product_transports pt ON pt.release_id=o.release_id AND pt.id=o.product_
 JOIN gw_products p ON p.release_id=pt.release_id AND p.id=pt.product_id
 JOIN gw_channel_transports ct ON ct.release_id=pt.release_id AND ct.id=pt.channel_transport_id
 JOIN gateway_channels ch ON ch.id=p.channel_id AND ch.status='active'
+JOIN gw_offering_runtime_state ors ON ors.release_id=o.release_id AND ors.offering_id=o.id AND ors.state='active'
 JOIN gw_credentials c ON c.channel_id=ch.id AND c.credential_pool_id=o.credential_pool_id AND c.status='active'
 JOIN gw_credential_purpose_grants g ON g.credential_id=c.id AND g.purpose='execution' AND g.status='active'
 JOIN gw_credential_versions cv ON cv.credential_id=c.id AND cv.id=c.current_version_id AND cv.status='active'
@@ -91,19 +128,25 @@ ORDER BY r.priority DESC, r.id`, activeRelease, modelName)
 	}
 	defer rows.Close()
 	var candidates []unifiedCandidate
+	capabilityMatch, transportMatch := false, false
 	for rows.Next() {
 		var c unifiedCandidate
 		var inputPrice, outputPrice string
-		if err := rows.Scan(&c.AbilityID, &c.ChannelID, &c.PoolID, &c.CredentialID, &c.VersionID, &c.BlobID, &c.VendorModel, &c.Protocol, &c.BaseURL, &c.TransportCode, &c.Priority, &c.Weight, &c.RequestPath, &c.Nonce, &c.Ciphertext, &c.WrapNonce, &c.WrappedDEK, &c.KEKVersion, &inputPrice, &outputPrice, &c.Capabilities); err != nil {
+		if err := rows.Scan(&c.AbilityID, &c.ChannelID, &c.PoolID, &c.CredentialID, &c.VersionID, &c.OfferingID, &c.BlobID, &c.VendorModel, &c.Protocol, &c.BaseURL, &c.TransportCode, &c.Priority, &c.Weight, &c.RequestPath, &c.Nonce, &c.Ciphertext, &c.WrapNonce, &c.WrappedDEK, &c.KEKVersion, &inputPrice, &outputPrice, &c.Capabilities); err != nil {
 			return nil, err
 		}
 		c.InputPrice, _ = decimal.NewFromString(inputPrice)
 		c.OutputPrice, _ = decimal.NewFromString(outputPrice)
 		transport := unifiedTransport(c.Protocol)
-		if containsUint(options.ExcludeChannels, uint(c.ChannelID)) || containsUint(options.ExcludeKeys, uint(c.CredentialID)) {
+		if !supportsSemanticRequirements(semanticCapabilities(c.Capabilities), requirements) {
 			continue
 		}
-		if !transportAllowed(transport, options.AllowedTransports) || !supportsSemanticRequirements(semanticCapabilities(c.Capabilities), requirements) {
+		capabilityMatch = true
+		if !transportAllowed(transport, options.AllowedTransports) {
+			continue
+		}
+		transportMatch = true
+		if containsUint(options.ExcludeChannels, uint(c.ChannelID)) || containsUint(options.ExcludeKeys, uint(c.CredentialID)) || excludedUnifiedAttempt(options.ExcludeAttempts, c.CredentialID, transport) {
 			continue
 		}
 		candidates = append(candidates, c)
@@ -112,7 +155,13 @@ ORDER BY r.priority DESC, r.id`, activeRelease, modelName)
 		return nil, err
 	}
 	if len(candidates) == 0 {
-		return nil, ErrModelNotFound
+		if !capabilityMatch {
+			return nil, ErrCapabilityUnavailable
+		}
+		if !transportMatch {
+			return nil, ErrNoCompatibleTransport
+		}
+		return nil, ErrNoRoute
 	}
 	sort.SliceStable(candidates, func(i, j int) bool {
 		leftRank := transportRank(unifiedTransport(candidates[i].Protocol), options.PreferredTransports)
@@ -134,7 +183,7 @@ ORDER BY r.priority DESC, r.id`, activeRelease, modelName)
 		}
 		top = append(top, candidate)
 	}
-	chosen := top[rand.Intn(len(top))]
+	chosen := weightedUnifiedCandidate(top)
 	apiKey, err := decryptUnifiedCredential(chosen)
 	if err != nil {
 		return nil, err
@@ -146,6 +195,41 @@ ORDER BY r.priority DESC, r.id`, activeRelease, modelName)
 		Transport: unifiedTransport(chosen.Protocol), TransportConfig: map[string]any{"request_path": chosen.RequestPath},
 		InputPrice: chosen.InputPrice, OutputPrice: chosen.OutputPrice,
 	}, nil
+}
+
+func excludedUnifiedAttempt(attempts []TransportAttempt, credentialID uint64, transport model.UpstreamTransport) bool {
+	for _, attempt := range attempts {
+		if uint64(attempt.KeyID) == credentialID && attempt.Transport == transport {
+			return true
+		}
+	}
+	return false
+}
+
+func weightedUnifiedCandidate(candidates []unifiedCandidate) unifiedCandidate {
+	if len(candidates) == 1 {
+		return candidates[0]
+	}
+	var total int64
+	for _, candidate := range candidates {
+		if candidate.Weight > 0 {
+			total += candidate.Weight
+		}
+	}
+	if total <= 0 {
+		return candidates[rand.Intn(len(candidates))]
+	}
+	pick := rand.Int63n(total)
+	for _, candidate := range candidates {
+		if candidate.Weight <= 0 {
+			continue
+		}
+		if pick < candidate.Weight {
+			return candidate
+		}
+		pick -= candidate.Weight
+	}
+	return candidates[len(candidates)-1]
 }
 
 func containsUint(values []uint, target uint) bool {
