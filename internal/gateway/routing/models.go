@@ -41,22 +41,36 @@ func (r RouteRequirements) Require(capability Capability) {
 
 // RouteResult 一次选路的结果:够 pipeline 构造上游请求。
 type RouteResult struct {
-	AbilityID       uint
-	KeyID           uint
-	ChannelID       uint
-	Protocol        model.Protocol
-	BaseURL         string
-	APIKey          string
-	VendorModel     string
-	ModelName       string // 公开模型名(计费/熔断/日志用)
-	ExtraHeaders    map[string]string
-	Capabilities    map[Capability]bool
-	Transport       model.UpstreamTransport
-	TransportConfig map[string]any
-	ExecutionMode   ExecutionMode
-	ChannelConfig   map[string]any // gw_channels.config 解析(如 image_to_base64)
+	// Unified catalog identity. Zero values mean this is a legacy route.
+	ReleaseID           uint
+	OperationContractID uint
+	ModelOperationID    uint
+	SKUID               uint
+	RouteID             uint
+	OfferingID          uint
+	ProductTransportID  uint
+	CredentialPoolID    uint
+	CredentialID        uint
+	CredentialVersionID uint
+	PurposeGrantID      uint
+	AbilityID           uint
+	KeyID               uint
+	ChannelID           uint
+	Protocol            model.Protocol
+	BaseURL             string
+	APIKey              string
+	VendorModel         string
+	ModelName           string // 公开模型名(计费/熔断/日志用)
+	ExtraHeaders        map[string]string
+	Capabilities        map[Capability]bool
+	Transport           model.UpstreamTransport
+	TransportConfig     map[string]any
+	ExecutionMode       ExecutionMode
+	ChannelConfig       map[string]any // gw_channels.config 解析(如 image_to_base64)
 
-	PriceMode   string
-	InputPrice  decimal.Decimal
-	OutputPrice decimal.Decimal
+	PriceMode       string
+	InputPrice      decimal.Decimal
+	OutputPrice     decimal.Decimal
+	Currency        string
+	CurrencyVersion uint
 }

@@ -107,3 +107,14 @@ func (s *Store) ActivateDeploymentGeneration(ctx context.Context, tx *sql.Tx, ge
 	}
 	return nil
 }
+
+func (s *Store) RecordCryptoReadiness(ctx context.Context, tx *sql.Tx, generationID, memberID, keyringID uint64, keyVersion uint32, operation, status string, expiresAt time.Time) error {
+	if tx == nil || generationID == 0 || memberID == 0 || keyringID == 0 || keyVersion == 0 || operation == "" || status == "" || expiresAt.IsZero() {
+		return ErrInvalidInput
+	}
+	if status != "ready" && status != "failed" && status != "expired" {
+		return ErrInvalidInput
+	}
+	_, err := tx.ExecContext(ctx, `INSERT INTO crypto_key_readiness(deployment_generation_id,deployment_member_id,keyring_id,key_version,operation,status,checked_at,expires_at) VALUES (?,?,?,?,?,?,?,?) ON DUPLICATE KEY UPDATE status=VALUES(status),checked_at=VALUES(checked_at),expires_at=VALUES(expires_at)`, generationID, memberID, keyringID, keyVersion, operation, status, nowUTC(), expiresAt.UTC())
+	return err
+}

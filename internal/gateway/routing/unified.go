@@ -21,16 +21,19 @@ const unifiedKeyMarker uint = 1 << 31
 type unifiedSelector struct{}
 
 type unifiedCandidate struct {
-	AbilityID, CredentialID, ChannelID, PoolID, VersionID, OfferingID uint64
-	VendorModel, Protocol, BaseURL, TransportCode                     string
-	Priority, Weight                                                  int64
-	RequestPath                                                       string
-	Nonce, Ciphertext, WrapNonce, WrappedDEK                          []byte
-	BlobID                                                            uint64
-	KEKVersion                                                        uint32
-	InputPrice, OutputPrice                                           decimal.Decimal
-	UnitCode                                                          string
-	Capabilities                                                      []byte
+	ReleaseID, OperationContractID, ModelOperationID, SKUID, RouteID, ProductTransportID uint64
+	AbilityID, CredentialID, ChannelID, PoolID, VersionID, OfferingID, PurposeGrantID    uint64
+	VendorModel, Protocol, BaseURL, TransportCode                                        string
+	Priority, Weight                                                                     int64
+	RequestPath                                                                          string
+	Nonce, Ciphertext, WrapNonce, WrappedDEK                                             []byte
+	BlobID                                                                               uint64
+	KEKVersion                                                                           uint32
+	InputPrice, OutputPrice                                                              decimal.Decimal
+	UnitCode                                                                             string
+	Currency                                                                             string
+	CurrencyVersion                                                                      uint64
+	Capabilities                                                                         []byte
 }
 
 func (s *unifiedSelector) active(ctx context.Context) (bool, error) {
@@ -115,11 +118,12 @@ WHERE rel.id=? AND rel.status='published' AND mn.api_name=?`, activeRelease, mod
 		return nil, ErrModelNotFound
 	}
 	rows, err := db.QueryContext(ctx, `
-SELECT mo.id, ch.id, o.credential_pool_id, c.id, cv.id, o.id, eb.id,
+SELECT rel.id, mo.operation_contract_id, mo.id, sku.id, r.id, pt.id, mo.id,
+       ch.id, o.credential_pool_id, c.id, cv.id, o.id, g.id, eb.id,
        p.vendor_model, ch.protocol, ct.base_url, ct.transport_code,
        r.priority, r.weight, ct.request_path,
        eb.nonce, eb.ciphertext, w.wrap_nonce, w.wrapped_dek, w.kek_version,
-	       COALESCE(sr.unit_code,''), COALESCE(sr.unit_price,0), cm.capability_tags
+	       COALESCE(sr.unit_code,''), COALESCE(sr.unit_price,0), COALESCE(sr.currency_code,''), COALESCE(sr.currency_version,0), cm.capability_tags
 FROM gw_catalog_releases rel
 JOIN gw_catalog_models cm ON cm.release_id=rel.id
 JOIN gw_catalog_model_names cmn ON cmn.release_id=cm.release_id AND cmn.catalog_model_id=cm.id
@@ -150,7 +154,10 @@ ORDER BY r.priority DESC, r.id`, activeRelease, modelName)
 	for rows.Next() {
 		var c unifiedCandidate
 		var unitPrice string
-		if err := rows.Scan(&c.AbilityID, &c.ChannelID, &c.PoolID, &c.CredentialID, &c.VersionID, &c.OfferingID, &c.BlobID, &c.VendorModel, &c.Protocol, &c.BaseURL, &c.TransportCode, &c.Priority, &c.Weight, &c.RequestPath, &c.Nonce, &c.Ciphertext, &c.WrapNonce, &c.WrappedDEK, &c.KEKVersion, &c.UnitCode, &unitPrice, &c.Capabilities); err != nil {
+		if err := rows.Scan(&c.ReleaseID, &c.OperationContractID, &c.ModelOperationID, &c.SKUID, &c.RouteID, &c.ProductTransportID, &c.AbilityID,
+			&c.ChannelID, &c.PoolID, &c.CredentialID, &c.VersionID, &c.OfferingID, &c.PurposeGrantID, &c.BlobID,
+			&c.VendorModel, &c.Protocol, &c.BaseURL, &c.TransportCode, &c.Priority, &c.Weight, &c.RequestPath,
+			&c.Nonce, &c.Ciphertext, &c.WrapNonce, &c.WrappedDEK, &c.KEKVersion, &c.UnitCode, &unitPrice, &c.Currency, &c.CurrencyVersion, &c.Capabilities); err != nil {
 			return nil, err
 		}
 		price, _ := decimal.NewFromString(unitPrice)
@@ -214,11 +221,15 @@ ORDER BY r.priority DESC, r.id`, activeRelease, modelName)
 		return nil, err
 	}
 	return &RouteResult{
+		ReleaseID: uint(chosen.ReleaseID), OperationContractID: uint(chosen.OperationContractID), ModelOperationID: uint(chosen.ModelOperationID),
+		SKUID: uint(chosen.SKUID), RouteID: uint(chosen.RouteID), OfferingID: uint(chosen.OfferingID), ProductTransportID: uint(chosen.ProductTransportID),
+		CredentialPoolID: uint(chosen.PoolID), CredentialID: uint(chosen.CredentialID), CredentialVersionID: uint(chosen.VersionID), PurposeGrantID: uint(chosen.PurposeGrantID),
 		AbilityID: uint(chosen.AbilityID), KeyID: unifiedKeyMarker | uint(chosen.CredentialID), ChannelID: uint(chosen.ChannelID),
 		Protocol: model.Protocol(chosen.Protocol), BaseURL: chosen.BaseURL, APIKey: apiKey,
 		VendorModel: chosen.VendorModel, ModelName: modelName, Capabilities: semanticCapabilities(chosen.Capabilities),
 		Transport: unifiedTransport(chosen.Protocol), TransportConfig: map[string]any{"request_path": chosen.RequestPath},
 		InputPrice: chosen.InputPrice, OutputPrice: chosen.OutputPrice, PriceMode: unifiedPriceMode(chosen.UnitCode),
+		Currency: chosen.Currency, CurrencyVersion: uint(chosen.CurrencyVersion),
 	}, nil
 }
 

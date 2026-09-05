@@ -8,6 +8,11 @@ func RegisterRoutes(group *gin.RouterGroup) {
 	group.GET("/unified-gateway/catalog", UnifiedGatewayCatalog)
 	group.POST("/unified-gateway/catalog/:id/publish", UnifiedGatewayPublishCatalog)
 	group.POST("/unified-gateway/catalog/:id/retire", UnifiedGatewayRetireCatalog)
+	group.POST("/unified-gateway/deployments", CreateUnifiedDeployment)
+	group.POST("/unified-gateway/deployments/:id/members", AddUnifiedDeploymentMember)
+	group.POST("/unified-gateway/deployments/:id/members/:member_id/catalog-readiness", RecordUnifiedCatalogReadiness)
+	group.POST("/unified-gateway/deployments/:id/members/:member_id/crypto-readiness", RecordUnifiedCryptoReadiness)
+	group.POST("/unified-gateway/deployments/:id/activate", ActivateUnifiedDeployment)
 	group.GET("/unified-gateway/credentials", UnifiedGatewayCredentials)
 	group.GET("/unified-gateway/calls", UnifiedGatewayCalls)
 	// 用户管理

@@ -15,6 +15,7 @@ import (
 
 	"github.com/mirainya/Prism/internal/domain"
 	"github.com/mirainya/Prism/internal/gateway/canonical"
+	"github.com/mirainya/Prism/internal/gateway/execution"
 	"github.com/mirainya/Prism/internal/gateway/routing"
 	"github.com/mirainya/Prism/internal/gateway/transport"
 	"github.com/mirainya/Prism/internal/model"
@@ -142,6 +143,7 @@ type StreamResult struct {
 
 type callLifecycle struct {
 	service         *service.APICallService
+	unified         *unifiedLifecycle
 	callID          string
 	leaseOwner      string
 	leaseStop       chan struct{}
@@ -158,6 +160,50 @@ type callLifecycle struct {
 	conversationProjection *service.ConversationProjectionOutputRequest
 	leaseErr               error
 	finished               bool
+}
+
+func (l *callLifecycle) startUnified(ctx context.Context, route *routing.RouteResult, userID, tokenID uint, store bool) {
+	if l == nil || !unifiedRoute(route) || l.unified != nil {
+		return
+	}
+	u, err := newUnifiedLifecycle(route, l.callID, userID, tokenID, store)
+	if err != nil {
+		logLedgerError("create unified gateway call", l.callID, 0, err)
+		return
+	}
+	l.mu.Lock()
+	l.unified = u
+	l.mu.Unlock()
+}
+
+func (l *callLifecycle) startUnifiedAttempt(ctx context.Context, route *routing.RouteResult, asynchronous bool, scopeKey string) {
+	if l == nil {
+		return
+	}
+	l.mu.Lock()
+	u := l.unified
+	l.mu.Unlock()
+	if u == nil {
+		return
+	}
+	if err := u.startAttempt(ctx, route, asynchronous, scopeKey); err != nil {
+		logLedgerError("start unified gateway attempt", l.callID, 0, err)
+	}
+}
+
+func (l *callLifecycle) finishUnified(ctx context.Context, attemptState execution.AttemptState, callState execution.CallState, reason string) {
+	if l == nil {
+		return
+	}
+	l.mu.Lock()
+	u := l.unified
+	l.mu.Unlock()
+	if u == nil {
+		return
+	}
+	if err := u.finish(ctx, attemptState, callState, reason); err != nil {
+		logLedgerError("finish unified gateway lifecycle", l.callID, 0, err)
+	}
 }
 
 const (
@@ -434,6 +480,7 @@ func (l *callLifecycle) completeAttempt(attemptID uint, usage *canonical.Usage, 
 	if err != nil {
 		logLedgerError("complete API call attempt", l.callID, attemptID, err)
 	}
+	l.finishUnified(context.Background(), execution.AttemptCompleted, execution.CallInProgress, "upstream_completed")
 }
 
 func (l *callLifecycle) failAttempt(attemptID uint, requestErr error, usage *canonical.Usage, providerResponseID string) {
@@ -459,6 +506,7 @@ func (l *callLifecycle) failAttempt(attemptID uint, requestErr error, usage *can
 	if err != nil {
 		logLedgerError("fail API call attempt", l.callID, attemptID, err)
 	}
+	l.finishUnified(context.Background(), execution.AttemptFailed, execution.CallInProgress, "upstream_failed")
 }
 
 func (l *callLifecycle) cancelAttempt(attemptID uint, requestErr error) {
@@ -476,6 +524,7 @@ func (l *callLifecycle) cancelAttempt(attemptID uint, requestErr error) {
 	if err != nil {
 		logLedgerError("cancel API call attempt", l.callID, attemptID, err)
 	}
+	l.finishUnified(context.Background(), execution.AttemptCancelled, execution.CallCancelled, "attempt_cancelled")
 }
 
 func (l *callLifecycle) completeCall(
@@ -508,6 +557,7 @@ func (l *callLifecycle) completeCall(
 	if err != nil {
 		logLedgerError("complete API call", l.callID, attemptID, err)
 	}
+	l.finishUnified(context.Background(), execution.AttemptCompleted, execution.CallCompleted, "call_completed")
 	l.releaseLease()
 	return err
 }
@@ -545,6 +595,7 @@ func (l *callLifecycle) failCall(
 	if err != nil {
 		logLedgerError("fail API call", l.callID, attemptID, err)
 	}
+	l.finishUnified(context.Background(), execution.AttemptFailed, execution.CallFailed, "call_failed")
 	l.releaseLease()
 	return err
 }
@@ -572,6 +623,7 @@ func (l *callLifecycle) cancelCall(
 	if err != nil {
 		logLedgerError("cancel API call", l.callID, 0, err)
 	}
+	l.finishUnified(context.Background(), execution.AttemptCancelled, execution.CallCancelled, "call_cancelled")
 	l.releaseLease()
 	return err
 }
@@ -1027,6 +1079,10 @@ func (e *Engine) executeSelected(
 	if err != nil {
 		e.selector.Release(route.KeyID)
 		return nil, false, err
+	}
+	if ledger != nil {
+		ledger.startUnified(ctx, route, options.UserID, options.TokenID, request.Store != nil && *request.Store)
+		ledger.startUnifiedAttempt(ctx, route, request.Background, fmt.Sprintf("credential:%d", route.CredentialID))
 	}
 	attempt, err := ledger.startAttempt(route, prepared)
 	if err != nil {
