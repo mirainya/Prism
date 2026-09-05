@@ -86,11 +86,11 @@ func (s *unifiedSelector) active(ctx context.Context) (bool, error) {
 	if err := db.QueryRowContext(ctx, `SELECT COUNT(*) FROM gw_catalog_readiness r JOIN gw_deployment_members m ON m.id=r.deployment_member_id JOIN gw_catalog_releases c ON c.id=r.release_id WHERE r.deployment_generation_id=? AND r.release_id=? AND r.status='ready' AND r.expires_at>UTC_TIMESTAMP(3) AND r.adapter_digest<>'' AND r.content_hash=c.content_hash AND r.semantic_digest=c.semantic_digest`, generationID, releaseID.Int64).Scan(&ready); err != nil || ready != members {
 		return false, err
 	}
-	var cryptoMembers, badKeys uint64
-	if err := db.QueryRowContext(ctx, `SELECT COUNT(DISTINCT deployment_member_id),COUNT(CASE WHEN status<>'ready' OR expires_at<=UTC_TIMESTAMP(3) THEN 1 END) FROM crypto_key_readiness WHERE deployment_generation_id=?`, generationID).Scan(&cryptoMembers, &badKeys); err != nil {
+	var cryptoMembers uint64
+	if err := db.QueryRowContext(ctx, `SELECT COUNT(*) FROM (SELECT deployment_member_id FROM crypto_key_readiness WHERE deployment_generation_id=? GROUP BY deployment_member_id HAVING COUNT(DISTINCT CASE WHEN status='ready' AND expires_at>UTC_TIMESTAMP(3) THEN operation END)=5) ready_members`, generationID).Scan(&cryptoMembers); err != nil {
 		return false, err
 	}
-	return cryptoMembers == members && badKeys == 0, nil
+	return cryptoMembers == members, nil
 }
 
 func (s *unifiedSelector) configured(ctx context.Context) bool {
@@ -161,7 +161,8 @@ JOIN gw_credential_secret_identities si ON si.id=c.secret_identity_id AND si.cha
 JOIN gw_credential_purpose_grants g ON g.credential_id=c.id AND g.purpose='execution' AND g.status='active'
 JOIN gw_credential_versions cv ON cv.credential_id=c.id AND cv.id=c.current_version_id AND cv.status='active'
 JOIN encrypted_blobs eb ON eb.id=cv.encrypted_blob_id
-JOIN encrypted_blob_key_wraps w ON w.encrypted_blob_id=eb.id AND w.keyring_id=eb.keyring_id
+JOIN crypto_keyring_state ks ON ks.id=eb.keyring_id
+JOIN encrypted_blob_key_wraps w ON w.encrypted_blob_id=eb.id AND w.keyring_id=eb.keyring_id AND w.kek_version=ks.current_version
 LEFT JOIN gw_sell_rates sr ON sr.release_id=sku.release_id AND sr.sku_id=sku.id
 WHERE rel.id=? AND rel.status='published' AND mn.api_name=?
 ORDER BY r.priority DESC, r.id`, activeRelease, modelName)

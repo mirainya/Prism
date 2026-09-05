@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"strings"
 	"time"
 )
 
@@ -87,11 +88,11 @@ func (s *Store) ActivateDeploymentGeneration(ctx context.Context, tx *sql.Tx, ge
 	if members == 0 || members != ready {
 		return ErrConflict
 	}
-	var cryptoMembers, badKeys uint64
-	if err := tx.QueryRowContext(ctx, `SELECT COUNT(DISTINCT deployment_member_id),COUNT(CASE WHEN status<>'ready' OR expires_at<=UTC_TIMESTAMP(3) THEN 1 END) FROM crypto_key_readiness WHERE deployment_generation_id=?`, generationID).Scan(&cryptoMembers, &badKeys); err != nil {
+	var cryptoMembers uint64
+	if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM (SELECT deployment_member_id FROM crypto_key_readiness WHERE deployment_generation_id=? GROUP BY deployment_member_id HAVING COUNT(DISTINCT CASE WHEN status='ready' AND expires_at>UTC_TIMESTAMP(3) THEN operation END)=5) ready_members`, generationID).Scan(&cryptoMembers); err != nil {
 		return err
 	}
-	if cryptoMembers != members || badKeys != 0 {
+	if cryptoMembers != members {
 		return ErrConflict
 	}
 	res, err := tx.ExecContext(ctx, `UPDATE gw_deployment_generations SET status='active',member_frozen_at=COALESCE(member_frozen_at,?) WHERE id=? AND status='preparing'`, nowUTC(), generationID)
@@ -109,12 +110,37 @@ func (s *Store) ActivateDeploymentGeneration(ctx context.Context, tx *sql.Tx, ge
 }
 
 func (s *Store) RecordCryptoReadiness(ctx context.Context, tx *sql.Tx, generationID, memberID, keyringID uint64, keyVersion uint32, operation, status string, expiresAt time.Time) error {
+	operation = strings.ToLower(strings.TrimSpace(operation))
+	status = strings.ToLower(strings.TrimSpace(status))
 	if tx == nil || generationID == 0 || memberID == 0 || keyringID == 0 || keyVersion == 0 || operation == "" || status == "" || expiresAt.IsZero() {
 		return ErrInvalidInput
 	}
-	if status != "ready" && status != "failed" && status != "expired" {
+	if !validCryptoReadinessOperation(operation) || (status != "ready" && status != "failed" && status != "expired") {
 		return ErrInvalidInput
+	}
+	if status == "ready" && !expiresAt.After(nowUTC()) {
+		return ErrInvalidInput
+	}
+	// The composite foreign key protects the write, but checking the parent
+	// state here gives callers a stable domain error and prevents readiness
+	// reports from being attached to a retired deployment generation.
+	var generationStatus string
+	if err := tx.QueryRowContext(ctx, `SELECT g.status FROM gw_deployment_generations g JOIN gw_deployment_members m ON m.deployment_generation_id=g.id WHERE g.id=? AND m.id=? FOR SHARE`, generationID, memberID).Scan(&generationStatus); err == sql.ErrNoRows {
+		return ErrNotFound
+	} else if err != nil {
+		return err
+	} else if generationStatus != "preparing" && generationStatus != "active" {
+		return ErrConflict
 	}
 	_, err := tx.ExecContext(ctx, `INSERT INTO crypto_key_readiness(deployment_generation_id,deployment_member_id,keyring_id,key_version,operation,status,checked_at,expires_at) VALUES (?,?,?,?,?,?,?,?) ON DUPLICATE KEY UPDATE status=VALUES(status),checked_at=VALUES(checked_at),expires_at=VALUES(expires_at)`, generationID, memberID, keyringID, keyVersion, operation, status, nowUTC(), expiresAt.UTC())
 	return err
+}
+
+func validCryptoReadinessOperation(value string) bool {
+	switch value {
+	case "mac", "wrap", "unwrap", "encrypt", "decrypt":
+		return true
+	default:
+		return false
+	}
 }

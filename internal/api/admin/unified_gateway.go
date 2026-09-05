@@ -168,6 +168,10 @@ func UnifiedGatewayCatalog(c *gin.Context) {
 		}
 		items = append(items, gin.H{"id": id, "release_no": releaseNo, "status": status, "semantic_version": semanticVersion, "content_hash": contentHash, "semantic_digest": semanticDigest, "published_at": nullableTime(publishedAt), "created_at": nullableTime(createdAt)})
 	}
+	if err := rows.Err(); err != nil {
+		resp.InternalError(c, pkgErrors.ErrInternalError)
+		return
+	}
 	resp.Success(c, unifiedGatewayPage{Items: items, Page: page, PageSize: size, Total: total})
 }
 
@@ -209,6 +213,10 @@ func UnifiedGatewayCredentials(c *gin.Context) {
 		}
 		items = append(items, gin.H{"id": id, "channel_id": channelID, "credential_pool_id": nullableInt(poolID), "credential_code": code, "status": status, "config_version": configVersion, "request_limit": nullableInt(requestLimit), "task_limit": nullableInt(taskLimit), "weight": weight, "current_version_id": nullableInt(currentVersion), "pool_code": poolCode.String, "pool_name": poolName.String})
 	}
+	if err := rows.Err(); err != nil {
+		resp.InternalError(c, pkgErrors.ErrInternalError)
+		return
+	}
 	resp.Success(c, unifiedGatewayPage{Items: items, Page: page, PageSize: size, Total: total})
 }
 
@@ -246,6 +254,10 @@ func UnifiedGatewayCalls(c *gin.Context) {
 			return
 		}
 		items = append(items, gin.H{"id": id, "public_id": publicID, "user_id": userID, "token_id": tokenID, "status": status, "quoted_amount": amount, "price_currency": currency, "delivery_mode": delivery, "created_at": nullableTime(createdAt), "updated_at": nullableTime(updatedAt)})
+	}
+	if err := rows.Err(); err != nil {
+		resp.InternalError(c, pkgErrors.ErrInternalError)
+		return
 	}
 	resp.Success(c, unifiedGatewayPage{Items: items, Page: page, PageSize: size, Total: total})
 }

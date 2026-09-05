@@ -2,7 +2,7 @@ import React, { useEffect, useState } from 'react';
 import { Activity, AlertTriangle, CheckCircle2, Database, KeyRound, Layers3, RefreshCw, ShieldCheck } from 'lucide-react';
 import { PageHeader, SummaryStrip } from '../components/shell';
 import { Badge, Card } from '../components/ui';
-import { activateUnifiedDeployment, createUnifiedDeployment, fetchUnifiedCallDetail, fetchUnifiedCalls, fetchUnifiedCatalog, fetchUnifiedCredentials, fetchUnifiedGatewayOverview, publishUnifiedCatalog, retireUnifiedCatalog, UnifiedCall, UnifiedCallDetail, UnifiedCatalogRelease, UnifiedCredential, UnifiedGatewayOverview } from '../services/unifiedGatewayApi';
+import { activateUnifiedCatalog, activateUnifiedDeployment, createUnifiedDeployment, fetchUnifiedCallDetail, fetchUnifiedCalls, fetchUnifiedCatalog, fetchUnifiedCredentials, fetchUnifiedGatewayOverview, publishUnifiedCatalog, retireUnifiedCatalog, UnifiedCall, UnifiedCallDetail, UnifiedCatalogRelease, UnifiedCredential, UnifiedGatewayOverview } from '../services/unifiedGatewayApi';
 
 const stateMeta: Record<string, { label: string; tone: 'success' | 'warning' | 'danger'; description: string }> = {
   legacy_runtime: { label: '旧路径运行中', tone: 'warning', description: '线上请求仍由旧网关表和旧写入路径处理。' },
@@ -13,6 +13,7 @@ const stateMeta: Record<string, { label: string; tone: 'success' | 'warning' | '
 const UnifiedGateway: React.FC = () => {
   const [data, setData] = useState<UnifiedGatewayOverview | null>(null);
   const [loading, setLoading] = useState(true);
+  const [tabLoading, setTabLoading] = useState(false);
   const [error, setError] = useState('');
   const [tab, setTab] = useState<'overview' | 'catalog' | 'credentials' | 'calls' | 'deployments'>('overview');
   const [catalog, setCatalog] = useState<UnifiedCatalogRelease[]>([]);
@@ -20,6 +21,7 @@ const UnifiedGateway: React.FC = () => {
   const [calls, setCalls] = useState<UnifiedCall[]>([]);
   const [pageInfo, setPageInfo] = useState({ page: 1, pageSize: 20, total: 0 });
   const [selectedCall, setSelectedCall] = useState<UnifiedCallDetail | null>(null);
+  const [callDetailPage, setCallDetailPage] = useState(1);
   const [deploymentForm, setDeploymentForm] = useState({ generation_no: 1, semantic_version: '', semantic_digest: '' });
 
   const load = async () => {
@@ -36,7 +38,9 @@ const UnifiedGateway: React.FC = () => {
 
   const loadTab = async (nextTab: typeof tab, page = 1) => {
     setTab(nextTab);
-    if (nextTab === 'overview' || nextTab === 'deployments') return;
+    setTabLoading(true);
+    setError('');
+    if (nextTab === 'overview' || nextTab === 'deployments') { setTabLoading(false); return; }
     try {
       if (nextTab === 'catalog') {
         const result = await fetchUnifiedCatalog(page);
@@ -53,6 +57,18 @@ const UnifiedGateway: React.FC = () => {
       }
     } catch (err: any) {
       setError(err?.message || '读取统一网关数据失败');
+    } finally {
+      setTabLoading(false);
+    }
+  };
+
+  const loadCallDetail = async (id: number, page = 1) => {
+    try {
+      setError('');
+      setSelectedCall(await fetchUnifiedCallDetail(id, page));
+      setCallDetailPage(page);
+    } catch (err: any) {
+      setError(err?.message || '读取调用详情失败');
     }
   };
 
@@ -63,6 +79,19 @@ const UnifiedGateway: React.FC = () => {
       await loadTab('catalog', pageInfo.page);
     } catch (err: any) {
       setError(err?.message || '更新目录状态失败');
+    }
+  };
+  const activateCatalog = async (release: UnifiedCatalogRelease) => {
+    if (!data?.runtime.deployment_id) {
+      setError('请先准备并激活部署代次');
+      return;
+    }
+    try {
+      await activateUnifiedCatalog(release.id, data.runtime.deployment_id, data.runtime.release_state_version);
+      await load();
+      await loadTab('catalog', pageInfo.page);
+    } catch (err: any) {
+      setError(err?.message || '激活目录失败');
     }
   };
 
@@ -130,18 +159,25 @@ const UnifiedGateway: React.FC = () => {
             <Compare label="旧路径状态" value={data?.legacy.runtime_active ? '仍在使用' : '未发现'} note="运行时审计" />
           </div>
         </Card>
-      </div> : <UnifiedTable tab={tab} catalog={catalog} credentials={credentials} calls={calls} pageInfo={pageInfo} onPage={page => void loadTab(tab, page)} onCatalogAction={changeCatalogState} onCallClick={async call => setSelectedCall(await fetchUnifiedCallDetail(call.id))} />}
-      {selectedCall && <div className="fixed inset-0 z-50 flex justify-end bg-black/20" onClick={() => setSelectedCall(null)}><aside className="h-full w-full max-w-xl overflow-y-auto bg-[var(--surface-card)] p-6 shadow-2xl" onClick={event => event.stopPropagation()}><div className="mb-5 flex items-center justify-between"><div><div className="text-xs text-[var(--text-secondary)]">统一调用详情</div><h2 className="text-lg font-extrabold text-[var(--text-primary)]">{selectedCall.call.public_id}</h2></div><button type="button" onClick={() => setSelectedCall(null)} className="rounded-md border border-[var(--border-soft)] px-3 py-1.5 text-sm">关闭</button></div><div className="grid grid-cols-2 gap-3 text-sm"><Info label="状态" value={selectedCall.call.status} /><Info label="报价" value={`${selectedCall.call.quoted_amount} ${selectedCall.call.price_currency}`} /><Info label="发布版" value={selectedCall.call.catalog_release_id} /><Info label="SKU" value={selectedCall.call.sku_id} /></div><h3 className="mb-2 mt-6 text-sm font-bold text-[var(--text-primary)]">Attempts</h3><div className="space-y-2">{selectedCall.attempts.items.map(attempt => <div key={attempt.id} className="rounded-lg border border-[var(--border-soft)] bg-[var(--surface-muted)] p-3 text-xs"><div className="flex justify-between font-bold"><span>#{attempt.attempt_no} · {attempt.state}</span><span>{formatDate(attempt.created_at)}</span></div><div className="mt-1 text-[var(--text-secondary)]">线路 {attempt.route_id} · Offering {attempt.offering_id} · 凭据版本 {attempt.credential_version_id}</div></div>)}</div></aside></div>}
+      </div> : <div className="relative">{tabLoading && <div className="absolute inset-0 z-10 flex items-start justify-center rounded-lg bg-[var(--surface-card)]/70 pt-16 text-sm font-bold text-[var(--text-secondary)]"><RefreshCw size={15} className="mr-2 animate-spin" />正在读取…</div>}<UnifiedTable tab={tab} catalog={catalog} credentials={credentials} calls={calls} pageInfo={pageInfo} onPage={page => void loadTab(tab, page)} onCatalogAction={changeCatalogState} onCatalogActivate={activateCatalog} activeReleaseId={data?.runtime.active_release_id} onCallClick={call => void loadCallDetail(call.id)} /> </div>}
+      {selectedCall && <div className="fixed inset-0 z-50 flex justify-end bg-black/20" onClick={() => setSelectedCall(null)}><aside className="h-full w-full max-w-xl overflow-y-auto bg-[var(--surface-card)] p-6 shadow-2xl" onClick={event => event.stopPropagation()}><div className="mb-5 flex items-center justify-between"><div><div className="text-xs text-[var(--text-secondary)]">统一调用详情</div><h2 className="text-lg font-extrabold text-[var(--text-primary)]">{selectedCall.call.public_id}</h2></div><button type="button" onClick={() => setSelectedCall(null)} className="rounded-md border border-[var(--border-soft)] px-3 py-1.5 text-sm">关闭</button></div><div className="grid grid-cols-2 gap-3 text-sm"><Info label="状态" value={selectedCall.call.status} /><Info label="报价" value={`${selectedCall.call.quoted_amount} ${selectedCall.call.price_currency}`} /><Info label="发布版" value={selectedCall.call.catalog_release_id} /><Info label="SKU" value={selectedCall.call.sku_id} /></div><h3 className="mb-2 mt-6 text-sm font-bold text-[var(--text-primary)]">Attempts</h3><div className="space-y-2">{selectedCall.attempts.items.map(attempt => <div key={attempt.id} className="rounded-lg border border-[var(--border-soft)] bg-[var(--surface-muted)] p-3 text-xs"><div className="flex justify-between font-bold"><span>#{attempt.attempt_no} · {attempt.state}</span><span>{formatDate(attempt.created_at)}</span></div><div className="mt-1 text-[var(--text-secondary)]">线路 {attempt.route_id} · Offering {attempt.offering_id} · 凭据版本 {attempt.credential_version_id}</div></div>)}</div><PageNav page={selectedCall.attempts.page} pageSize={selectedCall.attempts.page_size} total={selectedCall.attempts.total} onPage={page => void loadCallDetail(selectedCall.call.id, page)} /></aside></div>}
     </div>
   );
 };
 
-type UnifiedTableProps = { tab: 'catalog' | 'credentials' | 'calls'; catalog: UnifiedCatalogRelease[]; credentials: UnifiedCredential[]; calls: UnifiedCall[]; pageInfo: { page: number; pageSize: number; total: number }; onPage: (page: number) => void; onCatalogAction: (release: UnifiedCatalogRelease, action: 'publish' | 'retire') => void; onCallClick: (call: UnifiedCall) => void };
-const UnifiedTable: React.FC<UnifiedTableProps> = ({ tab, catalog, credentials, calls, pageInfo, onPage, onCatalogAction, onCallClick }) => {
+type UnifiedTableProps = { tab: 'catalog' | 'credentials' | 'calls'; catalog: UnifiedCatalogRelease[]; credentials: UnifiedCredential[]; calls: UnifiedCall[]; pageInfo: { page: number; pageSize: number; total: number }; onPage: (page: number) => void; onCatalogAction: (release: UnifiedCatalogRelease, action: 'publish' | 'retire') => void; onCatalogActivate: (release: UnifiedCatalogRelease) => void; activeReleaseId?: number | null; onCallClick: (call: UnifiedCall) => void };
+const UnifiedTable: React.FC<UnifiedTableProps> = ({ tab, catalog, credentials, calls, pageInfo, onPage, onCatalogAction, onCatalogActivate, activeReleaseId, onCallClick }) => {
   const headers = tab === 'catalog' ? ['版本', '状态', '语义版本', '内容摘要', '发布时间', '操作'] : tab === 'credentials' ? ['凭据', '凭据池', '状态', '版本', '并发限制'] : ['调用 ID', '状态', '报价', '交付方式', '创建时间'];
-  const rows = tab === 'catalog' ? catalog.map(item => [<span className="font-bold">#{item.release_no}</span>, <Badge variant={item.status === 'published' ? 'success' : item.status === 'draft' ? 'warning' : 'default'}>{item.status}</Badge>, item.semantic_version, <code className="text-xs">{item.content_hash.slice(0, 12)}…</code>, formatDate(item.published_at || item.created_at), item.status === 'draft' ? <button type="button" onClick={() => onCatalogAction(item, 'publish')} className="font-bold text-[var(--primary)] hover:underline">发布</button> : item.status === 'published' ? <button type="button" onClick={() => onCatalogAction(item, 'retire')} className="font-bold text-amber-600 hover:underline">退役</button> : <span className="text-[var(--text-tertiary)]">—</span>]) : tab === 'credentials' ? credentials.map(item => [<span className="font-bold">{item.credential_code}</span>, item.pool_name || item.pool_code || '—', <Badge variant={item.status === 'active' ? 'success' : item.status === 'draining' ? 'warning' : 'default'}>{item.status}</Badge>, item.current_version_id ? `v${item.current_version_id}` : '未激活', `${item.request_limit ?? '∞'} / ${item.task_limit ?? '∞'}`]) : calls.map(item => [<button type="button" onClick={() => onCallClick(item)} className="font-mono text-xs text-[var(--primary)] hover:underline">{item.public_id}</button>, <Badge variant={item.status === 'completed' ? 'success' : item.status === 'failed' ? 'error' : 'info'}>{item.status}</Badge>, `${item.quoted_amount} ${item.price_currency}`, item.delivery_mode, formatDate(item.created_at)]);
+  const rows = tab === 'catalog' ? catalog.map(item => [<span className="font-bold">#{item.release_no}</span>, <Badge variant={item.status === 'published' ? 'success' : item.status === 'draft' ? 'warning' : 'default'}>{item.status}</Badge>, item.semantic_version, <code className="text-xs">{item.content_hash.slice(0, 12)}…</code>, formatDate(item.published_at || item.created_at), item.status === 'draft' ? <button type="button" onClick={() => onCatalogAction(item, 'publish')} className="font-bold text-[var(--primary)] hover:underline">发布</button> : item.status === 'published' && activeReleaseId !== item.id ? <div className="flex gap-3"><button type="button" onClick={() => onCatalogActivate(item)} className="font-bold text-emerald-600 hover:underline">激活</button><button type="button" onClick={() => onCatalogAction(item, 'retire')} className="font-bold text-amber-600 hover:underline">退役</button></div> : item.id === activeReleaseId ? <Badge variant="success">活动版本</Badge> : <span className="text-[var(--text-tertiary)]">—</span>]) : tab === 'credentials' ? credentials.map(item => [<span className="font-bold">{item.credential_code}</span>, item.pool_name || item.pool_code || '—', <Badge variant={item.status === 'active' ? 'success' : item.status === 'draining' ? 'warning' : 'default'}>{item.status}</Badge>, item.current_version_id ? `v${item.current_version_id}` : '未激活', `${item.request_limit ?? '∞'} / ${item.task_limit ?? '∞'}`]) : calls.map(item => [<button type="button" onClick={() => onCallClick(item)} className="font-mono text-xs text-[var(--primary)] hover:underline">{item.public_id}</button>, <Badge variant={item.status === 'completed' ? 'success' : item.status === 'failed' ? 'error' : 'info'}>{item.status}</Badge>, `${item.quoted_amount} ${item.price_currency}`, item.delivery_mode, formatDate(item.created_at)]);
   const totalPages = Math.max(1, Math.ceil(pageInfo.total / pageInfo.pageSize));
-  return <div className="overflow-hidden rounded-lg border border-[var(--border-soft)] bg-[var(--surface-card)]"><div className="overflow-x-auto"><table className="w-full min-w-[720px] text-left text-sm"><thead className="bg-[var(--surface-muted)] text-xs text-[var(--text-secondary)]"><tr>{headers.map(header => <th key={header} className="px-4 py-3 font-bold">{header}</th>)}</tr></thead><tbody className="divide-y divide-[var(--border-soft)]">{rows.length === 0 ? <tr><td colSpan={headers.length} className="px-4 py-12 text-center text-[var(--text-secondary)]">暂无数据</td></tr> : rows.map((row, index) => <tr key={index} className="transition hover:bg-[var(--surface-muted)]">{row.map((cell, cellIndex) => <td key={cellIndex} className="px-4 py-3 text-[var(--text-primary)]">{cell}</td>)}</tr>)}</tbody></table></div><div className="flex items-center justify-between border-t border-[var(--border-soft)] px-4 py-3 text-xs text-[var(--text-secondary)]"><span>共 {pageInfo.total} 条</span><div className="flex items-center gap-2"><button type="button" disabled={pageInfo.page <= 1} onClick={() => onPage(pageInfo.page - 1)} className="rounded-md border border-[var(--border-soft)] px-2.5 py-1.5 disabled:opacity-40">上一页</button><span>{pageInfo.page} / {totalPages}</span><button type="button" disabled={pageInfo.page >= totalPages} onClick={() => onPage(pageInfo.page + 1)} className="rounded-md border border-[var(--border-soft)] px-2.5 py-1.5 disabled:opacity-40">下一页</button></div></div></div>;
+  return <div className="overflow-hidden rounded-lg border border-[var(--border-soft)] bg-[var(--surface-card)]"><div className="overflow-x-auto"><table className="w-full min-w-[720px] text-left text-sm"><thead className="bg-[var(--surface-muted)] text-xs text-[var(--text-secondary)]"><tr>{headers.map(header => <th key={header} className="px-4 py-3 font-bold">{header}</th>)}</tr></thead><tbody className="divide-y divide-[var(--border-soft)]">{rows.length === 0 ? <tr><td colSpan={headers.length} className="px-4 py-12 text-center text-[var(--text-secondary)]">暂无数据</td></tr> : rows.map((row, index) => <tr key={index} className="transition hover:bg-[var(--surface-muted)]">{row.map((cell, cellIndex) => <td key={cellIndex} className="px-4 py-3 text-[var(--text-primary)]">{cell}</td>)}</tr>)}</tbody></table></div><PageNav page={pageInfo.page} pageSize={pageInfo.pageSize} total={pageInfo.total} onPage={onPage} /></div>;
+};
+const PageNav: React.FC<{ page: number; pageSize: number; total: number; onPage: (page: number) => void }> = ({ page, pageSize, total, onPage }) => {
+  const totalPages = Math.max(1, Math.ceil(total / pageSize));
+  const first = Math.max(1, Math.min(page - 2, totalPages - 4));
+  const last = Math.min(totalPages, first + 4);
+  const pages = Array.from({ length: last - first + 1 }, (_, index) => first + index);
+  return <div className="flex flex-wrap items-center justify-between gap-3 border-t border-[var(--border-soft)] px-4 py-3 text-xs text-[var(--text-secondary)]"><span>共 {total} 条</span><div className="flex items-center gap-1.5"><button type="button" disabled={page <= 1} onClick={() => onPage(page - 1)} className="rounded-md border border-[var(--border-soft)] px-2.5 py-1.5 disabled:opacity-40">上一页</button>{pages.map(value => <button key={value} type="button" aria-current={value === page ? 'page' : undefined} onClick={() => onPage(value)} className={`min-w-8 rounded-md border px-2 py-1.5 font-semibold ${value === page ? 'border-[var(--primary)] bg-[var(--primary)] text-white' : 'border-[var(--border-soft)] hover:bg-[var(--surface-muted)]'}`}>{value}</button>)}<button type="button" disabled={page >= totalPages} onClick={() => onPage(page + 1)} className="rounded-md border border-[var(--border-soft)] px-2.5 py-1.5 disabled:opacity-40">下一页</button></div></div>;
 };
 const formatDate = (value?: string | null) => value ? new Date(value).toLocaleString('zh-CN', { hour12: false }) : '—';
 

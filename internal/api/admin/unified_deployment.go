@@ -35,6 +35,10 @@ type cryptoReadinessRequest struct {
 	Status     string    `json:"status"`
 	ExpiresAt  time.Time `json:"expires_at"`
 }
+type activateCatalogRequest struct {
+	GenerationID         uint64 `json:"generation_id"`
+	ExpectedStateVersion uint64 `json:"expected_state_version"`
+}
 
 func deploymentStore() (*repository.Store, error) {
 	db, err := model.DB().DB()
@@ -170,4 +174,31 @@ func ActivateUnifiedDeployment(c *gin.Context) {
 		return
 	}
 	resp.Success(c, gin.H{"active": true})
+}
+
+// ActivateUnifiedCatalog moves the runtime pointer only after every member of
+// the selected deployment proves the exact published release is ready.
+func ActivateUnifiedCatalog(c *gin.Context) {
+	releaseID, err := resp.ParseUintParam(c, "id")
+	if err != nil {
+		return
+	}
+	var in activateCatalogRequest
+	if err := c.ShouldBindJSON(&in); err != nil || in.GenerationID == 0 || in.ExpectedStateVersion == 0 {
+		resp.BadRequest(c, pkgErrors.WithMessage(pkgErrors.ErrInvalidParams, "generation_id and expected_state_version are required"))
+		return
+	}
+	store, err := deploymentStore()
+	if err != nil {
+		resp.InternalError(c, pkgErrors.ErrInternalError)
+		return
+	}
+	err = store.WithTx(c.Request.Context(), func(tx *sql.Tx) error {
+		return store.ActivateReleaseWhenReady(c.Request.Context(), tx, uint64(releaseID), in.ExpectedStateVersion, in.GenerationID)
+	})
+	if err != nil {
+		resp.BadRequest(c, pkgErrors.WithMessage(pkgErrors.ErrInvalidParams, err.Error()))
+		return
+	}
+	resp.Success(c, gin.H{"active": true, "release_id": releaseID})
 }
