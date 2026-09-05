@@ -3,6 +3,7 @@ package engine
 import (
 	"context"
 	"database/sql"
+	"encoding/base64"
 	"fmt"
 	"os"
 	"strings"
@@ -11,6 +12,7 @@ import (
 	"github.com/mirainya/Prism/internal/gateway/execution"
 	"github.com/mirainya/Prism/internal/gateway/repository"
 	"github.com/mirainya/Prism/internal/gateway/routing"
+	"github.com/mirainya/Prism/internal/gateway/security"
 	"github.com/mirainya/Prism/internal/model"
 )
 
@@ -22,6 +24,7 @@ type unifiedLifecycle struct {
 	callID    uint64
 	attemptID uint64
 	asyncID   uint64
+	pending   map[string][]byte
 }
 
 func unifiedRoute(route *routing.RouteResult) bool {
@@ -40,7 +43,7 @@ func newUnifiedLifecycle(route *routing.RouteResult, publicID string, userID, to
 	if err != nil {
 		return nil, err
 	}
-	l := &unifiedLifecycle{store: store}
+	l := &unifiedLifecycle{store: store, pending: make(map[string][]byte)}
 	currency := strings.ToUpper(strings.TrimSpace(route.Currency))
 	if currency == "" {
 		currency = strings.ToUpper(strings.TrimSpace(os.Getenv("PRISM_GATEWAY_CURRENCY")))
@@ -83,6 +86,63 @@ func newUnifiedLifecycle(route *routing.RouteResult, publicID string, userID, to
 	}
 	return l, nil
 }
+
+func (l *unifiedLifecycle) recordPayload(ctx context.Context, kind string, data []byte) {
+	if l == nil || len(data) == 0 || l.store == nil || l.callID == 0 || (kind != "request" && kind != "result") {
+		return
+	}
+	// Payload encryption is mandatory. Missing payload keys disable retention,
+	// never cause a plaintext fallback.
+	kek, err := decodeGatewayKey("PRISM_GATEWAY_PAYLOAD_KEK_B64")
+	if err != nil {
+		return
+	}
+	hmacKey, err := decodeGatewayHMACKey("PRISM_GATEWAY_PAYLOAD_HMAC_B64")
+	if err != nil {
+		return
+	}
+	_ = l.store.WithTx(ctx, func(tx *sql.Tx) error {
+		var keyringID uint64
+		var version uint32
+		if err := tx.QueryRowContext(ctx, "SELECT id,current_version FROM crypto_keyring_state WHERE purpose='gateway-payload' FOR SHARE").Scan(&keyringID, &version); err != nil {
+			return nil
+		}
+		if version == 0 {
+			return nil
+		}
+		owner := []byte(fmt.Sprintf("call:%d:%s", l.callID, kind))
+		blobID, err := l.store.PutEncryptedBlob(ctx, tx, repository.BlobInput{KeyringID: keyringID, KEKVersion: version, Purpose: "gateway-payload", SchemaVersion: 1, Owner: owner, Plaintext: data, KEK: kek, HMACKey: hmacKey})
+		if err != nil {
+			return err
+		}
+		digest := security.HMACSHA256(hmacKey, data)
+		contentHMAC := fmt.Sprintf("%x", digest[:])
+		payloadID, err := l.store.CreateCallPayload(ctx, tx, repository.CallPayloadInput{CallID: l.callID, Kind: kind, SchemaVersion: 1, EncryptedBlobID: &blobID, ContentHMAC: contentHMAC, ContentLength: uint64(len(data))})
+		if err != nil {
+			return err
+		}
+		column := "request_payload_id"
+		if kind == "result" {
+			column = "result_payload_id"
+		}
+		_, err = tx.ExecContext(ctx, "UPDATE gw_api_calls SET "+column+"=? WHERE id=? AND "+column+" IS NULL", payloadID, l.callID)
+		return err
+	})
+}
+
+func decodeGatewayKey(name string) ([]byte, error) {
+	value := strings.TrimSpace(os.Getenv(name))
+	if value == "" {
+		return nil, fmt.Errorf("%s is not configured", name)
+	}
+	decoded, err := base64.StdEncoding.DecodeString(value)
+	if err != nil || len(decoded) != 32 {
+		return nil, fmt.Errorf("%s must be a base64 encoded 32 byte key", name)
+	}
+	return decoded, nil
+}
+
+func decodeGatewayHMACKey(name string) ([]byte, error) { return decodeGatewayKey(name) }
 
 func (l *unifiedLifecycle) startAttempt(ctx context.Context, route *routing.RouteResult, asynchronous bool, scopeKey string) error {
 	if l == nil || l.store == nil || l.callID == 0 || !unifiedRoute(route) {

@@ -160,6 +160,7 @@ type callLifecycle struct {
 	conversationProjection *service.ConversationProjectionOutputRequest
 	leaseErr               error
 	finished               bool
+	pendingUnifiedPayloads map[string][]byte
 }
 
 func (l *callLifecycle) startUnified(ctx context.Context, route *routing.RouteResult, userID, tokenID uint, store bool) {
@@ -173,7 +174,12 @@ func (l *callLifecycle) startUnified(ctx context.Context, route *routing.RouteRe
 	}
 	l.mu.Lock()
 	l.unified = u
+	pending := l.pendingUnifiedPayloads
+	l.pendingUnifiedPayloads = nil
 	l.mu.Unlock()
+	for kind, data := range pending {
+		u.recordPayload(ctx, kind, data)
+	}
 }
 
 func (l *callLifecycle) startUnifiedAttempt(ctx context.Context, route *routing.RouteResult, asynchronous bool, scopeKey string) {
@@ -445,7 +451,28 @@ func (l *callLifecycle) markFirstByte(attemptID uint) {
 }
 
 func (l *callLifecycle) recordPayload(attemptID uint, kind string, data []byte) {
-	if l == nil || l.service == nil || len(data) == 0 {
+	if l == nil || len(data) == 0 {
+		return
+	}
+	l.mu.Lock()
+	u := l.unified
+	if u == nil {
+		if l.pendingUnifiedPayloads == nil {
+			l.pendingUnifiedPayloads = make(map[string][]byte)
+		}
+		if kind == model.APICallPayloadRequest {
+			l.pendingUnifiedPayloads["request"] = append([]byte(nil), data...)
+		}
+		l.mu.Unlock()
+	} else {
+		l.mu.Unlock()
+		unifiedKind := "request"
+		if kind == model.APICallPayloadResponse {
+			unifiedKind = "result"
+		}
+		u.recordPayload(context.Background(), unifiedKind, data)
+	}
+	if l.service == nil {
 		return
 	}
 	err := l.service.RecordPayload(&model.APICallPayload{
