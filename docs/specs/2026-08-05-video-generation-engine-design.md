@@ -2,6 +2,8 @@
 
 > 当前实现以 [`docs/VIDEO_ARCHITECTURE.md`](../VIDEO_ARCHITECTURE.md) 为准。本文仅保留早期设计过程，不作为现行配置说明。
 
+> 统一目录、凭据、账务、异步状态和素材生命周期的目标规范以 [`2026-09-04-unified-gateway-catalog-billing-architecture.md`](2026-09-04-unified-gateway-catalog-billing-architecture.md) 为准；本文中的 Redis 并发、渠道级价格和旧取消流程不得直接实现。
+
 ## 概述
 
 重构 Prism 视频生成系统，从现有的"配置驱动 BaseProvider"单一模式，升级为统一媒体生成引擎 + 可插拔 Provider Adapter 架构。目标：

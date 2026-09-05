@@ -4,6 +4,12 @@ import "github.com/gin-gonic/gin"
 
 // RegisterRoutes 注册 /api/admin 管理员路由（需要 JWT + Admin 认证）
 func RegisterRoutes(group *gin.RouterGroup) {
+	group.GET("/unified-gateway/overview", UnifiedGatewayOverview)
+	group.GET("/unified-gateway/catalog", UnifiedGatewayCatalog)
+	group.POST("/unified-gateway/catalog/:id/publish", UnifiedGatewayPublishCatalog)
+	group.POST("/unified-gateway/catalog/:id/retire", UnifiedGatewayRetireCatalog)
+	group.GET("/unified-gateway/credentials", UnifiedGatewayCredentials)
+	group.GET("/unified-gateway/calls", UnifiedGatewayCalls)
 	// 用户管理
 	group.GET("/users", ListUsers)
 	group.PUT("/users/:id/role", UpdateUserRole)

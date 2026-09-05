@@ -2,6 +2,8 @@
 
 日期：2026-08-27
 
+> 适配器验证记录，不是运行时架构规范。渠道、凭据、计费、并发、异步状态、取消和素材生命周期必须遵循 [`2026-09-04-unified-gateway-catalog-billing-architecture.md`](2026-09-04-unified-gateway-catalog-billing-architecture.md)；本文件中的旧表名和旧执行流程仅用于迁移核对。
+
 ## 1. 目标
 
 在 Prism 现有视频引擎中接入 Seedance 满血官逆渠道，首期覆盖文生视频、首帧、首尾帧和多模态参考生成，并保留生成音频、联网增强和返回尾帧能力。

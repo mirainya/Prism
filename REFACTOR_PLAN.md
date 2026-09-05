@@ -1,5 +1,7 @@
 # Prism 重构方案
 
+> 历史重构计划，保留用于过程记录，不是当前实现清单。统一目录、凭据、异步执行、素材交付和计费的目标架构以 [`docs/specs/2026-09-04-unified-gateway-catalog-billing-architecture.md`](docs/specs/2026-09-04-unified-gateway-catalog-billing-architecture.md) 为准；计划中的旧模块边界不得直接作为新代码约定。
+
 ## 一、现状问题总结
 
 | 问题 | 影响 |
@@ -578,20 +580,20 @@ const themes: Record<string, Theme> = {
 <div className="login-bg min-h-screen relative overflow-hidden">
   {/* 背景 mesh 渐变 */}
   <div className="absolute inset-0 bg-mesh" />
-  
+
   {/* 装饰层 — 旋转几何 */}
   <div className="login-art">
     {/* 大旋转环 (24s) */}
-    <div className="absolute w-[500px] h-[500px] rounded-full 
+    <div className="absolute w-[500px] h-[500px] rounded-full
                     border-2 border-primary/10 -top-[150px] -right-[150px]
                     animate-[login-spin_24s_linear_infinite]" />
     {/* 小虚线环 (反向 36s) */}
-    <div className="absolute w-[200px] h-[200px] rounded-full 
-                    border border-dashed border-primary/15 
+    <div className="absolute w-[200px] h-[200px] rounded-full
+                    border border-dashed border-primary/15
                     bottom-[10%] left-[5%]
                     animate-[login-spin-reverse_36s_linear_infinite]" />
     {/* 渐变光斑 */}
-    <div className="absolute w-[300px] h-[300px] rounded-full 
+    <div className="absolute w-[300px] h-[300px] rounded-full
                     bg-gradient-to-br from-primary/8 to-accent/5
                     top-[30%] right-[10%] blur-[40px]
                     animate-[glow-pulse_6s_ease-in-out_infinite]" />
@@ -600,15 +602,15 @@ const themes: Record<string, Theme> = {
   </div>
 
   {/* 半透明装饰圆 */}
-  <div className="absolute w-[400px] h-[400px] rounded-full 
+  <div className="absolute w-[400px] h-[400px] rounded-full
                   bg-white/15 -top-[100px] -right-[80px]" />
-  <div className="absolute w-[300px] h-[300px] rounded-full 
+  <div className="absolute w-[300px] h-[300px] rounded-full
                   bg-white/15 -bottom-[60px] -left-[60px]" />
 
   {/* 登录卡片 — 玻璃拟态 */}
   <div className="glass-card max-w-md mx-auto mt-[20vh] p-8
                   shadow-[0_20px_60px_rgba(0,0,0,0.08)]">
-    <h1 className="text-2xl font-bold bg-gradient-to-r 
+    <h1 className="text-2xl font-bold bg-gradient-to-r
                    from-primary to-accent bg-clip-text text-transparent">
       Prism
     </h1>
@@ -632,7 +634,7 @@ const themes: Record<string, Theme> = {
 ```jsx
 <aside className="bg-gradient-to-b from-prism-50 to-white border-r border-border-soft">
   {/* 活跃菜单项 */}
-  <a className="bg-prism-100/60 text-prism-700 rounded-xl 
+  <a className="bg-prism-100/60 text-prism-700 rounded-xl
                shadow-sm shadow-prism-200/50 font-medium">
     <Icon className="text-prism-500" />
     <span>Dashboard</span>
@@ -644,7 +646,7 @@ const themes: Record<string, Theme> = {
 
 ```jsx
 <div className="glass-card hover-lift p-6">
-  <div className="w-12 h-12 rounded-xl bg-gradient-to-br 
+  <div className="w-12 h-12 rounded-xl bg-gradient-to-br
                   from-prism-400 to-sakura-400 flex items-center justify-center">
     <Icon className="text-white" size={24} />
   </div>

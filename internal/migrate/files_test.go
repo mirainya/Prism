@@ -12,8 +12,8 @@ func TestLoadIncludesImmutableBaseline(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(migrations) != 46 {
-		t.Fatalf("managed migrations=%d, want 46", len(migrations))
+	if len(migrations) != 61 {
+		t.Fatalf("managed migrations=%d, want 61", len(migrations))
 	}
 	baseline := migrations[0]
 	if baseline.Filename != "20260718_150000_schema_baseline.sql" {
@@ -407,6 +407,56 @@ func TestLoadIncludesImmutableBaseline(t *testing.T) {
 			t.Errorf("video channel settings migration is missing %q", fragment)
 		}
 	}
+	if migrations[46].Filename != "20260905_100000_unified_gateway_foundation.sql" {
+		t.Fatalf("unified gateway foundation migration filename=%q", migrations[46].Filename)
+	}
+	const expectedUnifiedGatewayFoundationChecksum = "ef84439a80c4bcdb1c58791f877a2069f0053454e1981ba97f2928aff893b292"
+	if migrations[46].Checksum != expectedUnifiedGatewayFoundationChecksum {
+		t.Fatalf("unified gateway foundation checksum=%s, want %s", migrations[46].Checksum, expectedUnifiedGatewayFoundationChecksum)
+	}
+	if migrations[47].Filename != "20260905_110000_unified_gateway_crypto.sql" {
+		t.Fatalf("unified gateway crypto migration filename=%q", migrations[47].Filename)
+	}
+	const expectedUnifiedGatewayCryptoChecksum = "f25f431d3d1b4471302a42b9ebedeb58271c1ddc482ec55d111aecd7547909ca"
+	if migrations[47].Checksum != expectedUnifiedGatewayCryptoChecksum {
+		t.Fatalf("unified gateway crypto checksum=%s, want %s", migrations[47].Checksum, expectedUnifiedGatewayCryptoChecksum)
+	}
+	if migrations[48].Filename != "20260905_120000_unified_gateway_credentials.sql" {
+		t.Fatalf("unified gateway credentials migration filename=%q", migrations[48].Filename)
+	}
+	const expectedUnifiedGatewayCredentialsChecksum = "88ce1c6ad0540edf65d2bcc6e5dcb5c4cab62f5802e2779f5388206b89464385"
+	if migrations[48].Checksum != expectedUnifiedGatewayCredentialsChecksum {
+		t.Fatalf("unified gateway credentials checksum=%s, want %s", migrations[48].Checksum, expectedUnifiedGatewayCredentialsChecksum)
+	}
+	if migrations[49].Filename != "20260905_130000_unified_gateway_catalog_transport.sql" {
+		t.Fatalf("unified gateway catalog transport migration filename=%q", migrations[49].Filename)
+	}
+	const expectedUnifiedGatewayCatalogTransportChecksum = "b89405c40cf040c9b6aeca769783623e8650bdc45145943208d309a541740125"
+	if migrations[49].Checksum != expectedUnifiedGatewayCatalogTransportChecksum {
+		t.Fatalf("unified gateway catalog transport checksum=%s, want %s", migrations[49].Checksum, expectedUnifiedGatewayCatalogTransportChecksum)
+	}
+	newMigrations := []struct {
+		index    int
+		filename string
+		checksum string
+	}{
+		{50, "20260905_140000_unified_gateway_execution_core.sql", "9e5d6deaff4ed132dbccc91b7ae203e0ed6af1d09ee6b43d09ad6c192749a651"},
+		{51, "20260905_150000_unified_gateway_request_logs.sql", "9eb7ac620fff8e55ee2618d8d0dfd949c0e71820f24b89555425162d8c0a8700"},
+		{52, "20260905_160000_unified_gateway_async_identity.sql", "f4997cd79f2de34684c638e7812147720c7370243df46452e72bb161ca036220"},
+		{53, "20260905_170000_unified_gateway_billing.sql", "e892f57963d0b05d9c02d3d29e8c6802ea6e4fe3f6dc565c70d084b15460e0c8"},
+		{54, "20260905_180000_unified_gateway_control_plane.sql", "dab4ede65e1d0fb3c402fc73fc6ae465fddc503dd5f87a733a60fe1257a4b90a"},
+		{55, "20260905_190000_unified_gateway_delivery.sql", "5de63df75f7fa80b428820d28f6a12a1d9cb33d94e1568a69d03a9362bab4dad"},
+		{56, "20260905_200000_unified_gateway_resources.sql", "5e38c69d80b568aa55b711e413ba3b24c2b7640a5390cf68d132bb3a76a0c2a9"},
+		{57, "20260905_210000_unified_gateway_pricing_validation.sql", "f789bffc578bf69c397b54522999c6bdfd35f3ea108f0a312d1f310137072fdb"},
+		{58, "20260905_220000_unified_gateway_routing_policy_events.sql", "2534db692dcf2fb4cdfcb12d2f1d48deb84fd704fc0e81841164aa38117a537e"},
+		{59, "20260905_230000_unified_gateway_operations_runtime_costs.sql", "27ded61b051a78758841c274f2a41a22c271207d043566255947c37ac767980a"},
+		{60, "20260906_100000_unified_gateway_audit_events.sql", "18453fa359573bdcd6a345a865849526081d64cf87d4f9acf9e78a40b0fd4ac2"},
+	}
+	for _, migration := range newMigrations {
+		if migrations[migration.index].Filename != migration.filename || migrations[migration.index].Checksum != migration.checksum {
+			t.Fatalf("migration[%d]=%s/%s, want %s/%s", migration.index, migrations[migration.index].Filename, migrations[migration.index].Checksum, migration.filename, migration.checksum)
+		}
+	}
 }
 
 func TestBaselineContainsEveryRequiredApplicationTable(t *testing.T) {
@@ -426,6 +476,47 @@ func TestBaselineContainsEveryRequiredApplicationTable(t *testing.T) {
 	}
 	if !strings.Contains(baseline, "idx_conversations_canonical_match") {
 		t.Fatal("baseline is missing the canonical conversation match index")
+	}
+}
+
+func TestUnifiedGatewayMigrationsContainOnlyTypedTargetFacts(t *testing.T) {
+	migrations, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var unified strings.Builder
+	for _, migration := range migrations {
+		if migration.Version >= "20260905_100000" {
+			unified.WriteString(migration.SQL)
+		}
+	}
+	sql := unified.String()
+	for _, table := range []string{
+		"gw_models", "gw_operation_contracts", "gateway_channels", "gw_catalog_releases",
+		"gw_credential_pools", "gw_credentials", "gw_credential_versions", "encrypted_blobs",
+		"gw_channel_transports", "gw_products", "gw_product_transports", "gw_offerings", "gw_routes",
+		"gw_api_calls", "gw_api_call_attempts", "gw_async_executions", "gw_channel_request_logs",
+		"gw_credential_slots", "gw_upstream_task_identities", "gw_async_outbox",
+		"billing_accounts", "billing_reservations", "billing_events", "ledger_transactions", "ledger_entries",
+		"gw_media_assets", "gw_result_deliveries", "gw_result_delivery_sources", "gw_callback_targets",
+		"gw_callback_deliveries", "gw_capability_tasks", "gw_video_tasks", "gw_provider_state_refs",
+		"gw_control_plane_runs", "gw_runtime_requirements", "gw_execution_health", "gw_upstream_cost_events",
+		"gw_credential_purpose_grant_state_events", "gw_credential_version_state_events", "gw_catalog_release_state_events",
+		"gw_routing_policy_version_events", "billing_account_state_events",
+	} {
+		if !strings.Contains(sql, "CREATE TABLE IF NOT EXISTS `"+table+"`") {
+			t.Errorf("unified migrations are missing target table %s", table)
+		}
+	}
+	for _, forbidden := range []string{"`api_key`", "`request_body`", "`response_body`", "`provider_response`", "`callback_url`"} {
+		if strings.Contains(sql, forbidden) {
+			t.Errorf("unified migration contains forbidden plaintext field %s", forbidden)
+		}
+	}
+	for _, nonIdempotent := range []string{"ALTER TABLE ", "CREATE TRIGGER ", "DROP TABLE ", "DROP COLUMN "} {
+		if strings.Contains(strings.ToUpper(sql), nonIdempotent) {
+			t.Errorf("unified migration contains non-idempotent operation %q", nonIdempotent)
+		}
 	}
 }
 

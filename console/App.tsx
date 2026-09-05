@@ -20,6 +20,7 @@ const RequestLogs = lazy(() => import('./pages/RequestLogs'));
 const ApiDocs = lazy(() => import('./pages/ApiDocs'));
 const ChatLogs = lazy(() => import('./pages/ChatLogs'));
 const ChatModels = lazy(() => import('./pages/GatewayModels'));
+const UnifiedGateway = lazy(() => import('./pages/UnifiedGateway'));
 const ChangePassword = lazy(() => import('./pages/ChangePassword'));
 const Playground = lazy(() => import('./pages/Playground'));
 const VideoChannels = lazy(() => import('./pages/VideoChannels'));
@@ -259,6 +260,7 @@ const App: React.FC = () => {
             <>
               <Route path="/channels" element={<Channels />} />
               <Route path="/gateway-channels" element={<GatewayChannels />} />
+              <Route path="/unified-gateway" element={<UnifiedGateway />} />
               <Route path="/chat-models" element={<ChatModels />} />
               <Route path="/capabilities" element={<Capabilities />} />
               <Route path="/video-channels" element={<VideoChannels />} />

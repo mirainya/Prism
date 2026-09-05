@@ -2,6 +2,8 @@
 
 > AI Gateway 统一接口文档。供 AI Agent / 自动化工具集成使用。
 
+> 本文记录当前公开接口与兼容行为；统一目录、凭据、异步执行、素材交付和计费的目标架构见 [`docs/specs/2026-09-04-unified-gateway-catalog-billing-architecture.md`](docs/specs/2026-09-04-unified-gateway-catalog-billing-architecture.md)。目标架构未完成迁移前，不能据此推断新表或新状态已经可用。
+
 ## 基础信息
 
 - Base URL: `https://prism.mirainya.icu`
@@ -718,6 +720,17 @@ Playground 任务列表与 `/api/tasks` 使用相同的 `snapshot_at` 稳定分�
 | Transports | `GET/PUT /abilities/:id/transports`、`DELETE /abilities/:id/transports/:transport`、`POST .../:transport/check` |
 | Models | `GET /models`、`POST /models/reorder`、`DELETE /models?name=...` |
 | Model Meta | `GET /model-meta`、`PUT/DELETE /model-meta/:model_name` |
+
+### 统一网关运行审计
+
+所有路径均以 `/api/admin/unified-gateway` 开头，返回分页数据时最大每页 100 条；不返回密钥、密文或请求正文。
+
+| 资源 | 主要接口 |
+|------|----------|
+| 状态总览 | `GET /overview` |
+| 目录发布版 | `GET /catalog?page=&page_size=` |
+| 凭据池 | `GET /credentials?page=&page_size=` |
+| 统一调用 | `GET /calls?page=&page_size=` |
 
 ---
 

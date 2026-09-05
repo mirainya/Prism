@@ -2,6 +2,8 @@
 
 客户端只调用 Sub2API。Sub2API 将请求转发到 Prism，再由 Prism 调用实际生图渠道。
 
+> 本文描述当前图片接口的兼容行为。统一素材、结果交付、异步执行和计费的目标架构见 [`specs/2026-09-04-unified-gateway-catalog-billing-architecture.md`](specs/2026-09-04-unified-gateway-catalog-billing-architecture.md)；迁移完成前，本文中的旧转存和任务字段不能视为目标实现。
+
 ## 基本信息
 
 | 项目 | 值 |

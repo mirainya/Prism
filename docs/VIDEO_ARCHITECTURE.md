@@ -2,6 +2,8 @@
 
 本文描述 Prism 当前实际使用的视频生成路径。
 
+> 本文只说明统一网关迁移前的现行实现，不是后续扩展规范。统一目录、凭据、计费、异步状态和素材生命周期的目标设计以 [`specs/2026-09-04-unified-gateway-catalog-billing-architecture.md`](specs/2026-09-04-unified-gateway-catalog-billing-architecture.md) 为准；新功能不得继续复制本文的独立视频渠道、Redis 并发、渠道价格或旧取消流程。
+
 ## 对外接口
 
 客户端统一使用视频 API：

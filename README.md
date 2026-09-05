@@ -12,6 +12,8 @@ Prism 使用 Go + React 构建，对外提供 OpenAI Chat Completions、OpenAI R
 
 > Gateway V2 是内部执行架构名称；公开 API 仍位于 `/v1`，没有 `/v2` HTTP 接口。
 
+> 本 README 描述当前已实现结构。统一目录、凭据、异步执行、素材交付与计费的目标架构以 [`docs/specs/2026-09-04-unified-gateway-catalog-billing-architecture.md`](docs/specs/2026-09-04-unified-gateway-catalog-billing-architecture.md) 为准；迁移完成前不得把目标表名或流程当作已部署能力。
+
 ## 架构
 
 ```text

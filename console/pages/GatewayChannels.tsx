@@ -1,4 +1,5 @@
 import React, { useEffect, useMemo, useState } from 'react';
+import { Link } from 'react-router-dom';
 import { Plus, RefreshCw, Edit3, Trash2, ChevronDown, ChevronRight, Key, Power, Download, MessageSquare, GripVertical, Server, Search, Check, Activity, Loader2, CircleCheck, Boxes, Network } from 'lucide-react';
 import { DndContext, PointerSensor, closestCenter, useSensor, useSensors, DragEndEvent } from '@dnd-kit/core';
 import { SortableContext, arrayMove, useSortable, verticalListSortingStrategy } from '@dnd-kit/sortable';
@@ -675,6 +676,9 @@ const GatewayChannels: React.FC = () => {
         meta="管理对话协议、上游地址、密钥与模型能力"
         actions={(
           <>
+            <Link to="/unified-gateway" className="inline-flex h-9 items-center gap-2 rounded-lg border border-[var(--border-soft)] bg-[var(--surface-card)] px-3 text-sm font-bold text-[var(--text-secondary)] transition hover:border-[var(--primary)] hover:text-[var(--primary)]">
+              <Activity size={16} />统一状态
+            </Link>
             <button
               type="button"
               onClick={() => load()}

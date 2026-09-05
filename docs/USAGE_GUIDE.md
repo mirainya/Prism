@@ -2,6 +2,8 @@
 
 > 本文档是 Prism AI Gateway 平台的完整使用教程，涵盖部署、配置、管理后台操作和 API 调用。
 
+> 本教程描述当前已实现功能，部分章节仍引用迁移前的表名和运维路径。统一目录、凭据、异步执行、素材交付和计费的目标架构见 [`specs/2026-09-04-unified-gateway-catalog-billing-architecture.md`](specs/2026-09-04-unified-gateway-catalog-billing-architecture.md)；目标架构未完成迁移前，不得把目标表或状态当作已部署功能。
+
 ---
 
 ## 目录

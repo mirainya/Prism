@@ -1,5 +1,7 @@
 # Gateway V2 Architecture
 
+> This document describes the currently implemented Gateway V2. The target catalog, credential, async execution, and billing architecture is defined by `docs/specs/2026-09-04-unified-gateway-catalog-billing-architecture.md`; where they differ, the target specification is authoritative.
+
 ## Goal
 
 Gateway V2 has one execution engine for every conversational protocol. Protocol-specific

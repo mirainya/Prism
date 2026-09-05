@@ -2,12 +2,14 @@ package main
 
 import (
 	"context"
+	"database/sql"
 	"fmt"
 	"log"
 	"net/http"
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strconv"
 	"syscall"
 	"time"
 
@@ -207,7 +209,7 @@ func main() {
 
 func runMigrationCommand(ctx context.Context, db *gorm.DB, args []string) error {
 	if len(args) != 1 {
-		return fmt.Errorf("usage: prism migrate <up|status|adopt>")
+		return fmt.Errorf("usage: prism migrate <up|status|adopt|audit>")
 	}
 	switch args[0] {
 	case "up":
@@ -245,9 +247,38 @@ func runMigrationCommand(ctx context.Context, db *gorm.DB, args []string) error 
 		}
 		fmt.Printf("adopted schema baseline %s\n", baseline.Version)
 		return nil
+	case "audit":
+		sqlDB, err := db.DB()
+		if err != nil {
+			return err
+		}
+		report, err := schemamigrate.Audit(ctx, sqlDB)
+		if err != nil {
+			return err
+		}
+		fmt.Printf("legacy_channels=%d legacy_abilities=%d target_channels=%d target_models=%d target_credentials=%d target_releases=%d target_calls=%d active_release_id=%s deployment_status=%s ready_for_cutover=%t\n",
+			report.LegacyChannels,
+			report.LegacyAbilities,
+			report.TargetChannels,
+			report.TargetModels,
+			report.TargetCredentials,
+			report.TargetReleases,
+			report.TargetCalls,
+			nullInt64String(report.ActiveReleaseID),
+			report.DeploymentStatus,
+			report.ReadyForCutover(),
+		)
+		return nil
 	default:
-		return fmt.Errorf("unknown migration command %q; use up, status, or adopt", args[0])
+		return fmt.Errorf("unknown migration command %q; use up, status, adopt, or audit", args[0])
 	}
+}
+
+func nullInt64String(value sql.NullInt64) string {
+	if !value.Valid {
+		return "null"
+	}
+	return strconv.FormatInt(value.Int64, 10)
 }
 
 func closeDatabase(db *gorm.DB) {

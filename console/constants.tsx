@@ -2,6 +2,7 @@ import { ReactElement } from 'react';
 import {
     LayoutDashboard,
     Layers,
+    Layers3,
     Users,
     Key,
     FileText,
@@ -57,6 +58,7 @@ export const ROUTE_GROUPS: RouteGroup[] = [
     roles: ['admin'],
     children: [
       { path: '/gateway-channels', name: '网关渠道', icon: <Server size={20} />, roles: ['admin'] },
+      { path: '/unified-gateway', name: '统一网关', icon: <Layers3 size={20} />, roles: ['admin'] },
       { path: '/chat-models', name: '对话模型', icon: <Bot size={20} />, roles: ['admin'] },
     ],
   },

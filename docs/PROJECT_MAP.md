@@ -2,6 +2,8 @@
 
 Prism 是 Go + React 实现的 AI Gateway。公开接口位于 `/v1`；Gateway V2 是内部执行架构，不是 HTTP 版本号。
 
+> 本文描述当前已实现结构。统一目录、凭据、异步执行与计费的目标架构以 `docs/specs/2026-09-04-unified-gateway-catalog-billing-architecture.md` 为准；两者冲突时不得把本文当作目标设计。
+
 ## 技术栈
 
 | 层 | 技术 |
