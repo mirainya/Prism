@@ -45,6 +45,23 @@ func (s *unifiedSelector) active(ctx context.Context) (bool, error) {
 	if !releaseID.Valid || releaseID.Int64 <= 0 {
 		return false, nil
 	}
+	var releaseStatus string
+	if err := db.QueryRowContext(ctx, `SELECT status FROM gw_catalog_releases WHERE id=?`, releaseID.Int64).Scan(&releaseStatus); err != nil {
+		return false, err
+	}
+	if releaseStatus != "published" {
+		return false, nil
+	}
+	var missingSellRates, missingCostPlans uint64
+	if err := db.QueryRowContext(ctx, `SELECT COUNT(*) FROM gw_skus s LEFT JOIN gw_sell_rates sr ON sr.release_id=s.release_id AND sr.sku_id=s.id WHERE s.release_id=? AND sr.id IS NULL`, releaseID.Int64).Scan(&missingSellRates); err != nil {
+		return false, err
+	}
+	if err := db.QueryRowContext(ctx, `SELECT COUNT(*) FROM gw_offerings o LEFT JOIN gw_cost_plans cp ON cp.release_id=o.release_id AND cp.offering_id=o.id WHERE o.release_id=? AND cp.id IS NULL`, releaseID.Int64).Scan(&missingCostPlans); err != nil {
+		return false, err
+	}
+	if missingSellRates > 0 || missingCostPlans > 0 {
+		return false, nil
+	}
 	// A pointer update alone is not sufficient to enable traffic. Require an
 	// active deployment generation whose every member has a fresh, matching
 	// catalog and crypto readiness record.
