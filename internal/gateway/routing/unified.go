@@ -29,6 +29,7 @@ type unifiedCandidate struct {
 	BlobID                                                            uint64
 	KEKVersion                                                        uint32
 	InputPrice, OutputPrice                                           decimal.Decimal
+	UnitCode                                                          string
 	Capabilities                                                      []byte
 }
 
@@ -101,7 +102,7 @@ SELECT mo.id, ch.id, o.credential_pool_id, c.id, cv.id, o.id, eb.id,
        p.vendor_model, ch.protocol, ct.base_url, ct.transport_code,
        r.priority, r.weight, ct.request_path,
        eb.nonce, eb.ciphertext, w.wrap_nonce, w.wrapped_dek, w.kek_version,
-       COALESCE(sr.unit_price,0), COALESCE(sr.unit_price,0), cm.capability_tags
+	       COALESCE(sr.unit_code,''), COALESCE(sr.unit_price,0), cm.capability_tags
 FROM gw_catalog_releases rel
 JOIN gw_catalog_models cm ON cm.release_id=rel.id
 JOIN gw_catalog_model_names cmn ON cmn.release_id=cm.release_id AND cmn.catalog_model_id=cm.id
@@ -131,12 +132,19 @@ ORDER BY r.priority DESC, r.id`, activeRelease, modelName)
 	capabilityMatch, transportMatch := false, false
 	for rows.Next() {
 		var c unifiedCandidate
-		var inputPrice, outputPrice string
-		if err := rows.Scan(&c.AbilityID, &c.ChannelID, &c.PoolID, &c.CredentialID, &c.VersionID, &c.OfferingID, &c.BlobID, &c.VendorModel, &c.Protocol, &c.BaseURL, &c.TransportCode, &c.Priority, &c.Weight, &c.RequestPath, &c.Nonce, &c.Ciphertext, &c.WrapNonce, &c.WrappedDEK, &c.KEKVersion, &inputPrice, &outputPrice, &c.Capabilities); err != nil {
+		var unitPrice string
+		if err := rows.Scan(&c.AbilityID, &c.ChannelID, &c.PoolID, &c.CredentialID, &c.VersionID, &c.OfferingID, &c.BlobID, &c.VendorModel, &c.Protocol, &c.BaseURL, &c.TransportCode, &c.Priority, &c.Weight, &c.RequestPath, &c.Nonce, &c.Ciphertext, &c.WrapNonce, &c.WrappedDEK, &c.KEKVersion, &c.UnitCode, &unitPrice, &c.Capabilities); err != nil {
 			return nil, err
 		}
-		c.InputPrice, _ = decimal.NewFromString(inputPrice)
-		c.OutputPrice, _ = decimal.NewFromString(outputPrice)
+		price, _ := decimal.NewFromString(unitPrice)
+		switch strings.ToLower(c.UnitCode) {
+		case "request", "second", "image", "video", "megapixel":
+			c.InputPrice, c.OutputPrice = price, decimal.Zero
+		case "input_token", "input_tokens":
+			c.InputPrice = price
+		case "output_token", "output_tokens":
+			c.OutputPrice = price
+		}
 		transport := unifiedTransport(c.Protocol)
 		if !supportsSemanticRequirements(semanticCapabilities(c.Capabilities), requirements) {
 			continue
@@ -193,8 +201,17 @@ ORDER BY r.priority DESC, r.id`, activeRelease, modelName)
 		Protocol: model.Protocol(chosen.Protocol), BaseURL: chosen.BaseURL, APIKey: apiKey,
 		VendorModel: chosen.VendorModel, ModelName: modelName, Capabilities: semanticCapabilities(chosen.Capabilities),
 		Transport: unifiedTransport(chosen.Protocol), TransportConfig: map[string]any{"request_path": chosen.RequestPath},
-		InputPrice: chosen.InputPrice, OutputPrice: chosen.OutputPrice,
+		InputPrice: chosen.InputPrice, OutputPrice: chosen.OutputPrice, PriceMode: unifiedPriceMode(chosen.UnitCode),
 	}, nil
+}
+
+func unifiedPriceMode(unitCode string) string {
+	switch strings.ToLower(strings.TrimSpace(unitCode)) {
+	case "request", "second", "image", "video", "megapixel":
+		return "request"
+	default:
+		return "token"
+	}
 }
 
 func excludedUnifiedAttempt(attempts []TransportAttempt, credentialID uint64, transport model.UpstreamTransport) bool {

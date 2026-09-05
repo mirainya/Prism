@@ -52,3 +52,14 @@ func TestWeightedUnifiedCandidateAcceptsNonPositiveWeights(t *testing.T) {
 		}
 	}
 }
+
+func TestUnifiedPriceModeDistinguishesRequestUnits(t *testing.T) {
+	for _, unit := range []string{"request", "second", "image", "video", "megapixel"} {
+		if got := unifiedPriceMode(unit); got != "request" {
+			t.Fatalf("unit %q mode=%q, want request", unit, got)
+		}
+	}
+	if got := unifiedPriceMode("input_token"); got != "token" {
+		t.Fatalf("token unit mode=%q, want token", got)
+	}
+}
