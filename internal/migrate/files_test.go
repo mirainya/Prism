@@ -12,8 +12,8 @@ func TestLoadIncludesImmutableBaseline(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(migrations) != 61 {
-		t.Fatalf("managed migrations=%d, want 61", len(migrations))
+	if len(migrations) != 62 {
+		t.Fatalf("managed migrations=%d, want 62", len(migrations))
 	}
 	baseline := migrations[0]
 	if baseline.Filename != "20260718_150000_schema_baseline.sql" {
@@ -451,6 +451,7 @@ func TestLoadIncludesImmutableBaseline(t *testing.T) {
 		{58, "20260905_220000_unified_gateway_routing_policy_events.sql", "2534db692dcf2fb4cdfcb12d2f1d48deb84fd704fc0e81841164aa38117a537e"},
 		{59, "20260905_230000_unified_gateway_operations_runtime_costs.sql", "27ded61b051a78758841c274f2a41a22c271207d043566255947c37ac767980a"},
 		{60, "20260906_100000_unified_gateway_audit_events.sql", "18453fa359573bdcd6a345a865849526081d64cf87d4f9acf9e78a40b0fd4ac2"},
+		{61, "20260906_110000_repair_legacy_import_transport.sql", "e29fdd7766f53a9aab09412a2d0405171b24cfe8fe81112688e912466308e1fa"},
 	}
 	for _, migration := range newMigrations {
 		if migrations[migration.index].Filename != migration.filename || migrations[migration.index].Checksum != migration.checksum {
