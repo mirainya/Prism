@@ -49,6 +49,11 @@ func UnifiedGatewayOverview(c *gin.Context) {
 	targetCredentials := count("gw_credentials")
 	targetReleases := count("gw_catalog_releases")
 	targetCalls := count("gw_api_calls")
+	targetOfferings := count("gw_offerings")
+	targetRoutes := count("gw_routes")
+	sellRates := count("gw_sell_rates")
+	costRates := count("gw_cost_rates")
+	currencies := count("billing_currency_definitions")
 
 	state := "target_empty"
 	if targetChannels > 0 && targetModels > 0 && targetReleases > 0 && activeRelease.Valid {
@@ -56,7 +61,7 @@ func UnifiedGatewayOverview(c *gin.Context) {
 	} else if legacyChannels > 0 || legacyAbilities > 0 {
 		state = "legacy_runtime"
 	}
-	readyForCutover := legacyChannels == 0 && legacyAbilities == 0 && targetChannels > 0 && targetModels > 0 && targetCredentials > 0 && targetReleases > 0 && activeRelease.Valid && deploymentStatus == "active"
+	readyForCutover := legacyChannels == 0 && legacyAbilities == 0 && targetChannels > 0 && targetModels > 0 && targetCredentials > 0 && targetReleases > 0 && targetOfferings > 0 && targetRoutes > 0 && sellRates > 0 && costRates > 0 && currencies > 0 && activeRelease.Valid && deploymentStatus == "active"
 
 	resp.Success(c, gin.H{
 		"state":             state,
@@ -73,6 +78,11 @@ func UnifiedGatewayOverview(c *gin.Context) {
 			"credentials":      targetCredentials,
 			"catalog_releases": targetReleases,
 			"calls":            targetCalls,
+			"offerings":        targetOfferings,
+			"routes":           targetRoutes,
+			"sell_rates":       sellRates,
+			"cost_rates":       costRates,
+			"currencies":       currencies,
 		},
 		"legacy": gin.H{
 			"channels":       legacyChannels,

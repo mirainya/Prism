@@ -11,6 +11,8 @@ type AuditReport struct {
 	LegacyChannels, LegacyAbilities                int64
 	TargetChannels, TargetModels                   int64
 	TargetCredentials, TargetReleases, TargetCalls int64
+	TargetOfferings, TargetRoutes                  int64
+	SellRates, CostRates, Currencies               int64
 	ActiveReleaseID                                sql.NullInt64
 	DeploymentStatus                               string
 }
@@ -28,6 +30,11 @@ func Audit(ctx context.Context, db *sql.DB) (AuditReport, error) {
 		{"gw_credentials", &report.TargetCredentials},
 		{"gw_catalog_releases", &report.TargetReleases},
 		{"gw_api_calls", &report.TargetCalls},
+		{"gw_offerings", &report.TargetOfferings},
+		{"gw_routes", &report.TargetRoutes},
+		{"gw_sell_rates", &report.SellRates},
+		{"gw_cost_rates", &report.CostRates},
+		{"billing_currency_definitions", &report.Currencies},
 	}
 	for _, count := range counts {
 		table, target := count.table, count.target
@@ -45,5 +52,5 @@ func Audit(ctx context.Context, db *sql.DB) (AuditReport, error) {
 }
 
 func (r AuditReport) ReadyForCutover() bool {
-	return r.LegacyChannels == 0 && r.LegacyAbilities == 0 && r.TargetChannels > 0 && r.TargetModels > 0 && r.TargetCredentials > 0 && r.TargetReleases > 0 && r.ActiveReleaseID.Valid && r.DeploymentStatus == "active"
+	return r.LegacyChannels == 0 && r.LegacyAbilities == 0 && r.TargetChannels > 0 && r.TargetModels > 0 && r.TargetCredentials > 0 && r.TargetReleases > 0 && r.TargetOfferings > 0 && r.TargetRoutes > 0 && r.SellRates > 0 && r.CostRates > 0 && r.Currencies > 0 && r.ActiveReleaseID.Valid && r.DeploymentStatus == "active"
 }

@@ -27,6 +27,11 @@ func TestAuditReportsCutoverReadiness(t *testing.T) {
 		{"gw_credentials", 4},
 		{"gw_catalog_releases", 1},
 		{"gw_api_calls", 7},
+		{"gw_offerings", 2},
+		{"gw_routes", 2},
+		{"gw_sell_rates", 2},
+		{"gw_cost_rates", 2},
+		{"billing_currency_definitions", 1},
 	}
 	for _, query := range queries {
 		mock.ExpectQuery(regexp.QuoteMeta("SELECT COUNT(*) FROM `" + query.table + "`")).WillReturnRows(sqlmock.NewRows([]string{"COUNT(*)"}).AddRow(query.value))
@@ -67,6 +72,11 @@ func TestAuditDoesNotClaimReadinessWithLegacyRows(t *testing.T) {
 		{"gw_credentials", 4},
 		{"gw_catalog_releases", 1},
 		{"gw_api_calls", 7},
+		{"gw_offerings", 2},
+		{"gw_routes", 2},
+		{"gw_sell_rates", 2},
+		{"gw_cost_rates", 2},
+		{"billing_currency_definitions", 1},
 	} {
 		mock.ExpectQuery(regexp.QuoteMeta("SELECT COUNT(*) FROM `" + query.table + "`")).WillReturnRows(sqlmock.NewRows([]string{"COUNT(*)"}).AddRow(query.value))
 	}

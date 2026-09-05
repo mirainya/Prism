@@ -257,13 +257,18 @@ func runMigrationCommand(ctx context.Context, db *gorm.DB, args []string) error 
 		if err != nil {
 			return err
 		}
-		fmt.Printf("legacy_channels=%d legacy_abilities=%d target_channels=%d target_models=%d target_credentials=%d target_releases=%d target_calls=%d active_release_id=%s deployment_status=%s ready_for_cutover=%t\n",
+		fmt.Printf("legacy_channels=%d legacy_abilities=%d target_channels=%d target_models=%d target_credentials=%d target_releases=%d target_offerings=%d target_routes=%d sell_rates=%d cost_rates=%d currencies=%d target_calls=%d active_release_id=%s deployment_status=%s ready_for_cutover=%t\n",
 			report.LegacyChannels,
 			report.LegacyAbilities,
 			report.TargetChannels,
 			report.TargetModels,
 			report.TargetCredentials,
 			report.TargetReleases,
+			report.TargetOfferings,
+			report.TargetRoutes,
+			report.SellRates,
+			report.CostRates,
+			report.Currencies,
 			report.TargetCalls,
 			nullInt64String(report.ActiveReleaseID),
 			report.DeploymentStatus,
