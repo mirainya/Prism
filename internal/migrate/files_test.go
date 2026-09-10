@@ -12,8 +12,8 @@ func TestLoadIncludesImmutableBaseline(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(migrations) != 90 {
-		t.Fatalf("managed migrations=%d, want 90", len(migrations))
+	if len(migrations) != 91 {
+		t.Fatalf("managed migrations=%d, want 91", len(migrations))
 	}
 	baseline := migrations[0]
 	if baseline.Filename != "20260718_150000_schema_baseline.sql" {
