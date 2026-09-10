@@ -1,7 +1,6 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
-import { Book, Search, Copy, Check, ChevronDown, ChevronRight, Play, Loader2, Zap, MessageSquare, ListChecks, Bell, AlertTriangle, RefreshCw, Braces, FileUp } from 'lucide-react';
-import { fetchDocsModels, fetchDocsVideos, DocsModel, DocsVideosResponse, DocsVideoModelOptions } from '../services/docsApi';
-import { fetchGwModels } from '../services/gatewayApi';
+import { Book, Copy, Check, ChevronDown, ChevronRight, Play, Loader2, MessageSquare, AlertTriangle, Video, Braces, FileUp } from 'lucide-react';
+import { fetchDocsVideos, DocsVideosResponse, DocsVideoModelOptions } from '../services/docsApi';
 import { TryItDrawer } from './TryItDrawer';
 
 // ===== 代码块组件 =====
@@ -487,42 +486,9 @@ const FILE_ENDPOINTS: ApiEndpoint[] = [
   },
 ];
 
-// 兼容接口（图片生成）
-const IMAGE_COMPAT_ENDPOINTS: ApiEndpoint[] = [
-  {
-    id: 'ep-images-generations',
-    method: 'POST',
-    path: '/v1/images/generations',
-    name: '图片生成（OpenAI 标准）',
-    description: 'OpenAI 标准协议，同步返图。同步渠道直接返回，异步渠道网关内部轮询等待（默认上限 300s），超时返 202 + task_id。任何 OpenAI 图像 SDK 可即插即用。',
-    params: [
-      { name: 'model', type: 'string', required: true, description: '模型标识' },
-      { name: 'prompt', type: 'string', required: true, description: '提示词' },
-      { name: 'n', type: 'integer', required: false, description: '生成数量' },
-      { name: 'size', type: 'string', required: false, description: '图片尺寸，如 1024x1024' },
-      { name: 'quality', type: 'string', required: false, description: '图片质量' },
-      { name: 'response_format', type: 'string', required: false, description: 'url | b64_json' },
-      { name: 'output_format', type: 'string', required: false, description: '输出格式，如 png/jpeg/webp' },
-      { name: 'output_compression', type: 'integer', required: false, description: '压缩率 0-100' },
-      { name: 'style', type: 'string', required: false, description: '风格' },
-    ],
-    requestExample: JSON.stringify({ model: "gpt-image-1", prompt: "a cute corgi wearing sunglasses", n: 1, size: "1024x1024" }, null, 2),
-    responseExample: JSON.stringify({ created: 1704067200, data: [{ url: "https://...", revised_prompt: "..." }] }, null, 2),
-  },
-];
-
 const buildVideoDocEndpoints = (docs: DocsVideosResponse): ApiEndpoint[] => {
   const modelOptions = docs.model_options || {};
-  const channelModels = (docs.channels || []).flatMap(channel => (
-    channel.models.map(model => ({
-      model,
-      channelName: channel.name,
-      options: channel.model_options?.[model] || modelOptions[model] || {},
-    }))
-  ));
-  const videoModels = channelModels.length > 0
-    ? channelModels
-    : (docs.models || []).map(model => ({ model, options: modelOptions[model] || {} }));
+  const videoModels = (docs.models || []).map(model => ({ model, options: modelOptions[model] || {} }));
   const roleLabels = Array.from(new Set(videoModels.flatMap(({ options }) => options.allowed_roles || [])))
     .map(role => videoRoleLabels[role] || role);
   const params = [
@@ -533,7 +499,7 @@ const buildVideoDocEndpoints = (docs: DocsVideosResponse): ApiEndpoint[] => {
     { name: 'aspect_ratio', type: 'string', required: false, description: '画面比例；未配置比例的模型不要提交此字段' },
     { name: 'generate_audio', type: 'boolean', required: false, description: '是否生成音频；以模型能力为准，部分模型固定禁止' },
     { name: 'service_tier', type: 'string', required: false, description: '执行档位；具体可用值以所选模型能力为准，未填写时使用 standard' },
-    { name: 'references', type: 'array', required: false, description: `素材引用数组。每项为 {type, role, asset_id|url, duration_seconds}；可用角色以所选渠道的模型能力为准${roleLabels.length ? `，当前已配置：${roleLabels.join('、')}` : ''}，未声明的角色不要提交` },
+    { name: 'references', type: 'array', required: false, description: `素材引用数组。每项为 {type, role, asset_id|url, duration_seconds}；可用角色以当前模型能力为准${roleLabels.length ? `，当前已配置：${roleLabels.join('、')}` : ''}，未声明的角色不要提交` },
     { name: 'provider_options', type: 'object', required: false, description: '官方协议扩展；provider_options.seedance 支持 camera_fixed、return_last_frame、web_search' },
     { name: 'callback_url', type: 'string', required: false, description: '任务完成后的回调地址' },
   ];
@@ -549,7 +515,7 @@ const buildVideoDocEndpoints = (docs: DocsVideosResponse): ApiEndpoint[] => {
     method: 'POST',
     path: '/v1/videos/generations',
     name: '视频生成（Prism V1）',
-    description: 'Prism 统一视频协议。模型能力按当前渠道配置动态展示；任务类型由 references[].role 推断，不需要填写上游 provider_mode。',
+    description: 'Prism 统一视频协议。模型能力由当前发布目录动态展示，系统自动选路；任务类型由 references[].role 推断。',
     params,
     videoModels,
     requestExample: JSON.stringify({
@@ -574,18 +540,12 @@ const buildVideoDocEndpoints = (docs: DocsVideosResponse): ApiEndpoint[] => {
       id: 'ep-video-queue', method: 'GET', path: '/v1/videos/generations/{id}/queue', name: '任务队列状态',
       description: '查询单个视频任务的实时队列信息。', params: [{ name: 'id', type: 'string', required: true, description: '任务 ID' }],
     },
-    {
-      id: 'ep-video-priority-queue', method: 'POST', path: '/v1/videos/generations/{id}/priority-queue', name: '升级优先队列',
-      description: '将支持的标准队列任务升级为优先队列；积分 VIP、已开始生成和终态任务不可升级。', params: [{ name: 'id', type: 'string', required: true, description: '任务 ID' }],
-    },
   ];
 };
 
 // ===== 主组件 =====
 const ApiDocs: React.FC = () => {
-  const [models, setModels] = useState<DocsModel[]>([]);
-  const [videoDocs, setVideoDocs] = useState<DocsVideosResponse>({ models: [], model_options: {}, channels: [] });
-  const [search, setSearch] = useState('');
+  const [videoDocs, setVideoDocs] = useState<DocsVideosResponse>({ models: [], model_options: {} });
   const [loading, setLoading] = useState(true);
   const [activeSection, setActiveSection] = useState('quickstart');
   const [docsCopied, setDocsCopied] = useState(false);
@@ -593,30 +553,15 @@ const ApiDocs: React.FC = () => {
   const contentRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
-    Promise.all([
-      fetchDocsModels().catch(() => []),
-      fetchDocsVideos().catch(() => ({ models: [], model_options: {}, channels: [] })),
-      fetchGwModels().catch(() => []),
-    ]).then(([caps, videos, gwModels]) => {
-      // caps 是老 models 表(现只剩 image/video 能力);chat 模型已迁网关,从 gw 拉取补进来
-      const chatDocs: DocsModel[] = gwModels
-        .filter(g => g.key_available > 0)
-        .map(g => ({
-          code: g.model_name,
-          name: g.display_name || g.model_name,
-          type: 'chat',
-          description: '',
-          param_schema: null,
-          channels: [],
-        }));
-      setModels([...chatDocs, ...caps]);
+    fetchDocsVideos()
+      .catch(() => ({ models: [], model_options: {} }))
+      .then(videos => {
       setVideoDocs(videos);
       setLoading(false);
     });
   }, []);
 
   const videoEndpoints = buildVideoDocEndpoints(videoDocs);
-  const compatEndpoints = [...IMAGE_COMPAT_ENDPOINTS, ...videoEndpoints];
 
   // IntersectionObserver for active nav tracking
   useEffect(() => {
@@ -632,10 +577,10 @@ const ApiDocs: React.FC = () => {
       },
       { root: contentRef.current, threshold: 0.15, rootMargin: '-10% 0px -70% 0px' }
     );
-    const sections = contentRef.current?.querySelectorAll('section[id], div[id^="ep-"], div[id^="cap-"]');
+    const sections = contentRef.current?.querySelectorAll('section[id], div[id^="ep-"]');
     sections?.forEach(el => observer.observe(el));
     return () => observer.disconnect();
-  }, [loading, models]);
+  }, [loading, videoDocs]);
 
   const scrollTo = (id: string) => {
     const el = document.getElementById(id);
@@ -645,8 +590,6 @@ const ApiDocs: React.FC = () => {
   };
 
   const copyAllDocs = () => {
-    const chatModelsLocal = models.filter(m => m.type === 'chat');
-    const capModels = models.filter(m => m.type !== 'chat');
     const appendEndpoints = (title: string, intro: string, endpoints: ApiEndpoint[]) => {
       let section = `## ${title}\n\n${intro}\n\n`;
       endpoints.forEach(ep => {
@@ -672,92 +615,18 @@ const ApiDocs: React.FC = () => {
     let md = `# API 文档\n\nBase URL: ${window.location.origin}\n认证方式: 请求头 Authorization: YOUR_TOKEN\n\n`;
     md += `## Chat 对话接口\n\n### POST /v1/chat/completions\n对话补全 - 兼容 OpenAI 格式，支持多模态（图片/文件）\n\n| 参数 | 类型 | 必填 | 说明 |\n|------|------|------|------|\n`;
     CHAT_COMPLETIONS_PARAMS.forEach(p => { md += `| ${p.name} | ${p.type} | ${p.required ? '是' : '否'} | ${p.description} |\n`; });
-    md += `\n**多模态请求示例 (图片):**\n\`\`\`json\n${JSON.stringify({ model: chatModelsLocal[0]?.code || "gpt-4o", messages: [{ role: "user", content: [{ type: "text", text: "这张图片里有什么？" }, { type: "image_url", image_url: { url: "https://example.com/image.jpg" } }] }], max_tokens: 1000 }, null, 2)}\n\`\`\`\n\n`;
-    md += `### GET /v1/models\n获取所有可用模型\n\n当前可用模型: ${models.map(m => m.code).join(', ')}\n\n`;
+    md += `\n**多模态请求示例 (图片):**\n\`\`\`json\n${JSON.stringify({ model: "your-chat-model", messages: [{ role: "user", content: [{ type: "text", text: "这张图片里有什么？" }, { type: "image_url", image_url: { url: "https://example.com/image.jpg" } }] }], max_tokens: 1000 }, null, 2)}\n\`\`\`\n\n`;
+    md += `### GET /v1/models\n获取当前令牌可用的模型\n\n`;
     md += `### GET /v1/models/:code\n获取单个模型详情\n\n| 参数 | 类型 | 必填 | 说明 |\n|------|------|------|------|\n| code | string | 是 | 模型标识（路径参数） |\n\n`;
-    md += `### GET /v1/channels\n获取所有可用渠道列表\n\n`;
 	md += appendEndpoints('Anthropic Messages API', '下游使用 Anthropic Messages 协议，模型可通过任一已配置 Transport 执行。', ANTHROPIC_MESSAGES_ENDPOINTS);
     md += appendEndpoints('Responses API', '下游统一使用 /v1/responses。OpenAI 上游调用 /v1/responses；火山方舟调用原生 /api/v3/responses 并保留 v3 扩展；Anthropic 与 Google 由 Prism 转换。', RESPONSES_ENDPOINTS);
     md += appendEndpoints('Files API', '文件按 API Token 隔离，可通过 file_id 用于 Responses 多模态输入。', FILE_ENDPOINTS);
-    md += `## 能力接口\n\n### GET /v1/capabilities\n获取所有可用能力接口列表\n\n| 参数 | 类型 | 必填 | 说明 |\n|------|------|------|------|\n| channel | string | 否 | 按渠道类型筛选 |\n| type | string | 否 | 按能力类型筛选 |\n\n当前可用能力: ${capModels.map(m => m.code).join(', ')}\n\n`;
-    capModels.forEach(m => {
-      md += `### POST /v1/capabilities/${m.code}\n${m.name}${m.description ? ' - ' + m.description : ''}\n\n| 参数 | 类型 | 必填 | 说明 |\n|------|------|------|------|\n| channel | string | 否 | 指定渠道（可选） |\n| callback_url | string | 否 | 回调地址 |\n`;
-      if (m.param_schema && typeof m.param_schema === 'object') {
-        Object.entries(m.param_schema).forEach(([key, val]: [string, any]) => {
-          const t = val.type === 'enum' ? `enum(${(val.options || []).join('|')})` : (val.type || 'string');
-          md += `| ${key} | ${t} | ${val.required ? '是' : '否'} | ${val.name || ''} |\n`;
-        });
-      }
-      md += '\n';
-    });
-    md += `## 兼容接口\n\n`;
-    compatEndpoints.forEach(ep => {
-      md += `### ${ep.method} ${ep.path}\n${ep.name}${ep.description ? ' - ' + ep.description : ''}\n\n| 参数 | 类型 | 必填 | 说明 |\n|------|------|------|------|\n`;
-      ep.params.forEach(p => { md += `| ${p.name} | ${p.type} | ${p.required ? '是' : '否'} | ${p.description} |\n`; });
-      if (ep.requestExample) md += `\n**请求示例:**\n\`\`\`json\n${ep.requestExample}\n\`\`\`\n`;
-      if (ep.responseExample) md += `\n**响应示例:**\n\`\`\`json\n${ep.responseExample}\n\`\`\`\n`;
-      md += '\n';
-    });
-    md += `## 任务管理\n\n### GET /v1/tasks/:task_no\n查询任务状态和结果\n\n### POST /v1/tasks/:task_no/cancel\n取消正在处理中的任务\n\n`;
-    md += `## 回调通知\n\n提交任务时传入 callback_url，任务完成后系统 POST 结果到该地址。最多重试 3 次。\n\n`;
+    md += appendEndpoints('Video API', '统一视频生成与队列查询。', videoEndpoints);
     md += `## 错误码\n\n| 错误码 | 说明 |\n|--------|------|\n| 0 | 成功 |\n| 400 | 参数错误 |\n| 401 | 未认证/Token无效 |\n| 402 | 余额不足 |\n| 403 | 无权限 |\n| 404 | 资源不存在 |\n| 429 | 请求过于频繁 |\n| 500 | 服务器内部错误 |\n`;
     navigator.clipboard.writeText(md);
     setDocsCopied(true);
     setTimeout(() => setDocsCopied(false), 2000);
   };
-
-  const capabilityEndpoints: ApiEndpoint[] = models
-    .filter(m => m.type !== 'chat')
-    .filter(m => !search || m.name.includes(search) || m.code.includes(search))
-    .map(m => {
-      const params = [
-        { name: 'channel', type: 'string', required: false, description: '指定渠道（可选）' },
-        { name: 'callback_url', type: 'string', required: false, description: '回调地址' },
-      ];
-      if (m.param_schema && typeof m.param_schema === 'object' && !Array.isArray(m.param_schema)) {
-        Object.entries(m.param_schema).forEach(([key, val]: [string, any]) => {
-          const typeStr = val.type === 'enum' ? `enum(${(val.options || []).join('|')})` : (val.type || 'string');
-          params.push({ name: key, type: typeStr, required: val.required || false, description: val.name || '' });
-        });
-      }
-      // 收集渠道专属参数（与能力级不同的）
-      const channelParams: ApiEndpoint['channelParams'] = [];
-      m.channels.forEach(ch => {
-        if (ch.param_schema && typeof ch.param_schema === 'object') {
-          const chParams = Object.entries(ch.param_schema).map(([key, val]: [string, any]) => {
-            const typeStr = val.type === 'enum' ? `enum(${(val.options || []).join('|')})` : (val.type || 'string');
-            return { name: key, type: typeStr, required: val.required || false, description: val.name || '' };
-          });
-          if (chParams.length > 0) {
-            channelParams.push({ channelName: ch.channel_name, channelType: ch.channel_type, interactionMode: ch.interaction_mode, params: chParams });
-          }
-        }
-      });
-      const exampleBody: Record<string, any> = {};
-      if (m.param_schema && typeof m.param_schema === 'object') {
-        Object.entries(m.param_schema).forEach(([key, val]: [string, any]) => {
-          if (val.required) {
-            if (val.type === 'enum' && val.options?.length) exampleBody[key] = val.options[0];
-            else if (val.type === 'number') exampleBody[key] = 1;
-            else exampleBody[key] = `示例${val.name || key}`;
-          }
-        });
-      }
-      exampleBody.callback_url = "https://your-domain.com/callback";
-      return {
-        id: `cap-${m.code}`,
-        method: 'POST',
-        path: `/v1/capabilities/${m.code}`,
-        name: m.name,
-        description: m.description || `调用 ${m.name} 能力`,
-        params,
-        channelParams: channelParams.length > 0 ? channelParams : undefined,
-        requestExample: JSON.stringify(exampleBody, null, 2),
-        responseExample: JSON.stringify({ code: 0, message: "success", data: { task_no: "task_xxx", status: "pending", capability: m.code } }, null, 2),
-      };
-    });
-
-  const chatModels = models.filter(m => m.type === 'chat');
 
   const navGroups: NavGroup[] = [
     { id: 'quickstart', label: '快速开始', icon: <Book size={14} />, items: [] },
@@ -765,18 +634,11 @@ const ApiDocs: React.FC = () => {
       { id: 'ep-chat-completions', label: '对话补全' },
       { id: 'ep-models', label: '模型列表' },
       { id: 'ep-model-detail', label: '模型详情' },
-      { id: 'ep-channels', label: '渠道列表' },
     ]},
 	{ id: 'anthropic', label: 'Anthropic Messages', icon: <MessageSquare size={14} />, items: ANTHROPIC_MESSAGES_ENDPOINTS.map(e => ({ id: e.id, label: e.name })) },
     { id: 'responses', label: 'Responses', icon: <Braces size={14} />, items: RESPONSES_ENDPOINTS.map(e => ({ id: e.id, label: e.name })) },
     { id: 'files', label: 'Files', icon: <FileUp size={14} />, items: FILE_ENDPOINTS.map(e => ({ id: e.id, label: e.name })) },
-    { id: 'capabilities', label: '能力接口', icon: <Zap size={14} />, items: capabilityEndpoints.map(e => ({ id: e.id, label: e.name })) },
-    { id: 'compat', label: '兼容接口', icon: <RefreshCw size={14} />, items: compatEndpoints.map(e => ({ id: e.id, label: e.name })) },
-    { id: 'tasks', label: '任务管理', icon: <ListChecks size={14} />, items: [
-      { id: 'ep-get-task', label: '查询任务' },
-      { id: 'ep-cancel-task', label: '取消任务' },
-    ]},
-    { id: 'callback', label: '回调通知', icon: <Bell size={14} />, items: [] },
+    { id: 'video', label: 'Video', icon: <Video size={14} />, items: videoEndpoints.map(e => ({ id: e.id, label: e.name })) },
     { id: 'errors', label: '错误码', icon: <AlertTriangle size={14} />, items: [] },
   ];
 
@@ -795,10 +657,6 @@ const ApiDocs: React.FC = () => {
       {/* 左侧导航 */}
       <aside className="w-56 shrink-0 overflow-y-auto no-scrollbar hidden md:block">
         <div className="sticky top-0 space-y-1">
-          <div className="relative mb-3">
-            <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-[var(--text-secondary)]" />
-            <input value={search} onChange={e => setSearch(e.target.value)} placeholder="搜索接口..." className="w-full pl-8 pr-3 py-2 border border-[var(--border-soft)] rounded-lg text-xs focus:outline-none focus:ring-2 focus:ring-[var(--primary)] bg-[var(--surface-card)] text-[var(--text-primary)]" />
-          </div>
           <button onClick={copyAllDocs} className="flex items-center gap-2 w-full px-3 py-2 mb-2 text-xs font-medium border border-[var(--border-soft)] rounded-lg hover:bg-[var(--primary-lighter)] transition-colors text-[var(--text-secondary)]">
             {docsCopied ? <><Check size={12} className="text-green-500" /> 已复制</> : <><Copy size={12} /> 一键复制全部文档</>}
           </button>
@@ -840,7 +698,7 @@ const ApiDocs: React.FC = () => {
             <div className="space-y-2 text-sm text-indigo-100">
               <p><strong>Base URL:</strong> <code className="bg-white/20 px-2 py-0.5 rounded">{window.location.origin}</code></p>
               <p><strong>认证方式:</strong> 请求头 <code className="bg-white/20 px-2 py-0.5 rounded">Authorization: YOUR_TOKEN</code></p>
-              <p><strong>步骤:</strong> 1. 创建令牌 → 2. 选择模型/能力 → 3. 发起请求</p>
+              <p><strong>步骤:</strong> 1. 创建令牌 → 2. 选择模型 → 3. 发起请求</p>
             </div>
           </div>
         </section>
@@ -858,7 +716,7 @@ const ApiDocs: React.FC = () => {
               description: '发送消息获取模型回复，支持流式/非流式、多模态、Tool Use，并自动保存成功、失败和中断的对话轮次',
               params: CHAT_COMPLETIONS_PARAMS,
               requestExample: JSON.stringify({
-                model: chatModels[0]?.code || "gpt-4o",
+                model: "your-chat-model",
                 messages: [
                   { role: "system", content: "You are a helpful assistant." },
                   { role: "user", content: [
@@ -874,7 +732,7 @@ const ApiDocs: React.FC = () => {
                 id: "chatcmpl-abc123",
                 object: "chat.completion",
                 created: 1704067200,
-                model: chatModels[0]?.code || "gpt-4o",
+                model: "your-chat-model",
                 choices: [{ index: 0, message: { role: "assistant", content: "Hello! How can I help you?" }, finish_reason: "stop" }],
                 usage: { prompt_tokens: 20, completion_tokens: 10, total_tokens: 30 }
               }, null, 2),
@@ -885,11 +743,11 @@ const ApiDocs: React.FC = () => {
               method: 'GET',
               path: '/v1/models',
               name: '模型列表',
-              description: '获取所有可用模型（含 Chat 和能力接口）',
+              description: '获取当前令牌可用的模型',
               params: [],
               responseExample: JSON.stringify({
                 object: "list",
-                data: chatModels.slice(0, 3).map(m => ({ id: m.code, object: "model", created: 1704067200, owned_by: m.channels[0]?.channel_type || "unknown", type: "chat" }))
+                data: [{ id: "your-chat-model", object: "model", created: 1704067200, owned_by: "provider" }]
               }, null, 2),
             }} onTryIt={setTryItApi} />
 
@@ -901,33 +759,10 @@ const ApiDocs: React.FC = () => {
               description: '获取单个模型的详细信息',
               params: [{ name: 'code', type: 'string', required: true, description: '模型标识（路径参数）' }],
               responseExample: JSON.stringify({
-                id: chatModels[0]?.code || "gpt-4o", object: "model", created: 1704067200, owned_by: "openai", max_tokens: 4096
+                id: "your-chat-model", object: "model", created: 1704067200, owned_by: "provider", max_tokens: 4096
               }, null, 2),
             }} onTryIt={setTryItApi} />
-
-            <EndpointCard api={{
-              id: 'ep-channels',
-              method: 'GET',
-              path: '/v1/channels',
-              name: '渠道列表',
-              description: '获取所有可用渠道',
-              params: [],
-            }} onTryIt={setTryItApi} />
           </div>
-
-          {chatModels.length > 0 && (
-            <div className="mt-4 border border-[var(--border-soft)] rounded-xl p-4 bg-[var(--surface-card)]">
-              <h3 className="text-sm font-bold text-[var(--text-primary)] mb-3">当前可用模型</h3>
-              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-2">
-                {chatModels.map(m => (
-                  <div key={m.code} className="flex items-center gap-2 px-3 py-2 bg-[var(--surface)] rounded-lg">
-                    <code className="text-xs font-mono text-[var(--primary)]">{m.code}</code>
-                    {m.channels.length > 0 && <span className="text-xs text-[var(--text-secondary)] ml-auto">{m.channels[0].channel_type}</span>}
-                  </div>
-                ))}
-              </div>
-            </div>
-          )}
         </section>
 
 		<section id="anthropic">
@@ -961,80 +796,13 @@ const ApiDocs: React.FC = () => {
           </div>
         </section>
 
-        {/* 能力接口 */}
-        <section id="capabilities">
-          <h2 className="text-lg font-bold text-[var(--text-primary)] mb-3 flex items-center gap-2"><Zap size={18} /> 能力接口</h2>
-          <p className="text-sm text-[var(--text-secondary)] mb-4">调用各类 AI 能力，支持异步任务模式</p>
+        <section id="video">
+          <h2 className="text-lg font-bold text-[var(--text-primary)] mb-3 flex items-center gap-2"><Video size={18} /> Video API</h2>
+          <p className="text-sm text-[var(--text-secondary)] mb-4">统一视频生成与队列查询</p>
           <div className="space-y-3">
-            <EndpointCard api={{
-              id: 'ep-list-capabilities',
-              method: 'GET',
-              path: '/v1/capabilities',
-              name: '能力列表',
-              description: '获取所有可用的能力接口列表',
-              params: [
-                { name: 'channel', type: 'string', required: false, description: '按渠道类型筛选' },
-                { name: 'type', type: 'string', required: false, description: '按能力类型筛选' },
-              ],
-            }} onTryIt={setTryItApi} />
-          </div>
-          {capabilityEndpoints.length === 0
-            ? <div className="text-sm text-[var(--text-secondary)] py-8 text-center">暂无能力接口</div>
-            : <div className="space-y-3 mt-3">{capabilityEndpoints.map(ep => <EndpointCard key={ep.id} api={ep} onTryIt={setTryItApi} />)}</div>
-          }
-        </section>
-
-        {/* 兼容接口 */}
-        <section id="compat">
-          <h2 className="text-lg font-bold text-[var(--text-primary)] mb-3 flex items-center gap-2"><RefreshCw size={18} /> 兼容接口</h2>
-          <p className="text-sm text-[var(--text-secondary)] mb-4">兼容 OpenAI 格式的图片/视频生成接口</p>
-          <div className="space-y-3">
-            {compatEndpoints.map(ep => (
+            {videoEndpoints.map(ep => (
               <EndpointCard key={ep.id} api={ep} onTryIt={setTryItApi} />
             ))}
-          </div>
-        </section>
-
-        {/* 任务管理 */}
-        <section id="tasks">
-          <h2 className="text-lg font-bold text-[var(--text-primary)] mb-3 flex items-center gap-2"><ListChecks size={18} /> 任务管理</h2>
-          <div className="space-y-3">
-            <EndpointCard api={{
-              id: 'ep-get-task',
-              method: 'GET',
-              path: '/v1/tasks/{task_no}',
-              name: '查询任务',
-              description: '根据任务编号查询任务状态和结果',
-              params: [{ name: 'task_no', type: 'string', required: true, description: '任务编号（路径参数）' }],
-              responseExample: JSON.stringify({ code: 0, data: { task_no: "task_xxx", status: "completed", result: { url: "https://..." }, created_at: "2024-01-01T00:00:00Z" } }, null, 2),
-            }} onTryIt={setTryItApi} />
-            <EndpointCard api={{
-              id: 'ep-cancel-task',
-              method: 'POST',
-              path: '/v1/tasks/{task_no}/cancel',
-              name: '取消任务',
-              description: '取消一个待处理或进行中的任务',
-              params: [{ name: 'task_no', type: 'string', required: true, description: '任务编号（路径参数）' }],
-              responseExample: JSON.stringify({ code: 0, message: "success" }, null, 2),
-            }} onTryIt={setTryItApi} />
-          </div>
-        </section>
-
-        {/* 回调通知 */}
-        <section id="callback">
-          <h2 className="text-lg font-bold text-[var(--text-primary)] mb-3 flex items-center gap-2"><Bell size={18} /> 回调通知</h2>
-          <div className="border border-[var(--border-soft)] rounded-xl p-4 bg-[var(--surface-card)] space-y-3">
-            <p className="text-sm text-[var(--text-secondary)]">任务完成后，系统会向 <code className="text-[var(--primary)]">callback_url</code> 发送 POST 请求。</p>
-            <CodeBlock code={JSON.stringify({ task_no: "task_xxx", status: "completed", capability: "text-to-image", result: { url: "https://..." }, created_at: "2024-01-01T00:00:00Z" }, null, 2)} title="回调 Body 示例" />
-            <div className="text-sm text-[var(--text-secondary)] space-y-1">
-              <p><strong>status 枚举：</strong></p>
-              <ul className="ml-4 space-y-0.5 text-xs">
-                <li><code className="text-[var(--primary)]">pending</code> — 等待处理</li>
-                <li><code className="text-[var(--primary)]">processing</code> — 处理中</li>
-                <li><code className="text-[var(--primary)]">completed</code> — 已完成</li>
-                <li><code className="text-[var(--primary)]">failed</code> — 失败</li>
-              </ul>
-            </div>
           </div>
         </section>
 

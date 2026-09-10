@@ -1,17 +1,161 @@
 package open
 
 import (
-	"context"
+	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
 	"strings"
 	"time"
 
-	"github.com/mirainya/Prism/internal/service"
 	"github.com/tidwall/gjson"
 )
+
+const maxImageSSEEventBytes = 128 << 20
+
+var errImageSSEEventTooLarge = errors.New("image SSE event exceeds the size limit")
+
+type imageSSEParser struct {
+	pending   []byte
+	dataLines [][]byte
+	dataBytes int
+	emit      func([]byte)
+}
+
+func newImageSSEParser(emit func([]byte)) *imageSSEParser {
+	return &imageSSEParser{emit: emit}
+}
+
+func (p *imageSSEParser) Write(chunk []byte) error {
+	if p == nil || len(chunk) == 0 {
+		return nil
+	}
+	if len(p.pending)+p.dataBytes+len(chunk) > maxImageSSEEventBytes {
+		return errImageSSEEventTooLarge
+	}
+	p.pending = append(p.pending, chunk...)
+	for {
+		index := bytes.IndexAny(p.pending, "\r\n")
+		if index < 0 {
+			return nil
+		}
+		if p.pending[index] == '\r' && index+1 == len(p.pending) {
+			return nil
+		}
+		line := bytes.Clone(p.pending[:index])
+		separatorLength := 1
+		if p.pending[index] == '\r' && p.pending[index+1] == '\n' {
+			separatorLength = 2
+		}
+		p.pending = p.pending[index+separatorLength:]
+		p.consumeLine(line)
+	}
+}
+
+func (p *imageSSEParser) Finish() error {
+	if p == nil {
+		return nil
+	}
+	if len(p.pending)+p.dataBytes > maxImageSSEEventBytes {
+		return errImageSSEEventTooLarge
+	}
+	if len(p.pending) != 0 {
+		line := bytes.TrimSuffix(p.pending, []byte{'\r'})
+		p.consumeLine(line)
+		p.pending = nil
+	}
+	p.emitEvent()
+	return nil
+}
+
+func (p *imageSSEParser) consumeLine(line []byte) {
+	if len(line) == 0 {
+		p.emitEvent()
+		return
+	}
+	if line[0] == ':' || !bytes.HasPrefix(line, []byte("data:")) {
+		return
+	}
+	value := line[len("data:"):]
+	if len(value) != 0 && value[0] == ' ' {
+		value = value[1:]
+	}
+	value = bytes.Clone(value)
+	p.dataLines = append(p.dataLines, value)
+	p.dataBytes += len(value)
+}
+
+func (p *imageSSEParser) emitEvent() {
+	if len(p.dataLines) == 0 {
+		return
+	}
+	payload := bytes.Join(p.dataLines, []byte{'\n'})
+	p.dataLines = nil
+	p.dataBytes = 0
+	if p.emit != nil {
+		p.emit(payload)
+	}
+}
+
+type imageSSESession struct {
+	events   chan []byte
+	done     chan bool
+	parser   *imageSSEParser
+	finished bool
+}
+
+func startImageSSESession(w io.Writer) *imageSSESession {
+	events := make(chan []byte, 16)
+	session := &imageSSESession{events: events, done: make(chan bool, 1)}
+	session.parser = newImageSSEParser(func(payload []byte) {
+		events <- payload
+	})
+	go func() {
+		session.done <- forwardImageSSEEvents(w, events)
+	}()
+	return session
+}
+
+func (s *imageSSESession) Observe(chunk []byte) error {
+	if s == nil || s.finished {
+		return errors.New("image SSE session is closed")
+	}
+	return s.parser.Write(chunk)
+}
+
+func (s *imageSSESession) Complete(w io.Writer, response OpenAIImageResponse) {
+	errorForwarded, parserErr := s.finish()
+	if parserErr != nil && !errorForwarded {
+		writeImageSSEError(w, "upstream image stream was invalid", "api_error")
+	} else if !errorForwarded {
+		if err := writeImageCompletedSSE(w, response); err != nil {
+			writeImageSSEError(w, "image response serialization failed", "api_error")
+		}
+	}
+	writeImageSSEDone(w)
+	flushImageSSE(w)
+}
+
+func (s *imageSSESession) Fail(w io.Writer) {
+	errorForwarded, _ := s.finish()
+	if !errorForwarded {
+		writeImageSSEError(w, "upstream image generation failed", "api_error")
+	}
+	writeImageSSEDone(w)
+	flushImageSSE(w)
+}
+
+func (s *imageSSESession) finish() (bool, error) {
+	if s == nil || s.finished {
+		return false, nil
+	}
+	s.finished = true
+	parserErr := s.parser.Finish()
+	close(s.events)
+	return <-s.done, parserErr
+}
 
 // writeImageSSEData 写一帧 SSE data 行（两个换行结尾）。
 func writeImageSSEData(w io.Writer, payload []byte) {
@@ -118,32 +262,13 @@ func flushImageSSE(w io.Writer) {
 	}
 }
 
-// writeImageCompletedSSE 把 InvokeAndWait 结果格式化成 image_generation.completed 帧写入 w。
-// 若 responseFormat="b64_json"，通过 encode 把 URL 转成 base64 再下发。
-func writeImageCompletedSSE(
-	ctx context.Context,
-	w io.Writer,
-	result *service.ImageResult,
-	responseFormat string,
-	encode imageBase64Encoder,
-) error {
-	if result == nil || !result.Success {
-		msg := "image generation failed"
-		if result != nil && result.Error != "" {
-			msg = result.Error
-		}
-		writeImageSSEError(w, msg, "api_error")
-		return nil
-	}
-	data, err := buildOpenAIImageData(ctx, result.URLs, result.RevisedPrompt, responseFormat, encode)
-	if err != nil {
-		writeImageSSEError(w, err.Error(), "api_error")
-		return err
-	}
+// writeImageCompletedSSE writes the already-normalized, durably persisted
+// image response as the terminal OpenAI-compatible event.
+func writeImageCompletedSSE(w io.Writer, response OpenAIImageResponse) error {
 	event := map[string]any{
 		"type":    "image_generation.completed",
-		"created": time.Now().Unix(),
-		"data":    data,
+		"created": response.Created,
+		"data":    response.Data,
 	}
 	payload, err := json.Marshal(event)
 	if err != nil {

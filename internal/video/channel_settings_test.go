@@ -6,6 +6,8 @@ import (
 	"gorm.io/datatypes"
 )
 
+func boolPointer(value bool) *bool { return &value }
+
 func TestVideoChannelFormalSettingsTakePrecedence(t *testing.T) {
 	channel := &VideoChannel{
 		AdapterType:           AdapterTypeGeneric,

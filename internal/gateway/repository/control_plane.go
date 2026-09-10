@@ -4,6 +4,9 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"strings"
+	"time"
+	"unicode/utf8"
 )
 
 type ControlPlaneRunInput struct {
@@ -45,7 +48,14 @@ func (s *Store) CreateControlPlaneRun(ctx context.Context, tx *sql.Tx, in Contro
 	if err != nil {
 		return 0, fmt.Errorf("create control plane run: %w", err)
 	}
-	return lastID(result)
+	runID, err := lastID(result)
+	if err != nil {
+		return 0, err
+	}
+	if err := appendControlPlaneRunEvent(ctx, tx, runID, 1, "", "scheduled", "created", now); err != nil {
+		return 0, err
+	}
+	return runID, nil
 }
 
 func (s *Store) FinishControlPlaneRun(ctx context.Context, tx *sql.Tx, runID uint64, from, to, reason string) error {
@@ -58,8 +68,18 @@ func (s *Store) FinishControlPlaneRun(ctx context.Context, tx *sql.Tx, runID uin
 	if !(from == "scheduled" && to == "running" || from == "running" && (to == "completed" || to == "failed" || to == "manual_review")) {
 		return ErrConflict
 	}
+	var current string
+	var version uint64
+	if err := tx.QueryRowContext(ctx, `SELECT state,state_version FROM gw_control_plane_runs WHERE id=? FOR UPDATE`, runID).Scan(&current, &version); err == sql.ErrNoRows {
+		return ErrNotFound
+	} else if err != nil {
+		return err
+	}
+	if current != from {
+		return ErrConflict
+	}
 	now := nowUTC()
-	res, err := tx.ExecContext(ctx, `UPDATE gw_control_plane_runs SET state=?,state_version=state_version+1,updated_at=? WHERE id=? AND state=?`, to, now, runID, from)
+	res, err := tx.ExecContext(ctx, `UPDATE gw_control_plane_runs SET state=?,state_version=?,updated_at=? WHERE id=? AND state=? AND state_version=?`, to, version+1, now, runID, from, version)
 	if err != nil {
 		return err
 	}
@@ -70,7 +90,18 @@ func (s *Store) FinishControlPlaneRun(ctx context.Context, tx *sql.Tx, runID uin
 	if !ok {
 		return ErrConflict
 	}
-	return nil
+	return appendControlPlaneRunEvent(ctx, tx, runID, version+1, from, to, reason, now)
+}
+
+func appendControlPlaneRunEvent(ctx context.Context, tx *sql.Tx, runID, sequence uint64, oldState, newState, reason string, at time.Time) error {
+	reason = strings.ToLower(strings.TrimSpace(reason))
+	if tx == nil || runID == 0 || sequence == 0 || !validControlPlaneState(newState) ||
+		oldState != "" && !validControlPlaneState(oldState) || reason == "" ||
+		!utf8.ValidString(reason) || utf8.RuneCountInString(reason) > 128 || strings.ContainsAny(reason, "\x00\r\n\t") || at.IsZero() {
+		return ErrInvalidInput
+	}
+	_, err := tx.ExecContext(ctx, `INSERT INTO gw_control_plane_run_events(control_plane_run_id,event_seq,old_state,new_state,reason_code,created_at) VALUES (?,?,?,?,?,?)`, runID, sequence, emptyAsNull(oldState), newState, reason, at.UTC())
+	return err
 }
 
 func validControlPlaneAction(value string) bool {

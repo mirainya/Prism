@@ -12,8 +12,8 @@ func TestLoadIncludesImmutableBaseline(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(migrations) != 64 {
-		t.Fatalf("managed migrations=%d, want 64", len(migrations))
+	if len(migrations) != 90 {
+		t.Fatalf("managed migrations=%d, want 90", len(migrations))
 	}
 	baseline := migrations[0]
 	if baseline.Filename != "20260718_150000_schema_baseline.sql" {
@@ -453,10 +453,172 @@ func TestLoadIncludesImmutableBaseline(t *testing.T) {
 		{60, "20260906_100000_unified_gateway_audit_events.sql", "18453fa359573bdcd6a345a865849526081d64cf87d4f9acf9e78a40b0fd4ac2"},
 		{61, "20260906_110000_repair_legacy_import_transport.sql", "e29fdd7766f53a9aab09412a2d0405171b24cfe8fe81112688e912466308e1fa"},
 		{62, "20260906_120000_gateway_import_audit.sql", "b7d0578ceb1e1a598b7d9083c57e87f1b5bc2035ba2cb9fb2d39f2b49972f871"},
+		{63, "20260906_130000_backfill_offering_runtime_state.sql", "c596240219ace363d9bcd8575a32af27fae371f128aeb10064a1238327effdec"},
+		{64, "20260906_140000_gateway_rate_components.sql", "6d8a92dc5b228e521d54028d62b7c55378142a3209bad84a0a68ae9c17a9df90"},
+		{65, "20260906_150000_gateway_settlement_posting.sql", "84e8add72f480c30bb25363c3099ce1382c36377c7da664f23158ce3884572a2"},
+		{66, "20260906_160000_initialize_gateway_runtime_state.sql", "3bdacf03ac15d2c364f214d49c5b3dcc8278c70743f56e7d803896133bb0b0fb"},
+		{67, "20260906_170000_gateway_slot_admission_indexes.sql", "3977cd245eaa8fe0956458cdd0582a96838c38facfd077b61623c781a9614428"},
+		{68, "20260906_180000_gateway_async_dispatch_identity.sql", "8f36e099b9ba369440d83cbaa4cb5fbf41feaca1c66e49be642db9b252ae2efa"},
+		{69, "20260906_190000_gateway_result_delivery_events.sql", "ba8a96be6a9ae5c858212ad992067975e46936673af71cf36465ec51eb58418a"},
+		{70, "20260906_200000_gateway_sku_service_tiers.sql", "c7ea6e7f1f7f2e1fccd4dd8a72ed8f17d6915afcde15a757cae47ff2ff07b5bd"},
+		{71, "20260906_210000_gateway_callback_processing.sql", "c33eae299aa800791b38e23b41faf0737459c3ce268c781798113651c74f9174"},
+		{72, "20260906_220000_gateway_delivery_reconciliation.sql", "04c3a832f3251f01ed4cb491b12b2d2ce0c97d5567fe26e761a27378cd8ca9d4"},
+		{73, "20260906_230000_gateway_catalog_draft_revision.sql", "042aa17071aaa42e4344832b17c7a82269295c3b9a8942378cd8d502c89871e6"},
+		{74, "20260907_000000_gateway_legacy_billing_evidence.sql", "31e7e9d5fa9c3f0e56a94721fa9ee3507209cac48ffb212ced6a6dacce9f8dfd"},
+		{75, "20260907_010000_gateway_migration_mapping_proofs.sql", "3e0355acadb2ea1561e67f1e8828711ac162d8d7878c42997b000bbb30688c56"},
+		{76, "20260907_020000_gateway_file_resources.sql", "a8508c3382b42fbbc436b3b202690d5516accfeeb11bfa04eb4aade3d2a59bf8"},
+		{77, "20260907_030000_versioned_token_auth.sql", "ffa2b7b1caedc9027d675a66ac7446d799abd4871f3586655abafb021199eda6"},
+		{78, "20260907_040000_initialize_gateway_keyrings.sql", "12623e71d036224a045591b694a5a3a6d844dede178b4ca2e3be791d9d6daa50"},
+		{79, "20260907_050000_gateway_request_payload_blobs.sql", "c23137c934ba1240cff65acacd46983b449f5073d119d38a976ce44540349017"},
+		{80, "20260907_060000_gateway_entitlement_commercial_guards.sql", "bae2aef507f16ed792e9295a9a4489f98df6a393fb448e600975cda096b9b197"},
+		{81, "20260907_070000_gateway_response_visibility.sql", "2dbe94081207a0cb113876cf4069ee488fc1d949a06aaa8c552e0df0ccc562a7"},
+		{82, "20260907_080000_gateway_catalog_discovery.sql", "0d450071aee2e20f63c69c0731fe1677396d85a37e63d7dd9364beec39a79463"},
+		{83, "20260907_090000_gateway_control_plane_run_events.sql", "70f97a1ed45c62a52a5897e9642665e57551f5db957aa64e837d2f32e3610901"},
+		{84, "20260907_100000_gateway_attempt_cost_plan_identity.sql", "06ffd032b342965e72ec20ea29bb8b889b8b14fcf9391f52284c35d096f7acef"},
+		{85, "20260907_110000_gateway_outgoing_callback_delivery.sql", "e46075690342137475fafa9f88e6f6cfc611e2f9f4380d4565eba6974edb34a5"},
+		{86, "20260907_130000_backfill_legacy_catalog_mapping_proofs.sql", "006828c643041b50f39f5af7ece05396e8198eff6cfce0fd921b1298f37f4ef7"},
+		{87, "20260908_160000_gateway_active_deployment_pointer.sql", "1e4439b8caf97efedf3de3b54b0beceb0b90934affa5f3475ceb17760c367f5e"},
+		{88, "20260909_090000_gateway_callback_lifecycle.sql", "37e75752858666ed4f6d1b4d65d81620be1db9c3a669ecae2ea446632fdbd66b"},
+		{89, "20260909_100000_repair_legacy_cost_plans.sql", "9acf66dacd11c4fb5f576e113ebc4654700729173d3268eae179499de95152a0"},
 	}
 	for _, migration := range newMigrations {
 		if migrations[migration.index].Filename != migration.filename || migrations[migration.index].Checksum != migration.checksum {
 			t.Fatalf("migration[%d]=%s/%s, want %s/%s", migration.index, migrations[migration.index].Filename, migrations[migration.index].Checksum, migration.filename, migration.checksum)
+		}
+	}
+}
+
+func TestActiveDeploymentPointerMigrationUsesRetrySafeDDL(t *testing.T) {
+	migrations, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var sql string
+	for _, migration := range migrations {
+		if migration.Version == "20260908_160000" {
+			sql = migration.SQL
+			break
+		}
+	}
+	if sql == "" {
+		t.Fatal("active deployment pointer migration is missing")
+	}
+	for _, fragment := range []string{
+		"MySQL DDL implicitly commits",
+		"FROM information_schema.columns",
+		"column_name = 'active_deployment_generation_id'",
+		"FROM information_schema.table_constraints",
+		"constraint_name = 'fk_gw_catalog_runtime_state_deployment'",
+		"FOREIGN KEY (`active_deployment_generation_id`) REFERENCES `gw_deployment_generations` (`id`)",
+		"PREPARE prism_stmt FROM @prism_ddl;",
+		"DEALLOCATE PREPARE prism_stmt;",
+		"DROP TRIGGER IF EXISTS `trg_gw_runtime_state_validate_insert`",
+		"DROP TRIGGER IF EXISTS `trg_gw_runtime_state_validate_update`",
+		"WHERE runtime.`id` = 1",
+		"AND runtime.`active_deployment_generation_id` IS NULL",
+	} {
+		if !strings.Contains(sql, fragment) {
+			t.Errorf("active deployment pointer migration is missing %q", fragment)
+		}
+	}
+	if strings.Count(sql, "'DO 0'") < 2 {
+		t.Fatal("active deployment pointer DDL is not conditional for retry")
+	}
+}
+
+func TestCallbackLifecycleMigrationIsRetrySafeAndDetachesBlobReferences(t *testing.T) {
+	migrations, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var sql string
+	for _, migration := range migrations {
+		if migration.Version == "20260909_090000" {
+			sql = migration.SQL
+			break
+		}
+	}
+	if sql == "" {
+		t.Fatal("callback lifecycle migration is missing")
+	}
+	for _, fragment := range []string{
+		"MODIFY COLUMN `encrypted_blob_id` bigint unsigned NULL",
+		"ADD COLUMN `status` varchar(16) NULL",
+		"ADD COLUMN `expires_at` datetime(3) NULL",
+		"ADD COLUMN `invalidated_at` datetime(3) NULL",
+		"SET `expires_at` = DATE_ADD(`created_at`, INTERVAL 24 HOUR)",
+		"ADD KEY `idx_gw_callback_binding_alias_lifecycle`",
+		"ck_gw_callback_binding_alias_status",
+		"ck_gw_callback_receipts_parent_exclusive",
+		"PREPARE prism_stmt FROM @prism_ddl;",
+		"DEALLOCATE PREPARE prism_stmt;",
+	} {
+		if !strings.Contains(sql, fragment) {
+			t.Errorf("callback lifecycle migration is missing %q", fragment)
+		}
+	}
+	if strings.Count(sql, "FROM information_schema.columns") < 6 {
+		t.Fatalf("callback lifecycle migration does not guard independent column changes")
+	}
+}
+
+func TestLegacyCostPlanRepairMigrationIsScopedAndRetrySafe(t *testing.T) {
+	migrations, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var sql string
+	for _, migration := range migrations {
+		if migration.Version == "20260909_100000" {
+			sql = migration.SQL
+			break
+		}
+	}
+	if sql == "" {
+		t.Fatal("legacy cost-plan repair migration is missing")
+	}
+	for _, fragment := range []string{
+		"INSERT INTO `gw_cost_plans` (`release_id`, `offering_id`, `plan_code`, `created_at`)",
+		"r.`status` = 'draft'",
+		"r.`semantic_version` = 'legacy-import-1'",
+		"o.`cost_plan_code`",
+		"o.`created_at`",
+		"WHERE NOT EXISTS",
+		"p.`release_id` = o.`release_id`",
+		"p.`offering_id` = o.`id`",
+		"p.`plan_code` = o.`cost_plan_code`",
+	} {
+		if !strings.Contains(sql, fragment) {
+			t.Errorf("legacy cost-plan repair migration is missing %q", fragment)
+		}
+	}
+	for _, forbidden := range []string{"UPDATE `gw_cost_plans`", "DELETE FROM `gw_cost_plans`"} {
+		if strings.Contains(sql, forbidden) {
+			t.Errorf("legacy cost-plan repair migration contains %q", forbidden)
+		}
+	}
+}
+
+func TestConditionalValidationFailuresArePreparedStatementCompatible(t *testing.T) {
+	migrations, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := map[string]string{
+		"20260907_030000": "__prism_abort_invalid_legacy_token_digest__",
+		"20260907_060000": "__prism_abort_missing_entitlement_fingerprints__",
+		"20260907_100000": "__prism_abort_missing_cost_plan_ids__",
+	}
+	for _, migration := range migrations {
+		abortTable, ok := want[migration.Version]
+		if !ok {
+			continue
+		}
+		if strings.Contains(migration.SQL, "SIGNAL SQLSTATE") {
+			t.Errorf("migration %s uses SIGNAL in a prepared statement", migration.Filename)
+		}
+		if !strings.Contains(migration.SQL, "SELECT * FROM `"+abortTable+"`") {
+			t.Errorf("migration %s is missing deterministic prepared validation failure", migration.Filename)
 		}
 	}
 }
@@ -487,9 +649,13 @@ func TestUnifiedGatewayMigrationsContainOnlyTypedTargetFacts(t *testing.T) {
 		t.Fatal(err)
 	}
 	var unified strings.Builder
+	var foundation strings.Builder
 	for _, migration := range migrations {
 		if migration.Version >= "20260905_100000" {
 			unified.WriteString(migration.SQL)
+		}
+		if migration.Version >= "20260905_100000" && migration.Version <= "20260906_130000" {
+			foundation.WriteString(migration.SQL)
 		}
 	}
 	sql := unified.String()
@@ -505,6 +671,12 @@ func TestUnifiedGatewayMigrationsContainOnlyTypedTargetFacts(t *testing.T) {
 		"gw_control_plane_runs", "gw_runtime_requirements", "gw_execution_health", "gw_upstream_cost_events",
 		"gw_credential_purpose_grant_state_events", "gw_credential_version_state_events", "gw_catalog_release_state_events",
 		"gw_routing_policy_version_events", "billing_account_state_events",
+		"gw_legacy_account_snapshots", "gw_legacy_billing_evidence",
+		"gw_catalog_source_profiles", "gw_catalog_discovery_snapshots", "gw_catalog_discovery_items",
+		"gw_catalog_discovery_item_groups", "gw_catalog_discovery_item_endpoints",
+		"gw_catalog_discovery_review_events", "gw_catalog_discovery_review_state",
+		"gw_catalog_import_snapshots", "gw_catalog_price_candidates", "gw_catalog_price_candidate_reviews",
+		"gw_control_plane_run_events",
 	} {
 		if !strings.Contains(sql, "CREATE TABLE IF NOT EXISTS `"+table+"`") {
 			t.Errorf("unified migrations are missing target table %s", table)
@@ -516,8 +688,31 @@ func TestUnifiedGatewayMigrationsContainOnlyTypedTargetFacts(t *testing.T) {
 		}
 	}
 	for _, nonIdempotent := range []string{"ALTER TABLE ", "CREATE TRIGGER ", "DROP TABLE ", "DROP COLUMN "} {
-		if strings.Contains(strings.ToUpper(sql), nonIdempotent) {
+		if strings.Contains(strings.ToUpper(foundation.String()), nonIdempotent) {
 			t.Errorf("unified migration contains non-idempotent operation %q", nonIdempotent)
+		}
+	}
+}
+
+func TestRateComponentsAreAnAdditiveMigration(t *testing.T) {
+	migrations, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var sql string
+	for _, m := range migrations {
+		if m.Version == "20260906_140000" {
+			sql = m.SQL
+		}
+	}
+	for _, fragment := range []string{"ALTER TABLE `gw_sell_rates`", "ALTER TABLE `gw_cost_rates`", "`component_code`", "`quantity_source`", "`charge_event`", "`unit_scale`", "`quantity_step`", "`max_quantity`"} {
+		if !strings.Contains(sql, fragment) {
+			t.Errorf("rate component migration missing %s", fragment)
+		}
+	}
+	for _, forbidden := range []string{"UPDATE ", "DELETE FROM ", "DROP TABLE ", "DROP COLUMN "} {
+		if strings.Contains(sql, forbidden) {
+			t.Fatalf("pricing facts must not be guessed or removed: %s", forbidden)
 		}
 	}
 }

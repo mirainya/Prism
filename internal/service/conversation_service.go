@@ -1,6 +1,11 @@
 package service
 
 import (
+	"encoding/json"
+	"fmt"
+	"time"
+
+	"github.com/mirainya/Prism/internal/gateway/canonical"
 	"github.com/mirainya/Prism/internal/model"
 	"github.com/shopspring/decimal"
 	"gorm.io/gorm"
@@ -96,26 +101,9 @@ func (s *ConversationService) ListConversations(req *ListConversationsRequest) (
 			items[i] = ConversationItem{Conversation: c}
 		}
 
-		// New conversations use the turn ledger. Legacy rows without turns fall
-		// back to messages so existing API responses remain compatible.
 		costMap, err := aggregateConversationCosts(db, "conversation_turns", ids)
 		if err != nil {
 			return nil, err
-		}
-		legacyIDs := make([]uint, 0, len(ids))
-		for _, id := range ids {
-			if _, ok := costMap[id]; !ok {
-				legacyIDs = append(legacyIDs, id)
-			}
-		}
-		if len(legacyIDs) > 0 {
-			legacyCosts, err := aggregateConversationCosts(db, "messages", legacyIDs)
-			if err != nil {
-				return nil, err
-			}
-			for conversationID, cost := range legacyCosts {
-				costMap[conversationID] = cost
-			}
 		}
 		for i := range items {
 			items[i].TotalCost = costMap[items[i].ID]
@@ -176,11 +164,33 @@ type ListMessagesRequest struct {
 
 // ListMessagesResponse 查询消息列表响应
 type ListMessagesResponse struct {
-	Items        []model.Message     `json:"items"`
-	Total        int64               `json:"total"`
-	Page         int                 `json:"page"`
-	PageSize     int                 `json:"page_size"`
-	Conversation *model.Conversation `json:"conversation"`
+	Items        []ConversationMessage `json:"items"`
+	Total        int64                 `json:"total"`
+	Page         int                   `json:"page"`
+	PageSize     int                   `json:"page_size"`
+	Conversation *model.Conversation   `json:"conversation"`
+}
+
+// ConversationMessage is a readable projection of canonical conversation
+// items. The canonical item rows remain the only stored message history.
+type ConversationMessage struct {
+	ID               uint64
+	ConversationID   uint
+	CallID           string
+	RequestLogID     uint
+	Role             string
+	Content          string
+	Attachments      string
+	ReasoningContent string
+	FinishReason     string
+	InputTokens      int
+	OutputTokens     int
+	Model            string
+	ChannelID        uint
+	AccountID        uint
+	LatencyMs        int
+	Cost             decimal.Decimal
+	CreatedAt        time.Time
 }
 
 // ListMessages 查询消息列表
@@ -206,20 +216,20 @@ func (s *ConversationService) ListMessages(conversationID uint, page, pageSize i
 		return nil, err
 	}
 
-	// 总数
-	var total int64
-	if err := db.Model(&model.Message{}).Where("conversation_id = ?", conversationID).Count(&total).Error; err != nil {
+	items, err := projectConversationMessages(db, conversationID)
+	if err != nil {
 		return nil, err
 	}
-
-	// 分页查询，按创建时间正序
-	var items []model.Message
+	total := int64(len(items))
 	offset := (page - 1) * pageSize
-	if err := db.Where("conversation_id = ?", conversationID).
-		Order("created_at ASC, id ASC").
-		Offset(offset).Limit(pageSize).
-		Find(&items).Error; err != nil {
-		return nil, err
+	if offset >= len(items) {
+		items = make([]ConversationMessage, 0)
+	} else {
+		end := offset + pageSize
+		if end > len(items) {
+			end = len(items)
+		}
+		items = items[offset:end]
 	}
 
 	return &ListMessagesResponse{
@@ -229,4 +239,76 @@ func (s *ConversationService) ListMessages(conversationID uint, page, pageSize i
 		PageSize:     pageSize,
 		Conversation: &conversation,
 	}, nil
+}
+
+func projectConversationMessages(db *gorm.DB, conversationID uint) ([]ConversationMessage, error) {
+	var turns []model.ConversationTurn
+	if err := db.Where("conversation_id = ?", conversationID).
+		Order("turn_sequence ASC").Order("id ASC").Find(&turns).Error; err != nil {
+		return nil, err
+	}
+	if len(turns) == 0 {
+		return make([]ConversationMessage, 0), nil
+	}
+	turnIDs := make([]uint64, len(turns))
+	for index := range turns {
+		turnIDs[index] = turns[index].ID
+	}
+	var records []model.ConversationItem
+	if err := db.Where("conversation_id = ? AND turn_id IN ?", conversationID, turnIDs).
+		Order("turn_sequence ASC").Order("ordinal ASC").Order("id ASC").Find(&records).Error; err != nil {
+		return nil, err
+	}
+	recordsByTurn := make(map[uint64][]model.ConversationItem, len(turns))
+	for _, record := range records {
+		recordsByTurn[record.TurnID] = append(recordsByTurn[record.TurnID], record)
+	}
+	result := make([]ConversationMessage, 0, len(records))
+	for _, turn := range turns {
+		turnRecords := recordsByTurn[turn.ID]
+		for _, direction := range []string{model.ConversationItemInput, model.ConversationItemOutput} {
+			directional := make([]model.ConversationItem, 0, len(turnRecords))
+			canonicalItems := make([]canonical.Item, 0, len(turnRecords))
+			for _, record := range turnRecords {
+				if record.Direction != direction {
+					continue
+				}
+				var item canonical.Item
+				if err := json.Unmarshal(record.CanonicalJSON, &item); err != nil {
+					return nil, fmt.Errorf("decode conversation item %d: %w", record.ID, err)
+				}
+				directional = append(directional, record)
+				canonicalItems = append(canonicalItems, item)
+			}
+			messages, err := canonicalItemsToChatMessages(canonicalItems)
+			if err != nil {
+				return nil, fmt.Errorf("project conversation turn %d: %w", turn.ID, err)
+			}
+			for index, message := range messages {
+				id := turn.ID
+				if len(directional) > 0 {
+					recordIndex := index
+					if recordIndex >= len(directional) {
+						recordIndex = len(directional) - 1
+					}
+					id = directional[recordIndex].ID
+				}
+				projected := ConversationMessage{
+					ID: id, ConversationID: conversationID, CallID: turn.CallID,
+					RequestLogID: turn.RequestLogID, Role: message.Role,
+					Content: message.ContentText(), Attachments: message.ContentAttachments(),
+					ReasoningContent: message.ReasoningContent, Model: turn.Model, CreatedAt: turn.CreatedAt,
+				}
+				if direction == model.ConversationItemOutput && index == len(messages)-1 {
+					projected.FinishReason = turn.FinishReason
+					projected.InputTokens = turn.InputTokens
+					projected.OutputTokens = turn.OutputTokens
+					projected.LatencyMs = int(turn.LatencyMs)
+					projected.Cost = turn.Cost
+				}
+				result = append(result, projected)
+			}
+		}
+	}
+	return result, nil
 }

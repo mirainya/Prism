@@ -3,6 +3,8 @@ package filestorage
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"io"
 	"net/http"
@@ -68,6 +70,121 @@ func TestTransferReaderStreamsMultipartUpload(t *testing.T) {
 	if got != "https://cdn.example/video.mp4" {
 		t.Fatalf("URL = %q", got)
 	}
+}
+
+func TestUploadReaderReturnsStableStorageIdentity(t *testing.T) {
+	payload := []byte("stored-content")
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/v1/upload" || r.FormValue("path") != "prism/files/file-1/" {
+			t.Fatalf("unexpected upload request %s path=%q", r.URL.Path, r.FormValue("path"))
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"code": 200,
+			"data": map[string]any{
+				"id": "storage-row-1", "objectId": "object-1", "platform": "r2-main",
+				"url": serverURL(r), "path": "prism/files/file-1/", "filename": "stored.bin",
+				"size": len(payload), "contentType": "application/octet-stream",
+			},
+		})
+	}))
+	defer server.Close()
+	previous := config.C
+	config.C = &config.Config{FileStorage: config.FileStorageConfig{BaseURL: server.URL, APIKey: "test-key"}}
+	t.Cleanup(func() { config.C = previous })
+
+	result, err := UploadReaderAtPath(context.Background(), bytes.NewReader(payload), "application/octet-stream", "prism/files/file-1/")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.StorageKey() != "xfs:r2-main:object-1" || result.Size != int64(len(payload)) {
+		t.Fatalf("unexpected upload result: %+v key=%q", result, result.StorageKey())
+	}
+}
+
+func TestUploadReaderAtPathWithFilenameUsesDeterministicObjectName(t *testing.T) {
+	const filename = "8c7dd922ad47494fc02c388e12c00eac67da1f5cd03cc320e384d10cf4cf2ad7.mp4"
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		file, header, err := r.FormFile("file")
+		if err != nil {
+			t.Fatalf("form file: %v", err)
+		}
+		defer file.Close()
+		if header.Filename != filename || r.FormValue("path") != "prism/gateway-results/17/" {
+			t.Fatalf("filename=%q path=%q", header.Filename, r.FormValue("path"))
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"code": 200,
+			"data": map[string]any{"url": "https://cdn.example/result.mp4", "filename": filename, "path": "prism/gateway-results/17/"},
+		})
+	}))
+	defer server.Close()
+	previous := config.C
+	config.C = &config.Config{FileStorage: config.FileStorageConfig{BaseURL: server.URL, APIKey: "test-key"}}
+	t.Cleanup(func() { config.C = previous })
+
+	result, err := UploadReaderAtPathWithFilename(context.Background(), bytes.NewReader([]byte("video")), "video/mp4", "prism/gateway-results/17/", filename)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Filename != filename {
+		t.Fatalf("result=%+v", result)
+	}
+	for _, invalid := range []string{"", "../result.mp4", `nested\\result.mp4`, "result.mp4\nignored"} {
+		if _, err := UploadReaderAtPathWithFilename(context.Background(), bytes.NewReader([]byte("video")), "video/mp4", "prism/gateway-results/17/", invalid); err == nil {
+			t.Fatalf("invalid filename %q accepted", invalid)
+		}
+	}
+}
+
+func TestOpenDownloadUsesAuthenticatedStorageProxy(t *testing.T) {
+	const locator = "https://cdn.example/private/file.bin"
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet || r.URL.Path != "/api/v1/file/download" || r.URL.Query().Get("url") != locator || r.Header.Get("X-Api-Key") != "test-key" {
+			http.Error(w, "invalid request", http.StatusBadRequest)
+			return
+		}
+		_, _ = w.Write([]byte("private-content"))
+	}))
+	defer server.Close()
+	previous := config.C
+	config.C = &config.Config{FileStorage: config.FileStorageConfig{BaseURL: server.URL, APIKey: "test-key"}}
+	t.Cleanup(func() { config.C = previous })
+
+	data, err := ReadURL(context.Background(), locator, 64)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(data) != "private-content" {
+		t.Fatalf("downloaded %q", data)
+	}
+}
+
+func TestVerifyURLRejectsStoredObjectCorruption(t *testing.T) {
+	const locator = "https://cdn.example/private/file.bin"
+	payload := []byte("stored-content")
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Length", "14")
+		_, _ = w.Write(payload)
+	}))
+	defer server.Close()
+	previous := config.C
+	config.C = &config.Config{FileStorage: config.FileStorageConfig{BaseURL: server.URL, APIKey: "test-key"}}
+	t.Cleanup(func() { config.C = previous })
+	digest := sha256.Sum256(payload)
+	if err := VerifyURL(context.Background(), locator, int64(len(payload)), hex.EncodeToString(digest[:])); err != nil {
+		t.Fatal(err)
+	}
+	badDigest := sha256.Sum256([]byte("different"))
+	if err := VerifyURL(context.Background(), locator, int64(len(payload)), hex.EncodeToString(badDigest[:])); err == nil {
+		t.Fatal("expected checksum mismatch")
+	}
+	if err := VerifyURL(context.Background(), locator, int64(len(payload))+1, hex.EncodeToString(digest[:])); err == nil {
+		t.Fatal("expected length mismatch")
+	}
+}
+
+func serverURL(r *http.Request) string {
+	return "https://cdn.example" + r.URL.Path + "/stored.bin"
 }
 
 func TestDeleteURLUsesDocumentedEndpoint(t *testing.T) {

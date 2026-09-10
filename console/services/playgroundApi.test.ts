@@ -3,8 +3,6 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import {
     playgroundGetConversationTurns,
     playgroundEstimateVideo,
-    playgroundGetTask,
-    playgroundListCapabilities,
     playgroundListConversations,
     playgroundListModels,
     playgroundListVideoModels,
@@ -24,153 +22,42 @@ describe('playgroundApi', () => {
     requestMock.mockReset();
   });
 
-  it('normalizes capabilities and channel parameter overrides', async () => {
-    requestMock.mockResolvedValue([
-      {
-        code: 'image.generate',
-        name: 'Image generation',
-        param_schema: { prompt: { type: 'string' } },
-        operations: [{ id: 'images.generate', path: '/v1/images/generations', supports_stream: false }],
-        channels: [
-          {
-            channel_id: 3,
-            channel_type: 'openai',
-            channel_name: 'Primary',
-            model: 'gpt-image',
-            price: 0.25,
-            interaction_mode: 'sync',
-            param_schema: { size: { type: 'string' } },
-          },
-        ],
-      },
-    ]);
-
-    await expect(playgroundListCapabilities('token-1')).resolves.toEqual([
-      {
-        id: 'image.generate',
-        code: 'image.generate',
-        name: 'Image generation',
-        type: 'other',
-        description: '',
-        standardParams: { prompt: { type: 'string' } },
-        operations: [{ id: 'images.generate', path: '/v1/images/generations', supportsStream: false, paramSchema: null }],
-        channels: [
-          {
-            channelId: 3,
-            channelType: 'openai',
-            channelName: 'Primary',
-            model: 'gpt-image',
-            routeOperation: '',
-            price: 0.25,
-            interactionMode: 'sync',
-            paramSchema: { size: { type: 'string' } },
-          },
-        ],
-      },
-    ]);
-    expect(requestMock).toHaveBeenCalledWith('/playground/token-1/capabilities');
-  });
-
-  it('keeps operation-specific routes separate while grouping the model', async () => {
-    requestMock.mockResolvedValue([
-      {
-        code: 'gpt-image-2-1.5k',
-        name: 'gpt-image-2-1.5k',
-        type: 'image',
-        operations: [
-          { id: 'images.generate', path: '/v1/images/generations', supports_stream: true },
-          { id: 'images.edit', path: '/v1/images/edits', supports_stream: false },
-        ],
-        channels: [
-          {
-            channel_id: 3,
-            channel_type: 'mirainya',
-            channel_name: 'MiraiNya',
-            model: 'gpt-image-2-1.5k',
-            interaction_mode: 'sync',
-            route_operation: 'images.generate',
-          },
-          {
-            channel_id: 3,
-            channel_type: 'mirainya',
-            channel_name: 'MiraiNya',
-            model: 'gpt-image-2-1.5k',
-            interaction_mode: 'sync',
-            route_operation: 'images.edit',
-          },
-        ],
-      },
-    ]);
-
-    const capabilities = await playgroundListCapabilities('token-1');
-
-    expect(capabilities).toHaveLength(1);
-    expect(capabilities[0].operations.map(operation => operation.id)).toEqual(['images.generate', 'images.edit']);
-    expect(capabilities[0].channels).toHaveLength(2);
-    expect(capabilities[0].channels[0]).toMatchObject({
-      channelId: 3,
-      channelType: 'mirainya',
-      channelName: 'MiraiNya',
-      model: 'gpt-image-2-1.5k',
-      routeOperation: 'images.generate',
-      interactionMode: 'sync',
-    });
-    expect(capabilities[0].channels[1].routeOperation).toBe('images.edit');
-  });
-
-  it('loads chat models from the unified capability list', async () => {
-    requestMock.mockResolvedValue([
+  it('loads chat models from the dedicated model endpoint', async () => {
+    requestMock.mockResolvedValue({ data: [
       {
         id: 'gpt-4.1',
-        code: 'gpt-4.1',
-        type: 'chat',
-        operations: [{ id: 'chat.completions' }, { id: 'responses.create' }],
+        owned_by: 'openai',
         supports_stream: true,
         default_stream: true,
         supports_tools: true,
         group: 'OpenAI',
+		supported_operations: ['chat.completions', 'responses.create'],
+		supported_endpoints: ['/v1/chat/completions', '/v1/responses'],
       },
-      {
-        id: 'gpt_image2',
-        code: 'gpt_image2',
-        type: 'image',
-        operations: [{ id: 'images.generate' }],
-      },
-    ]);
+    ] });
 
     await expect(playgroundListModels('token-1')).resolves.toEqual([
       expect.objectContaining({
         id: 'gpt-4.1',
-        owned_by: 'prism',
+        owned_by: 'openai',
         supports_stream: true,
         default_stream: true,
         supports_tools: true,
         group: 'OpenAI',
+		supported_operations: ['chat.completions', 'responses.create'],
+		supported_endpoints: ['/v1/chat/completions', '/v1/responses'],
       }),
     ]);
-    expect(requestMock).toHaveBeenCalledWith('/playground/token-1/capabilities');
+    expect(requestMock).toHaveBeenCalledWith('/playground/token-1/models');
   });
 
-  it('loads large task parameters only for explicit detail requests', async () => {
-    requestMock.mockResolvedValue({
-      task_id: 'task-1', task_no: 'task-1', status: 'success', progress: 100,
-      result: { url: 'https://result.example/image.png' }, raw_params: { prompt: 'test' },
-    });
-
-    await playgroundGetTask('token-1', 'task-1');
-    await playgroundGetTask('token-1', 'task-1', true);
-
-    expect(requestMock).toHaveBeenNthCalledWith(1, '/playground/token-1/tasks/task-1');
-    expect(requestMock).toHaveBeenNthCalledWith(2, '/playground/token-1/tasks/task-1?include_params=true');
-  });
-
-  it('sends video estimate parameters unchanged', async () => {
+  it('normalizes video estimate parameters to the public contract', async () => {
     requestMock.mockResolvedValue({
       estimated_cost: '1.5', base_cost: '1.25', markup_ratio: '1.2', pricing_mode: 'upstream_estimate',
     });
     const controller = new AbortController();
     const params = {
-      model: 'video-model', prompt: 'test', duration: 5, params: { priority: 4 },
+      model: 'video-model', prompt: 'test', duration: 5, params: { web_search: true },
       task_mode: 'references',
       content: [{ type: 'video_url' as const, role: 'reference_video' as const, asset_id: 'asset-1', duration_seconds: 4 }],
     };
@@ -179,7 +66,15 @@ describe('playgroundApi', () => {
       estimated_cost: '1.5', pricing_mode: 'upstream_estimate',
     });
     expect(requestMock).toHaveBeenCalledWith('/playground/token-1/videos/estimate', {
-      method: 'POST', body: JSON.stringify(params), signal: controller.signal,
+      method: 'POST',
+      body: JSON.stringify({
+        model: 'video-model',
+        prompt: 'test',
+        duration: 5,
+        references: [{ type: 'video', role: 'reference_video', asset_id: 'asset-1', duration_seconds: 4 }],
+        provider_options: { seedance: { web_search: true } },
+      }),
+      signal: controller.signal,
     });
   });
 
@@ -187,7 +82,6 @@ describe('playgroundApi', () => {
     requestMock.mockResolvedValue({
       models: ['seedance-2.0'],
       model_options: { 'seedance-2.0': { resolutions: ['1080p'] } },
-      channels: [{ id: 2, name: '官满血-Seedance', models: ['seedance-2.0'], model_options: {} }],
     });
 
     await expect(playgroundListVideoModels('token-1')).resolves.toEqual({
@@ -200,11 +94,8 @@ describe('playgroundApi', () => {
           allowed_roles: [],
           parameters: [],
           service_tier_options: [],
-          allow_local_cancel: false,
-          cancel_statuses: [],
         },
       },
-      channels: [{ id: 2, name: '官满血-Seedance', models: ['seedance-2.0'], model_options: {} }],
     });
     expect(requestMock).toHaveBeenCalledWith('/playground/token-1/videos/models');
   });

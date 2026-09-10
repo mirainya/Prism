@@ -47,8 +47,18 @@ func (a *EventAccumulator) Observe(event Event) {
 		EventReasoningPartAdded, EventReasoningTextDone, EventReasoningPartDone:
 		if event.Item != nil {
 			item := CloneItems([]Item{*event.Item})[0]
-			if item.Type == "function_call" && a.toolArgumentDeltas[a.itemKey(event, item)] && isEmptyJSONObject(item.Arguments) {
-				item.Arguments = nil
+			if item.Type == "function_call" && a.toolArgumentDeltas[a.itemKey(event, item)] {
+				// Delta-accumulated arguments are the authoritative source once
+				// tool_arguments.delta events have started. A late Item.Arguments
+				// (e.g. a stop frame that re-emits {} or a partial snapshot) must
+				// not clobber the accumulated buffer. Only accept it when it is
+				// valid JSON and the accumulator still holds an invalid prefix
+				// (delta stream truncated) so recovery has a chance.
+				accumulated := a.outputs[a.itemKey(event, item)]
+				accumulatedValid := accumulated != nil && len(accumulated.Arguments) > 0 && json.Valid(accumulated.Arguments)
+				if accumulatedValid || len(item.Arguments) == 0 || !json.Valid(item.Arguments) || isEmptyJSONObject(item.Arguments) {
+					item.Arguments = nil
+				}
 			}
 			itemEvent := event
 			itemEvent.Item = &item

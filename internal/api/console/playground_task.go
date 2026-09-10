@@ -1,150 +1,20 @@
 package console
 
 import (
+	"database/sql"
 	"encoding/json"
 	"fmt"
 	"net/http"
-	"strings"
+	"time"
 
 	"github.com/gin-gonic/gin"
-	"github.com/mirainya/Prism/internal/api/middleware"
 	"github.com/mirainya/Prism/internal/api/resp"
+	"github.com/mirainya/Prism/internal/gateway/payloadview"
+	"github.com/mirainya/Prism/internal/gateway/repository"
 	"github.com/mirainya/Prism/internal/model"
 	"github.com/mirainya/Prism/internal/service"
 	"github.com/mirainya/Prism/pkg/errors"
 )
-
-// PlaygroundListTasks GET /api/playground/:token_id/tasks
-func PlaygroundListTasks(c *gin.Context) {
-	token, ok := getPlaygroundToken(c)
-	if !ok {
-		return
-	}
-
-	var req service.ListTasksRequest
-	if err := c.ShouldBindQuery(&req); err != nil {
-		resp.ErrorMsg(c, http.StatusBadRequest, 400, "invalid query params")
-		return
-	}
-	if req.Page <= 0 {
-		req.Page = 1
-	}
-	if req.PageSize <= 0 {
-		req.PageSize = 20
-	}
-	if req.PageSize > 100 {
-		req.PageSize = 100
-	}
-	if req.Keyword == "" {
-		req.Keyword = strings.TrimSpace(c.Query("keyword"))
-	}
-	if req.Status == "" {
-		req.Status = strings.TrimSpace(c.Query("status"))
-	}
-	if req.Capability == "" {
-		req.Capability = strings.TrimSpace(c.Query("capability"))
-	}
-	req.TokenID = token.ID
-
-	result, err := playgroundDashboardService.ListTasks(&req, token.UserID, false)
-	if err != nil {
-		resp.ErrorMsg(c, http.StatusInternalServerError, 500, "failed to list tasks")
-		return
-	}
-
-	resp.Success(c, gin.H{
-		"items":       result.Items,
-		"total":       result.Total,
-		"page":        result.Page,
-		"page_size":   result.PageSize,
-		"snapshot_at": result.SnapshotAt,
-	})
-}
-
-// PlaygroundGetTask GET /api/playground/:token_id/tasks/:task_no
-func PlaygroundGetTask(c *gin.Context) {
-	token, ok := getPlaygroundToken(c)
-	if !ok {
-		return
-	}
-
-	taskNo := c.Param("task_no")
-	includeParams := c.Query("include_params") == "true"
-	var task *model.Task
-	var err error
-	if includeParams {
-		task, err = capabilityService.GetTaskForToken(c.Request.Context(), taskNo, token.UserID, token.ID)
-	} else {
-		task, err = capabilityService.GetTaskSummaryForToken(c.Request.Context(), taskNo, token.UserID, token.ID)
-	}
-	if err != nil {
-		resp.ErrorMsg(c, http.StatusNotFound, 404, "task not found")
-		return
-	}
-
-	var result any
-	if len(task.Result) > 0 {
-		_ = json.Unmarshal(task.Result, &result)
-	}
-
-	detail := gin.H{
-		"task_id":    task.TaskNo,
-		"task_no":    task.TaskNo,
-		"status":     task.Status.Public(),
-		"progress":   task.Progress,
-		"result":     result,
-		"error":      task.ErrorMessage,
-		"cost":       task.Cost,
-		"created_at": task.CreatedAt,
-	}
-	if includeParams {
-		var rawParams any
-		if len(task.RequestParams) > 0 {
-			_ = json.Unmarshal(task.RequestParams, &rawParams)
-		}
-		detail["raw_params"] = rawParams
-	}
-	if middleware.GetUserRole(c) == string(model.UserRoleAdmin) {
-		if includeParams {
-			var mappedParams any
-			if len(task.MappedParams) > 0 {
-				_ = json.Unmarshal(task.MappedParams, &mappedParams)
-			}
-			var vendorResponse any
-			if len(task.VendorResponse) > 0 {
-				_ = json.Unmarshal(task.VendorResponse, &vendorResponse)
-			}
-			detail["mapped_params"] = mappedParams
-			detail["vendor_response"] = vendorResponse
-		}
-		detail["vendor_task_id"] = task.VendorTaskID
-	}
-
-	if task.StartedAt != nil {
-		detail["started_at"] = task.StartedAt
-	}
-	if task.CompletedAt != nil {
-		detail["completed_at"] = task.CompletedAt
-	}
-
-	resp.Success(c, detail)
-}
-
-// PlaygroundCancelTask POST /api/playground/:token_id/tasks/:task_no/cancel
-func PlaygroundCancelTask(c *gin.Context) {
-	token, ok := getPlaygroundToken(c)
-	if !ok {
-		return
-	}
-
-	taskNo := c.Param("task_no")
-	if err := capabilityService.CancelTaskForToken(c.Request.Context(), taskNo, token.UserID, token.ID); err != nil {
-		resp.ErrorMsg(c, http.StatusBadRequest, 400, err.Error())
-		return
-	}
-
-	resp.Success(c, gin.H{"message": "task cancelled"})
-}
 
 // PlaygroundListConversations GET /api/playground/:token_id/conversations
 func PlaygroundListConversations(c *gin.Context) {
@@ -320,79 +190,165 @@ func PlaygroundGetDebug(c *gin.Context) {
 	if err != nil {
 		return
 	}
-	logDetail, err := service.NewRequestLogService().GetRequestLog(requestLogID)
+	database, err := model.DB().DB()
+	if err != nil {
+		resp.InternalError(c, errors.ErrInternalError)
+		return
+	}
+	type debugRow struct {
+		RequestLogID, CallID, ChannelID               uint64
+		CallPublicID, CallStatus, ModelCode           string
+		ChannelName, ChannelType, VendorModel         string
+		RequestPath, ErrorCode                        string
+		HTTPStatus, DurationMS                        sql.NullInt64
+		RequestBlobID, ResponseBlobID                 sql.NullInt64
+		RequestComplete, ResponseComplete             bool
+		RequestAt                                     time.Time
+		ConversationID                                uint
+		FinishReason, ProviderResponseID, ContextMode string
+		InputTokens, OutputTokens, TotalTokens        int
+		ErrorMessage                                  string
+	}
+	var detail debugRow
+	err = model.DB().Raw(`SELECT
+		request_log.id AS request_log_id,
+		gateway_call.id AS call_id,
+		gateway_call.public_id AS call_public_id,
+		gateway_call.status AS call_status,
+		gateway_model.model_code,
+		product.channel_id,
+		channel.display_name AS channel_name,
+		channel_transport.protocol AS channel_type,
+		product.vendor_model,
+		channel_transport.request_path,
+		request_log.http_status,
+		request_log.duration_ms,
+		request_log.error_code,
+		request_log.request_payload_blob_id AS request_blob_id,
+		request_log.response_payload_blob_id AS response_blob_id,
+		request_log.request_bytes_complete AS request_complete,
+		request_log.response_bytes_complete AS response_complete,
+		request_log.created_at AS request_at,
+		COALESCE(turn.conversation_id, 0) AS conversation_id,
+		COALESCE(turn.finish_reason, '') AS finish_reason,
+		COALESCE(turn.provider_response_id, '') AS provider_response_id,
+		COALESCE(turn.context_mode, '') AS context_mode,
+		COALESCE(turn.input_tokens, 0) AS input_tokens,
+		COALESCE(turn.output_tokens, 0) AS output_tokens,
+		COALESCE(turn.total_tokens, 0) AS total_tokens,
+		COALESCE(turn.error_message, '') AS error_message
+	FROM gw_channel_request_logs AS request_log
+	JOIN gw_api_call_attempts AS attempt ON attempt.id = request_log.attempt_id
+	JOIN gw_api_calls AS gateway_call ON gateway_call.id = attempt.call_id
+	JOIN gw_model_operations AS model_operation
+		ON model_operation.id = gateway_call.model_operation_id
+		AND model_operation.release_id = gateway_call.catalog_release_id
+	JOIN gw_catalog_models AS catalog_model
+		ON catalog_model.id = model_operation.catalog_model_id
+		AND catalog_model.release_id = model_operation.release_id
+	JOIN gw_models AS gateway_model ON gateway_model.id = catalog_model.model_id
+	JOIN gw_product_transports AS product_transport
+		ON product_transport.id = attempt.product_transport_id
+		AND product_transport.release_id = attempt.catalog_release_id
+	JOIN gw_products AS product
+		ON product.id = product_transport.product_id
+		AND product.release_id = product_transport.release_id
+	JOIN gw_channel_transports AS channel_transport
+		ON channel_transport.id = product_transport.channel_transport_id
+		AND channel_transport.release_id = product_transport.release_id
+	JOIN gateway_channels AS channel ON channel.id = product.channel_id
+	LEFT JOIN conversation_turns AS turn ON turn.call_id = gateway_call.public_id
+	WHERE request_log.id = ? AND gateway_call.user_id = ? AND gateway_call.token_id = ?`,
+		requestLogID, token.UserID, token.ID).Take(&detail).Error
 	if err != nil {
 		resp.NotFound(c, errors.ErrTaskNotFound)
 		return
 	}
-	if logDetail.ConversationID == 0 {
-		resp.Forbidden(c, errors.ErrNoPermission)
+	store, err := repository.New(database)
+	if err != nil {
+		resp.InternalError(c, errors.ErrInternalError)
 		return
 	}
-	conversation, convErr := conversationService.GetConversation(logDetail.ConversationID)
-	if convErr != nil || conversation.UserID != token.UserID || conversation.TokenID != token.ID {
-		resp.Forbidden(c, errors.ErrNoPermission)
-		return
+	requestBody, responseBody := any(nil), any(nil)
+	for _, payload := range []struct {
+		kind string
+		id   sql.NullInt64
+		dest *any
+	}{{"request", detail.RequestBlobID, &requestBody}, {"response", detail.ResponseBlobID, &responseBody}} {
+		if !payload.id.Valid || payload.id.Int64 <= 0 {
+			continue
+		}
+		plain, readErr := payloadview.ReadRequestLogPayload(
+			c.Request.Context(), store, detail.RequestLogID, uint64(payload.id.Int64), payload.kind,
+		)
+		if readErr != nil {
+			resp.InternalError(c, errors.ErrInternalError)
+			return
+		}
+		*payload.dest = decodePlaygroundDebugPayload(plain)
+		clear(plain)
 	}
-
-	var requestBody any
-	if logDetail.RequestBody != "" {
-		_ = json.Unmarshal([]byte(logDetail.RequestBody), &requestBody)
+	status := detail.CallStatus
+	if status == "retry_pending" {
+		status = "in_progress"
+	} else if status == "indeterminate" {
+		status = "failed"
 	}
-	var requestHeaders any
-	if logDetail.RequestHeaders != "" {
-		_ = json.Unmarshal([]byte(logDetail.RequestHeaders), &requestHeaders)
-	}
-	var responseBody any
-	if logDetail.ResponseBody != "" {
-		if err := json.Unmarshal([]byte(logDetail.ResponseBody), &responseBody); err != nil {
-			responseBody = logDetail.ResponseBody
+	responsePreview := ""
+	if encoded, encodeErr := json.Marshal(responseBody); encodeErr == nil && responseBody != nil {
+		responsePreview = string(encoded)
+		if len(responsePreview) > 1000 {
+			responsePreview = responsePreview[:1000]
 		}
 	}
-
-	// 上下文策略状态：有状态对话(B模式)依赖 conversation 上的 provider_response_id
-	contextMode := ""
-	providerResponseID := conversation.ProviderResponseID
-	if providerResponseID != "" {
-		contextMode = "stateful" // B模式：历史由上游维护，仅发新消息
-	} else {
-		contextMode = "full_history" // A模式：发送本地全量历史
+	errorMessage := detail.ErrorMessage
+	if errorMessage == "" {
+		errorMessage = detail.ErrorCode
 	}
 
 	resp.Success(c, gin.H{
-		"request_log_id":  logDetail.ID,
-		"conversation_id": logDetail.ConversationID,
-		"channel_id":      logDetail.ChannelID,
-		"account_id":      logDetail.AccountID,
-		"channel_name": func() string {
-			if logDetail.Channel != nil {
-				return logDetail.Channel.Name
-			}
-			return ""
-		}(),
-		"channel_type": func() string {
-			if logDetail.Channel != nil {
-				return logDetail.Channel.Type
-			}
-			return ""
-		}(),
-		"model_code":              logDetail.ModelCode,
-		"vendor_model":            logDetail.VendorModel,
-		"request_path":            logDetail.RequestPath,
-		"is_stream":               logDetail.IsStream,
-		"status_code":             logDetail.StatusCode,
-		"duration_ms":             logDetail.DurationMs,
-		"error_message":           logDetail.ErrorMessage,
-		"finish_reason":           logDetail.FinishReason,
-		"response_preview":        logDetail.ResponsePreview,
-		"usage_prompt_tokens":     logDetail.UsagePromptTokens,
-		"usage_completion_tokens": logDetail.UsageCompletionTokens,
-		"usage_total_tokens":      logDetail.UsageTotalTokens,
-		"request_headers":         requestHeaders,
+		"request_log_id":          detail.RequestLogID,
+		"conversation_id":         detail.ConversationID,
+		"call_id":                 detail.CallPublicID,
+		"channel_id":              detail.ChannelID,
+		"account_id":              0,
+		"channel_name":            detail.ChannelName,
+		"channel_type":            detail.ChannelType,
+		"model_code":              detail.ModelCode,
+		"vendor_model":            detail.VendorModel,
+		"request_path":            detail.RequestPath,
+		"is_stream":               false,
+		"status":                  status,
+		"status_code":             nullablePlaygroundDebugInt(detail.HTTPStatus),
+		"duration_ms":             nullablePlaygroundDebugInt(detail.DurationMS),
+		"error_message":           errorMessage,
+		"finish_reason":           detail.FinishReason,
+		"response_preview":        responsePreview,
+		"usage_prompt_tokens":     detail.InputTokens,
+		"usage_completion_tokens": detail.OutputTokens,
+		"usage_total_tokens":      detail.TotalTokens,
+		"request_headers":         nil,
 		"request_body":            requestBody,
 		"response_body":           responseBody,
-		"request_at":              logDetail.RequestAt,
-		"context_mode":            contextMode,
-		"provider_response_id":    providerResponseID,
+		"request_complete":        detail.RequestComplete,
+		"response_complete":       detail.ResponseComplete,
+		"request_at":              detail.RequestAt,
+		"context_mode":            detail.ContextMode,
+		"provider_response_id":    detail.ProviderResponseID,
 	})
+}
+
+func decodePlaygroundDebugPayload(raw []byte) any {
+	var value any
+	if json.Unmarshal(raw, &value) == nil {
+		return value
+	}
+	return string(raw)
+}
+
+func nullablePlaygroundDebugInt(value sql.NullInt64) any {
+	if !value.Valid {
+		return nil
+	}
+	return value.Int64
 }

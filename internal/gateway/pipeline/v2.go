@@ -25,7 +25,9 @@ func (p *Pipeline) completeV2(ctx context.Context, request *service.CompletionRe
 	if err != nil {
 		return nil, err
 	}
-	result, err := p.v2.Execute(ctx, canonicalRequest, p.v2Options(request))
+	options := p.v2Options(request)
+	options.ConversationInput = chatConversationInput(request, canonicalRequest)
+	result, err := p.v2.Execute(ctx, canonicalRequest, options)
 	if err != nil {
 		return nil, err
 	}
@@ -77,6 +79,7 @@ func (p *Pipeline) streamCompleteV2(ctx context.Context, request *service.Comple
 	}
 	canonicalRequest.Stream = true
 	options := p.v2Options(request)
+	options.ConversationInput = chatConversationInput(request, canonicalRequest)
 	options.DeferCallCompletion = true
 	result, err := p.v2.Execute(ctx, canonicalRequest, options)
 	if err != nil {
@@ -94,6 +97,14 @@ func (p *Pipeline) streamCompleteV2(ctx context.Context, request *service.Comple
 	}
 	go session.proxyV2ChatStream(ctx, writer, result.Stream, request.Model)
 	return session, nil
+}
+
+func chatConversationInput(request *service.CompletionRequest, canonicalRequest canonical.Request) *service.ConversationProjectionInputRequest {
+	return &service.ConversationProjectionInputRequest{
+		ConversationID:     request.ConversationRecordID,
+		PreviousResponseID: request.PreviousResponseID,
+		InputItems:         canonical.CloneItems(canonicalRequest.Items),
+	}
 }
 
 func (p *Pipeline) v2Options(request *service.CompletionRequest) engine.ExecuteOptions {

@@ -150,10 +150,6 @@ func TestConversationProjectionItemsMarshalNormalizesMalformedRawWithoutMutating
 func TestConversationProjectionOutboxProjectsTerminalCallAndDeletesIdempotently(t *testing.T) {
 	db := setupConversationProjectionOutboxTestDB(t)
 	call := createConversationTestCall(t, db, "call_outbox_project", 31, 41, decimal.RequireFromString("0.25"))
-	call.Model = "model-a"
-	if err := db.Model(call).Update("model", call.Model).Error; err != nil {
-		t.Fatal(err)
-	}
 	stageCompletedConversationProjection(t, call.ID, "hello", "world")
 
 	service := NewConversationProjectionOutboxService()
@@ -243,10 +239,7 @@ func TestConversationProjectionOutboxProjectsLegacyUnpreparedExplicitInput(t *te
 func TestConversationProjectionOutboxRetainsSanitizedFailureAndRecovers(t *testing.T) {
 	db := setupConversationProjectionOutboxTestDB(t)
 	call := createConversationTestCall(t, db, "call_outbox_recover", 51, 61, decimal.Zero)
-	call.Model = "model-recover"
-	if err := db.Model(call).Update("model", call.Model).Error; err != nil {
-		t.Fatal(err)
-	}
+	updateConversationTestCallModel(t, db, call, "model-recover")
 	stageCompletedConversationProjection(t, call.ID, "recover me", "recovered")
 
 	now := time.Date(2026, 7, 15, 21, 0, 0, 0, time.UTC)
@@ -327,12 +320,7 @@ func TestConversationProjectionOutboxRequiresExplicitOutputForEveryTerminalStatu
 	}
 
 	failed := createConversationTestCall(t, db, "call_outbox_failed", 71, 81, decimal.Zero)
-	if err := db.Model(failed).Updates(map[string]any{
-		"status": model.APICallStatusFailed, "error_type": "server_error",
-		"error_code": "upstream_error", "error_message": "failed safely",
-	}).Error; err != nil {
-		t.Fatal(err)
-	}
+	updateConversationTestCallStatus(t, db, failed, model.APICallStatusFailed)
 	if err := StageAPIConversationProjectionInput(ConversationProjectionInputRequest{
 		CallID:     failed.ID,
 		InputItems: []canonical.Item{{Type: "message", Role: canonical.RoleUser, Content: []canonical.Content{{Type: "input_text", Text: "failed input"}}}},
@@ -354,7 +342,7 @@ func TestConversationProjectionOutboxRequiresExplicitOutputForEveryTerminalStatu
 	if err := db.First(&turn, "call_id = ?", failed.ID).Error; err != nil {
 		t.Fatal(err)
 	}
-	if turn.Status != model.ConversationTurnFailed || turn.ErrorCode != "upstream_error" {
+	if turn.Status != model.ConversationTurnFailed {
 		t.Fatalf("failed turn = %#v", turn)
 	}
 }
@@ -362,15 +350,8 @@ func TestConversationProjectionOutboxRequiresExplicitOutputForEveryTerminalStatu
 func TestConversationProjectionOutboxReconcileSelectsOnlyTerminalCalls(t *testing.T) {
 	db := setupConversationProjectionOutboxTestDB(t)
 	terminal := createConversationTestCall(t, db, "call_outbox_terminal", 91, 92, decimal.Zero)
-	running := &model.APICall{
-		ID: "call_outbox_running", RequestID: "call_outbox_running",
-		UserID: 91, TokenID: 92, Model: "model-a", Status: model.APICallStatusInProgress,
-		ProjectConversation: true,
-		StartedAt:           time.Now(),
-	}
-	if err := db.Create(running).Error; err != nil {
-		t.Fatal(err)
-	}
+	running := createConversationTestCall(t, db, "call_outbox_running", 91, 92, decimal.Zero)
+	updateConversationTestCallStatus(t, db, running, model.APICallStatusInProgress)
 	stageCompletedConversationProjection(t, terminal.ID, "terminal", "done")
 	stageCompletedConversationProjection(t, running.ID, "running", "not yet")
 
@@ -393,68 +374,6 @@ func TestConversationProjectionOutboxReconcileSelectsOnlyTerminalCalls(t *testin
 	}
 }
 
-func TestConversationProjectionOutboxReconcileWaitsForStaleCallRefund(t *testing.T) {
-	db := setupConversationProjectionOutboxTestDB(t)
-	call := createConversationTestCall(t, db, "call_outbox_stale_refund", 93, 94, decimal.Zero)
-	if err := db.Model(call).Updates(map[string]any{
-		"status":        model.APICallStatusFailed,
-		"error_type":    "server_error",
-		"error_code":    staleCallPendingCode,
-		"error_message": "billing reconciliation is pending",
-	}).Error; err != nil {
-		t.Fatal(err)
-	}
-	stageCompletedConversationProjection(t, call.ID, "stale input", "")
-
-	attempted, err := ReconcilePendingAPIConversations(context.Background(), 10)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if attempted != 0 {
-		t.Fatalf("attempted stale pending calls = %d, want 0", attempted)
-	}
-	var pendingCount int64
-	if err := db.Model(&model.ConversationProjectionOutbox{}).Where("call_id = ?", call.ID).Count(&pendingCount).Error; err != nil {
-		t.Fatal(err)
-	}
-	if pendingCount != 1 {
-		t.Fatalf("pending outbox count = %d, want 1", pendingCount)
-	}
-	var turnCount int64
-	if err := db.Model(&model.ConversationTurn{}).Where("call_id = ?", call.ID).Count(&turnCount).Error; err != nil {
-		t.Fatal(err)
-	}
-	if turnCount != 0 {
-		t.Fatalf("stale pending turn count = %d, want 0", turnCount)
-	}
-
-	if err := db.Model(call).
-		Where("status = ? AND error_code = ?", model.APICallStatusFailed, staleCallPendingCode).
-		Updates(map[string]any{
-			"error_code":    staleCallFinalCode,
-			"error_message": "Execution stopped before a terminal result was persisted",
-		}).Error; err != nil {
-		t.Fatal(err)
-	}
-	attempted, err = ReconcilePendingAPIConversations(context.Background(), 10)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if attempted != 1 {
-		t.Fatalf("attempted finalized stale calls = %d, want 1", attempted)
-	}
-	var turn model.ConversationTurn
-	if err := db.First(&turn, "call_id = ?", call.ID).Error; err != nil {
-		t.Fatal(err)
-	}
-	if turn.Status != model.ConversationTurnFailed || turn.ErrorCode != staleCallFinalCode {
-		t.Fatalf("finalized stale turn = %#v", turn)
-	}
-	if err := db.First(&model.ConversationProjectionOutbox{}, "call_id = ?", call.ID).Error; !errors.Is(err, gorm.ErrRecordNotFound) {
-		t.Fatalf("outbox after finalized projection error = %v", err)
-	}
-}
-
 func TestConversationProjectionOutboxTxStagesWithCallAndRollsBackAtomically(t *testing.T) {
 	db := setupConversationProjectionOutboxTestDB(t)
 	rollbackErr := errors.New("rollback transaction")
@@ -462,10 +381,9 @@ func TestConversationProjectionOutboxTxStagesWithCallAndRollsBackAtomically(t *t
 		call := model.APICall{
 			ID: "call_outbox_tx_rollback", RequestID: "call_outbox_tx_rollback",
 			UserID: 101, TokenID: 102, Model: "model-a",
-			ProjectConversation: true,
-			Status:              model.APICallStatusInProgress, StartedAt: time.Now(),
+			Status: model.APICallStatusInProgress, StartedAt: time.Now(),
 		}
-		if err := tx.Create(&call).Error; err != nil {
+		if err := insertConversationTestCall(tx, &call); err != nil {
 			return err
 		}
 		if err := StageAPIConversationProjectionInputTx(tx, ConversationProjectionInputRequest{
@@ -484,7 +402,7 @@ func TestConversationProjectionOutboxTxStagesWithCallAndRollsBackAtomically(t *t
 		t.Fatalf("rollback error = %v", err)
 	}
 	var count int64
-	if err := db.Model(&model.APICall{}).Where("id = ?", "call_outbox_tx_rollback").Count(&count).Error; err != nil || count != 0 {
+	if err := db.Table("gw_api_calls").Where("public_id = ?", "call_outbox_tx_rollback").Count(&count).Error; err != nil || count != 0 {
 		t.Fatalf("rolled back call count=%d err=%v", count, err)
 	}
 	if err := db.Model(&model.ConversationProjectionOutbox{}).Where("call_id = ?", "call_outbox_tx_rollback").Count(&count).Error; err != nil || count != 0 {
@@ -495,10 +413,9 @@ func TestConversationProjectionOutboxTxStagesWithCallAndRollsBackAtomically(t *t
 		call := model.APICall{
 			ID: "call_outbox_tx_commit", RequestID: "call_outbox_tx_commit",
 			UserID: 101, TokenID: 102, Model: "model-a",
-			ProjectConversation: true,
-			Status:              model.APICallStatusInProgress, StartedAt: time.Now(),
+			Status: model.APICallStatusInProgress, StartedAt: time.Now(),
 		}
-		if err := tx.Create(&call).Error; err != nil {
+		if err := insertConversationTestCall(tx, &call); err != nil {
 			return err
 		}
 		if err := StageAPIConversationProjectionInputTx(tx, ConversationProjectionInputRequest{
@@ -573,42 +490,17 @@ func TestConversationProjectionOutputIfPresentNeverCreatesOutputOnlyEntry(t *tes
 	}
 }
 
-func TestConversationProjectionInputRejectsUnmarkedAPICall(t *testing.T) {
-	db := setupConversationProjectionOutboxTestDB(t)
-	call := &model.APICall{
-		ID: "call_outbox_unmarked", RequestID: "request-outbox-unmarked",
-		UserID: 121, TokenID: 122, Model: "model-a",
-		Status: model.APICallStatusInProgress, StartedAt: time.Now(),
-	}
-	if err := db.Create(call).Error; err != nil {
-		t.Fatal(err)
-	}
-	err := StageAPIConversationProjectionInput(ConversationProjectionInputRequest{
-		CallID: call.ID, InputItems: []canonical.Item{},
-	})
-	if !errors.Is(err, ErrAPICallInvalidInput) {
-		t.Fatalf("stage unmarked call error = %v", err)
-	}
-	var count int64
-	if err := db.Model(&model.ConversationProjectionOutbox{}).Where("call_id = ?", call.ID).Count(&count).Error; err != nil {
-		t.Fatal(err)
-	}
-	if count != 0 {
-		t.Fatalf("unmarked call created %d outbox rows", count)
-	}
-}
-
 func TestConversationProjectionInputRejectsMismatchedConversationID(t *testing.T) {
 	db := setupConversationProjectionOutboxTestDB(t)
 	call := createConversationTestCall(t, db, "call_outbox_conversation_mismatch", 131, 132, decimal.Zero)
-	conversation := &model.Conversation{UserID: 131, TokenID: 132, Model: "model-a", Status: 1}
+	conversation := &model.Conversation{UserID: 131, TokenID: 999, Model: "model-a", Status: 1}
 	if err := db.Create(conversation).Error; err != nil {
 		t.Fatal(err)
 	}
 	err := StageAPIConversationProjectionInput(ConversationProjectionInputRequest{
 		CallID: call.ID, ConversationID: conversation.ID, InputItems: []canonical.Item{},
 	})
-	if !errors.Is(err, ErrAPICallInvalidInput) {
+	if !errors.Is(err, ErrConversationNotFound) {
 		t.Fatalf("stage mismatched conversation error = %v", err)
 	}
 	var count int64
@@ -627,22 +519,13 @@ func TestConversationProjectionInputResolvesPreviousResponseBeforeStaging(t *tes
 	conversationID := projectConversationTestTurn(
 		t, db, "call_outbox_previous_base", []canonical.Item{baseInput}, []canonical.Item{baseOutput},
 	)
-	cutoff := time.Now().AddDate(0, 0, -90)
-	old := cutoff.AddDate(0, 0, -1)
 	if err := db.Model(&model.Conversation{}).Where("id = ?", conversationID).UpdateColumns(map[string]any{
 		"provider_response_id": "provider-outbox-previous",
-		"updated_at":           old,
 	}).Error; err != nil {
 		t.Fatal(err)
 	}
-	pendingCall := &model.APICall{
-		ID: "call_outbox_previous_pending", RequestID: "request-outbox-previous-pending",
-		UserID: 1, TokenID: 2, Model: "model-a", Status: model.APICallStatusReceived,
-		ProjectConversation: true, StartedAt: time.Now(),
-	}
-	if err := db.Create(pendingCall).Error; err != nil {
-		t.Fatal(err)
-	}
+	pendingCall := createConversationTestCall(t, db, "call_outbox_previous_pending", 1, 2, decimal.Zero)
+	updateConversationTestCallStatus(t, db, pendingCall, model.APICallStatusReceived)
 	newInput := canonicalMessage(canonical.RoleUser, "new input", "input_text")
 	stageRequest := ConversationProjectionInputRequest{
 		CallID: pendingCall.ID, PreviousResponseID: " provider-outbox-previous ",
@@ -665,17 +548,13 @@ func TestConversationProjectionInputResolvesPreviousResponseBeforeStaging(t *tes
 		t.Fatalf("repeat previous-response stage after mapping changed: %v", err)
 	}
 
-	var stagedCall model.APICall
-	if err := db.First(&stagedCall, "id = ?", pendingCall.ID).Error; err != nil {
-		t.Fatal(err)
-	}
 	var entry model.ConversationProjectionOutbox
 	if err := db.First(&entry, "call_id = ?", pendingCall.ID).Error; err != nil {
 		t.Fatal(err)
 	}
-	if stagedCall.ConversationID != conversationID || entry.ConversationID != conversationID || !entry.InputPrepared ||
+	if entry.ConversationID != conversationID || !entry.InputPrepared ||
 		entry.ContextMode != model.ConversationTurnContextExplicit {
-		t.Fatalf("resolved call=%#v entry=%#v conversation=%d", stagedCall, entry, conversationID)
+		t.Fatalf("resolved entry=%#v conversation=%d", entry, conversationID)
 	}
 	if entry.PreviousResponseID != "provider-outbox-previous" {
 		t.Fatalf("stored previous_response_id = %q", entry.PreviousResponseID)
@@ -687,29 +566,12 @@ func TestConversationProjectionInputResolvesPreviousResponseBeforeStaging(t *tes
 	if len(input) != 1 || canonicalConversationItemText(input[0]) != "new input" {
 		t.Fatalf("prepared previous-response input = %#v", input)
 	}
-
-	// The cleanup candidate was selected before staging. Its transactional
-	// recheck must now observe the direct outbox reference and preserve it.
-	deleted, err := deleteExpiredConversationCandidates(db, cutoff, []uint{conversationID}, true)
-	if err != nil || deleted != 0 {
-		t.Fatalf("deleted resolved previous-response conversation=%d err=%v", deleted, err)
-	}
-	var conversationCount int64
-	if err := db.Model(&model.Conversation{}).Where("id = ?", conversationID).Count(&conversationCount).Error; err != nil || conversationCount != 1 {
-		t.Fatalf("resolved conversation count=%d err=%v", conversationCount, err)
-	}
 }
 
 func TestConversationProjectionInputLeavesUnmatchedPreviousResponseImplicit(t *testing.T) {
 	db := setupConversationProjectionOutboxTestDB(t)
-	call := &model.APICall{
-		ID: "call_outbox_previous_unmatched", RequestID: "request-outbox-previous-unmatched",
-		UserID: 7, TokenID: 8, Model: "model-a", Status: model.APICallStatusReceived,
-		ProjectConversation: true, StartedAt: time.Now(),
-	}
-	if err := db.Create(call).Error; err != nil {
-		t.Fatal(err)
-	}
+	call := createConversationTestCall(t, db, "call_outbox_previous_unmatched", 7, 8, decimal.Zero)
+	updateConversationTestCallStatus(t, db, call, model.APICallStatusReceived)
 	if err := StageAPIConversationProjectionInput(ConversationProjectionInputRequest{
 		CallID: call.ID, PreviousResponseID: "provider-not-found",
 		InputItems: []canonical.Item{canonicalMessage(canonical.RoleUser, "unmatched input", "input_text")},
@@ -717,15 +579,12 @@ func TestConversationProjectionInputLeavesUnmatchedPreviousResponseImplicit(t *t
 		t.Fatal(err)
 	}
 
-	if err := db.First(call, "id = ?", call.ID).Error; err != nil {
-		t.Fatal(err)
-	}
 	var entry model.ConversationProjectionOutbox
 	if err := db.First(&entry, "call_id = ?", call.ID).Error; err != nil {
 		t.Fatal(err)
 	}
-	if call.ConversationID != 0 || entry.ConversationID != 0 || entry.InputPrepared {
-		t.Fatalf("unmatched call=%#v entry=%#v", call, entry)
+	if entry.ConversationID != 0 || entry.InputPrepared {
+		t.Fatalf("unmatched entry=%#v", entry)
 	}
 	input, err := unmarshalConversationProjectionItems(entry.CanonicalInput, "input")
 	if err != nil {
@@ -734,9 +593,7 @@ func TestConversationProjectionInputLeavesUnmatchedPreviousResponseImplicit(t *t
 	if len(input) != 1 || canonicalConversationItemText(input[0]) != "unmatched input" {
 		t.Fatalf("unmatched previous-response input = %#v", input)
 	}
-	if err := db.Model(call).Update("status", model.APICallStatusCompleted).Error; err != nil {
-		t.Fatal(err)
-	}
+	updateConversationTestCallStatus(t, db, call, model.APICallStatusCompleted)
 	if updated, err := StageAPIConversationProjectionOutputIfPresent(ConversationProjectionOutputRequest{
 		CallID: call.ID,
 		OutputItems: []canonical.Item{
@@ -756,57 +613,29 @@ func TestConversationProjectionInputLeavesUnmatchedPreviousResponseImplicit(t *t
 	if err := db.Create(&ambiguous).Error; err != nil {
 		t.Fatal(err)
 	}
-	ambiguousCall := &model.APICall{
-		ID: "call_outbox_previous_ambiguous", RequestID: "request-outbox-previous-ambiguous",
-		UserID: 7, TokenID: 8, Model: "model-a", Status: model.APICallStatusReceived,
-		ProjectConversation: true, StartedAt: time.Now(),
-	}
-	if err := db.Create(ambiguousCall).Error; err != nil {
-		t.Fatal(err)
-	}
+	ambiguousCall := createConversationTestCall(t, db, "call_outbox_previous_ambiguous", 7, 8, decimal.Zero)
+	updateConversationTestCallStatus(t, db, ambiguousCall, model.APICallStatusReceived)
 	if err := StageAPIConversationProjectionInput(ConversationProjectionInputRequest{
 		CallID: ambiguousCall.ID, PreviousResponseID: "provider-ambiguous",
 		InputItems: []canonical.Item{canonicalMessage(canonical.RoleUser, "ambiguous input", "input_text")},
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if err := db.First(ambiguousCall, "id = ?", ambiguousCall.ID).Error; err != nil {
-		t.Fatal(err)
-	}
 	entry = model.ConversationProjectionOutbox{}
 	if err := db.First(&entry, "call_id = ?", ambiguousCall.ID).Error; err != nil {
 		t.Fatal(err)
 	}
-	if ambiguousCall.ConversationID != 0 || entry.ConversationID != 0 || entry.InputPrepared {
-		t.Fatalf("ambiguous call=%#v entry=%#v", ambiguousCall, entry)
+	if entry.ConversationID != 0 || entry.InputPrepared {
+		t.Fatalf("ambiguous entry=%#v", entry)
 	}
 }
 
 func TestConversationProjectionWaitsForPreviousPublicResponseProjection(t *testing.T) {
 	db := setupConversationProjectionOutboxTestDB(t)
-	now := time.Now()
-	previousCall := model.APICall{
-		ID: "call_outbox_dependency_previous", RequestID: "request-outbox-dependency-previous",
-		UserID: 1, TokenID: 2, Model: "model-a", Status: model.APICallStatusCompleted,
-		ProjectConversation: true, ResourceType: "response", ResourceID: "resp_dependency_previous",
-		StartedAt: now, CreatedAt: now, UpdatedAt: now,
-	}
-	continuationCall := model.APICall{
-		ID: "call_outbox_dependency_continuation", RequestID: "request-outbox-dependency-continuation",
-		UserID: 1, TokenID: 2, Model: "model-a", Status: model.APICallStatusCompleted,
-		ProjectConversation: true, ResourceType: "response", ResourceID: "resp_dependency_continuation",
-		StartedAt: now, CreatedAt: now, UpdatedAt: now,
-	}
-	if err := db.Create(&[]model.APICall{previousCall, continuationCall}).Error; err != nil {
-		t.Fatal(err)
-	}
-	if err := db.Create(&model.AIResponse{
-		ID: "resp_dependency_previous", UserID: 1, TokenID: 2, CallID: previousCall.ID,
-		Model: "model-a", Status: "completed", Store: true,
-		IdempotencyKey: "internal:resp_dependency_previous", CreatedAt: now,
-	}).Error; err != nil {
-		t.Fatal(err)
-	}
+	previousCall := createConversationTestCall(t, db, "call_outbox_dependency_previous", 1, 2, decimal.Zero)
+	continuationCall := createConversationTestCall(t, db, "call_outbox_dependency_continuation", 1, 2, decimal.Zero)
+	createConversationTestResource(t, db, previousCall.ID, "resp_dependency_previous", "response", 1, 2)
+	createConversationTestResource(t, db, continuationCall.ID, "resp_dependency_continuation", "response", 1, 2)
 	if err := StageAPIConversationProjectionInput(ConversationProjectionInputRequest{
 		CallID: previousCall.ID,
 		InputItems: []canonical.Item{

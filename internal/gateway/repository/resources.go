@@ -85,15 +85,28 @@ type AIResponseInput struct {
 }
 
 func (s *Store) CreateAIResponse(ctx context.Context, tx *sql.Tx, in AIResponseInput) error {
-	if tx == nil || in.ResourceID == 0 || in.ResponseNo == "" || len(in.ResponseNo) > 36 || in.Status == "" || len(in.Status) > 24 {
+	if tx == nil || in.ResourceID == 0 || in.ResponseNo == "" || len(in.ResponseNo) > 36 || !validAIResponseStatus(in.Status) {
 		return ErrInvalidInput
 	}
 	if err := ensureResourceKind(ctx, tx, in.ResourceID, "response"); err != nil {
 		return err
 	}
 	if in.PreviousResourceID != nil {
-		if err := ensureResourceKind(ctx, tx, *in.PreviousResourceID, "response"); err != nil {
+		if *in.PreviousResourceID == 0 || *in.PreviousResourceID == in.ResourceID {
+			return ErrInvalidInput
+		}
+		var currentUserID, currentTokenID, previousUserID, previousTokenID uint64
+		var previousKind string
+		if err := tx.QueryRowContext(ctx, `SELECT user_id,token_id FROM gw_api_resources WHERE id=? FOR SHARE`, in.ResourceID).Scan(&currentUserID, &currentTokenID); err != nil {
 			return err
+		}
+		if err := tx.QueryRowContext(ctx, `SELECT resource_kind,user_id,token_id FROM gw_api_resources WHERE id=? FOR SHARE`, *in.PreviousResourceID).Scan(&previousKind, &previousUserID, &previousTokenID); err == sql.ErrNoRows {
+			return ErrNotFound
+		} else if err != nil {
+			return err
+		}
+		if previousKind != "response" || previousUserID != currentUserID || previousTokenID != currentTokenID {
+			return ErrConflict
 		}
 	}
 	summary, err := jsonValue(in.Summary)
@@ -102,6 +115,71 @@ func (s *Store) CreateAIResponse(ctx context.Context, tx *sql.Tx, in AIResponseI
 	}
 	_, err = tx.ExecContext(ctx, `INSERT INTO gw_ai_responses(resource_id,response_no,status,previous_response_resource_id,result_summary,created_at,updated_at) VALUES (?,?,?,?,?,?,?)`, in.ResourceID, in.ResponseNo, in.Status, nullableID(in.PreviousResourceID), summary, nowUTC(), nowUTC())
 	return err
+}
+
+// UpdateAIResponse updates only the bounded protocol projection. Complete
+// response bytes remain in the encrypted Call result payload.
+func (s *Store) UpdateAIResponse(ctx context.Context, tx *sql.Tx, resourceID uint64, status string, summary any) error {
+	if tx == nil || resourceID == 0 || !validAIResponseStatus(status) {
+		return ErrInvalidInput
+	}
+	if err := ensureResourceKind(ctx, tx, resourceID, "response"); err != nil {
+		return err
+	}
+	var current string
+	if err := tx.QueryRowContext(ctx, `SELECT status FROM gw_ai_responses WHERE resource_id=? FOR UPDATE`, resourceID).Scan(&current); err == sql.ErrNoRows {
+		return ErrNotFound
+	} else if err != nil {
+		return err
+	}
+	if !validAIResponseTransition(current, status) {
+		return ErrConflict
+	}
+	value, err := jsonValue(summary)
+	if err != nil {
+		return err
+	}
+	result, err := tx.ExecContext(ctx, `UPDATE gw_ai_responses SET status=?,result_summary=COALESCE(?,result_summary),updated_at=? WHERE resource_id=?`, status, value, nowUTC(), resourceID)
+	if err != nil {
+		return err
+	}
+	_, err = result.RowsAffected()
+	return err
+}
+
+func validAIResponseStatus(status string) bool {
+	switch status {
+	case "queued", "in_progress", "completed", "failed", "cancelled", "incomplete":
+		return true
+	default:
+		return false
+	}
+}
+
+func isAIResponseTerminal(status string) bool {
+	switch status {
+	case "completed", "failed", "cancelled", "incomplete":
+		return true
+	default:
+		return false
+	}
+}
+
+func validAIResponseTransition(from, to string) bool {
+	if from == to {
+		return validAIResponseStatus(from)
+	}
+	if isAIResponseTerminal(from) {
+		return false
+	}
+	switch from {
+	case "queued":
+		return to == "in_progress" || isAIResponseTerminal(to)
+	case "in_progress":
+		return isAIResponseTerminal(to)
+	default:
+		return false
+	}
 }
 
 func (s *Store) UpdateCapabilityTask(ctx context.Context, tx *sql.Tx, resourceID uint64, status string, progress uint8, parameters any) error {
@@ -116,6 +194,29 @@ func (s *Store) UpdateCapabilityTask(ctx context.Context, tx *sql.Tx, resourceID
 		return err
 	}
 	res, err := tx.ExecContext(ctx, `UPDATE gw_capability_tasks SET status=?,progress=?,parameter_summary=?,updated_at=? WHERE resource_id=?`, status, progress, v, nowUTC(), resourceID)
+	if err != nil {
+		return err
+	}
+	ok, err := affected(res)
+	if err != nil {
+		return err
+	}
+	if !ok {
+		return ErrNotFound
+	}
+	return nil
+}
+
+// UpdateCapabilityTaskState changes only the bounded status projection. The
+// original parameter summary remains immutable execution context.
+func (s *Store) UpdateCapabilityTaskState(ctx context.Context, tx *sql.Tx, resourceID uint64, status string, progress uint8) error {
+	if tx == nil || resourceID == 0 || status == "" || len(status) > 24 || progress > 100 {
+		return ErrInvalidInput
+	}
+	if err := ensureResourceKind(ctx, tx, resourceID, "capability_task"); err != nil {
+		return err
+	}
+	res, err := tx.ExecContext(ctx, `UPDATE gw_capability_tasks SET status=?,progress=?,updated_at=? WHERE resource_id=?`, status, progress, nowUTC(), resourceID)
 	if err != nil {
 		return err
 	}

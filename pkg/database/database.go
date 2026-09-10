@@ -1,6 +1,8 @@
 package database
 
 import (
+	"context"
+	"database/sql"
 	"fmt"
 	"net"
 	"strconv"
@@ -49,6 +51,10 @@ func connect(multiStatements bool) (*gorm.DB, error) {
 	if err != nil {
 		return nil, fmt.Errorf("get sql.DB: %w", err)
 	}
+	if err := requireSupportedMySQL(context.Background(), sqlDB); err != nil {
+		_ = sqlDB.Close()
+		return nil, err
+	}
 
 	maxOpen := cfg.MaxOpenConns
 	if maxOpen <= 0 {
@@ -76,6 +82,58 @@ func connect(multiStatements bool) (*gorm.DB, error) {
 	db = db.Set("gorm:table_options", "ENGINE=InnoDB")
 
 	return db, nil
+}
+
+const minimumMySQLVersion = "8.0.16"
+
+func requireSupportedMySQL(ctx context.Context, db *sql.DB) error {
+	if db == nil {
+		return fmt.Errorf("database version check: nil database")
+	}
+	var version, comment string
+	if err := db.QueryRowContext(ctx, `SELECT VERSION(), @@version_comment`).Scan(&version, &comment); err != nil {
+		return fmt.Errorf("database version check: %w", err)
+	}
+	major, minor, patch, err := parseOracleMySQLVersion(version, comment)
+	if err != nil {
+		return err
+	}
+	if major < 8 || major == 8 && minor == 0 && patch < 16 {
+		return fmt.Errorf("unsupported database %q (%s): Oracle MySQL %s or newer is required", version, comment, minimumMySQLVersion)
+	}
+	return nil
+}
+
+func parseOracleMySQLVersion(version, comment string) (int, int, int, error) {
+	version = strings.TrimSpace(version)
+	comment = strings.TrimSpace(comment)
+	lower := strings.ToLower(version + " " + comment)
+	for _, incompatible := range []string{"mariadb", "tidb", "percona", "aurora"} {
+		if strings.Contains(lower, incompatible) {
+			return 0, 0, 0, fmt.Errorf("unsupported database %q (%s): Oracle MySQL %s or newer is required", version, comment, minimumMySQLVersion)
+		}
+	}
+	parts := strings.SplitN(version, ".", 4)
+	if len(parts) < 3 {
+		return 0, 0, 0, fmt.Errorf("unsupported database version %q (%s): Oracle MySQL %s or newer is required", version, comment, minimumMySQLVersion)
+	}
+	values := [3]int{}
+	for index := range values {
+		component := parts[index]
+		if index == 2 {
+			end := 0
+			for end < len(component) && component[end] >= '0' && component[end] <= '9' {
+				end++
+			}
+			component = component[:end]
+		}
+		value, parseErr := strconv.Atoi(component)
+		if parseErr != nil || value < 0 {
+			return 0, 0, 0, fmt.Errorf("unsupported database version %q (%s): Oracle MySQL %s or newer is required", version, comment, minimumMySQLVersion)
+		}
+		values[index] = value
+	}
+	return values[0], values[1], values[2], nil
 }
 
 func buildDSN(cfg config.DatabaseConfig, multiStatements bool) string {

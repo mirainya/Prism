@@ -1,6 +1,10 @@
 package video
 
-import "context"
+import (
+	"context"
+
+	"github.com/shopspring/decimal"
+)
 
 const (
 	AdapterTypeSeedance = "seedance"
@@ -21,7 +25,7 @@ type RequestValidator interface {
 
 // Estimator 可选：支持上游估价
 type Estimator interface {
-	Estimate(ctx context.Context, req *GenerateRequest) (float64, error)
+	Estimate(ctx context.Context, req *GenerateRequest) (decimal.Decimal, error)
 }
 
 type DetailedEstimator interface {
@@ -29,14 +33,14 @@ type DetailedEstimator interface {
 }
 
 type ProviderEstimate struct {
-	EstimatedCost float64 `json:"estimated_cost"`
-	ActualCost    float64 `json:"actual_cost,omitempty"`
-	UnitCost      float64 `json:"unit_cost,omitempty"`
-	Units         float64 `json:"units,omitempty"`
-	BillingMode   string  `json:"billing_mode,omitempty"`
-	BillingTier   string  `json:"billing_tier,omitempty"`
-	PricingSource string  `json:"pricing_source,omitempty"`
-	Currency      string  `json:"currency,omitempty"`
+	EstimatedCost decimal.Decimal  `json:"estimated_cost"`
+	ActualCost    *decimal.Decimal `json:"actual_cost,omitempty"`
+	UnitCost      *decimal.Decimal `json:"unit_cost,omitempty"`
+	Units         *decimal.Decimal `json:"units,omitempty"`
+	BillingMode   string           `json:"billing_mode,omitempty"`
+	BillingTier   string           `json:"billing_tier,omitempty"`
+	PricingSource string           `json:"pricing_source,omitempty"`
+	Currency      string           `json:"currency,omitempty"`
 }
 
 // Canceller 可选：支持上游取消
@@ -52,7 +56,7 @@ type Actioner interface {
 }
 
 type ActionPricing interface {
-	ActionSurchargePercent(action string) float64
+	ActionSurchargePercent(action string) decimal.Decimal
 }
 
 // LocalCancellationPolicy describes whether a task without an upstream ID can
@@ -150,13 +154,13 @@ type Progress struct {
 }
 
 type ProviderMetadata struct {
-	QueueStatus              string  `json:"queue_status,omitempty"`
-	QueuePosition            int     `json:"queue_position,omitempty"`
-	QueueLimit               int     `json:"queue_limit,omitempty"`
-	PriorityQueue            *bool   `json:"priority_queue,omitempty"`
-	PointsVIP                *bool   `json:"points_vip,omitempty"`
-	PrioritySurchargePercent float64 `json:"priority_surcharge_percent,omitempty"`
-	EstimatedCost            float64 `json:"estimated_cost,omitempty"`
+	QueueStatus              string           `json:"queue_status,omitempty"`
+	QueuePosition            int              `json:"queue_position,omitempty"`
+	QueueLimit               int              `json:"queue_limit,omitempty"`
+	PriorityQueue            *bool            `json:"priority_queue,omitempty"`
+	PointsVIP                *bool            `json:"points_vip,omitempty"`
+	PrioritySurchargePercent *decimal.Decimal `json:"priority_surcharge_percent,omitempty"`
+	EstimatedCost            *decimal.Decimal `json:"estimated_cost,omitempty"`
 }
 
 // GenerationResult 生成结果

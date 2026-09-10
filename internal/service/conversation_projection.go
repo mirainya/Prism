@@ -114,27 +114,11 @@ func canonicalConversationChoiceIndex(item canonical.Item) int {
 }
 
 func projectedConversationTurnStatus(callID string) (model.ConversationTurnStatus, error) {
-	var call model.APICall
-	if err := model.DB().Select("status").First(&call, "id = ?", callID).Error; err != nil {
+	facts, err := loadConversationCallFactsTx(model.DB(), callID, false)
+	if err != nil {
 		return "", fmt.Errorf("load API call %s status: %w", callID, err)
 	}
-	return conversationTurnStatusForAPICall(&call)
-}
-
-func conversationTurnStatusForAPICall(call *model.APICall) (model.ConversationTurnStatus, error) {
-	if call == nil {
-		return "", errors.New("API call is required")
-	}
-	switch call.Status {
-	case model.APICallStatusCompleted:
-		return model.ConversationTurnCompleted, nil
-	case model.APICallStatusFailed:
-		return model.ConversationTurnFailed, nil
-	case model.APICallStatusCancelled:
-		return model.ConversationTurnAborted, nil
-	default:
-		return "", fmt.Errorf("API call %s is not terminal: %s", call.ID, call.Status)
-	}
+	return facts.turnStatus()
 }
 
 // ValidateAPIConversationID performs the ownership check handlers need before
@@ -159,58 +143,82 @@ func recordUsesCanonicalItems(record *ConversationTurnRecord) bool {
 	return record != nil && (record.MatchCanonicalInput || record.InputItems != nil || record.OutputItems != nil)
 }
 
-func hydrateConversationTurnRecordTx(tx *gorm.DB, record *ConversationTurnRecord, call *model.APICall) error {
+func hydrateConversationTurnRecordTx(tx *gorm.DB, record *ConversationTurnRecord, facts *conversationCallFacts) error {
+	if facts == nil {
+		return errors.New("API call is required")
+	}
+	call := &facts.Call
 	if call.Model != "" {
 		record.Model = call.Model
 	}
-	attemptID := call.FinalAttemptID
+	return hydrateUnifiedConversationTurnRecordTx(tx, record, facts)
+}
+
+func hydrateUnifiedConversationTurnRecordTx(tx *gorm.DB, record *ConversationTurnRecord, facts *conversationCallFacts) error {
+	attemptID := facts.UnifiedFinalAttemptID
+	type requestLogRow struct {
+		ID         uint64 `gorm:"column:id"`
+		AttemptID  uint64 `gorm:"column:attempt_id"`
+		DurationMS uint64 `gorm:"column:duration_ms"`
+	}
+	loadRequestLog := func(requestLogID uint) (requestLogRow, error) {
+		var requestLog requestLogRow
+		query := tx.Table("gw_channel_request_logs AS request_log").
+			Select("request_log.id, COALESCE(request_log.attempt_id, 0) AS attempt_id, COALESCE(request_log.duration_ms, 0) AS duration_ms").
+			Joins("JOIN gw_api_call_attempts AS attempt ON attempt.id = request_log.attempt_id").
+			Where("attempt.call_id = ?", facts.UnifiedCallID)
+		if requestLogID > 0 {
+			query = query.Where("request_log.id = ?", requestLogID)
+		} else if attemptID > 0 {
+			query = query.Where("attempt.id = ?", attemptID)
+		}
+		err := query.Order("request_log.id DESC").Take(&requestLog).Error
+		return requestLog, err
+	}
+	requestLog, err := loadRequestLog(record.RequestLogID)
+	if err != nil && !errors.Is(err, gorm.ErrRecordNotFound) {
+		return err
+	}
+	if errors.Is(err, gorm.ErrRecordNotFound) && record.RequestLogID > 0 {
+		var existing int64
+		if countErr := tx.Table("gw_channel_request_logs").Where("id = ?", record.RequestLogID).Count(&existing).Error; countErr != nil {
+			return countErr
+		}
+		if existing > 0 {
+			return fmt.Errorf("load conversation request log %d for call %s: %w", record.RequestLogID, facts.Call.ID, gorm.ErrRecordNotFound)
+		}
+		record.RequestLogID = 0
+		requestLog, err = loadRequestLog(0)
+		if err != nil && !errors.Is(err, gorm.ErrRecordNotFound) {
+			return err
+		}
+	}
+	if err == nil {
+		record.RequestLogID = uint(requestLog.ID)
+		facts.Call.DurationMs = int64(requestLog.DurationMS)
+		if attemptID == 0 {
+			attemptID = requestLog.AttemptID
+		}
+	}
+
 	if attemptID > 0 {
-		var attempt model.APICallAttempt
-		if err := tx.Where("id = ? AND call_id = ?", attemptID, call.ID).First(&attempt).Error; err != nil {
-			return fmt.Errorf("load final API call attempt %d: %w", attemptID, err)
+		var provenance struct {
+			CredentialID uint   `gorm:"column:credential_id"`
+			Transport    string `gorm:"column:transport_code"`
 		}
-		if attempt.ProviderResponseID != "" {
-			record.ProviderResponseID = attempt.ProviderResponseID
-		}
-		record.Provenance.KeyID = attempt.KeyID
-		record.Provenance.Transport = attempt.Transport
-	}
-	var requestLog model.ChannelRequestLog
-	if record.RequestLogID > 0 {
-		query := tx.Where("id = ? AND call_id = ?", record.RequestLogID, call.ID)
-		if attemptID > 0 {
-			query = query.Where("attempt_id = ?", attemptID)
-		}
-		if err := query.First(&requestLog).Error; err != nil {
-			if !errors.Is(err, gorm.ErrRecordNotFound) {
-				return fmt.Errorf("load conversation request log %d for call %s: %w", record.RequestLogID, call.ID, err)
-			}
-			var existing int64
-			if countErr := tx.Model(&model.ChannelRequestLog{}).
-				Where("id = ?", record.RequestLogID).Count(&existing).Error; countErr != nil {
-				return countErr
-			}
-			if existing > 0 {
-				return fmt.Errorf("load conversation request log %d for call %s: %w", record.RequestLogID, call.ID, err)
-			}
-			record.RequestLogID = 0
-		}
-	}
-	if requestLog.ID == 0 {
-		query := tx.Where("call_id = ?", call.ID)
-		if attemptID > 0 {
-			query = query.Where("attempt_id = ?", attemptID)
-		}
-		err := query.Order("id DESC").First(&requestLog).Error
+		err := tx.Table("gw_api_call_attempts AS attempt").
+			Select("attempt.credential_id, channel_transport.transport_code").
+			Joins("JOIN gw_product_transports AS product_transport ON product_transport.id = attempt.product_transport_id AND product_transport.release_id = attempt.catalog_release_id").
+			Joins("JOIN gw_channel_transports AS channel_transport ON channel_transport.id = product_transport.channel_transport_id AND channel_transport.release_id = product_transport.release_id").
+			Where("attempt.id = ? AND attempt.call_id = ?", attemptID, facts.UnifiedCallID).
+			Take(&provenance).Error
 		if err != nil && !errors.Is(err, gorm.ErrRecordNotFound) {
 			return err
 		}
 		if err == nil {
-			record.RequestLogID = requestLog.ID
+			record.Provenance.KeyID = provenance.CredentialID
+			record.Provenance.Transport = model.UpstreamTransport(provenance.Transport)
 		}
-	}
-	if requestLog.ID > 0 && record.FinishReason == "" {
-		record.FinishReason = requestLog.FinishReason
 	}
 	return nil
 }
@@ -334,17 +342,19 @@ func resolvePreviousResponseConversationTx(tx *gorm.DB, responseID string, userI
 	var candidates []candidate
 	err := tx.Table("conversations AS conversation").
 		Select("conversation.*").
-		Joins("LEFT JOIN api_calls AS api_call ON api_call.conversation_id = conversation.id AND api_call.id = conversation.call_id").
 		Where("conversation.user_id = ? AND conversation.token_id = ? AND conversation.status = 1", userID, tokenID).
-		Where(`conversation.provider_response_id = ? OR api_call.resource_id = ? OR EXISTS (
+		Where(`conversation.provider_response_id = ? OR EXISTS (
 			SELECT 1
 			FROM conversation_turns AS response_turn
-			JOIN ai_responses AS response ON response.call_id = response_turn.call_id
+			JOIN gw_api_calls AS response_call ON response_call.public_id = response_turn.call_id
+			JOIN gw_api_resources AS response_resource
+				ON response_resource.call_id = response_call.id
+				AND response_resource.resource_kind = 'response'
 			WHERE response_turn.conversation_id = conversation.id
-				AND response.id = ?
-				AND response.user_id = conversation.user_id
-				AND response.token_id = conversation.token_id
-		)`, responseID, responseID, responseID).
+				AND response_resource.public_id = ?
+				AND response_resource.user_id = conversation.user_id
+				AND response_resource.token_id = conversation.token_id
+		)`, responseID, responseID).
 		Limit(2).Scan(&candidates).Error
 	if err != nil {
 		return nil, false, err
@@ -372,10 +382,15 @@ func pendingPublicResponseProjectionTx(tx *gorm.DB, responseID string, userID, t
 	if !strings.HasPrefix(responseID, "resp_") {
 		return false, "", nil
 	}
-	var response model.AIResponse
-	err := tx.Select("call_id").
-		Where("id = ? AND user_id = ? AND token_id = ?", responseID, userID, tokenID).
-		First(&response).Error
+	var response struct {
+		CallID string `gorm:"column:call_id"`
+	}
+	err := tx.Table("gw_api_resources AS response_resource").
+		Select("response_call.public_id AS call_id").
+		Joins("JOIN gw_api_calls AS response_call ON response_call.id = response_resource.call_id").
+		Where("response_resource.public_id = ? AND response_resource.resource_kind = 'response'", responseID).
+		Where("response_resource.user_id = ? AND response_resource.token_id = ?", userID, tokenID).
+		Take(&response).Error
 	if errors.Is(err, gorm.ErrRecordNotFound) {
 		return false, "", nil
 	}

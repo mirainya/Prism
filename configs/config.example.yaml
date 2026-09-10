@@ -1,6 +1,5 @@
 server:
   port: 23523
-  reset_gateway_concurrency_on_start: true # Set false when multiple Prism instances share one database
   jwt_secret: "your-secret-key-change-in-production"
 
 database:
@@ -25,11 +24,6 @@ redis:
   read_timeout: 3           # 读超时(秒)
   write_timeout: 3          # 写超时(秒)
 
-worker:
-  concurrency: 10
-  poll_interval: 5s
-  max_retry: 3
-
 http_client:
   timeout: 30               # 请求超时(秒)
   max_idle_conns: 100       # 最大空闲连接数
@@ -37,7 +31,20 @@ http_client:
   idle_conn_timeout: 90     # 空闲连接超时(秒)
 
 file_storage:
-  max_total_size_mb: 1024   # Per-token Files API quota
+  base_url: ""              # x-file-storage 服务地址，留空时禁用托管文件存储
+  api_key: ""               # x-file-storage API Key
+  upload_path: "Prism/"
+  max_file_size_mb: 64
+  max_total_size_mb: 1024    # 每个 Token 的 Files API 总容量上限
+  allowed_types:
+    - "image/png"
+    - "image/jpeg"
+    - "image/gif"
+    - "image/webp"
+    - "application/pdf"
+    - "text/plain"
+    - "text/csv"
+    - "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
 
 rate_limit:
   enabled: false
@@ -47,7 +54,6 @@ observability:
   retain_api_call_payloads: false      # 默认不保存请求和响应正文
   api_call_payload_retention_hours: 168
   api_call_payload_max_bytes: 262144
-  api_call_payload_encryption_key: "" # 建议使用随机 32 字节密钥的 Base64 编码
   api_call_metadata_retention_days: 90
   resource_history_retention_days: 90 # 终态异步任务与闲置 Playground 对话历史
   api_access_log_retention_days: 30

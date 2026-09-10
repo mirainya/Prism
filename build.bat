@@ -5,59 +5,68 @@ echo ========================================
 echo   Prism Build Script - Linux AMD64
 echo ========================================
 
-:: 设置变量
-set APP_NAME=prism
-set OUTPUT_DIR=dist
-set VERSION=1.0.0
+rem Build settings
+set "APP_NAME=prism"
+set "OUTPUT_DIR=dist"
+set "VERSION=2.0.0"
 
-:: 获取当前时间作为构建时间
-for /f "tokens=2 delims==" %%I in ('wmic os get localdatetime /value') do set datetime=%%I
-set BUILD_TIME=%datetime:~0,4%-%datetime:~4,2%-%datetime:~6,2% %datetime:~8,2%:%datetime:~10,2%:%datetime:~12,2%
+rem Use an RFC3339 UTC timestamp without spaces so linker flags remain stable.
+for /f %%I in ('powershell.exe -NoProfile -Command "(Get-Date).ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ssZ')"') do set "BUILD_TIME=%%I"
+if not defined BUILD_TIME (
+    echo [ERROR] Unable to determine build time.
+    exit /b 1
+)
+for /f %%I in ('git rev-parse HEAD 2^>nul') do set "SOURCE_REVISION=%%I"
+if not defined SOURCE_REVISION set "SOURCE_REVISION=working-tree"
 
 echo.
 echo [1/4] Cleaning output directory...
-if exist %OUTPUT_DIR% rd /s /q %OUTPUT_DIR%
-mkdir %OUTPUT_DIR%
+if exist "%OUTPUT_DIR%" rd /s /q "%OUTPUT_DIR%"
+mkdir "%OUTPUT_DIR%"
+if not "%ERRORLEVEL%"=="0" exit /b 1
 
 echo.
 echo [2/4] Installing frontend dependencies...
-cd console
-call npm install
-if %errorlevel% neq 0 (
+pushd console
+if not "%ERRORLEVEL%"=="0" exit /b 1
+call npm ci
+if not "%ERRORLEVEL%"=="0" (
     echo.
-    echo [ERROR] npm install failed!
-    cd ..
+    echo [ERROR] npm ci failed!
+    popd
     exit /b 1
 )
 
 echo.
 echo [3/4] Building frontend (will be embedded in binary)...
 call npm run build
-if %errorlevel% neq 0 (
+if not "%ERRORLEVEL%"=="0" (
     echo.
     echo [ERROR] Frontend build failed!
-    cd ..
+    popd
     exit /b 1
 )
-cd ..
+popd
 
 echo.
 echo [4/4] Building backend for Linux AMD64 (with embedded console)...
-set GOOS=linux
-set GOARCH=amd64
-set CGO_ENABLED=0
+set "GOOS=linux"
+set "GOARCH=amd64"
+set "CGO_ENABLED=0"
 
-go build -ldflags="-s -w -X main.Version=%VERSION% -X 'main.BuildTime=%BUILD_TIME%'" -o %OUTPUT_DIR%/%APP_NAME% ./cmd/server
+go build -trimpath -ldflags="-s -w -X main.Version=%VERSION% -X main.BuildTime=%BUILD_TIME% -X github.com/mirainya/Prism/internal/gateway/adapter.BuildRevision=%SOURCE_REVISION%" -o "%OUTPUT_DIR%\%APP_NAME%" ./cmd/server
 
-if %errorlevel% neq 0 (
+if not "%ERRORLEVEL%"=="0" (
     echo.
     echo [ERROR] Backend build failed!
     exit /b 1
 )
 
-:: 复制示例配置
-mkdir %OUTPUT_DIR%\configs
-if exist configs\config.example.yaml copy configs\config.example.yaml %OUTPUT_DIR%\configs\
+rem Include a configuration template in the package.
+mkdir "%OUTPUT_DIR%\configs"
+if not "%ERRORLEVEL%"=="0" exit /b 1
+if exist "configs\config.example.yaml" copy /y "configs\config.example.yaml" "%OUTPUT_DIR%\configs\config.example.yaml" >nul
+if not "%ERRORLEVEL%"=="0" exit /b 1
 
 echo.
 echo ========================================

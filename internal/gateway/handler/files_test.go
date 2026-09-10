@@ -2,8 +2,12 @@ package handler
 
 import (
 	"bytes"
+	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"io"
 	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
@@ -18,6 +22,7 @@ import (
 	"github.com/mirainya/Prism/internal/api/middleware"
 	"github.com/mirainya/Prism/internal/model"
 	"github.com/mirainya/Prism/pkg/config"
+	"github.com/mirainya/Prism/pkg/filestorage"
 	"gorm.io/gorm"
 	"gorm.io/gorm/logger"
 )
@@ -63,15 +68,91 @@ func setupFilesTestDB(t *testing.T, sqlLog *fileSQLLog) (*gorm.DB, *model.Token)
 		t.Fatalf("get sql database: %v", err)
 	}
 	t.Cleanup(func() { _ = sqlDB.Close() })
-	if err := db.AutoMigrate(&model.Token{}, &model.AIFile{}); err != nil {
+	if err := db.AutoMigrate(&model.Token{}, &model.AIFile{}, &model.MediaAsset{}, &model.MediaAssetRef{}, &model.MediaAssetStateEvent{}); err != nil {
 		t.Fatalf("migrate database: %v", err)
 	}
-	token := &model.Token{UserID: 7, Key: "files-test-key", Name: "files-test", Status: 1}
+	token := &model.Token{UserID: 7, Selector: "files-test-key", Name: "files-test", Status: 1}
 	if err := db.Create(token).Error; err != nil {
 		t.Fatalf("create token: %v", err)
 	}
 	model.SetDB(db)
+	previousConfig := config.C
+	previousUpload := uploadFileObject
+	previousOpen := openFileObject
+	previousVerify := verifyFileObject
+	previousDelete := deleteFileObject
+	config.C = &config.Config{FileStorage: config.FileStorageConfig{BaseURL: "https://storage.test", APIKey: "test-key", UploadPath: "prism/", MaxTotalSizeMB: config.DefaultFileStorageMaxTotalSizeMB}}
+	var stored sync.Map
+	uploadFileObject = func(_ context.Context, reader io.Reader, contentType, storagePath string) (filestorage.UploadResult, error) {
+		data, err := io.ReadAll(reader)
+		if err != nil {
+			return filestorage.UploadResult{}, err
+		}
+		url := "https://storage.test/" + strings.Trim(storagePath, "/") + "/object"
+		stored.Store(url, data)
+		return filestorage.UploadResult{ID: strings.ReplaceAll(storagePath, "/", "_"), URL: url, Size: int64(len(data)), ContentType: contentType}, nil
+	}
+	openFileObject = func(_ context.Context, url string) (*http.Response, error) {
+		value, ok := stored.Load(url)
+		if !ok {
+			return nil, fmt.Errorf("object not found")
+		}
+		data := value.([]byte)
+		return &http.Response{StatusCode: http.StatusOK, Header: http.Header{"Content-Type": []string{"application/octet-stream"}}, Body: io.NopCloser(bytes.NewReader(data)), ContentLength: int64(len(data))}, nil
+	}
+	verifyFileObject = func(_ context.Context, url string, expectedBytes int64, expectedSHA256 string) error {
+		value, ok := stored.Load(url)
+		if !ok {
+			return fmt.Errorf("object not found")
+		}
+		data := value.([]byte)
+		digest := sha256.Sum256(data)
+		if int64(len(data)) != expectedBytes || hex.EncodeToString(digest[:]) != expectedSHA256 {
+			return fmt.Errorf("object integrity mismatch")
+		}
+		return nil
+	}
+	deleteFileObject = func(_ context.Context, url string) error {
+		stored.Delete(url)
+		return nil
+	}
+	t.Cleanup(func() {
+		config.C = previousConfig
+		uploadFileObject = previousUpload
+		openFileObject = previousOpen
+		verifyFileObject = previousVerify
+		deleteFileObject = previousDelete
+	})
 	return db, token
+}
+
+func createStoredTestFile(t *testing.T, db *gorm.DB, token *model.Token, id string, content []byte, createdAt time.Time) model.AIFile {
+	t.Helper()
+	digest := sha256.Sum256(content)
+	file := model.AIFile{ID: id, UserID: token.UserID, TokenID: token.ID, Filename: id + ".txt", Purpose: "user_data", Bytes: int64(len(content)), MimeType: "text/plain", Status: "processed", CreatedAt: createdAt, UpdatedAt: createdAt}
+	asset := model.MediaAsset{UserID: token.UserID, TokenID: token.ID, Purpose: "file", ObjectKey: "xfs:test:" + id, StorageLocator: "https://storage.test/objects/" + id, ContentType: file.MimeType, ContentLength: uint64(len(content)), SHA256: hex.EncodeToString(digest[:]), State: "active", StateVersion: 1, CreatedAt: createdAt, UpdatedAt: createdAt}
+	if err := db.Create(&file).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Create(&asset).Error; err != nil {
+		t.Fatal(err)
+	}
+	fileID := file.ID
+	if err := db.Create(&model.MediaAssetRef{MediaAssetID: asset.ID, UserID: file.UserID, TokenID: file.TokenID, Role: "file", Ordinal: 0, AIFileID: &fileID, CreatedAt: createdAt}).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Create(&model.MediaAssetStateEvent{MediaAssetID: asset.ID, NewState: "active", StateVersion: 1, ReasonCode: "test", CreatedAt: createdAt}).Error; err != nil {
+		t.Fatal(err)
+	}
+	previous := openFileObject
+	openFileObject = func(_ context.Context, url string) (*http.Response, error) {
+		if url != asset.StorageLocator {
+			return nil, fmt.Errorf("unexpected locator %q", url)
+		}
+		return &http.Response{StatusCode: http.StatusOK, Header: http.Header{"Content-Type": []string{file.MimeType}}, Body: io.NopCloser(bytes.NewReader(content)), ContentLength: int64(len(content))}, nil
+	}
+	t.Cleanup(func() { openFileObject = previous })
+	return file
 }
 
 func filesTestRouter(token *model.Token) *gin.Engine {
@@ -144,10 +225,7 @@ func TestListFilesUsesMetadataOnlyAndPaginates(t *testing.T) {
 func TestGetFileMetadataDoesNotSelectContent(t *testing.T) {
 	sqlLog := &fileSQLLog{}
 	db, token := setupFilesTestDB(t, sqlLog)
-	record := model.AIFile{ID: "file_metadata", UserID: token.UserID, TokenID: token.ID, Filename: "metadata.txt", Purpose: "user_data", Bytes: 6, MimeType: "text/plain", Content: []byte("secret"), Status: "processed", CreatedAt: time.Now()}
-	if err := db.Create(&record).Error; err != nil {
-		t.Fatalf("create file: %v", err)
-	}
+	createStoredTestFile(t, db, token, "file_metadata", []byte("secret"), time.Now())
 	router := filesTestRouter(token)
 
 	sqlLog.Reset()
@@ -156,8 +234,8 @@ func TestGetFileMetadataDoesNotSelectContent(t *testing.T) {
 	if response.Code != http.StatusOK {
 		t.Fatalf("status = %d, body=%s", response.Code, response.Body.String())
 	}
-	if strings.Contains(strings.ToLower(sqlLog.String()), "`content`") {
-		t.Fatalf("metadata query selected content BLOB: %s", sqlLog.String())
+	if strings.Contains(strings.ToLower(sqlLog.String()), "longblob") {
+		t.Fatalf("metadata query referenced a BLOB: %s", sqlLog.String())
 	}
 
 	response = httptest.NewRecorder()
@@ -170,7 +248,7 @@ func TestGetFileMetadataDoesNotSelectContent(t *testing.T) {
 func TestConcurrentUploadsRespectTokenQuota(t *testing.T) {
 	_, token := setupFilesTestDB(t, nil)
 	previousConfig := config.C
-	config.C = &config.Config{FileStorage: config.FileStorageConfig{MaxTotalSizeMB: 1}}
+	config.C = &config.Config{FileStorage: config.FileStorageConfig{BaseURL: "https://storage.test", APIKey: "test-key", UploadPath: "prism/", MaxTotalSizeMB: 1}}
 	t.Cleanup(func() { config.C = previousConfig })
 	router := filesTestRouter(token)
 	payload := bytes.Repeat([]byte("a"), 600*1024)
@@ -283,26 +361,12 @@ func TestSupportedFilePurposes(t *testing.T) {
 func TestConcurrentUploadAndDeleteDoNotDeadlock(t *testing.T) {
 	db, token := setupFilesTestDB(t, nil)
 	previousConfig := config.C
-	config.C = &config.Config{FileStorage: config.FileStorageConfig{MaxTotalSizeMB: 1}}
+	config.C = &config.Config{FileStorage: config.FileStorageConfig{BaseURL: "https://storage.test", APIKey: "test-key", UploadPath: "prism/", MaxTotalSizeMB: 1}}
 	t.Cleanup(func() { config.C = previousConfig })
 
 	const operations = 8
 	for i := 0; i < operations/2; i++ {
-		record := model.AIFile{
-			ID:        fmt.Sprintf("file_delete_%d", i),
-			UserID:    token.UserID,
-			TokenID:   token.ID,
-			Filename:  "delete.txt",
-			Purpose:   "user_data",
-			Bytes:     1,
-			MimeType:  "text/plain",
-			Content:   []byte("x"),
-			Status:    "processed",
-			CreatedAt: time.Now(),
-		}
-		if err := db.Create(&record).Error; err != nil {
-			t.Fatalf("create file: %v", err)
-		}
+		createStoredTestFile(t, db, token, fmt.Sprintf("file_delete_%d", i), []byte("x"), time.Now())
 	}
 
 	router := filesTestRouter(token)

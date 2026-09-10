@@ -64,8 +64,9 @@ func (s *Store) ActivateBudgetPolicy(ctx context.Context, tx *sql.Tx, tokenID, p
 	if tx == nil || tokenID == 0 || policyID == 0 || effectiveAt.IsZero() {
 		return 0, ErrInvalidInput
 	}
+	effectiveAt = effectiveAt.UTC().Truncate(time.Millisecond)
 	var lockedPolicy uint64
-	if err := tx.QueryRowContext(ctx, `SELECT id FROM token_budget_policies WHERE id=? AND token_id=? FOR SHARE`, policyID, tokenID).Scan(&lockedPolicy); err == sql.ErrNoRows {
+	if err := tx.QueryRowContext(ctx, s.forShare(`SELECT id FROM token_budget_policies WHERE id=? AND token_id=?`), policyID, tokenID).Scan(&lockedPolicy); err == sql.ErrNoRows {
 		return 0, ErrNotFound
 	} else if err != nil {
 		return 0, err
@@ -73,7 +74,7 @@ func (s *Store) ActivateBudgetPolicy(ctx context.Context, tx *sql.Tx, tokenID, p
 	var predecessor sql.NullInt64
 	var seq uint64
 	var previousAt time.Time
-	err := tx.QueryRowContext(ctx, `SELECT id,activation_seq,effective_at FROM token_budget_policy_activations WHERE token_id=? ORDER BY activation_seq DESC LIMIT 1 FOR UPDATE`, tokenID).Scan(&predecessor, &seq, &previousAt)
+	err := tx.QueryRowContext(ctx, s.forUpdate(`SELECT id,activation_seq,effective_at FROM token_budget_policy_activations WHERE token_id=? ORDER BY activation_seq DESC LIMIT 1`), tokenID).Scan(&predecessor, &seq, &previousAt)
 	if err != nil && err != sql.ErrNoRows {
 		return 0, err
 	}
@@ -104,11 +105,16 @@ func (s *Store) CreateBudgetWindow(ctx context.Context, tx *sql.Tx, in BudgetWin
 	if tx == nil || in.TokenID == 0 || in.PolicyID == 0 || in.ActivationID == 0 || in.StartAt.IsZero() {
 		return 0, ErrInvalidInput
 	}
+	in.StartAt = in.StartAt.UTC().Truncate(time.Millisecond)
+	if in.EndAt != nil {
+		end := in.EndAt.UTC().Truncate(time.Millisecond)
+		in.EndAt = &end
+	}
 	var policyLimit sql.NullString
 	var kind string
 	var activationPolicyID uint64
 	var effectiveAt time.Time
-	if err := tx.QueryRowContext(ctx, `SELECT p.window_kind,p.limit_amount,a.policy_id,a.effective_at FROM token_budget_policies p JOIN token_budget_policy_activations a ON a.token_id=p.token_id AND a.policy_id=p.id WHERE p.id=? AND p.token_id=? AND a.id=? FOR SHARE`, in.PolicyID, in.TokenID, in.ActivationID).Scan(&kind, &policyLimit, &activationPolicyID, &effectiveAt); err == sql.ErrNoRows {
+	if err := tx.QueryRowContext(ctx, s.forShare(`SELECT p.window_kind,p.limit_amount,a.policy_id,a.effective_at FROM token_budget_policies p JOIN token_budget_policy_activations a ON a.token_id=p.token_id AND a.policy_id=p.id WHERE p.id=? AND p.token_id=? AND a.id=?`), in.PolicyID, in.TokenID, in.ActivationID).Scan(&kind, &policyLimit, &activationPolicyID, &effectiveAt); err == sql.ErrNoRows {
 		return 0, ErrNotFound
 	} else if err != nil {
 		return 0, err
@@ -153,7 +159,7 @@ func (s *Store) ApplyBudgetAdjustment(ctx context.Context, tx *sql.Tx, in Budget
 		return 0, false, ErrInvalidInput
 	}
 	var existing, existingWindow uint64
-	if err := tx.QueryRowContext(ctx, `SELECT id,budget_window_id FROM token_budget_adjustment_events WHERE source_type=? AND source_key=? FOR UPDATE`, in.SourceType, in.SourceKey).Scan(&existing, &existingWindow); err == nil {
+	if err := tx.QueryRowContext(ctx, s.forUpdate(`SELECT id,budget_window_id FROM token_budget_adjustment_events WHERE source_type=? AND source_key=?`), in.SourceType, in.SourceKey).Scan(&existing, &existingWindow); err == nil {
 		if existingWindow != in.WindowID {
 			return 0, false, ErrConflict
 		}
@@ -162,7 +168,7 @@ func (s *Store) ApplyBudgetAdjustment(ctx context.Context, tx *sql.Tx, in Budget
 		return 0, false, err
 	}
 	var limit, used, held sql.NullString
-	if err := tx.QueryRowContext(ctx, `SELECT limit_amount,used_amount,held_amount FROM token_budget_windows WHERE id=? FOR UPDATE`, in.WindowID).Scan(&limit, &used, &held); err == sql.ErrNoRows {
+	if err := tx.QueryRowContext(ctx, s.forUpdate(`SELECT limit_amount,used_amount,held_amount FROM token_budget_windows WHERE id=?`), in.WindowID).Scan(&limit, &used, &held); err == sql.ErrNoRows {
 		return 0, false, ErrNotFound
 	} else if err != nil {
 		return 0, false, err

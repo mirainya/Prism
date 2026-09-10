@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/mirainya/Prism/internal/video"
+	"github.com/shopspring/decimal"
 )
 
 const (
@@ -44,10 +45,10 @@ type requestConfig struct {
 }
 
 type serviceTierConfig struct {
-	Label            string         `json:"label"`
-	SurchargePercent float64        `json:"surcharge_percent"`
-	AddsResolutions  []string       `json:"adds_resolutions"`
-	RequestParams    map[string]any `json:"request_params"`
+	Label            string          `json:"label"`
+	SurchargePercent decimal.Decimal `json:"surcharge_percent"`
+	AddsResolutions  []string        `json:"adds_resolutions"`
+	RequestParams    map[string]any  `json:"request_params"`
 }
 
 // contentProjection selects one content item and writes one of its values to
@@ -526,6 +527,9 @@ func (c adapterConfig) validate(baseURL string) error {
 		return err
 	}
 	for tier, definition := range c.ServiceTiers {
+		if definition.SurchargePercent.IsNegative() || definition.SurchargePercent.GreaterThan(decimal.NewFromInt(10000)) || definition.SurchargePercent.Exponent() < -4 {
+			return fmt.Errorf("generic adapter service tier %q has an invalid surcharge", tier)
+		}
 		if tier != "standard" && tier != "priority" && tier != "vip" {
 			return fmt.Errorf("generic adapter service_tiers has invalid tier %q", tier)
 		}

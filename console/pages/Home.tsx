@@ -11,6 +11,7 @@ import {
     Coins
 } from 'lucide-react';
 import logo from '@/assets/logo.svg';
+import { APP_VERSION } from '../version';
 
 interface HomeProps {
     onLogin: () => void;
@@ -176,13 +177,14 @@ const Home: React.FC<HomeProps> = ({onLogin, onPricing}) => {
                             </div>
                             <pre className="text-sm text-gray-300 overflow-x-auto">
                 <code>{`curl -X POST \\
-  ${window.location.origin}/v1/capabilities/text2img \\
+  ${window.location.origin}/v1/videos/generations \\
   -H "Authorization: Bearer YOUR_TOKEN" \\
   -H "Content-Type: application/json" \\
   -d '{
     "prompt": "a beautiful sunset",
-    "width": 1024,
-    "height": 1024
+    "model": "your-video-model",
+    "duration": 5,
+    "resolution": "1080p"
   }'`}</code>
               </pre>
                         </div>
@@ -245,7 +247,7 @@ const Home: React.FC<HomeProps> = ({onLogin, onPricing}) => {
                         <span className="text-[var(--text-secondary)]">棱镜 Prism</span>
                     </div>
                     <div className="text-[var(--text-secondary)] text-sm">
-                        v1.0.0 - AI Gateway
+                        v{APP_VERSION} - AI Gateway
                     </div>
                 </div>
             </footer>

@@ -13,12 +13,28 @@ func (s *Store) PublishRelease(ctx context.Context, tx *sql.Tx, releaseID, revie
 	if tx == nil || releaseID == 0 {
 		return ErrInvalidInput
 	}
+	var status string
+	if err := tx.QueryRowContext(ctx, `SELECT status FROM gw_catalog_releases WHERE id=? FOR UPDATE`, releaseID).Scan(&status); err != nil {
+		return err
+	}
+	if status != "draft" {
+		return ErrConflict
+	}
+	if err := CheckCatalogStructure(ctx, tx, releaseID); err != nil {
+		return err
+	}
+	if err := CheckCatalogPricing(ctx, tx, releaseID); err != nil {
+		return err
+	}
+	if _, err := finalizeCatalogDigest(ctx, tx, releaseID); err != nil {
+		return err
+	}
 	now := nowUTC()
 	var reviewer any
 	if reviewerID != 0 {
 		reviewer = reviewerID
 	}
-	result, err := tx.ExecContext(ctx, `UPDATE gw_catalog_releases SET status='published',reviewed_by=?,published_at=? WHERE id=? AND status='draft'`, reviewer, now, releaseID)
+	result, err := tx.ExecContext(ctx, `UPDATE gw_catalog_releases SET status='published',config_version=config_version+1,reviewed_by=?,published_at=?,updated_at=? WHERE id=? AND status='draft'`, reviewer, now, now, releaseID)
 	if err != nil {
 		return fmt.Errorf("publish catalog release: %w", err)
 	}
@@ -69,9 +85,16 @@ func (s *Store) ActivateRelease(ctx context.Context, tx *sql.Tx, releaseID, expe
 // ActivateReleaseWhenReady adds the deployment-generation proof required by
 // production activation. Every registered member must report a non-expired
 // ready record for the exact release before the singleton pointer moves.
-func (s *Store) ActivateReleaseWhenReady(ctx context.Context, tx *sql.Tx, releaseID, expectedVersion, generationID uint64) error {
-	if tx == nil || releaseID == 0 || generationID == 0 {
+func (s *Store) ActivateReleaseWhenReady(ctx context.Context, tx *sql.Tx, releaseID, expectedVersion, generationID uint64, identity DeploymentIdentity) error {
+	if tx == nil || releaseID == 0 || generationID == 0 || identity.Validate() != nil {
 		return ErrInvalidInput
+	}
+	var stateVersion uint64
+	if err := tx.QueryRowContext(ctx, `SELECT state_version FROM gw_catalog_runtime_state WHERE id=1 FOR UPDATE`).Scan(&stateVersion); err != nil {
+		return err
+	}
+	if stateVersion != expectedVersion {
+		return ErrConflict
 	}
 	var generationStatus string
 	if err := tx.QueryRowContext(ctx, `SELECT status FROM gw_deployment_generations WHERE id=? FOR SHARE`, generationID).Scan(&generationStatus); err == sql.ErrNoRows {
@@ -79,18 +102,20 @@ func (s *Store) ActivateReleaseWhenReady(ctx context.Context, tx *sql.Tx, releas
 	} else if err != nil {
 		return err
 	}
-	if generationStatus != "preparing" && generationStatus != "active" {
+	if generationStatus != "active" {
 		return ErrConflict
 	}
-	var members, ready uint64
-	if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM gw_deployment_members WHERE deployment_generation_id=?`, generationID).Scan(&members); err != nil {
+	if err := CheckCatalogReadiness(ctx, tx, generationID, releaseID, identity); err != nil {
 		return err
 	}
-	if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM gw_catalog_readiness r JOIN gw_deployment_members m ON m.id=r.deployment_member_id JOIN gw_catalog_releases c ON c.id=r.release_id WHERE r.deployment_generation_id=? AND r.release_id=? AND r.status='ready' AND r.expires_at>UTC_TIMESTAMP(3) AND r.adapter_digest<>'' AND r.content_hash=c.content_hash AND r.semantic_digest=c.semantic_digest`, generationID, releaseID).Scan(&ready); err != nil {
+	if err := CheckCatalogPricing(ctx, tx, releaseID); err != nil {
 		return err
 	}
-	if members == 0 || ready != members {
-		return ErrConflict
+	if err := CheckCatalogValidations(ctx, tx, releaseID); err != nil {
+		return err
+	}
+	if err := CheckCryptoReadiness(ctx, tx, generationID); err != nil {
+		return fmt.Errorf("catalog crypto readiness: %w", err)
 	}
 	return s.ActivateRelease(ctx, tx, releaseID, expectedVersion)
 }
@@ -115,7 +140,7 @@ func (s *Store) RetireRelease(ctx context.Context, tx *sql.Tx, releaseID uint64)
 	if active.Valid && uint64(active.Int64) == releaseID {
 		return ErrConflict
 	}
-	result, err := tx.ExecContext(ctx, `UPDATE gw_catalog_releases SET status='retired' WHERE id=? AND status=?`, releaseID, oldState)
+	result, err := tx.ExecContext(ctx, `UPDATE gw_catalog_releases SET status='retired',config_version=config_version+1,updated_at=? WHERE id=? AND status=?`, nowUTC(), releaseID, oldState)
 	if err != nil {
 		return fmt.Errorf("retire catalog release: %w", err)
 	}

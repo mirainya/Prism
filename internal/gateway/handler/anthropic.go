@@ -9,7 +9,6 @@ import (
 	"strings"
 
 	"github.com/gin-gonic/gin"
-	"github.com/google/uuid"
 	"github.com/mirainya/Prism/internal/api/middleware"
 	"github.com/mirainya/Prism/internal/domain"
 	"github.com/mirainya/Prism/internal/gateway/canonical"
@@ -23,7 +22,11 @@ import (
 	"github.com/mirainya/Prism/internal/service"
 )
 
-type AnthropicHandler struct{ engine *engine.Engine }
+type anthropicExecutor interface {
+	Execute(context.Context, canonical.Request, engine.ExecuteOptions) (*engine.Result, error)
+}
+
+type AnthropicHandler struct{ engine anthropicExecutor }
 
 func NewAnthropicHandler(executionEngine *engine.Engine) *AnthropicHandler {
 	if executionEngine == nil {
@@ -66,31 +69,24 @@ func (h *AnthropicHandler) Messages(c *gin.Context) {
 	if conversationID > 0 {
 		c.Header(prismConversationIDHeader, strconv.FormatUint(uint64(conversationID), 10))
 	}
-	callID := "call_" + uuid.NewString()
+	callID := service.GenerateUnifiedCallID()
 	requestID := middleware.GetRequestID(c.Request.Context())
 	c.Header("X-Prism-Call-ID", callID)
 	projectionBase := service.ConversationProjectionRequest{
 		UserID: token.UserID, TokenID: token.ID, Model: request.Model,
 		CallID: callID, ConversationID: conversationID, InputItems: request.Items,
 	}
-	store := request.Store != nil && *request.Store
 	thinkingLevel := strings.TrimSpace(c.GetHeader(chatpipeline.ThinkingLevelHeader))
-	if err := createAPIConversationCall(&service.StartCallRequest{
-		ID: callID, RequestID: requestID, UserID: token.UserID, TokenID: token.ID,
-		Endpoint: "/v1/messages", Operation: string(transport.OperationMessages), Model: request.Model,
-		IsStream: request.Stream, Store: store, ConversationID: conversationID,
-	}, service.ConversationProjectionInputRequest{
-		ConversationID: conversationID, InputItems: canonical.CloneItems(request.Items),
-	}); err != nil {
-		writeAnthropicError(c, http.StatusInternalServerError, "api_error", "failed to initialize conversation history")
-		return
-	}
 	result, err := h.engine.Execute(c.Request.Context(), request, engine.ExecuteOptions{
 		UserID: token.UserID, TokenID: token.ID,
 		CallID: callID, RequestID: requestID, DownstreamEndpoint: "/v1/messages",
 		DownstreamRequest:   body,
 		ConversationID:      conversationID,
 		ProjectConversation: true,
+		ConversationInput: &service.ConversationProjectionInputRequest{
+			ConversationID: conversationID,
+			InputItems:     canonical.CloneItems(request.Items),
+		},
 		DeferCallCompletion: true,
 		BillingKey:          requestID, MaxAttempts: 3,
 		PrepareRoute: func(_ context.Context, candidate canonical.Request, route *routing.RouteResult) (canonical.Request, error) {
@@ -144,16 +140,6 @@ func (h *AnthropicHandler) Messages(c *gin.Context) {
 	c.Header("Content-Type", "application/json; charset=utf-8")
 	c.Status(http.StatusOK)
 	written, writeErr := c.Writer.Write(encoded)
-	if written > 0 {
-		captured := written
-		if captured > len(encoded) {
-			captured = len(encoded)
-		}
-		service.NewAPICallService().RecordPayloadBestEffort(&model.APICallPayload{
-			CallID: result.CallID, AttemptID: result.AttemptID,
-			Kind: model.APICallPayloadResponse, ContentType: "application/json", Data: encoded[:captured],
-		})
-	}
 	if writeErr == nil && written != len(encoded) {
 		writeErr = io.ErrShortWrite
 	}
@@ -183,10 +169,6 @@ func (h *AnthropicHandler) writeStream(
 ) {
 	// SSEEncoder 会为非 Anthropic 上游合成合法 block 生命周期；原生 raw 帧仅允许同协议直通。
 	defer stream.Close()
-	capture := service.NewAPICallService().NewPayloadCaptureBestEffort(
-		stream.CallID, stream.AttemptID, model.APICallPayloadResponse, "text/event-stream",
-	)
-	defer capture.SaveBestEffort()
 	encoder := codec.NewSSEEncoder(publicModel)
 	upstreamTransport := transport.ID("")
 	if stream.Route != nil {
@@ -240,13 +222,6 @@ func (h *AnthropicHandler) writeStream(
 			continue
 		}
 		written, writeErr := c.Writer.Write(frame)
-		if written > 0 && capture != nil {
-			captured := written
-			if captured > len(frame) {
-				captured = len(frame)
-			}
-			_, _ = capture.Write(frame[:captured])
-		}
 		if writeErr != nil {
 			stageAnthropicStreamOutput("stage aborted anthropic stream output", stream, requestLogID)
 			deliveryErr := stream.Abort(writeErr, true)
@@ -315,6 +290,9 @@ func writeAnthropicExecutionError(c *gin.Context, err error) {
 	}
 	message := err.Error()
 	errorType := "api_error"
+	if appErr, ok := domain.IsAppError(err); ok {
+		status, message = appErr.HTTPStatus, appErr.Message
+	}
 	if details := transport.DetailsFromError(err); details != nil {
 		if details.Message != "" {
 			message = details.Message

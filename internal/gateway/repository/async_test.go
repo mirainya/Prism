@@ -37,6 +37,9 @@ func TestClaimAsyncOutboxFencesLeaseAndMarksReplayRisk(t *testing.T) {
 	if item.Attempts != 2 || !item.MayHaveDispatched || item.LeaseOwner != "worker-a" || item.LeaseExpiresAt.IsZero() {
 		t.Fatalf("unexpected lease item: %+v", item)
 	}
+	mock.ExpectQuery("SELECT 1 FROM gw_async_outbox").
+		WithArgs(uint64(7), "worker-a", uint64(2), uint64(3), uint64(2), "submit", nil, nil, uint64(9), nil, nil).
+		WillReturnRows(sqlmock.NewRows([]string{"1"}).AddRow(1))
 	mock.ExpectExec(regexp.QuoteMeta("UPDATE gw_async_outbox SET status=?,last_error_code=?")).
 		WithArgs("succeeded", "", sqlmock.AnyArg(), uint64(7), "worker-a", uint64(2)).WillReturnResult(sqlmock.NewResult(0, 1))
 	if err := store.CompleteAsyncOutbox(ctx, tx, item, true, ""); err != nil {
@@ -67,10 +70,40 @@ func TestCompleteAsyncOutboxRejectsStaleLease(t *testing.T) {
 		t.Fatal(err)
 	}
 	item := OutboxItem{ID: 7, LeaseOwner: "old-worker", Attempts: 4}
-	mock.ExpectExec(regexp.QuoteMeta("UPDATE gw_async_outbox SET status=?,last_error_code=?")).
-		WithArgs("succeeded", "", sqlmock.AnyArg(), uint64(7), "old-worker", uint64(4)).WillReturnResult(sqlmock.NewResult(0, 0))
+	mock.ExpectQuery("SELECT 1 FROM gw_async_outbox").
+		WithArgs(uint64(7), "old-worker", uint64(4), uint64(0), uint64(0), "", nil, nil, nil, nil, nil).
+		WillReturnRows(sqlmock.NewRows([]string{"1"}))
 	if err := store.CompleteAsyncOutbox(context.Background(), tx, item, true, ""); err != ErrConflict {
 		t.Fatalf("want ErrConflict, got %v", err)
+	}
+	mock.ExpectRollback()
+	_ = tx.Rollback()
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestAssertAsyncOutboxLeaseFencesActionIdentity(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	store, err := New(db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	mock.ExpectBegin()
+	tx, err := db.Begin()
+	if err != nil {
+		t.Fatal(err)
+	}
+	item := OutboxItem{ID: 7, AsyncExecutionID: 9, ActionSeq: 3, StateVersion: 2, Action: "submit", LeaseOwner: "worker-a", Attempts: 2}
+	mock.ExpectQuery(regexp.QuoteMeta("SELECT 1 FROM gw_async_outbox")).
+		WithArgs(uint64(7), "worker-a", uint64(2), uint64(3), uint64(2), "submit", nil, nil, uint64(9), nil, nil).
+		WillReturnRows(sqlmock.NewRows([]string{"1"}).AddRow(1))
+	if err := store.AssertAsyncOutboxLease(context.Background(), tx, item); err != nil {
+		t.Fatal(err)
 	}
 	mock.ExpectRollback()
 	_ = tx.Rollback()

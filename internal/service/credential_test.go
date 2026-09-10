@@ -4,15 +4,17 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/mirainya/Prism/internal/api/middleware"
 	"github.com/mirainya/Prism/internal/model"
+	"github.com/mirainya/Prism/internal/tokenauth"
 	"github.com/shopspring/decimal"
 )
 
 func TestTokenSecretIsReturnedOnlyAtCreation(t *testing.T) {
 	db := setupTestDB(t)
-	if err := db.AutoMigrate(&model.TokenChannelPriority{}); err != nil {
-		t.Fatalf("migrate token priorities: %v", err)
+	setupUnifiedFundsSchema(t, db)
+	user := &model.User{BaseModel: model.BaseModel{ID: 42}, Username: "credential-owner", Status: 1}
+	if err := db.Create(user).Error; err != nil {
+		t.Fatalf("create user: %v", err)
 	}
 
 	created, err := NewTokenService().CreateToken(42, &CreateTokenReq{
@@ -31,10 +33,19 @@ func TestTokenSecretIsReturnedOnlyAtCreation(t *testing.T) {
 	if err := db.First(&stored, created["id"]).Error; err != nil {
 		t.Fatalf("load stored token: %v", err)
 	}
-	if db.Migrator().HasColumn(&model.Token{}, "plain_key") {
-		t.Fatal("token schema still contains a plaintext key column")
+	columns, err := db.Migrator().ColumnTypes(&model.Token{})
+	if err != nil {
+		t.Fatalf("read token columns: %v", err)
 	}
-	wantHint := middleware.KeyHint(plainKey)
+	for _, column := range columns {
+		if column.Name() == "key" || column.Name() == "plain_key" {
+			t.Fatalf("token schema still contains legacy full-key column %q", column.Name())
+		}
+	}
+	if stored.Selector == "" || len(stored.SecretDigest) != 32 || stored.SecretDigestVersion != tokenauth.DigestVersion {
+		t.Fatalf("stored token credential is incomplete: selector=%q digest_bytes=%d version=%d", stored.Selector, len(stored.SecretDigest), stored.SecretDigestVersion)
+	}
+	wantHint := tokenauth.KeyHint(plainKey)
 	if stored.KeyHint != wantHint {
 		t.Fatalf("stored key hint = %q, want %q", stored.KeyHint, wantHint)
 	}
@@ -56,55 +67,5 @@ func TestTokenSecretIsReturnedOnlyAtCreation(t *testing.T) {
 	}
 	if detail["key"] != wantHint || detail["key_hint"] != wantHint {
 		t.Fatalf("detail token key fields = %#v", detail)
-	}
-}
-
-func TestMaskedUpstreamCredentialsAreNotPersistedAsUpdates(t *testing.T) {
-	db := setupTestDB(t)
-	if err := db.AutoMigrate(&model.GwChannel{}, &model.GwChannelKey{}); err != nil {
-		t.Fatalf("migrate gateway tables: %v", err)
-	}
-
-	const channelSecret = "channel-secret-1234"
-	account := &model.ChannelAccount{Name: "legacy", APIKey: channelSecret}
-	if err := db.Create(account).Error; err != nil {
-		t.Fatalf("create channel account: %v", err)
-	}
-	newName := "renamed"
-	if err := NewChannelService().UpdateChannelAccount(account.ID, &UpdateChannelAccountRequest{
-		Name:   newName,
-		APIKey: MaskCredential(channelSecret),
-	}); err != nil {
-		t.Fatalf("update channel account: %v", err)
-	}
-	var storedAccount model.ChannelAccount
-	if err := db.First(&storedAccount, account.ID).Error; err != nil {
-		t.Fatalf("load channel account: %v", err)
-	}
-	if storedAccount.APIKey != channelSecret || storedAccount.Name != newName {
-		t.Fatalf("channel account after masked update = %+v", storedAccount)
-	}
-
-	channel := &model.GwChannel{Name: "gateway", Protocol: "openai", BaseURL: "https://example.com"}
-	if err := db.Create(channel).Error; err != nil {
-		t.Fatalf("create gateway channel: %v", err)
-	}
-	const gatewaySecret = "gateway-secret-5678"
-	key := &model.GwChannelKey{ChannelID: channel.ID, Name: "primary", APIKey: gatewaySecret}
-	if err := db.Create(key).Error; err != nil {
-		t.Fatalf("create gateway key: %v", err)
-	}
-	if err := NewGatewayAdminService().UpdateKey(key.ID, map[string]any{
-		"name":    newName,
-		"api_key": MaskCredential(gatewaySecret),
-	}); err != nil {
-		t.Fatalf("update gateway key: %v", err)
-	}
-	var storedKey model.GwChannelKey
-	if err := db.First(&storedKey, key.ID).Error; err != nil {
-		t.Fatalf("load gateway key: %v", err)
-	}
-	if storedKey.APIKey != gatewaySecret || storedKey.Name != newName {
-		t.Fatalf("gateway key after masked update = %+v", storedKey)
 	}
 }

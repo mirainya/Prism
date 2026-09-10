@@ -1,61 +1,11 @@
 import { request } from './request';
 
-// ========== 视频引擎管理 API ==========
-
-export interface VideoModelMapping {
-  model_name: string;
-  vendor_model: string;
-}
-
-export interface DiscoveredVideoModel {
-  vendor_model: string;
-  public_models: string[];
-}
-
-export interface VideoChannel {
-  id: number;
-  name: string;
-  adapter_type: string;
-  adapter_profile?: string;
-  base_url: string;
-  status: string;
-  priority: number;
-  request_timeout_seconds?: number;
-  models: VideoModelMapping[] | string[] | string;
-  capabilities: any;
-  supports_first_frame?: boolean;
-  supports_last_frame?: boolean;
-  supports_audio?: boolean;
-  supports_web_search?: boolean;
-  cancel_mode?: string;
-  pricing: any;
-  pricing_mode?: string;
-  fixed_price?: number | string;
-  markup_ratio?: number | string;
-  asset_resolver: string;
-  result_storage_enabled?: boolean;
-  extra_config: any;
-  created_at?: string;
-  updated_at?: string;
-}
-
-export interface VideoChannelKey {
-  id: number;
-  channel_id: number;
-  label: string;
-  masked_key: string;
-  weight: number;
-  max_concurrency: number;
-  current_concurrency: number;
-  status: string;
-  total_calls: number;
-}
-
 export interface VideoCallPayload {
   id: number;
   call_id: string;
   attempt_id: number;
-  kind: string;
+  /** The unified payload table only stores one request and one result per call. */
+  kind: 'request' | 'result';
   content_type: string;
   data: string;
   encrypted: boolean;
@@ -68,6 +18,7 @@ export interface VideoCallPayload {
 export interface VideoTask {
   id: string;
   call_id: string;
+  gateway_call_id?: number;
   user_id: number;
   token_id: number;
   channel_id: number;
@@ -99,6 +50,8 @@ export interface VideoTask {
   poll_count: number;
   callback_url: string;
   call_payloads?: VideoCallPayload[];
+  request_payload_expired?: boolean;
+  result_payload_expired?: boolean;
   created_at: string;
   submitted_at?: string;
   completed_at?: string;
@@ -127,48 +80,46 @@ export interface VideoTaskListParams {
   snapshot_at?: string;
 }
 
-// ===== Channels =====
+export interface VideoTaskPage {
+  items: VideoTask[];
+  total: number;
+  page: number;
+  page_size: number;
+  snapshot_at?: string;
+}
 
-export const fetchVideoChannels = () =>
-  request<VideoChannel[]>('/admin/video/channels');
+type VideoTaskPageResponse = Partial<VideoTaskPage> & {
+  items?: VideoTask[];
+  total?: number | string;
+  page?: number | string;
+  page_size?: number | string;
+};
 
-export const getVideoChannel = (id: number) =>
-  request<VideoChannel>(`/admin/video/channels/${id}`);
-
-export const discoverVideoChannelModels = (id: number) =>
-  request<{ models: DiscoveredVideoModel[] }>(`/admin/video/channels/${id}/models/discover`);
-
-export const createVideoChannel = (data: Partial<VideoChannel>) =>
-  request<VideoChannel>('/admin/video/channels', { method: 'POST', body: JSON.stringify(data) });
-
-export const updateVideoChannel = (id: number, data: Partial<VideoChannel>) =>
-  request<VideoChannel>(`/admin/video/channels/${id}`, { method: 'PUT', body: JSON.stringify(data) });
-
-export const deleteVideoChannel = (id: number) =>
-  request<null>(`/admin/video/channels/${id}`, { method: 'DELETE' });
-
-// ===== Keys =====
-
-export const fetchVideoKeys = (channelId: number) =>
-  request<VideoChannelKey[]>(`/admin/video/channels/${channelId}/keys`);
-
-export const createVideoKey = (channelId: number, data: { api_key: string; label?: string; weight?: number; max_concurrency?: number; status?: string }) =>
-  request<VideoChannelKey>(`/admin/video/channels/${channelId}/keys`, { method: 'POST', body: JSON.stringify(data) });
-
-export const updateVideoKey = (id: number, data: Partial<{ label: string; weight: number; max_concurrency: number; status: string }>) =>
-  request<VideoChannelKey>(`/admin/video/keys/${id}`, { method: 'PUT', body: JSON.stringify(data) });
-
-export const deleteVideoKey = (id: number) =>
-  request<null>(`/admin/video/keys/${id}`, { method: 'DELETE' });
+const positiveInteger = (value: unknown, fallback: number) => {
+  const parsed = typeof value === 'number' ? value : Number(value);
+  return Number.isSafeInteger(parsed) && parsed > 0 ? parsed : fallback;
+};
 
 // ===== Tasks =====
 
-export const fetchVideoTasks = (params: VideoTaskListParams) => {
+export const fetchVideoTasks = async (params: VideoTaskListParams = {}): Promise<VideoTaskPage> => {
+  const page = positiveInteger(params.page, 1);
+  const pageSize = Math.min(100, positiveInteger(params.page_size, 20));
   const qs = new URLSearchParams();
-  Object.entries(params).forEach(([key, value]) => {
+  Object.entries({ ...params, page, page_size: pageSize }).forEach(([key, value]) => {
     if (value !== undefined && value !== '') qs.set(key, String(value));
   });
-  return request<{ total: number; items: VideoTask[]; snapshot_at?: string }>(`/admin/video/tasks?${qs.toString()}`);
+  const response = await request<VideoTaskPageResponse>(`/admin/video/tasks?${qs.toString()}`);
+  const total = positiveInteger(response?.total, 0);
+  return {
+    items: Array.isArray(response?.items) ? response.items : [],
+    total,
+    // Older unified handlers omit these two fields. Keep the requested values
+    // so the UI can calculate page bounds without guessing from row counts.
+    page: positiveInteger(response?.page, page),
+    page_size: positiveInteger(response?.page_size, pageSize),
+    snapshot_at: typeof response?.snapshot_at === 'string' ? response.snapshot_at : undefined,
+  };
 };
 
 export const getVideoTask = (id: string) =>

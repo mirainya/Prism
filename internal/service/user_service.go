@@ -2,7 +2,9 @@ package service
 
 import (
 	"context"
+	"database/sql"
 	"errors"
+	"fmt"
 
 	"github.com/google/uuid"
 	"github.com/mirainya/Prism/internal/model"
@@ -32,6 +34,7 @@ type LoginRequest struct {
 type LoginResponse struct {
 	Token string      `json:"token"`
 	User  *model.User `json:"user"`
+	Funds UserFunds   `json:"funds"`
 }
 
 func (s *UserService) Register(req *RegisterRequest) (*model.User, error) {
@@ -72,6 +75,11 @@ func (s *UserService) Login(req *LoginRequest) (*LoginResponse, error) {
 	if !auth.CheckPassword(req.Password, user.Password) {
 		return nil, errors.New("invalid username or password")
 	}
+	funds, err := s.GetUserFunds(user.ID)
+	if err != nil {
+		return nil, err
+	}
+	user.Balance = funds.Available
 
 	token, err := auth.GenerateTokenWithSessionVersion(user.ID, user.Username, string(user.Role), user.SessionVersion)
 	if err != nil {
@@ -87,6 +95,7 @@ func (s *UserService) Login(req *LoginRequest) (*LoginResponse, error) {
 	return &LoginResponse{
 		Token: token,
 		User:  &user,
+		Funds: funds,
 	}, nil
 }
 
@@ -95,20 +104,58 @@ func (s *UserService) Logout(token string) error {
 	return cache.DeleteLoginToken(context.Background(), token)
 }
 
-func (s *UserService) GetUserByID(id uint) (*model.User, error) {
+type UserWithFunds struct {
+	model.User
+	TotalUsed decimal.Decimal
+}
+
+func (s *UserService) GetUserByID(id uint) (*UserWithFunds, error) {
 	var user model.User
 	if err := model.DB().Model(&model.User{}).First(&user, id).Error; err != nil {
 		return nil, err
 	}
-	return &user, nil
+	funds, err := s.GetUserFunds(id)
+	if err != nil {
+		return nil, err
+	}
+	user.Balance = funds.Available
+	return &UserWithFunds{User: user, TotalUsed: funds.Used}, nil
 }
 
-func (s *UserService) ListUsers() ([]model.User, error) {
+func (s *UserService) ListUsers() ([]UserWithFunds, error) {
 	var users []model.User
 	if err := model.DB().Model(&model.User{}).Find(&users).Error; err != nil {
 		return nil, err
 	}
-	return users, nil
+	ids := make([]uint, len(users))
+	for i := range users {
+		ids[i] = users[i].ID
+	}
+	funds, err := loadUserFunds(context.Background(), ids)
+	if err != nil {
+		return nil, err
+	}
+	result := make([]UserWithFunds, len(users))
+	for i := range users {
+		snapshot := funds[users[i].ID]
+		users[i].Balance = snapshot.Available
+		result[i] = UserWithFunds{User: users[i], TotalUsed: snapshot.Used}
+	}
+	return result, nil
+}
+
+type UserFunds struct {
+	Available decimal.Decimal
+	Used      decimal.Decimal
+}
+
+func (s *UserService) GetUserFunds(userID uint) (UserFunds, error) {
+	funds, err := loadUserFunds(context.Background(), []uint{userID})
+	if err != nil {
+		return UserFunds{}, err
+	}
+	snapshot := funds[userID]
+	return UserFunds(snapshot), nil
 }
 
 func (s *UserService) UpdateUserRole(userID uint, role model.UserRole) error {
@@ -142,21 +189,17 @@ func (s *UserService) RechargeUserBy(actorUserID, userID uint, amount decimal.De
 	if !amount.IsPositive() {
 		return ErrInvalidBalanceAmount
 	}
-	return model.DB().Transaction(func(tx *gorm.DB) error {
-		result := tx.Model(&model.User{}).Where("id = ?", userID).
-			UpdateColumn("balance", gorm.Expr("balance + ?", amount))
-		if result.Error != nil {
-			return result.Error
+	store, err := unifiedFundsStore()
+	if err != nil {
+		return err
+	}
+	return store.WithTx(context.Background(), func(tx *sql.Tx) error {
+		accountID, err := store.OpenBillingAccount(context.Background(), tx, uint64(userID))
+		if err != nil {
+			return err
 		}
-		if result.RowsAffected == 0 {
-			return gorm.ErrRecordNotFound
-		}
-		return recordBalanceEntryTx(tx, balanceEntryRequest{
-			AccountType: model.BalanceAccountUser, AccountID: userID,
-			UserID: userID, Direction: model.BalanceDirectionCredit,
-			Category: BalanceCategoryRecharge, Amount: amount,
-			SourceKey: "user_recharge:" + uuid.NewString(), ActorUserID: actorUserID,
-		})
+		sourceKey := fmt.Sprintf("admin:%d:user:%d:%s", actorUserID, userID, uuid.NewString())
+		return store.CreditBillingAccount(context.Background(), tx, accountID, amount.String(), sourceKey)
 	})
 }
 

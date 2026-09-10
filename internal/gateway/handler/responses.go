@@ -142,7 +142,12 @@ func setResponsesRecordHeaders(c *gin.Context, result *responsepipeline.Result) 
 }
 
 func (h *ResponsesHandler) Get(c *gin.Context) {
-	response, err := h.pipe.Get(middleware.GetTokenID(c), c.Param("id"))
+	token := middleware.GetToken(c)
+	if token == nil {
+		openaierror.Write(c, http.StatusUnauthorized, "Invalid authentication token", "invalid_request_error", nil, "invalid_api_key")
+		return
+	}
+	response, err := h.pipe.Get(token.UserID, token.ID, c.Param("id"))
 	if err != nil {
 		respondResponsesError(c, err)
 		return
@@ -151,7 +156,12 @@ func (h *ResponsesHandler) Get(c *gin.Context) {
 }
 
 func (h *ResponsesHandler) Delete(c *gin.Context) {
-	if err := h.pipe.Delete(middleware.GetTokenID(c), c.Param("id")); err != nil {
+	token := middleware.GetToken(c)
+	if token == nil {
+		openaierror.Write(c, http.StatusUnauthorized, "Invalid authentication token", "invalid_request_error", nil, "invalid_api_key")
+		return
+	}
+	if err := h.pipe.Delete(token.UserID, token.ID, c.Param("id")); err != nil {
 		respondResponsesError(c, err)
 		return
 	}
@@ -159,7 +169,12 @@ func (h *ResponsesHandler) Delete(c *gin.Context) {
 }
 
 func (h *ResponsesHandler) Cancel(c *gin.Context) {
-	response, err := h.pipe.Cancel(middleware.GetTokenID(c), c.Param("id"))
+	token := middleware.GetToken(c)
+	if token == nil {
+		openaierror.Write(c, http.StatusUnauthorized, "Invalid authentication token", "invalid_request_error", nil, "invalid_api_key")
+		return
+	}
+	response, err := h.pipe.Cancel(token.UserID, token.ID, c.Param("id"))
 	if err != nil {
 		respondResponsesError(c, err)
 		return
@@ -184,7 +199,12 @@ func (h *ResponsesHandler) InputItems(c *gin.Context) {
 		openaierror.InvalidRequest(c, "order must be asc or desc", &param, "invalid_value")
 		return
 	}
-	items, err := h.pipe.InputItems(middleware.GetTokenID(c), c.Param("id"), responsepipeline.InputItemsOptions{Limit: limit, Order: order, After: strings.TrimSpace(c.Query("after"))})
+	token := middleware.GetToken(c)
+	if token == nil {
+		openaierror.Write(c, http.StatusUnauthorized, "Invalid authentication token", "invalid_request_error", nil, "invalid_api_key")
+		return
+	}
+	items, err := h.pipe.InputItems(token.UserID, token.ID, c.Param("id"), responsepipeline.InputItemsOptions{Limit: limit, Order: order, After: strings.TrimSpace(c.Query("after"))})
 	if err != nil {
 		respondResponsesError(c, err)
 		return

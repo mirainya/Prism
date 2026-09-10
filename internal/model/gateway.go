@@ -19,6 +19,7 @@ const (
 	UpstreamTransportAnthropic       UpstreamTransport = "anthropic_messages"
 	UpstreamTransportGoogle          UpstreamTransport = "google_generate_content"
 	UpstreamTransportVolcengineV3    UpstreamTransport = "volcengine_responses_v3"
+	UpstreamTransportOpenAIImages    UpstreamTransport = "openai_images"
 	UpstreamTransportVideoGeneration UpstreamTransport = "video_generation"
 )
 

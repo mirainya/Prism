@@ -292,7 +292,7 @@ func TestGenericAdapterEstimatesWithSubmitRequestMapping(t *testing.T) {
 		TaskID: "estimate-1", Params: map[string]any{"priority": 4},
 		Content: []video.ContentItem{{Type: "video_url", Role: "reference_video", StorageObjectID: "object-1"}},
 	})
-	if err != nil || cost != 1.25 {
+	if err != nil || cost.String() != "1.25" {
 		t.Fatalf("cost=%v err=%v", cost, err)
 	}
 	if seenBody["priority"] != float64(4) || seenBody["model"] != "seedance-2.5" {
@@ -301,6 +301,22 @@ func TestGenericAdapterEstimatesWithSubmitRequestMapping(t *testing.T) {
 	content, ok := seenBody["content"].([]any)
 	if !ok || len(content) != 1 || content[0].(map[string]any)["storage_object_id"] != "object-1" {
 		t.Fatalf("estimate content=%#v", seenBody["content"])
+	}
+}
+
+func TestGenericAdapterEstimateRejectsInvalidMoney(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		writer.Header().Set("Content-Type", "application/json")
+		_, _ = writer.Write([]byte(`{"code":0,"data":{"estimated_cost":"0.1x"}}`))
+	}))
+	defer server.Close()
+	config := testAdapterConfig()
+	config.Estimate = operationConfig{Enabled: true, Method: http.MethodPost, Path: "/estimate"}
+	config.Response.EstimatedCostPaths = []string{"estimated_cost"}
+	adapter := newTestAdapter(server.URL, "secret", server.Client(), config)
+	_, err := adapter.Estimate(context.Background(), &video.GenerateRequest{Model: "m", Prompt: "p"})
+	if err == nil || !strings.Contains(err.Error(), "invalid monetary value") {
+		t.Fatalf("error=%v", err)
 	}
 }
 

@@ -19,10 +19,11 @@ func GetCurrentUser(c *gin.Context) {
 	}
 
 	resp.Success(c, gin.H{
-		"id":       user.ID,
-		"username": user.Username,
-		"role":     user.Role,
-		"balance":  user.Balance,
+		"id":         user.ID,
+		"username":   user.Username,
+		"role":       user.Role,
+		"balance":    user.Balance,
+		"total_used": user.TotalUsed,
 	})
 }
 

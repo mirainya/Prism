@@ -29,6 +29,12 @@ import {
 } from './protocol';
 import { Dialog } from '../../components/ui';
 
+const protocolOperations: Record<PlaygroundProtocol, string> = {
+  chat: 'chat.completions',
+  responses: 'responses.create',
+  anthropic: 'messages.create',
+};
+
 const ChatTab: React.FC<{ tokenId: string }> = ({ tokenId }) => {
   const [models, setModels] = useState<PlaygroundModelInfo[]>([]);
   const [selectedModel, setSelectedModel] = useState('');
@@ -94,6 +100,12 @@ const ChatTab: React.FC<{ tokenId: string }> = ({ tokenId }) => {
   const hasConversationMessages = chat.messages.some(msg => msg.role === 'user' || msg.role === 'assistant');
   const modelChangedOnConversation = Boolean(selectedConversationId && conversationModel && selectedModel && conversationModel !== selectedModel && hasConversationMessages);
   const protocolInfo = PLAYGROUND_PROTOCOLS.find(item => item.value === protocol)!;
+	const supportedProtocols = useMemo(() => new Set(
+		PLAYGROUND_PROTOCOLS
+			.filter(item => selectedModelInfo?.supported_operations.includes(protocolOperations[item.value]))
+			.map(item => item.value),
+	), [selectedModelInfo]);
+	const protocolSupported = supportedProtocols.has(protocol);
 
   const loadHistory = async () => {
     if (!tokenId) return;
@@ -152,6 +164,12 @@ const ChatTab: React.FC<{ tokenId: string }> = ({ tokenId }) => {
   useEffect(() => {
     setThinkingLevel(selectedModelInfo?.thinking?.default || '');
   }, [selectedModelInfo?.id]);
+
+	useEffect(() => {
+		if (!selectedModelInfo || protocolSupported || selectedConversationId || hasConversationMessages) return;
+		const next = PLAYGROUND_PROTOCOLS.find(item => supportedProtocols.has(item.value));
+		if (next) setProtocol(next.value);
+	}, [selectedModelInfo, protocolSupported, supportedProtocols, selectedConversationId, hasConversationMessages]);
 
   useEffect(() => {
     const limit = selectedModelInfo?.max_tokens || 0;
@@ -221,6 +239,7 @@ const ChatTab: React.FC<{ tokenId: string }> = ({ tokenId }) => {
     const readyAttachments = attachments.filter(a => a.uploaded && a.url);
     const hasAttachments = readyAttachments.length > 0;
     if ((!hasText && !hasAttachments) || chat.isStreaming || loadingConversationId !== undefined || !selectedModel) return;
+		if (!protocolSupported) { setError('当前模型不支持所选协议'); return; }
     if (attachments.some(a => a.uploading)) { setError('请等待文件上传完成'); return; }
     if (attachments.some(a => a.error)) { setError('有文件上传失败，请移除后重试'); return; }
     setError('');
@@ -470,7 +489,7 @@ const ChatTab: React.FC<{ tokenId: string }> = ({ tokenId }) => {
   };
 
   const handleProtocolChange = (nextProtocol: PlaygroundProtocol) => {
-    if (chat.isStreaming || nextProtocol === protocol) return;
+    if (chat.isStreaming || nextProtocol === protocol || !supportedProtocols.has(nextProtocol)) return;
     conversationLoadRef.current += 1;
     setLoadingConversationId(undefined);
     setProtocol(nextProtocol);
@@ -491,7 +510,7 @@ const ChatTab: React.FC<{ tokenId: string }> = ({ tokenId }) => {
           key={item.value}
           type="button"
           title={item.endpoint}
-          disabled={chat.isStreaming}
+			disabled={chat.isStreaming || !supportedProtocols.has(item.value)}
           onClick={() => handleProtocolChange(item.value)}
           className={`${compact ? 'px-2' : 'px-2.5'} h-7 rounded-md text-[11px] font-medium transition-colors disabled:opacity-40 ${protocol === item.value ? 'bg-[var(--surface-card)] text-[var(--primary)] shadow-sm' : 'text-[var(--text-secondary)] hover:text-[var(--text-primary)]'}`}
         >
@@ -834,7 +853,7 @@ const ChatTab: React.FC<{ tokenId: string }> = ({ tokenId }) => {
                 {chat.isStreaming ? (
                   <button onClick={handleStop} className="px-4 py-2.5 bg-red-500 text-white rounded-xl hover:bg-red-600 transition-colors flex-shrink-0"><Square size={18} /></button>
                 ) : (
-                  <button onClick={handleSend} disabled={loadingConversationId !== undefined || (!input.trim() && attachments.filter(a => a.uploaded).length === 0) || !selectedModel} className="px-3 md:px-4 py-2.5 bg-[var(--primary)] text-white rounded-xl hover:opacity-90 disabled:opacity-30 disabled:cursor-not-allowed transition-colors flex-shrink-0 flex items-center gap-1.5">
+				  <button onClick={handleSend} disabled={loadingConversationId !== undefined || (!input.trim() && attachments.filter(a => a.uploaded).length === 0) || !selectedModel || !protocolSupported} className="px-3 md:px-4 py-2.5 bg-[var(--primary)] text-white rounded-xl hover:opacity-90 disabled:opacity-30 disabled:cursor-not-allowed transition-colors flex-shrink-0 flex items-center gap-1.5">
                     <Send size={16} /><span className="text-sm font-medium hidden sm:inline">发送</span>
                   </button>
                 )}

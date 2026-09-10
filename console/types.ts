@@ -13,193 +13,13 @@ export interface User {
   createdAt: string;
 }
 
-export interface Channel {
-  id: string;
-  type: string;
-  name: string;
-  baseUrl: string;
-  config: Record<string, any>;
-  status: number;
-  sort: number;
-  accountsCount: number;
-  createdAt: string;
-  updatedAt: string;
-}
-
-// 账号级 per-model 熔断状态
-export interface AccountCircuitState {
-  modelCode: string;
-  disabledUntil: string;
-  reason: string;
-  statusCode: number;
-  failCount: number;
-}
-
-export interface ChannelAccount {
-  id: string;
-  channelId: string;
-  name: string;
-  apiKey: string;
-  maskedKey: string;
-  config: Record<string, any>;
-  weight: number;
-  maxTasks: number;
-  status: number;
-  currentTasks: number;
-  supportedModels: string[];
-  circuitStates: AccountCircuitState[];
-  createdAt: string;
-  updatedAt: string;
-}
-
-export type CapabilityStandardParamType = 'string' | 'number' | 'array' | 'enum';
-
-export interface CapabilityStandardParamSchema {
-  type: CapabilityStandardParamType;
-  name: string;
-  description?: string;
-  required?: boolean;
-  options?: string[];
-  enumValues?: string[];
-  default?: string | number;
-}
-
-export type CapabilityStandardParams = Record<string, CapabilityStandardParamSchema>;
-
-export interface EndpointAccountBinding {
-  id: string;
-  endpointId: string;
-  accountId: string;
-  status: number;
-  priority: number;
-  weight: number;
-  accountName?: string;
-  accountStatus: number;
-}
-
-export interface EndpointOriginSnapshot {
-  channelId?: number;
-  channelName?: string;
-  channelType?: string;
-  accountId?: number;
-  accountName?: string;
-  vendorModel?: string;
-  adapter?: string;
-  sourceEndpointId?: number;
-  inferred?: boolean;
-}
-
-// 能力定义
-export interface Capability {
-  code: string;
-  name: string;
-    type: 'image' | 'video' | 'chat' | 'other';
-  description: string;
-  aliases: string[];
-  standardParams: CapabilityStandardParams;
-  standardResponse: Record<string, any>;
-  status: number;
-  sort: number;
-  createdAt: string;
-  updatedAt: string;
-}
-
-// 渠道能力配置
-export interface ChannelCapability {
-  id: string;
-  channelId: string;
-  accountId: string;
-  capabilityCode: string;
-  routeOperation?: string;
-  supportedOperations?: string[];
-  model: string;
-  name: string;
-  modelType?: string;
-  price: number;
-  priceUnit: string;
-  resultMode: 'sync' | 'poll' | 'callback';
-  requestPath: string;
-  requestMethod: string;
-  contentType: string;
-    // 认证配置
-    authLocation: 'header' | 'body' | 'query';
-    authKey: string;
-    authValuePrefix: string;
-    // 轮询配置
-  pollPath: string;
-    pollMethod: string;
-  pollInterval: number;
-  pollMaxAttempts: number;
-    pollParamMapping: Record<string, any>;
-    pollResponseMapping: Record<string, any>;
-    // 映射配置
-  paramMapping: Record<string, any>;
-  paramSchema?: Record<string, any> | null;
-  responseMapping: Record<string, any>;
-  callbackMapping: Record<string, any>;
-  extraConfig: Record<string, any>;
-  originType: 'manual' | 'key_discovery' | 'endpoint_import' | 'legacy_inferred' | 'legacy_unknown';
-  originAccountId: string;
-  originSnapshot: EndpointOriginSnapshot;
-  discoveredAt?: string;
-  accountBindings: EndpointAccountBinding[];
-  status: number;
-  createdAt: string;
-  updatedAt: string;
-  channel?: Channel;
-  capability?: Capability;
-}
-
 export interface ApiToken {
   id: string;
   name: string;
   key: string;
-    balance: number;
-    totalUsed: number;
+  balance: number;
+  totalUsed: number;
   status: 'active' | 'expired';
-  channelPriorities?: ChannelPriorityItem[];
-}
-
-// 渠道优先级配置项
-export interface ChannelPriorityItem {
-  capabilityCode: string;
-  channelId: number;
-  priority: number;
-}
-
-// 能力及其可用渠道
-export interface CapabilityWithChannels {
-  id?: string;
-  code: string;
-  name: string;
-  type: string;
-  description: string;
-  standardParams?: CapabilityStandardParams;
-  operations: ModelOperation[];
-  channels: ChannelOption[];
-}
-
-export interface ModelOperation {
-  id: string;
-  path: string;
-  supportsStream: boolean;
-  paramSchema?: CapabilityStandardParams | null;
-}
-
-export interface PlaygroundCapability extends CapabilityWithChannels {
-  standardParams: CapabilityStandardParams;
-}
-
-// 渠道选项
-export interface ChannelOption {
-  channelId: number;
-  channelType: string;
-  channelName: string;
-  model: string;
-  routeOperation?: string;
-  price: number;
-  interactionMode: string;
-  paramSchema?: CapabilityStandardParams | null;
 }
 
 export interface TaskLog {
@@ -322,6 +142,8 @@ export interface PlaygroundModelInfo {
   supports_tools?: boolean;
   supports_response_format?: boolean;
   supports_multimodal?: boolean;
+	supported_operations: string[];
+	supported_endpoints: string[];
   thinking?: {
     default: string;
     locked: boolean;
@@ -418,7 +240,7 @@ export interface PlaygroundDebugDetail {
   statusCode?: number;
   errorMessage?: string;
   finishReason?: string;
-  contextMode?: string;        // 上下文策略: stateful(B/有状态) | full_history(A/全量历史)
+  contextMode?: string;
   providerResponseId?: string; // 上游有状态对话ID(火山 response_id)
   responsePreview?: string;
   requestHeaders?: Record<string, any>;
@@ -429,55 +251,6 @@ export interface PlaygroundDebugDetail {
     completion_tokens: number;
     total_tokens: number;
   };
-}
-
-export interface PlaygroundTaskListParams {
-  page?: number;
-  page_size?: number;
-  snapshot_at?: string;
-  status?: string;
-  capability?: string;
-  keyword?: string;
-}
-
-export interface PlaygroundTaskListItem {
-  id: string;
-  taskNo: string;
-  capability: string;
-  capabilityName: string;
-  channel: string;
-  status: string;
-  progress: number;
-  cost: number;
-  refunded: boolean;
-  error?: string;
-  createdAt: string;
-  completedAt?: string;
-}
-
-export interface PlaygroundTaskListResponse {
-  items: PlaygroundTaskListItem[];
-  total: number;
-  page: number;
-  page_size: number;
-  snapshot_at?: string;
-}
-
-export interface PlaygroundTaskDetail {
-  taskId: string;
-  taskNo: string;
-  status: string;
-  progress: number;
-  result: any;
-  error: string;
-  cost: number;
-  rawParams?: Record<string, any>;
-  mappedParams?: Record<string, any>;
-  vendorResponse?: any;
-  vendorTaskId?: string;
-  createdAt?: string;
-  startedAt?: string;
-  completedAt?: string;
 }
 
 // Provider 类型

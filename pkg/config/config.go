@@ -1,13 +1,27 @@
 package config
 
 import (
+	"errors"
+	"fmt"
+	"strings"
 	"sync"
+	"time"
+	"unicode"
+	"unicode/utf8"
 
 	"github.com/fsnotify/fsnotify"
 	"github.com/spf13/viper"
 )
 
 const DefaultFileStorageMaxTotalSizeMB = 1024
+
+// MinJWTSecretBytes is the minimum entropy budget accepted for the console
+// signing key. The configuration loader keeps parsing examples usable for
+// documentation, while the runtime validator below fails closed before the
+// server starts.
+const MinJWTSecretBytes = 32
+
+var ErrInvalidJWTSecret = errors.New("server.jwt_secret must be a strong, non-default secret")
 
 const (
 	DefaultAPICallPayloadRetentionHours = 24 * 7
@@ -19,11 +33,26 @@ const (
 	DefaultBillingLedgerRetentionDays   = 365
 )
 
+func APICallPayloadRetentionDuration() time.Duration {
+	hours := DefaultAPICallPayloadRetentionHours
+	if C != nil && C.Observability.APICallPayloadRetentionHours > 0 {
+		hours = C.Observability.APICallPayloadRetentionHours
+	}
+	return time.Duration(hours) * time.Hour
+}
+
+func ResourceHistoryRetentionDuration() time.Duration {
+	days := DefaultResourceHistoryRetentionDays
+	if C != nil && C.Observability.ResourceHistoryRetentionDays > 0 {
+		days = C.Observability.ResourceHistoryRetentionDays
+	}
+	return time.Duration(days) * 24 * time.Hour
+}
+
 type Config struct {
 	Server        ServerConfig        `mapstructure:"server"`
 	Database      DatabaseConfig      `mapstructure:"database"`
 	Redis         RedisConfig         `mapstructure:"redis"`
-	Worker        WorkerConfig        `mapstructure:"worker"`
 	HTTPClient    HTTPClientConfig    `mapstructure:"http_client"`
 	RateLimit     RateLimitConfig     `mapstructure:"rate_limit"`
 	FileStorage   FileStorageConfig   `mapstructure:"file_storage"`
@@ -31,14 +60,114 @@ type Config struct {
 }
 
 type ServerConfig struct {
-	Port                    int    `mapstructure:"port"`
-	JWTSecret               string `mapstructure:"jwt_secret"`
-	PublicURL               string `mapstructure:"public_url"`
-	ResetGatewayConcurrency *bool  `mapstructure:"reset_gateway_concurrency_on_start"`
+	Port      int    `mapstructure:"port"`
+	JWTSecret string `mapstructure:"jwt_secret"`
+	PublicURL string `mapstructure:"public_url"`
 }
 
-func (c ServerConfig) ShouldResetGatewayConcurrency() bool {
-	return c.ResetGatewayConcurrency == nil || *c.ResetGatewayConcurrency
+// ValidateJWTSecret validates the deployment-time JWT signing secret. It is
+// intentionally independent of token generation so unit tests and migration
+// tools can construct an in-memory config without weakening the startup gate.
+func ValidateJWTSecret(secret string) error {
+	value := strings.TrimSpace(secret)
+	if value != secret || !utf8.ValidString(value) || len([]byte(value)) < MinJWTSecretBytes || strings.IndexFunc(value, unicode.IsControl) >= 0 {
+		return ErrInvalidJWTSecret
+	}
+	lower := strings.ToLower(value)
+	for _, marker := range []string{
+		"your-secret",
+		"your_secret",
+		"yoursecret",
+		"your secret",
+		"change-this",
+		"change_this",
+		"changethis",
+		"change this",
+		"replace-me",
+		"replace_me",
+		"replaceme",
+		"replace me",
+		"default",
+		"example",
+		"password",
+	} {
+		if strings.Contains(lower, marker) {
+			return ErrInvalidJWTSecret
+		}
+	}
+	// A long repetition is not a usable secret, even though it satisfies the
+	// byte-length check (for example, strings.Repeat("a", 32)).
+	runes := []rune(value)
+	if len(runes) > 0 {
+		allSame := true
+		for _, r := range runes[1:] {
+			if r != runes[0] {
+				allSame = false
+				break
+			}
+		}
+		if allSame {
+			return ErrInvalidJWTSecret
+		}
+	}
+	// Reject short periodic and monotonic patterns commonly used as
+	// placeholders. This is deliberately conservative; ordinary generated
+	// base64/hex secrets do not match these patterns.
+	bytesValue := []byte(value)
+	unique := make(map[byte]struct{}, len(bytesValue))
+	for _, b := range bytesValue {
+		unique[b] = struct{}{}
+	}
+	if len(unique) < 8 {
+		return ErrInvalidJWTSecret
+	}
+	for period := 1; period <= 16 && period*2 <= len(bytesValue); period++ {
+		repeated := true
+		for i := period; i < len(bytesValue); i++ {
+			if bytesValue[i] != bytesValue[i%period] {
+				repeated = false
+				break
+			}
+		}
+		if repeated {
+			return ErrInvalidJWTSecret
+		}
+	}
+	if len(bytesValue) >= 3 {
+		ascending, descending := true, true
+		for i := 1; i < len(bytesValue); i++ {
+			ascending = ascending && bytesValue[i] == bytesValue[i-1]+1
+			descending = descending && bytesValue[i]+1 == bytesValue[i-1]
+		}
+		if ascending || descending {
+			return ErrInvalidJWTSecret
+		}
+	}
+	return nil
+}
+
+// Validate checks the values that are security-critical before starting the
+// HTTP server. Other fields retain their existing defaults and validation
+// paths, so this method deliberately stays narrow.
+func (c *Config) Validate() error {
+	if c == nil {
+		return ErrInvalidJWTSecret
+	}
+	if err := ValidateJWTSecret(c.Server.JWTSecret); err != nil {
+		return fmt.Errorf("%w: invalid server.jwt_secret", err)
+	}
+	return nil
+}
+
+// ValidateRuntime validates the currently loaded process configuration.
+func ValidateRuntime() error {
+	mu.RLock()
+	cfg := C
+	mu.RUnlock()
+	if cfg == nil {
+		return ErrInvalidJWTSecret
+	}
+	return cfg.Validate()
 }
 
 type DatabaseConfig struct {
@@ -65,12 +194,6 @@ type RedisConfig struct {
 	WriteTimeout int    `mapstructure:"write_timeout"`
 }
 
-type WorkerConfig struct {
-	Concurrency  int    `mapstructure:"concurrency"`
-	PollInterval string `mapstructure:"poll_interval"`
-	MaxRetry     int    `mapstructure:"max_retry"`
-}
-
 type HTTPClientConfig struct {
 	Timeout             int `mapstructure:"timeout"`
 	MaxIdleConns        int `mapstructure:"max_idle_conns"`
@@ -93,15 +216,14 @@ type FileStorageConfig struct {
 }
 
 type ObservabilityConfig struct {
-	RetainAPICallPayloads        bool   `mapstructure:"retain_api_call_payloads"`
-	APICallPayloadRetentionHours int    `mapstructure:"api_call_payload_retention_hours"`
-	APICallPayloadMaxBytes       int    `mapstructure:"api_call_payload_max_bytes"`
-	APICallPayloadEncryptionKey  string `mapstructure:"api_call_payload_encryption_key"`
-	APICallMetadataRetentionDays int    `mapstructure:"api_call_metadata_retention_days"`
-	ResourceHistoryRetentionDays int    `mapstructure:"resource_history_retention_days"`
-	APIAccessLogRetentionDays    int    `mapstructure:"api_access_log_retention_days"`
-	AuditEventRetentionDays      int    `mapstructure:"audit_event_retention_days"`
-	BillingLedgerRetentionDays   int    `mapstructure:"billing_ledger_retention_days"`
+	RetainAPICallPayloads        bool `mapstructure:"retain_api_call_payloads"`
+	APICallPayloadRetentionHours int  `mapstructure:"api_call_payload_retention_hours"`
+	APICallPayloadMaxBytes       int  `mapstructure:"api_call_payload_max_bytes"`
+	APICallMetadataRetentionDays int  `mapstructure:"api_call_metadata_retention_days"`
+	ResourceHistoryRetentionDays int  `mapstructure:"resource_history_retention_days"`
+	APIAccessLogRetentionDays    int  `mapstructure:"api_access_log_retention_days"`
+	AuditEventRetentionDays      int  `mapstructure:"audit_event_retention_days"`
+	BillingLedgerRetentionDays   int  `mapstructure:"billing_ledger_retention_days"`
 }
 
 var (
@@ -147,6 +269,12 @@ func Watch() {
 			return
 		}
 		applyDefaults(newCfg)
+		// A reload must not replace a known-good signing key with an example or
+		// weak value. Keep the previous configuration active until the file is
+		// corrected and another change event arrives.
+		if err := newCfg.Validate(); err != nil {
+			return
+		}
 
 		// 回调在锁外执行，避免回调再次读取配置或注册监听时发生死锁。
 		mu.Lock()

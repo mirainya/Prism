@@ -12,7 +12,7 @@ var queryService = service.NewQueryService()
 
 // ListAvailableChannels 列出所有可用渠道
 func ListAvailableChannels(c *gin.Context) {
-	result, err := queryService.ListAvailableChannels()
+	result, err := queryService.ListAvailableChannels(c.Request.Context())
 	if err != nil {
 		resp.ErrorMsg(c, http.StatusInternalServerError, 500, "failed to get channels")
 		return
@@ -25,7 +25,7 @@ func ListAvailableCapabilities(c *gin.Context) {
 	channelType := c.Query("channel")
 	capabilityType := c.Query("type")
 
-	result, err := queryService.ListAvailableCapabilities(channelType, capabilityType)
+	result, err := queryService.ListAvailableCapabilities(c.Request.Context(), channelType, capabilityType)
 	if err != nil {
 		resp.ErrorMsg(c, http.StatusInternalServerError, 500, "failed to get capabilities")
 		return

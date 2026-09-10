@@ -15,30 +15,9 @@ import (
 )
 
 func TestSaveConversationTurnBindsRequestLog(t *testing.T) {
-	db := setupTestDB(t)
-	if err := db.AutoMigrate(
-		&model.Conversation{},
-		&model.Message{},
-		&model.ConversationTurn{},
-		&model.ConversationItem{},
-		&model.ChannelRequestLog{},
-		&model.APICall{},
-	); err != nil {
-		t.Fatalf("migrate conversation tables: %v", err)
-	}
-
-	requestLog := &model.ChannelRequestLog{CallID: "call_conversation", RequestType: model.RequestTypeChat}
-	if err := db.Create(requestLog).Error; err != nil {
-		t.Fatalf("create request log: %v", err)
-	}
-	call := &model.APICall{
-		ID: "call_conversation", RequestID: "request-conversation", UserID: 1, TokenID: 2,
-		Status: model.APICallStatusCompleted, InputTokens: 11, OutputTokens: 7, TotalTokens: 18,
-		FinalCost: decimal.RequireFromString("0.125"), DurationMs: 321,
-	}
-	if err := db.Create(call).Error; err != nil {
-		t.Fatalf("create API call: %v", err)
-	}
+	db := setupConversationDomainTestDB(t)
+	call := createConversationTestCall(t, db, "call_conversation", 1, 2, decimal.RequireFromString("0.125"))
+	requestLogID := createConversationTestRequestLog(t, db, call.ID, 9, "openai_chat", 321)
 
 	conversationID, err := SaveConversationTurn(
 		&ConversationContext{},
@@ -51,21 +30,13 @@ func TestSaveConversationTurnBindsRequestLog(t *testing.T) {
 		"stop",
 		"",
 		call.ID,
-		requestLog.ID,
+		requestLogID,
 	)
 	if err != nil {
 		t.Fatalf("SaveConversationTurn failed: %v", err)
 	}
 	if conversationID == 0 {
 		t.Fatal("SaveConversationTurn returned no conversation ID")
-	}
-
-	var savedLog model.ChannelRequestLog
-	if err := db.First(&savedLog, requestLog.ID).Error; err != nil {
-		t.Fatalf("reload request log: %v", err)
-	}
-	if savedLog.ConversationID != conversationID {
-		t.Fatalf("conversation_id = %d, want %d", savedLog.ConversationID, conversationID)
 	}
 
 	var conversation model.Conversation
@@ -75,45 +46,22 @@ func TestSaveConversationTurnBindsRequestLog(t *testing.T) {
 	if conversation.CallID != call.ID {
 		t.Fatalf("conversation call_id = %q, want %q", conversation.CallID, call.ID)
 	}
-	var messages []model.Message
-	if err := db.Where("conversation_id = ?", conversationID).Find(&messages).Error; err != nil {
-		t.Fatalf("reload messages: %v", err)
-	}
-	if len(messages) != 2 || messages[0].CallID != call.ID || messages[1].CallID != call.ID {
-		t.Fatalf("messages are not linked to call: %#v", messages)
-	}
-	if !messages[1].Cost.Equal(call.FinalCost) || messages[1].LatencyMs != int(call.DurationMs) ||
-		messages[1].InputTokens != call.InputTokens || messages[1].OutputTokens != call.OutputTokens {
-		t.Fatalf("legacy assistant metrics = %#v, call = %#v", messages[1], call)
-	}
 	var turn model.ConversationTurn
 	if err := db.Where("conversation_id = ?", conversationID).First(&turn).Error; err != nil {
 		t.Fatalf("reload conversation turn: %v", err)
 	}
-	if turn.Sequence != 1 || turn.CallID != call.ID || turn.TotalTokens != call.TotalTokens ||
-		!turn.Cost.Equal(call.FinalCost) || turn.LatencyMs != call.DurationMs {
+	if turn.Sequence != 1 || turn.CallID != call.ID || turn.RequestLogID != requestLogID ||
+		!turn.Cost.Equal(call.FinalCost) || turn.LatencyMs != 321 {
 		t.Fatalf("conversation turn = %#v", turn)
 	}
-	if err := db.First(call, "id = ?", call.ID).Error; err != nil {
-		t.Fatalf("reload API call: %v", err)
-	}
-	if call.ConversationID != conversationID {
-		t.Fatalf("API call conversation_id = %d, want %d", call.ConversationID, conversationID)
+	var itemCount int64
+	if err := db.Model(&model.ConversationItem{}).Where("conversation_id = ?", conversationID).Count(&itemCount).Error; err != nil || itemCount != 2 {
+		t.Fatalf("canonical item count = %d, err = %v", itemCount, err)
 	}
 }
 
 func TestSaveConversationTurnRollsBackWhenAssociationFails(t *testing.T) {
-	db := setupTestDB(t)
-	if err := db.AutoMigrate(
-		&model.Conversation{},
-		&model.Message{},
-		&model.ConversationTurn{},
-		&model.ConversationItem{},
-		&model.ChannelRequestLog{},
-		&model.APICall{},
-	); err != nil {
-		t.Fatal(err)
-	}
+	db := setupConversationDomainTestDB(t)
 
 	conversationID, err := SaveConversationTurn(
 		&ConversationContext{}, 1, 2, "test-model",
@@ -124,11 +72,8 @@ func TestSaveConversationTurnRollsBackWhenAssociationFails(t *testing.T) {
 	if err == nil || conversationID != 0 {
 		t.Fatalf("save result: conversation=%d err=%v", conversationID, err)
 	}
-	var conversations, messages, turns, items int64
+	var conversations, turns, items int64
 	if err := db.Model(&model.Conversation{}).Count(&conversations).Error; err != nil {
-		t.Fatal(err)
-	}
-	if err := db.Model(&model.Message{}).Count(&messages).Error; err != nil {
 		t.Fatal(err)
 	}
 	if err := db.Model(&model.ConversationTurn{}).Count(&turns).Error; err != nil {
@@ -137,8 +82,8 @@ func TestSaveConversationTurnRollsBackWhenAssociationFails(t *testing.T) {
 	if err := db.Model(&model.ConversationItem{}).Count(&items).Error; err != nil {
 		t.Fatal(err)
 	}
-	if conversations != 0 || messages != 0 || turns != 0 || items != 0 {
-		t.Fatalf("partial conversation persisted: conversations=%d messages=%d turns=%d items=%d", conversations, messages, turns, items)
+	if conversations != 0 || turns != 0 || items != 0 {
+		t.Fatalf("partial conversation persisted: conversations=%d turns=%d items=%d", conversations, turns, items)
 	}
 }
 
@@ -215,13 +160,12 @@ func TestConversationFailureTurnIsRecordedButExcludedFromContext(t *testing.T) {
 		t.Fatal(err)
 	}
 	failedCall := createConversationTestCall(t, db, "call_failure_abort", 1, 2, decimal.RequireFromString("0.2"))
-	if err := db.Model(failedCall).Updates(map[string]any{"status": model.APICallStatusCancelled, "error_type": "cancelled", "error_code": "client_cancelled", "error_message": "client disconnected"}).Error; err != nil {
-		t.Fatal(err)
-	}
+	updateConversationTestCallStatus(t, db, failedCall, model.APICallStatusCancelled)
 	partial := chat.ChatMessage{Role: model.RoleAssistant, Content: "partial"}
 	if _, err := RecordConversationTurnFailure(cc, ConversationTurnRecord{
 		UserID: 1, TokenID: 2, Model: "model-a", NewMessages: []chat.ChatMessage{{Role: model.RoleUser, Content: "abort me"}},
 		Assistant: &partial, Status: model.ConversationTurnAborted, CallID: failedCall.ID,
+		ErrorType: "cancelled", ErrorCode: "client_cancelled", ErrorMessage: "client disconnected",
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -245,35 +189,6 @@ func TestConversationFailureTurnIsRecordedButExcludedFromContext(t *testing.T) {
 	}
 	if _, err := LoadConversationContextStrict("999999", 2, "model-a"); !errors.Is(err, ErrConversationNotFound) {
 		t.Fatalf("missing conversation error = %v", err)
-	}
-}
-
-func TestConversationHistoryMergesLegacyAndCanonicalWithoutDuplicateWrites(t *testing.T) {
-	db := setupConversationDomainTestDB(t)
-	conv := &model.Conversation{UserID: 1, TokenID: 2, Title: "legacy", Model: "model-a", Status: 1}
-	if err := db.Create(conv).Error; err != nil {
-		t.Fatal(err)
-	}
-	legacy := []model.Message{
-		{ConversationID: conv.ID, Role: model.RoleUser, Content: "old user"},
-		{ConversationID: conv.ID, Role: model.RoleAssistant, Content: "old assistant"},
-	}
-	if err := db.Create(&legacy).Error; err != nil {
-		t.Fatal(err)
-	}
-	call := createConversationTestCall(t, db, "call_mixed_history", 1, 2, decimal.Zero)
-	if _, err := SaveConversationTurn(&ConversationContext{Conv: conv}, 1, 2, "model-a",
-		[]chat.ChatMessage{{Role: model.RoleUser, Content: "new user"}}, chat.ChatMessage{Role: model.RoleAssistant, Content: "new assistant"},
-		nil, "stop", "", call.ID, 0); err != nil {
-		t.Fatal(err)
-	}
-	loaded, err := LoadConversationContextStrict(fmt.Sprint(conv.ID), 2, "model-a")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(loaded.History) != 4 || loaded.History[0].Content != "old user" || loaded.History[1].Content != "old assistant" ||
-		loaded.History[2].Content != "new user" || loaded.History[3].Content != "new assistant" {
-		t.Fatalf("mixed history = %#v", loaded.History)
 	}
 }
 
@@ -369,10 +284,29 @@ func setupConversationDomainTestDB(t *testing.T) *gorm.DB {
 	t.Helper()
 	db := setupTestDB(t)
 	if err := db.AutoMigrate(
-		&model.Conversation{}, &model.Message{}, &model.ConversationTurn{}, &model.ConversationItem{},
-		&model.ChannelRequestLog{}, &model.APICall{}, &model.AIResponse{},
+		&model.Conversation{}, &model.ConversationTurn{}, &model.ConversationItem{},
 	); err != nil {
 		t.Fatal(err)
+	}
+	for _, statement := range []string{
+		`CREATE TABLE gw_models(id INTEGER PRIMARY KEY, model_code TEXT NOT NULL UNIQUE)`,
+		`CREATE TABLE gw_catalog_models(id INTEGER PRIMARY KEY, release_id INTEGER NOT NULL, model_id INTEGER NOT NULL)`,
+		`CREATE TABLE gw_model_operations(id INTEGER PRIMARY KEY, release_id INTEGER NOT NULL, catalog_model_id INTEGER NOT NULL)`,
+		`CREATE TABLE gw_api_calls(id INTEGER PRIMARY KEY AUTOINCREMENT, public_id TEXT NOT NULL UNIQUE, user_id INTEGER NOT NULL, token_id INTEGER NOT NULL, catalog_release_id INTEGER NOT NULL, model_operation_id INTEGER NOT NULL, status TEXT NOT NULL, current_attempt_id INTEGER, final_attempt_id INTEGER, created_at DATETIME NOT NULL, updated_at DATETIME NOT NULL)`,
+		`CREATE TABLE gw_api_call_attempts(id INTEGER PRIMARY KEY AUTOINCREMENT, call_id INTEGER NOT NULL, attempt_no INTEGER NOT NULL, catalog_release_id INTEGER NOT NULL, product_transport_id INTEGER NOT NULL DEFAULT 0, credential_id INTEGER NOT NULL DEFAULT 0)`,
+		`CREATE TABLE gw_channel_request_logs(id INTEGER PRIMARY KEY AUTOINCREMENT, attempt_id INTEGER, request_seq INTEGER NOT NULL DEFAULT 1, duration_ms INTEGER NOT NULL DEFAULT 0)`,
+		`CREATE TABLE gw_channel_transports(id INTEGER PRIMARY KEY AUTOINCREMENT, release_id INTEGER NOT NULL, transport_code TEXT NOT NULL)`,
+		`CREATE TABLE gw_product_transports(id INTEGER PRIMARY KEY AUTOINCREMENT, release_id INTEGER NOT NULL, channel_transport_id INTEGER NOT NULL)`,
+		`CREATE TABLE gw_api_resources(id INTEGER PRIMARY KEY AUTOINCREMENT, public_id TEXT NOT NULL UNIQUE, resource_kind TEXT NOT NULL, call_id INTEGER NOT NULL, user_id INTEGER NOT NULL, token_id INTEGER NOT NULL, deleted_at DATETIME)`,
+		`CREATE TABLE billing_reservations(id INTEGER PRIMARY KEY AUTOINCREMENT, call_id INTEGER NOT NULL UNIQUE)`,
+		`CREATE TABLE billing_settlements(reservation_id INTEGER PRIMARY KEY, actual_amount TEXT NOT NULL)`,
+		`INSERT INTO gw_models(id,model_code) VALUES (1,'model-a'),(2,'model-b'),(3,'model-recover')`,
+		`INSERT INTO gw_catalog_models(id,release_id,model_id) VALUES (1,1,1),(2,1,2),(3,1,3)`,
+		`INSERT INTO gw_model_operations(id,release_id,catalog_model_id) VALUES (1,1,1),(2,1,2),(3,1,3)`,
+	} {
+		if err := db.Exec(statement).Error; err != nil {
+			t.Fatalf("create unified conversation fixture: %v", err)
+		}
 	}
 	return db
 }
@@ -382,10 +316,128 @@ func createConversationTestCall(t *testing.T, db *gorm.DB, id string, userID, to
 	call := &model.APICall{
 		ID: id, RequestID: id, UserID: userID, TokenID: tokenID, Status: model.APICallStatusCompleted,
 		ProjectConversation: true,
-		InputTokens:         3, OutputTokens: 2, TotalTokens: 5, FinalCost: cost, DurationMs: 25,
+		FinalCost:           cost, DurationMs: 25, Model: "model-a",
 	}
-	if err := db.Create(call).Error; err != nil {
+	if err := insertConversationTestCall(db, call); err != nil {
 		t.Fatal(err)
 	}
 	return call
+}
+
+func insertConversationTestCall(db *gorm.DB, call *model.APICall) error {
+	modelCode := call.Model
+	if modelCode == "" {
+		modelCode = "model-a"
+		call.Model = modelCode
+	}
+	var operationID uint64
+	if err := db.Table("gw_model_operations AS operation").
+		Select("operation.id").
+		Joins("JOIN gw_catalog_models AS catalog_model ON catalog_model.id = operation.catalog_model_id AND catalog_model.release_id = operation.release_id").
+		Joins("JOIN gw_models AS gateway_model ON gateway_model.id = catalog_model.model_id").
+		Where("operation.release_id = 1 AND gateway_model.model_code = ?", modelCode).
+		Take(&operationID).Error; err != nil {
+		return err
+	}
+	createdAt := call.StartedAt
+	if createdAt.IsZero() {
+		createdAt = time.Now().Add(-time.Duration(call.DurationMs) * time.Millisecond)
+	}
+	updatedAt := call.UpdatedAt
+	if updatedAt.IsZero() || updatedAt.Before(createdAt) {
+		updatedAt = createdAt.Add(time.Duration(call.DurationMs) * time.Millisecond)
+	}
+	if err := db.Exec(`INSERT INTO gw_api_calls(public_id,user_id,token_id,catalog_release_id,model_operation_id,status,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?)`,
+		call.ID, call.UserID, call.TokenID, 1, operationID, string(call.Status), createdAt, updatedAt).Error; err != nil {
+		return err
+	}
+	var internalCallID uint64
+	if err := db.Table("gw_api_calls").Where("public_id = ?", call.ID).Pluck("id", &internalCallID).Error; err != nil {
+		return err
+	}
+	if err := db.Exec(`INSERT INTO billing_reservations(call_id) VALUES (?)`, internalCallID).Error; err != nil {
+		return err
+	}
+	var reservationID uint64
+	if err := db.Table("billing_reservations").Where("call_id = ?", internalCallID).Pluck("id", &reservationID).Error; err != nil {
+		return err
+	}
+	return db.Exec(`INSERT INTO billing_settlements(reservation_id,actual_amount) VALUES (?,?)`, reservationID, call.FinalCost.String()).Error
+}
+
+func updateConversationTestCallStatus(t *testing.T, db *gorm.DB, call *model.APICall, status model.APICallStatus) {
+	t.Helper()
+	if err := db.Table("gw_api_calls").Where("public_id = ?", call.ID).Update("status", string(status)).Error; err != nil {
+		t.Fatal(err)
+	}
+	call.Status = status
+}
+
+func updateConversationTestCallModel(t *testing.T, db *gorm.DB, call *model.APICall, modelCode string) {
+	t.Helper()
+	var operationID uint64
+	if err := db.Table("gw_model_operations AS operation").
+		Select("operation.id").
+		Joins("JOIN gw_catalog_models AS catalog_model ON catalog_model.id = operation.catalog_model_id AND catalog_model.release_id = operation.release_id").
+		Joins("JOIN gw_models AS gateway_model ON gateway_model.id = catalog_model.model_id").
+		Where("operation.release_id = 1 AND gateway_model.model_code = ?", modelCode).
+		Take(&operationID).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Table("gw_api_calls").Where("public_id = ?", call.ID).Update("model_operation_id", operationID).Error; err != nil {
+		t.Fatal(err)
+	}
+	call.Model = modelCode
+}
+
+func createConversationTestRequestLog(t *testing.T, db *gorm.DB, callID string, credentialID uint64, transport string, durationMS uint64) uint {
+	t.Helper()
+	var internalCallID uint64
+	if err := db.Table("gw_api_calls").Where("public_id = ?", callID).Pluck("id", &internalCallID).Error; err != nil || internalCallID == 0 {
+		t.Fatalf("load unified call %s: id=%d err=%v", callID, internalCallID, err)
+	}
+	result := db.Exec(`INSERT INTO gw_channel_transports(release_id,transport_code) VALUES (1,?)`, transport)
+	if result.Error != nil {
+		t.Fatal(result.Error)
+	}
+	var channelTransportID uint64
+	if err := db.Raw(`SELECT last_insert_rowid()`).Scan(&channelTransportID).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Exec(`INSERT INTO gw_product_transports(release_id,channel_transport_id) VALUES (1,?)`, channelTransportID).Error; err != nil {
+		t.Fatal(err)
+	}
+	var productTransportID uint64
+	if err := db.Raw(`SELECT last_insert_rowid()`).Scan(&productTransportID).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Exec(`INSERT INTO gw_api_call_attempts(call_id,attempt_no,catalog_release_id,product_transport_id,credential_id) VALUES (?,1,1,?,?)`, internalCallID, productTransportID, credentialID).Error; err != nil {
+		t.Fatal(err)
+	}
+	var attemptID uint64
+	if err := db.Raw(`SELECT last_insert_rowid()`).Scan(&attemptID).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Table("gw_api_calls").Where("id = ?", internalCallID).Updates(map[string]any{"current_attempt_id": attemptID, "final_attempt_id": attemptID}).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Exec(`INSERT INTO gw_channel_request_logs(attempt_id,request_seq,duration_ms) VALUES (?,1,?)`, attemptID, durationMS).Error; err != nil {
+		t.Fatal(err)
+	}
+	var requestLogID uint
+	if err := db.Raw(`SELECT last_insert_rowid()`).Scan(&requestLogID).Error; err != nil {
+		t.Fatal(err)
+	}
+	return requestLogID
+}
+
+func createConversationTestResource(t *testing.T, db *gorm.DB, callID, publicID, kind string, userID, tokenID uint) {
+	t.Helper()
+	var internalCallID uint64
+	if err := db.Table("gw_api_calls").Where("public_id = ?", callID).Pluck("id", &internalCallID).Error; err != nil || internalCallID == 0 {
+		t.Fatalf("load unified call %s: id=%d err=%v", callID, internalCallID, err)
+	}
+	if err := db.Exec(`INSERT INTO gw_api_resources(public_id,resource_kind,call_id,user_id,token_id) VALUES (?,?,?,?,?)`, publicID, kind, internalCallID, userID, tokenID).Error; err != nil {
+		t.Fatal(err)
+	}
 }

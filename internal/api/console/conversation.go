@@ -70,10 +70,8 @@ func ListConversations(c *gin.Context) {
 
 // GetConversationMessages 获取对话的消息列表
 func GetConversationMessages(c *gin.Context) {
-	idStr := c.Param("id")
-	var id uint
-	if _, err := fmt.Sscanf(idStr, "%d", &id); err != nil {
-		resp.BadRequest(c, errors.WithMessage(errors.ErrInvalidParams, "invalid conversation id"))
+	id, err := resp.ParseUintParam(c, "id")
+	if err != nil {
 		return
 	}
 
@@ -164,12 +162,10 @@ func GetConversationMessages(c *gin.Context) {
 	})
 }
 
-// GetConversationTurns returns canonical conversation turns independently
-// from the legacy message projection so both datasets have stable pagination.
+// GetConversationTurns returns canonical conversation turns with stable pagination.
 func GetConversationTurns(c *gin.Context) {
-	var id uint
-	if _, err := fmt.Sscanf(c.Param("id"), "%d", &id); err != nil {
-		resp.BadRequest(c, errors.WithMessage(errors.ErrInvalidParams, "invalid conversation id"))
+	id, err := resp.ParseUintParam(c, "id")
+	if err != nil {
 		return
 	}
 	conversation, err := conversationService.GetConversation(id)
@@ -239,7 +235,7 @@ func conversationTurnResponses(turns []service.ConversationTurnItem, includeInte
 	return result
 }
 
-func conversationCallStatuses(messages []model.Message) (map[string]model.APICallStatus, error) {
+func conversationCallStatuses(messages []service.ConversationMessage) (map[string]model.APICallStatus, error) {
 	type callStatusRow struct {
 		ID     string              `gorm:"column:id"`
 		Status model.APICallStatus `gorm:"column:status"`
@@ -261,8 +257,9 @@ func conversationCallStatuses(messages []model.Message) (map[string]model.APICal
 		return statuses, nil
 	}
 	var rows []callStatusRow
-	if err := model.DB().Model(&model.APICall{}).
-		Select("id", "status").Where("id IN ?", callIDs).Find(&rows).Error; err != nil {
+	if err := model.DB().Table("gw_api_calls").
+		Select(`public_id AS id, CASE status WHEN 'retry_pending' THEN 'in_progress' WHEN 'indeterminate' THEN 'failed' ELSE status END AS status`).
+		Where("public_id IN ?", callIDs).Find(&rows).Error; err != nil {
 		return nil, err
 	}
 	for _, row := range rows {

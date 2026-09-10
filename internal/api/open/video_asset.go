@@ -9,6 +9,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/mirainya/Prism/internal/api/middleware"
 	"github.com/mirainya/Prism/internal/api/resp"
+	"github.com/mirainya/Prism/internal/model"
 	"github.com/mirainya/Prism/internal/video"
 	perrors "github.com/mirainya/Prism/pkg/errors"
 )
@@ -19,12 +20,7 @@ func CreateVideoAsset(c *gin.Context) {
 		resp.ErrorMsg(c, http.StatusUnauthorized, 401, "unauthorized")
 		return
 	}
-	if videoEngine == nil {
-		resp.ErrorMsg(c, http.StatusServiceUnavailable, 503, "video engine unavailable")
-		return
-	}
-
-	req := &video.CreateAssetRequest{TokenID: token.ID}
+	req := &video.CreateAssetRequest{UserID: token.UserID, TokenID: token.ID}
 	contentType := c.ContentType()
 	switch {
 	case strings.HasPrefix(contentType, "multipart/form-data"):
@@ -57,6 +53,7 @@ func CreateVideoAsset(c *gin.Context) {
 			req.DurationSeconds = &value
 		}
 	case contentType == "application/json":
+		c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, 1<<20)
 		var body struct {
 			URL             string   `json:"url" binding:"required"`
 			Kind            string   `json:"kind" binding:"required"`
@@ -74,7 +71,7 @@ func CreateVideoAsset(c *gin.Context) {
 		return
 	}
 
-	asset, err := video.NewAssetService(videoEngine.DB()).Create(c.Request.Context(), req)
+	asset, err := video.NewUnifiedAssetService(model.DB()).Create(c.Request.Context(), req)
 	if err != nil {
 		writeVideoAssetError(c, err)
 		return
@@ -88,11 +85,7 @@ func GetVideoAsset(c *gin.Context) {
 		resp.ErrorMsg(c, http.StatusUnauthorized, 401, "unauthorized")
 		return
 	}
-	if videoEngine == nil {
-		resp.NotFound(c, perrors.ErrTaskNotFound)
-		return
-	}
-	asset, err := video.NewAssetService(videoEngine.DB()).Get(c.Request.Context(), token.ID, c.Param("asset_id"))
+	asset, err := video.NewUnifiedAssetService(model.DB()).Get(c.Request.Context(), token.ID, c.Param("asset_id"))
 	if err != nil {
 		writeVideoAssetError(c, err)
 		return
@@ -106,11 +99,7 @@ func DeleteVideoAsset(c *gin.Context) {
 		resp.ErrorMsg(c, http.StatusUnauthorized, 401, "unauthorized")
 		return
 	}
-	if videoEngine == nil {
-		resp.NotFound(c, perrors.ErrTaskNotFound)
-		return
-	}
-	err := video.NewAssetService(videoEngine.DB()).Delete(c.Request.Context(), token.ID, c.Param("asset_id"))
+	err := video.NewUnifiedAssetService(model.DB()).Delete(c.Request.Context(), token.ID, c.Param("asset_id"))
 	if err != nil {
 		writeVideoAssetError(c, err)
 		return
@@ -119,14 +108,21 @@ func DeleteVideoAsset(c *gin.Context) {
 }
 
 func writeVideoAssetError(c *gin.Context, err error) {
+	var maxErr *http.MaxBytesError
+	if errors.As(err, &maxErr) {
+		resp.ErrorMsg(c, http.StatusRequestEntityTooLarge, 413, "video asset request body is too large")
+		return
+	}
 	switch {
 	case errors.Is(err, video.ErrAssetNotFound):
-		resp.ErrorMsg(c, http.StatusNotFound, 404, err.Error())
+		resp.ErrorMsg(c, http.StatusNotFound, 404, "video asset not found")
 	case errors.Is(err, video.ErrFileTooLarge):
-		resp.ErrorMsg(c, http.StatusRequestEntityTooLarge, 413, err.Error())
+		resp.ErrorMsg(c, http.StatusRequestEntityTooLarge, 413, "video asset is too large")
 	case errors.Is(err, video.ErrInvalidAsset), errors.Is(err, video.ErrAssetNotReady):
-		resp.BadRequest(c, perrors.WithMessage(perrors.ErrInvalidParams, err.Error()))
+		resp.BadRequest(c, perrors.WithMessage(perrors.ErrInvalidParams, "invalid video asset"))
+	case errors.Is(err, video.ErrAssetInUse):
+		resp.ErrorMsg(c, http.StatusConflict, 409, "video asset is still in use")
 	default:
-		resp.ErrorMsg(c, http.StatusInternalServerError, 500, err.Error())
+		resp.ErrorMsg(c, http.StatusInternalServerError, 500, "video asset operation failed")
 	}
 }

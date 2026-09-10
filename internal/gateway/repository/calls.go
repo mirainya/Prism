@@ -4,10 +4,120 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"time"
 
 	"github.com/mirainya/Prism/internal/gateway/billing"
 	"github.com/mirainya/Prism/internal/gateway/execution"
 )
+
+type CallLease struct {
+	CallID, AttemptID uint64
+	Owner             string
+	ExpiresAt         time.Time
+}
+
+func (s *Store) ClaimCallLease(ctx context.Context, tx *sql.Tx, callID, attemptID uint64, owner string, lease time.Duration) (CallLease, error) {
+	if tx == nil || callID == 0 || attemptID == 0 || owner == "" || len(owner) > 128 || lease <= 0 {
+		return CallLease{}, ErrInvalidInput
+	}
+	expiresAt := nowUTC().Add(lease).Truncate(time.Millisecond)
+	return s.claimCallLeaseUntil(ctx, tx, callID, attemptID, owner, expiresAt)
+}
+
+func (s *Store) claimCallLeaseUntil(ctx context.Context, tx *sql.Tx, callID, attemptID uint64, owner string, expiresAt time.Time) (CallLease, error) {
+	if tx == nil || callID == 0 || attemptID == 0 || owner == "" || len(owner) > 128 || expiresAt.IsZero() {
+		return CallLease{}, ErrInvalidInput
+	}
+	result, err := tx.ExecContext(ctx, `UPDATE gw_api_calls
+SET lease_owner=?,lease_expires_at=?,next_action_at=NULL,updated_at=?
+WHERE id=? AND current_attempt_id=? AND status='in_progress'
+  AND (lease_owner='' OR lease_expires_at IS NULL OR lease_expires_at<=UTC_TIMESTAMP(3))`,
+		owner, expiresAt.UTC(), nowUTC(), callID, attemptID)
+	if err != nil {
+		return CallLease{}, fmt.Errorf("claim call lease: %w", err)
+	}
+	ok, err := affected(result)
+	if err != nil {
+		return CallLease{}, err
+	}
+	if !ok {
+		return CallLease{}, ErrConflict
+	}
+	return CallLease{CallID: callID, AttemptID: attemptID, Owner: owner, ExpiresAt: expiresAt.UTC()}, nil
+}
+
+// AssertCallLease locks and verifies the exact lease generation. ExpiresAt is
+// part of the fence so reusing an owner name cannot authorize an older worker.
+func (s *Store) AssertCallLease(ctx context.Context, tx *sql.Tx, lease CallLease) error {
+	if tx == nil || lease.CallID == 0 || lease.AttemptID == 0 || lease.Owner == "" || len(lease.Owner) > 128 || lease.ExpiresAt.IsZero() {
+		return ErrInvalidInput
+	}
+	var id uint64
+	err := tx.QueryRowContext(ctx, `SELECT id FROM gw_api_calls
+WHERE id=? AND current_attempt_id=? AND status='in_progress'
+  AND lease_owner=? AND lease_expires_at=? AND lease_expires_at>UTC_TIMESTAMP(3)
+FOR UPDATE`, lease.CallID, lease.AttemptID, lease.Owner, lease.ExpiresAt.UTC()).Scan(&id)
+	if err == sql.ErrNoRows {
+		return ErrConflict
+	}
+	return err
+}
+
+func (s *Store) RenewCallLease(ctx context.Context, tx *sql.Tx, lease CallLease, duration time.Duration) (CallLease, error) {
+	if duration <= 0 {
+		return CallLease{}, ErrInvalidInput
+	}
+	expiresAt := nowUTC().Add(duration).Truncate(time.Millisecond)
+	return s.renewCallLeaseUntil(ctx, tx, lease, expiresAt)
+}
+
+func (s *Store) renewCallLeaseUntil(ctx context.Context, tx *sql.Tx, lease CallLease, expiresAt time.Time) (CallLease, error) {
+	if err := s.AssertCallLease(ctx, tx, lease); err != nil {
+		return CallLease{}, err
+	}
+	if !expiresAt.After(lease.ExpiresAt) {
+		return CallLease{}, ErrInvalidInput
+	}
+	result, err := tx.ExecContext(ctx, `UPDATE gw_api_calls SET lease_expires_at=?,updated_at=?
+WHERE id=? AND current_attempt_id=? AND status='in_progress' AND lease_owner=? AND lease_expires_at=?`,
+		expiresAt, nowUTC(), lease.CallID, lease.AttemptID, lease.Owner, lease.ExpiresAt.UTC())
+	if err != nil {
+		return CallLease{}, fmt.Errorf("renew call lease: %w", err)
+	}
+	ok, err := affected(result)
+	if err != nil {
+		return CallLease{}, err
+	}
+	if !ok {
+		return CallLease{}, ErrConflict
+	}
+	lease.ExpiresAt = expiresAt
+	return lease, nil
+}
+
+// ReleaseCallLease matches the exact lease even after a terminal transition
+// has cleared current_attempt_id. This lets result, Outbox, and lease updates
+// commit atomically without weakening the earlier assertion.
+func (s *Store) ReleaseCallLease(ctx context.Context, tx *sql.Tx, lease CallLease) error {
+	if tx == nil || lease.CallID == 0 || lease.AttemptID == 0 || lease.Owner == "" || len(lease.Owner) > 128 || lease.ExpiresAt.IsZero() {
+		return ErrInvalidInput
+	}
+	result, err := tx.ExecContext(ctx, `UPDATE gw_api_calls SET lease_owner='',lease_expires_at=NULL,updated_at=?
+WHERE id=? AND lease_owner=? AND lease_expires_at=?
+  AND EXISTS (SELECT 1 FROM gw_api_call_attempts a WHERE a.id=? AND a.call_id=gw_api_calls.id)`,
+		nowUTC(), lease.CallID, lease.Owner, lease.ExpiresAt.UTC(), lease.AttemptID)
+	if err != nil {
+		return fmt.Errorf("release call lease: %w", err)
+	}
+	ok, err := affected(result)
+	if err != nil {
+		return err
+	}
+	if !ok {
+		return ErrConflict
+	}
+	return nil
+}
 
 type CreateCallInput struct {
 	PublicID                                                       string
@@ -51,16 +161,38 @@ func (s *Store) CreateCall(ctx context.Context, db DB, in CreateCallInput) (uint
 }
 
 type BeginAttemptInput struct {
-	CallID, CatalogReleaseID, SKUID, RouteID, OfferingID, ProductTransportID uint64
-	CredentialPoolID, CredentialID, CredentialVersionID, PurposeGrantID      uint64
+	CallID, CatalogReleaseID, SKUID, RouteID, OfferingID, CostPlanID, ProductTransportID uint64
+	CredentialPoolID, CredentialID, CredentialVersionID, PurposeGrantID                  uint64
 }
 
 // BeginAttempt and the conditional call update must run in the same SQL
 // transaction. The generated unique active marker is the final database guard
 // against two workers owning one call concurrently.
 func (s *Store) BeginAttempt(ctx context.Context, tx *sql.Tx, in BeginAttemptInput) (uint64, error) {
-	if tx == nil || in.CallID == 0 || in.CatalogReleaseID == 0 || in.SKUID == 0 || in.RouteID == 0 || in.OfferingID == 0 || in.ProductTransportID == 0 || in.CredentialPoolID == 0 || in.CredentialID == 0 || in.CredentialVersionID == 0 || in.PurposeGrantID == 0 {
+	if tx == nil || in.CallID == 0 || in.CatalogReleaseID == 0 || in.SKUID == 0 || in.RouteID == 0 || in.OfferingID == 0 || in.CostPlanID == 0 || in.ProductTransportID == 0 || in.CredentialPoolID == 0 || in.CredentialID == 0 || in.CredentialVersionID == 0 || in.PurposeGrantID == 0 {
 		return 0, ErrInvalidInput
+	}
+	var callStatus string
+	var releaseID, skuID uint64
+	var currentAttempt sql.NullInt64
+	if err := tx.QueryRowContext(ctx, `SELECT status,catalog_release_id,sku_id,current_attempt_id FROM gw_api_calls WHERE id=? FOR UPDATE`, in.CallID).Scan(&callStatus, &releaseID, &skuID, &currentAttempt); err != nil {
+		return 0, err
+	}
+	if currentAttempt.Valid || releaseID != in.CatalogReleaseID || skuID != in.SKUID || (callStatus != "received" && callStatus != "retry_pending" && callStatus != "in_progress") {
+		return 0, ErrConflict
+	}
+	// The call row serializes attempts; read the latest number before pool locks.
+	var attemptNo uint64
+	var previousState string
+	if err := tx.QueryRowContext(ctx, `SELECT attempt_no,state FROM gw_api_call_attempts WHERE call_id=? ORDER BY attempt_no DESC LIMIT 1 FOR UPDATE`, in.CallID).Scan(&attemptNo, &previousState); err != nil && err != sql.ErrNoRows {
+		return 0, fmt.Errorf("allocate attempt number: %w", err)
+	}
+	if previousState != "" && previousState != "failed" && previousState != "not_created" {
+		return 0, ErrConflict
+	}
+	attemptNo++
+	if err := lockAdmissionChannel(ctx, tx, in.CredentialPoolID); err != nil {
+		return 0, err
 	}
 	var poolStatus string
 	if err := tx.QueryRowContext(ctx, `SELECT status FROM gw_credential_pools WHERE id=? FOR UPDATE`, in.CredentialPoolID).Scan(&poolStatus); err == sql.ErrNoRows {
@@ -71,19 +203,21 @@ func (s *Store) BeginAttempt(ctx context.Context, tx *sql.Tx, in BeginAttemptInp
 		return 0, ErrConflict
 	}
 	var credentialStatus string
-	if err := tx.QueryRowContext(ctx, `SELECT status FROM gw_credentials WHERE id=? AND credential_pool_id=? FOR UPDATE`, in.CredentialID, in.CredentialPoolID).Scan(&credentialStatus); err == sql.ErrNoRows {
+	var currentVersion sql.NullInt64
+	if err := tx.QueryRowContext(ctx, `SELECT status,current_version_id FROM gw_credentials WHERE id=? AND credential_pool_id=? FOR UPDATE`, in.CredentialID, in.CredentialPoolID).Scan(&credentialStatus, &currentVersion); err == sql.ErrNoRows {
 		return 0, ErrNotFound
 	} else if err != nil {
 		return 0, err
-	} else if credentialStatus != "active" {
+	} else if credentialStatus != "active" || !currentVersion.Valid || uint64(currentVersion.Int64) != in.CredentialVersionID {
 		return 0, ErrConflict
 	}
-	var versionStatus string
-	if err := tx.QueryRowContext(ctx, `SELECT status FROM gw_credential_versions WHERE id=? AND credential_id=? FOR SHARE`, in.CredentialVersionID, in.CredentialID).Scan(&versionStatus); err == sql.ErrNoRows {
+	var versionStatus, secretStatus string
+	var validUntil sql.NullTime
+	if err := tx.QueryRowContext(ctx, `SELECT v.status,v.valid_until,i.status FROM gw_credential_versions v JOIN gw_credential_secret_identities i ON i.id=v.secret_identity_id WHERE v.id=? AND v.credential_id=? AND v.encrypted_blob_id IS NOT NULL FOR SHARE`, in.CredentialVersionID, in.CredentialID).Scan(&versionStatus, &validUntil, &secretStatus); err == sql.ErrNoRows {
 		return 0, ErrNotFound
 	} else if err != nil {
 		return 0, err
-	} else if versionStatus != "active" {
+	} else if versionStatus != "active" || secretStatus != "active" || validUntil.Valid && !validUntil.Time.After(nowUTC()) {
 		return 0, ErrConflict
 	}
 	var grantStatus, grantPurpose string
@@ -94,14 +228,10 @@ func (s *Store) BeginAttempt(ctx context.Context, tx *sql.Tx, in BeginAttemptInp
 	} else if grantStatus != "active" || grantPurpose != "execution" {
 		return 0, ErrConflict
 	}
-	var attemptNo uint64
-	if err := tx.QueryRowContext(ctx, `SELECT COALESCE(MAX(attempt_no),0)+1 FROM gw_api_call_attempts WHERE call_id=? FOR UPDATE`, in.CallID).Scan(&attemptNo); err != nil {
-		return 0, fmt.Errorf("allocate attempt number: %w", err)
-	}
 	now := nowUTC()
 	result, err := tx.ExecContext(ctx, `INSERT INTO gw_api_call_attempts
- (call_id,attempt_no,catalog_release_id,sku_id,route_id,offering_id,product_transport_id,credential_pool_id,credential_id,credential_version_id,purpose_grant_id,state,state_version,created_at,updated_at)
- VALUES (?,?,?,?,?,?,?,?,?,?,?,'started',1,?,?)`, in.CallID, attemptNo, in.CatalogReleaseID, in.SKUID, in.RouteID, in.OfferingID, in.ProductTransportID, in.CredentialPoolID, in.CredentialID, in.CredentialVersionID, in.PurposeGrantID, now, now)
+	 (call_id,attempt_no,catalog_release_id,sku_id,route_id,offering_id,cost_plan_id,product_transport_id,credential_pool_id,credential_id,credential_version_id,purpose_grant_id,state,state_version,created_at,updated_at)
+	 VALUES (?,?,?,?,?,?,?,?,?,?,?,?,'started',1,?,?)`, in.CallID, attemptNo, in.CatalogReleaseID, in.SKUID, in.RouteID, in.OfferingID, in.CostPlanID, in.ProductTransportID, in.CredentialPoolID, in.CredentialID, in.CredentialVersionID, in.PurposeGrantID, now, now)
 	if err != nil {
 		return 0, fmt.Errorf("insert attempt: %w", err)
 	}
@@ -130,8 +260,11 @@ func (s *Store) TransitionCall(ctx context.Context, tx *sql.Tx, callID uint64, f
 	if err := execution.TransitionCall(from, to); err != nil {
 		return err
 	}
+	if !isTerminalCall(to) {
+		finalAttemptID = nil
+	}
 	now := nowUTC()
-	result, err := tx.ExecContext(ctx, `UPDATE gw_api_calls SET status=?,state_version=state_version+1,current_attempt_id=CASE WHEN ? THEN NULL ELSE current_attempt_id END,final_attempt_id=COALESCE(?,final_attempt_id),updated_at=? WHERE id=? AND status=? AND state_version=?`, string(to), isTerminalCall(to), nullableID(finalAttemptID), now, callID, string(from), expectedVersion)
+	result, err := tx.ExecContext(ctx, `UPDATE gw_api_calls SET status=?,state_version=state_version+1,current_attempt_id=CASE WHEN ? THEN NULL ELSE current_attempt_id END,final_attempt_id=COALESCE(?,final_attempt_id),updated_at=? WHERE id=? AND status=? AND state_version=?`, string(to), isTerminalCall(to) || to == execution.CallRetryPending, nullableID(finalAttemptID), now, callID, string(from), expectedVersion)
 	if err != nil {
 		return fmt.Errorf("transition call: %w", err)
 	}

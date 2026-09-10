@@ -1,101 +1,76 @@
 package console
 
 import (
+	"context"
 	"reflect"
 	"testing"
 
+	"github.com/DATA-DOG/go-sqlmock"
 	"github.com/mirainya/Prism/internal/model"
-	"github.com/mirainya/Prism/internal/video"
+	"gorm.io/driver/mysql"
+	"gorm.io/gorm"
 )
 
-func TestVideoTaskTypesForChannel(t *testing.T) {
-	tests := []struct {
-		name         string
-		channel      video.VideoChannel
-		rule         playgroundVideoModelValidation
-		wantTaskType []string
-	}{
-		{
-			name:    "official channel supports frame modes",
-			channel: video.VideoChannel{Capabilities: []byte(`{"first_frame":true,"last_frame":true}`)},
-			wantTaskType: []string{
-				"text", "first_frame", "first_last_frame", "multimodal",
-			},
-		},
-		{
-			name:    "h channel supports text and references",
-			channel: video.VideoChannel{Capabilities: []byte(`{"audio":true}`)},
-			wantTaskType: []string{
-				"text", "multimodal",
-			},
-		},
-		{
-			name:    "seedance 2.5 requires multimodal references",
-			channel: video.VideoChannel{Capabilities: []byte(`{"audio":false}`)},
-			rule: playgroundVideoModelValidation{
-				TaskModes:    []string{"references"},
-				RequireMedia: true,
-				AllowedRoles: []string{"reference_image", "reference_video", "reference_audio"},
-			},
-			wantTaskType: []string{"multimodal"},
-		},
-		{
-			name:    "h seedance 2.5 supports video extension",
-			channel: video.VideoChannel{Capabilities: []byte(`{"audio":true}`)},
-			rule: playgroundVideoModelValidation{
-				TaskModes:    []string{"text", "references", "video_extension"},
-				AllowedRoles: []string{"reference_image", "reference_video", "reference_audio"},
-			},
-			wantTaskType: []string{"text", "multimodal", "video_extension"},
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			got := videoTaskTypesForChannel(tt.channel, tt.rule)
-			if !reflect.DeepEqual(got, tt.wantTaskType) {
-				t.Fatalf("task types = %#v, want %#v", got, tt.wantTaskType)
-			}
-		})
-	}
-}
-
-func TestBuildPlaygroundVideoRequestUsesExplicitChannel(t *testing.T) {
-	req, err := buildPlaygroundVideoRequest(map[string]any{
-		"model":      "seedance-2.0",
-		"prompt":     "test",
-		"channel_id": float64(2),
-	}, &model.Token{BaseModel: model.BaseModel{ID: 7}, UserID: 9})
+func playgroundVideoCatalogMock(t *testing.T) sqlmock.Sqlmock {
+	t.Helper()
+	db, mock, err := sqlmock.New()
 	if err != nil {
 		t.Fatal(err)
 	}
-	if req.ChannelID != 2 {
-		t.Fatalf("channel id = %d, want 2", req.ChannelID)
+	gdb, err := gorm.Open(mysql.New(mysql.Config{Conn: db, SkipInitializeWithVersion: true}), &gorm.Config{DisableAutomaticPing: true})
+	if err != nil {
+		t.Fatal(err)
 	}
-	if _, exists := req.Params["channel_id"]; exists {
-		t.Fatal("channel_id must not be forwarded as an upstream parameter")
+	var old *gorm.DB
+	if model.HasDB() {
+		old = model.DB()
 	}
+	model.SetDB(gdb)
+	t.Cleanup(func() {
+		model.SetDB(old)
+		_ = db.Close()
+		if err := mock.ExpectationsWereMet(); err != nil {
+			t.Error(err)
+		}
+	})
+	return mock
 }
 
-func TestBuildPlaygroundVideoRequestRejectsInvalidChannel(t *testing.T) {
-	_, err := buildPlaygroundVideoRequest(map[string]any{
-		"model":      "seedance-2.0",
-		"prompt":     "test",
-		"channel_id": 1.5,
-	}, &model.Token{BaseModel: model.BaseModel{ID: 7}, UserID: 9})
-	if err == nil {
-		t.Fatal("expected invalid channel_id error")
-	}
-}
+func TestListVideoModelsUsesPublishedRuntimeCatalog(t *testing.T) {
+	mock := playgroundVideoCatalogMock(t)
+	mock.ExpectQuery(`SELECT rel\.id`).WillReturnRows(sqlmock.NewRows([]string{
+		"release_id", "catalog_model_id", "model_id", "sort_order", "model_code", "api_name", "is_primary",
+		"display_name", "description", "visibility", "capability_tags", "operation_code", "http_method",
+		"route_template", "sku_id", "sku_code", "delivery_mode", "max_results", "idempotency_mode",
+		"service_tiers", "channel_id", "channel_code", "channel_name", "vendor_model", "protocol",
+		"task_scope", "capability_constraints", "cancel_mode",
+	}).
+		AddRow(1, 10, 20, 1, "seedance_2_0", "seedance-2.0", true,
+			"Seedance 2.0", "", "public", []byte(`[]`), "videos.generate", "POST",
+			"/v1/videos/generations", 30, "standard", "async", 1, "request",
+			[]byte(`["standard"]`), 40, "seedance", "Seedance", "seedance-2.0", "openai",
+			"task", []byte(`{"resolutions":["720p"],"task_types":["text"]}`), "none").
+		AddRow(1, 10, 20, 1, "seedance_2_0", "seedance-2.0", true,
+			"Seedance 2.0", "", "public", []byte(`[]`), "videos.generate", "POST",
+			"/v1/videos/generations", 31, "priority", "async", 1, "request",
+			[]byte(`["priority"]`), 40, "seedance", "Seedance", "seedance-2.0", "openai",
+			"task", []byte(`{"resolutions":["1080p"],"task_types":["multimodal"]}`), "upstream"))
 
-func TestPlaygroundVideoOptionsUseEmptyCancelStatusesWhenCancelIsDisabled(t *testing.T) {
-	options := playgroundVideoOptionsForChannel(
-		video.VideoChannel{AdapterType: "generic"},
-		"video-model",
-		playgroundVideoModelValidation{},
-		playgroundVideoAdapterSettings{},
-	)
-	if options.CancelStatuses == nil {
-		t.Fatal("cancel statuses must encode as an empty array, not null")
+	result, err := listVideoModels(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(result.Models, []string{"seedance-2.0"}) {
+		t.Fatalf("models = %#v", result.Models)
+	}
+	options := result.ModelOptions["seedance-2.0"]
+	if !reflect.DeepEqual(options.Resolutions, []string{"720p", "1080p"}) {
+		t.Fatalf("resolutions = %#v", options.Resolutions)
+	}
+	if !reflect.DeepEqual(options.ServiceTiers, []string{"standard", "priority"}) {
+		t.Fatalf("service tiers = %#v", options.ServiceTiers)
+	}
+	if !reflect.DeepEqual(options.TaskTypes, []string{"text", "multimodal"}) {
+		t.Fatalf("task types = %#v", options.TaskTypes)
 	}
 }

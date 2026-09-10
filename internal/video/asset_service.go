@@ -3,6 +3,7 @@ package video
 import (
 	"bytes"
 	"context"
+	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
@@ -39,6 +40,7 @@ type AssetService struct {
 }
 
 type CreateAssetRequest struct {
+	UserID          uint
 	TokenID         uint
 	Kind            string
 	ContentType     string
@@ -135,8 +137,13 @@ func (s *AssetService) Create(ctx context.Context, req *CreateAssetRequest) (*Vi
 			return nil, fmt.Errorf("upload video asset: %w", err)
 		}
 	}
+	assetID, err := generateAssetID()
+	if err != nil {
+		s.removeUploadedURL(ctx, storageURL, sizeBytes)
+		return nil, err
+	}
 	asset := &VideoAsset{
-		ID: generateID(), TokenID: req.TokenID, SHA256: hash,
+		ID: assetID, TokenID: req.TokenID, SHA256: hash,
 		SizeBytes: sizeBytes, Kind: kind, ContentType: contentType,
 		DurationSeconds: req.DurationSeconds, Status: VideoAssetStatusReady,
 		StoragePath: storageURL, ExpiresAt: now.Add(defaultAssetTTL), CreatedAt: now,
@@ -155,6 +162,14 @@ func (s *AssetService) Create(ctx context.Context, req *CreateAssetRequest) (*Vi
 		return nil, err
 	}
 	return asset, nil
+}
+
+func generateAssetID() (string, error) {
+	var id [16]byte
+	if _, err := rand.Read(id[:]); err != nil {
+		return "", fmt.Errorf("generate video asset id: %w", err)
+	}
+	return hex.EncodeToString(id[:]), nil
 }
 
 func (s *AssetService) Get(ctx context.Context, tokenID uint, assetID string) (*VideoAsset, error) {

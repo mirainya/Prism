@@ -2,7 +2,6 @@ package admin
 
 import (
 	stdErrors "errors"
-	"fmt"
 
 	"github.com/gin-gonic/gin"
 	"github.com/mirainya/Prism/internal/api/middleware"
@@ -29,6 +28,7 @@ func ListUsers(c *gin.Context) {
 			"username":   u.Username,
 			"role":       u.Role,
 			"balance":    u.Balance,
+			"total_used": u.TotalUsed,
 			"status":     u.Status,
 			"created_at": u.CreatedAt,
 		}
@@ -42,17 +42,14 @@ type UpdateRoleRequest struct {
 }
 
 func UpdateUserRole(c *gin.Context) {
-	userID := c.Param("id")
-
 	var req UpdateRoleRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
 		resp.BadRequest(c, errors.WithMessage(errors.ErrInvalidParams, err.Error()))
 		return
 	}
 
-	var id uint
-	if _, err := fmt.Sscanf(userID, "%d", &id); err != nil {
-		resp.BadRequest(c, errors.WithMessage(errors.ErrInvalidParams, "invalid user id"))
+	id, err := resp.ParseUintParam(c, "id")
+	if err != nil {
 		return
 	}
 
@@ -69,17 +66,14 @@ type UpdateStatusRequest struct {
 }
 
 func UpdateUserStatus(c *gin.Context) {
-	userID := c.Param("id")
-
 	var req UpdateStatusRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
 		resp.BadRequest(c, errors.WithMessage(errors.ErrInvalidParams, err.Error()))
 		return
 	}
 
-	var id uint
-	if _, err := fmt.Sscanf(userID, "%d", &id); err != nil {
-		resp.BadRequest(c, errors.WithMessage(errors.ErrInvalidParams, "invalid user id"))
+	id, err := resp.ParseUintParam(c, "id")
+	if err != nil {
 		return
 	}
 
@@ -96,17 +90,14 @@ type RechargeRequest struct {
 }
 
 func RechargeUser(c *gin.Context) {
-	userID := c.Param("id")
-
 	var req RechargeRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
 		resp.BadRequest(c, errors.WithMessage(errors.ErrInvalidParams, err.Error()))
 		return
 	}
 
-	var id uint
-	if _, err := fmt.Sscanf(userID, "%d", &id); err != nil {
-		resp.BadRequest(c, errors.WithMessage(errors.ErrInvalidParams, "invalid user id"))
+	id, err := resp.ParseUintParam(c, "id")
+	if err != nil {
 		return
 	}
 

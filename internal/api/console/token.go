@@ -2,7 +2,6 @@ package console
 
 import (
 	stdErrors "errors"
-	"fmt"
 
 	"github.com/gin-gonic/gin"
 	"github.com/mirainya/Prism/internal/api/middleware"
@@ -48,11 +47,8 @@ func CreateToken(c *gin.Context) {
 
 func GetToken(c *gin.Context) {
 	userID := middleware.GetUserID(c)
-	tokenID := c.Param("id")
-
-	var id uint
-	if _, err := fmt.Sscanf(tokenID, "%d", &id); err != nil {
-		resp.BadRequest(c, errors.WithMessage(errors.ErrInvalidParams, "invalid token id"))
+	id, err := resp.ParseUintParam(c, "id")
+	if err != nil {
 		return
 	}
 
@@ -67,11 +63,8 @@ func GetToken(c *gin.Context) {
 
 func UpdateToken(c *gin.Context) {
 	userID := middleware.GetUserID(c)
-	tokenID := c.Param("id")
-
-	var id uint
-	if _, err := fmt.Sscanf(tokenID, "%d", &id); err != nil {
-		resp.BadRequest(c, errors.WithMessage(errors.ErrInvalidParams, "invalid token id"))
+	id, err := resp.ParseUintParam(c, "id")
+	if err != nil {
 		return
 	}
 
@@ -91,11 +84,8 @@ func UpdateToken(c *gin.Context) {
 
 func DeleteToken(c *gin.Context) {
 	userID := middleware.GetUserID(c)
-	tokenID := c.Param("id")
-
-	var id uint
-	if _, err := fmt.Sscanf(tokenID, "%d", &id); err != nil {
-		resp.BadRequest(c, errors.WithMessage(errors.ErrInvalidParams, "invalid token id"))
+	id, err := resp.ParseUintParam(c, "id")
+	if err != nil {
 		return
 	}
 
@@ -117,11 +107,8 @@ type RechargeTokenRequest struct {
 
 func RechargeToken(c *gin.Context) {
 	userID := middleware.GetUserID(c)
-	tokenID := c.Param("id")
-
-	var id uint
-	if _, err := fmt.Sscanf(tokenID, "%d", &id); err != nil {
-		resp.BadRequest(c, errors.WithMessage(errors.ErrInvalidParams, "invalid token id"))
+	id, err := resp.ParseUintParam(c, "id")
+	if err != nil {
 		return
 	}
 
@@ -146,7 +133,8 @@ func RechargeToken(c *gin.Context) {
 	}
 
 	resp.Success(c, gin.H{
-		"id":      token.ID,
-		"balance": token.Balance,
+		"id":         token.ID,
+		"balance":    token.Balance,
+		"total_used": token.TotalUsed,
 	})
 }

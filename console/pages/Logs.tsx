@@ -19,8 +19,8 @@ import {
   XCircle,
   type LucideIcon,
 } from 'lucide-react';
-import { fetchCapabilities, fetchTaskDetail, fetchTaskLogs, TaskListParams } from '../services/api';
-import { Capability, TaskDetail, TaskLog, UserRole } from '../types';
+import { fetchTaskDetail, fetchTaskLogs, TaskListParams } from '../services/api';
+import { TaskDetail, TaskLog, UserRole } from '../types';
 import { Drawer, Pagination, Select } from '../components/ui';
 import { PageHeader } from '../components/shell';
 
@@ -368,7 +368,6 @@ const Logs: React.FC = () => {
   const [isLoading, setIsLoading] = useState(true);
   const [loadError, setLoadError] = useState('');
   const [refreshKey, setRefreshKey] = useState(0);
-  const [capabilities, setCapabilities] = useState<Capability[]>([]);
   const [draft, setDraft] = useState<FilterDraft>({ ...EMPTY_FILTERS });
   const [filters, setFilters] = useState<TaskListParams>({});
   const [selectedTask, setSelectedTask] = useState<TaskDetail | null>(null);
@@ -379,14 +378,6 @@ const Logs: React.FC = () => {
   const listRequest = useRef(0);
   const detailRequest = useRef(0);
   const snapshotAt = useRef('');
-
-  useEffect(() => {
-    let active = true;
-    fetchCapabilities()
-      .then(items => { if (active) setCapabilities(items); })
-      .catch(() => {});
-    return () => { active = false; };
-  }, []);
 
   useEffect(() => {
     let active = true;
@@ -514,9 +505,9 @@ const Logs: React.FC = () => {
             <label className="text-xs font-semibold text-[var(--text-secondary)]">任务 ID
               <input value={draft.task_no} onChange={event => updateDraft('task_no', event.target.value)} placeholder="task_..." className={`${INPUT_CLASS} mt-1 font-mono`} />
             </label>
-            <div className="text-xs font-semibold text-[var(--text-secondary)]">能力
-              <Select value={draft.capability} onChange={v => updateDraft('capability', v)} className="mt-1" options={[{ label: '全部能力', value: '' }, ...capabilities.map(capability => ({ label: capability.name, value: capability.code }))]} />
-            </div>
+            <label className="text-xs font-semibold text-[var(--text-secondary)]">能力标识
+              <input value={draft.capability} onChange={event => updateDraft('capability', event.target.value)} placeholder="历史能力标识" className={`${INPUT_CLASS} mt-1 font-mono`} />
+            </label>
             <div className="text-xs font-semibold text-[var(--text-secondary)]">状态
               <Select value={draft.status} onChange={v => updateDraft('status', v)} className="mt-1" options={[{ label: '全部状态', value: '' }, { label: '等待中', value: 'pending' }, { label: '处理中', value: 'processing' }, { label: '成功', value: 'success' }, { label: '失败', value: 'failed' }, { label: '已取消', value: 'cancelled' }]} />
             </div>

@@ -1,7 +1,9 @@
 package config
 
 import (
+	"errors"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/spf13/viper"
@@ -44,13 +46,46 @@ func TestApplyDefaultsPreservesConfiguredFileQuota(t *testing.T) {
 	}
 }
 
-func TestShouldResetGatewayConcurrency(t *testing.T) {
-	if !((&Config{}).Server.ShouldResetGatewayConcurrency()) {
-		t.Fatal("single-instance default must reset stale concurrency")
+func TestValidateJWTSecretRejectsDefaultsAndWeakValues(t *testing.T) {
+	for _, value := range []string{
+		"",
+		" strong-secret-value-that-is-long-enough-but-has-padding ",
+		"short-secret",
+		"your-secret-key-change-in-production",
+		"change-this-to-a-secure-random-string-but-still-a-default",
+		strings.Repeat("a", MinJWTSecretBytes),
+		strings.Repeat("ab", MinJWTSecretBytes/2),
+		strings.Repeat("a", MinJWTSecretBytes-1) + "b",
+		"01234567890123456789012345678901",
+		string([]byte{0xff, 0xfe}) + strings.Repeat("x", MinJWTSecretBytes),
+	} {
+		if err := ValidateJWTSecret(value); !errors.Is(err, ErrInvalidJWTSecret) {
+			t.Fatalf("secret %q error=%v, want ErrInvalidJWTSecret", value, err)
+		}
 	}
-	disabled := false
-	server := ServerConfig{ResetGatewayConcurrency: &disabled}
-	if server.ShouldResetGatewayConcurrency() {
-		t.Fatal("explicit multi-instance setting was ignored")
+}
+
+func TestValidateJWTSecretAcceptsStrongConfiguredValue(t *testing.T) {
+	secret := "m3L!qP7#vR2@xK9$zN4%tY8^bC6&hJ1*"
+	if err := ValidateJWTSecret(secret); err != nil {
+		t.Fatalf("strong secret rejected: %v", err)
+	}
+}
+
+func TestConfigValidateAndRuntimeValidation(t *testing.T) {
+	if err := (&Config{Server: ServerConfig{JWTSecret: "short"}}).Validate(); !errors.Is(err, ErrInvalidJWTSecret) {
+		t.Fatalf("weak config error=%v, want ErrInvalidJWTSecret", err)
+	}
+	previous := Get()
+	mu.Lock()
+	C = &Config{Server: ServerConfig{JWTSecret: "m3L!qP7#vR2@xK9$zN4%tY8^bC6&hJ1*"}}
+	mu.Unlock()
+	t.Cleanup(func() {
+		mu.Lock()
+		C = previous
+		mu.Unlock()
+	})
+	if err := ValidateRuntime(); err != nil {
+		t.Fatalf("runtime validation rejected strong config: %v", err)
 	}
 }

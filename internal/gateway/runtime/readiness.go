@@ -4,37 +4,109 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"sync/atomic"
+	"time"
+
+	"github.com/mirainya/Prism/internal/gateway/repository"
 )
 
 var ErrNotReady = errors.New("gateway runtime: deployment is not ready")
 
-// RequireConfiguredReadiness keeps the pre-migration empty database usable,
-// but refuses to start once any unified catalog data exists without a fully
-// proven active release. This prevents a partial cutover from falling back to
-// legacy execution paths.
+// ReadinessCheck is the common gate used by HTTP handlers and workers.
+// Implementations must return ErrNotReady, directly or through errors.Join,
+// whenever this process may not execute data-plane work.
+type ReadinessCheck func(context.Context) error
+
+func (check ReadinessCheck) Require(ctx context.Context) error {
+	if check == nil {
+		return ErrNotReady
+	}
+	if err := check(ctx); err != nil {
+		if errors.Is(err, ErrNotReady) {
+			return err
+		}
+		return errors.Join(ErrNotReady, err)
+	}
+	return nil
+}
+
+// ReadinessGate is a process-lifetime fail-closed latch. Once disabled it
+// cannot be re-enabled; a new process must prove readiness before serving.
+type ReadinessGate struct {
+	ready atomic.Bool
+}
+
+func NewReadinessGate(ready bool) *ReadinessGate {
+	gate := &ReadinessGate{}
+	gate.ready.Store(ready)
+	return gate
+}
+
+func (gate *ReadinessGate) Require(ctx context.Context) error {
+	if ctx != nil {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+	}
+	if gate == nil || !gate.ready.Load() {
+		return ErrNotReady
+	}
+	return nil
+}
+
+func (gate *ReadinessGate) Disable() {
+	if gate != nil {
+		gate.ready.Store(false)
+	}
+}
+
+func (gate *ReadinessGate) Ready() bool {
+	return gate != nil && gate.ready.Load()
+}
+
+// Watch probes durable readiness at a bounded interval. The first failed
+// probe permanently disables the process gate and asks the worker group to
+// stop by returning the failure.
+func (gate *ReadinessGate) Watch(ctx context.Context, interval time.Duration, check ReadinessCheck) error {
+	if gate == nil || interval <= 0 || check == nil {
+		if gate != nil {
+			gate.Disable()
+		}
+		return ErrNotReady
+	}
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-ticker.C:
+			if err := check.Require(ctx); err != nil {
+				if ctx.Err() != nil {
+					return ctx.Err()
+				}
+				gate.Disable()
+				return err
+			}
+		}
+	}
+}
+
+// RequireConfiguredReadiness verifies that this process may execute data-plane
+// work. Control-plane HTTP handlers may still start when this returns
+// ErrNotReady; public execution and workers must remain disabled.
 func RequireConfiguredReadiness(ctx context.Context, db *sql.DB) error {
 	if db == nil {
 		return ErrNotReady
 	}
-	var channels, releases uint64
-	if err := db.QueryRowContext(ctx, `SELECT COUNT(*) FROM gateway_channels`).Scan(&channels); err != nil {
+	var releaseID, generationID sql.NullInt64
+	if err := db.QueryRowContext(ctx, `SELECT active_release_id,active_deployment_generation_id FROM gw_catalog_runtime_state WHERE id=1`).Scan(&releaseID, &generationID); err != nil {
+		return errors.Join(ErrNotReady, err)
+	}
+	if !releaseID.Valid || releaseID.Int64 <= 0 || !generationID.Valid || generationID.Int64 <= 0 {
 		return ErrNotReady
 	}
-	if err := db.QueryRowContext(ctx, `SELECT COUNT(*) FROM gw_catalog_releases`).Scan(&releases); err != nil {
-		return ErrNotReady
-	}
-	if channels == 0 && releases == 0 {
-		return nil
-	}
-	var releaseID sql.NullInt64
-	if err := db.QueryRowContext(ctx, `SELECT active_release_id FROM gw_catalog_runtime_state WHERE id=1`).Scan(&releaseID); err != nil || !releaseID.Valid || releaseID.Int64 <= 0 {
-		return ErrNotReady
-	}
-	var generationID uint64
-	if err := db.QueryRowContext(ctx, `SELECT id FROM gw_deployment_generations WHERE status='active' ORDER BY id DESC LIMIT 1`).Scan(&generationID); err != nil {
-		return ErrNotReady
-	}
-	return CheckReadiness(ctx, db, generationID, uint64(releaseID.Int64))
+	return CheckReadiness(ctx, db, uint64(generationID.Int64), uint64(releaseID.Int64))
 }
 
 // CheckReadiness verifies the immutable deployment generation before traffic
@@ -44,20 +116,39 @@ func CheckReadiness(ctx context.Context, db *sql.DB, generationID, releaseID uin
 	if db == nil || generationID == 0 || releaseID == 0 {
 		return ErrNotReady
 	}
+	// The caller must validate the exact singleton pointer, not merely an
+	// independently active generation/release pair. This prevents a stale
+	// process or management endpoint from treating an old deployment as ready
+	// after a cutover.
+	var activeRelease, activeGeneration sql.NullInt64
+	if err := db.QueryRowContext(ctx, `SELECT active_release_id,active_deployment_generation_id FROM gw_catalog_runtime_state WHERE id=1`).Scan(&activeRelease, &activeGeneration); err != nil {
+		return errors.Join(ErrNotReady, err)
+	}
+	if !activeRelease.Valid || !activeGeneration.Valid || activeRelease.Int64 != int64(releaseID) || activeGeneration.Int64 != int64(generationID) {
+		return ErrNotReady
+	}
 	var status string
 	if err := db.QueryRowContext(ctx, `SELECT status FROM gw_deployment_generations WHERE id=?`, generationID).Scan(&status); err != nil || status != "active" {
 		return ErrNotReady
 	}
-	var members, ready uint64
-	if err := db.QueryRowContext(ctx, `SELECT COUNT(*) FROM gw_deployment_members WHERE deployment_generation_id=?`, generationID).Scan(&members); err != nil || members == 0 {
-		return ErrNotReady
+	identity, err := CurrentProcessIdentity()
+	if err != nil {
+		return errors.Join(ErrNotReady, err)
 	}
-	if err := db.QueryRowContext(ctx, `SELECT COUNT(*) FROM gw_catalog_readiness r JOIN gw_deployment_members m ON m.id=r.deployment_member_id JOIN gw_catalog_releases c ON c.id=r.release_id WHERE r.deployment_generation_id=? AND r.release_id=? AND r.status='ready' AND r.expires_at>UTC_TIMESTAMP(3) AND r.adapter_digest<>'' AND r.content_hash=c.content_hash AND r.semantic_digest=c.semantic_digest`, generationID, releaseID).Scan(&ready); err != nil || ready != members {
-		return ErrNotReady
+	if err := repository.CheckCatalogReadiness(ctx, db, generationID, releaseID, identity); err != nil {
+		return errors.Join(ErrNotReady, err)
 	}
-	var cryptoMembers uint64
-	if err := db.QueryRowContext(ctx, `SELECT COUNT(*) FROM (SELECT deployment_member_id FROM crypto_key_readiness WHERE deployment_generation_id=? GROUP BY deployment_member_id HAVING COUNT(DISTINCT CASE WHEN status='ready' AND expires_at>UTC_TIMESTAMP(3) THEN operation END)=5) ready_members`, generationID).Scan(&cryptoMembers); err != nil || cryptoMembers != members {
-		return ErrNotReady
+	if err := repository.CheckCatalogPricing(ctx, db, releaseID); err != nil {
+		return errors.Join(ErrNotReady, err)
+	}
+	if err := repository.CheckCatalogValidations(ctx, db, releaseID); err != nil {
+		return errors.Join(ErrNotReady, err)
+	}
+	if err := repository.CheckCryptoReadiness(ctx, db, generationID); err != nil {
+		return errors.Join(ErrNotReady, err)
+	}
+	if err := repository.CheckBillingReadiness(ctx, db); err != nil {
+		return errors.Join(ErrNotReady, err)
 	}
 	return nil
 }

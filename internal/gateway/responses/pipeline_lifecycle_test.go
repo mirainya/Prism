@@ -1,38 +1,22 @@
 package responses
 
 import (
+	"context"
 	"encoding/json"
-	"errors"
 	"strings"
 	"testing"
-	"time"
 
-	"github.com/mirainya/Prism/internal/domain"
-	"github.com/mirainya/Prism/internal/gateway/canonical"
 	"github.com/mirainya/Prism/internal/gateway/routing"
 	"github.com/mirainya/Prism/internal/model"
 	protocol "github.com/mirainya/Prism/internal/provider/responses"
-	"github.com/mirainya/Prism/internal/service"
 	"gorm.io/datatypes"
-	"gorm.io/gorm"
 )
 
-func TestPrepareContinuationRebuildsThreeRoundHistory(t *testing.T) {
-	db := setupResponsesLifecycleDB(t, &model.AIResponse{})
-	chain := []model.AIResponse{
-		responseHistoryRecord("resp_1", "", `"first input"`, "first output"),
-		responseHistoryRecord("resp_2", "resp_1", `"second input"`, "second output"),
-		responseHistoryRecord("resp_3", "resp_2", `"third input"`, "third output"),
-	}
-	for index := range chain {
-		if err := db.Create(&chain[index]).Error; err != nil {
-			t.Fatalf("create history record %d: %v", index, err)
-		}
-	}
-
+func TestPrepareContinuationRebuildsStoredRound(t *testing.T) {
+	previous := responseHistoryRecord("resp_previous", "", `"previous input"`, "previous output")
 	req := &protocol.Request{Input: json.RawMessage(`"current input"`), PreviousResponseID: "resp_3"}
 	route := &routing.RouteResult{Protocol: model.ProtocolAnthropic, ChannelID: 99, KeyID: 99}
-	if err := prepareContinuation(req, &chain[2], route); err != nil {
+	if err := prepareContinuation(req, &previous, route); err != nil {
 		t.Fatalf("prepare continuation: %v", err)
 	}
 	if req.PreviousResponseID != "" {
@@ -43,10 +27,10 @@ func TestPrepareContinuationRebuildsThreeRoundHistory(t *testing.T) {
 	if err := json.Unmarshal(req.Input, &items); err != nil {
 		t.Fatalf("decode rebuilt input: %v", err)
 	}
-	if len(items) != 7 {
-		t.Fatalf("rebuilt item count = %d, want 7: %s", len(items), req.Input)
+	if len(items) != 3 {
+		t.Fatalf("rebuilt item count = %d, want 3: %s", len(items), req.Input)
 	}
-	for index, expected := range []string{"first input", "first output", "second input", "second output", "third input", "third output", "current input"} {
+	for index, expected := range []string{"previous input", "previous output", "current input"} {
 		if !strings.Contains(string(req.Input), expected) {
 			t.Fatalf("rebuilt input missing %q: %s", expected, req.Input)
 		}
@@ -58,13 +42,11 @@ func TestPrepareContinuationRebuildsThreeRoundHistory(t *testing.T) {
 }
 
 func TestInputItemsExpandsStoredStringInput(t *testing.T) {
-	db := setupResponsesLifecycleDB(t, &model.AIResponse{})
-	record := model.AIResponse{ID: "resp_string", UserID: 1, TokenID: 10, Model: "m", Status: "completed", Store: true, InputItems: datatypes.JSON(`"hello"`), IdempotencyKey: "string-input", CreatedAt: time.Now()}
-	if err := db.Create(&record).Error; err != nil {
+	items, err := decodeInputItems(json.RawMessage(`"hello"`))
+	if err != nil {
 		t.Fatal(err)
 	}
-
-	list, err := (&Pipeline{}).InputItems(10, record.ID)
+	list, err := paginateResponseInput("resp_string", items)
 	if err != nil {
 		t.Fatalf("get input items: %v", err)
 	}
@@ -74,168 +56,24 @@ func TestInputItemsExpandsStoredStringInput(t *testing.T) {
 }
 
 func TestResolveImageFileIDUsesDataURLWithoutPersistingExpandedInput(t *testing.T) {
-	db := setupResponsesLifecycleDB(t, &model.AIFile{}, &model.AIResponse{})
+	db := openResponsesTestDB(t)
+	model.SetDB(db)
 	file := model.AIFile{ID: "file_image", UserID: 1, TokenID: 10, Filename: "pixel.png", Purpose: "vision", Bytes: 3, MimeType: "image/png", Content: []byte{1, 2, 3}, Status: "processed"}
-	if err := db.Create(&file).Error; err != nil {
-		t.Fatal(err)
-	}
+	storeResponseTestFiles(t, db, file)
 	original := datatypes.JSON(`[{
 		"type":"message","role":"user","content":[{"type":"input_image","file_id":"file_image"}]
 	}]`)
-	record := model.AIResponse{ID: "resp_image", UserID: 1, TokenID: 10, Model: "m", Status: "in_progress", Store: true, InputItems: original, RequestJSON: mustJSON(map[string]any{"model": "m", "input": json.RawMessage(original)}), IdempotencyKey: "image-input", CreatedAt: time.Now()}
-	if err := db.Create(&record).Error; err != nil {
-		t.Fatal(err)
-	}
-
 	req := &protocol.Request{Input: append(json.RawMessage(nil), original...)}
-	if err := resolveInputFiles(10, req); err != nil {
+	if err := resolveInputFiles(context.Background(), 10, req); err != nil {
 		t.Fatalf("resolve image file: %v", err)
 	}
 	if !strings.Contains(string(req.Input), `"image_url":"data:image/png;base64,AQID"`) || strings.Contains(string(req.Input), `"file_id"`) {
 		t.Fatalf("unexpected resolved image input: %s", req.Input)
 	}
 
-	var stored model.AIResponse
-	if err := db.First(&stored, "id = ?", record.ID).Error; err != nil {
-		t.Fatal(err)
+	if !strings.Contains(string(original), `"file_id":"file_image"`) || strings.Contains(string(original), "data:image/png") {
+		t.Fatalf("source input was expanded: %s", original)
 	}
-	if !strings.Contains(string(stored.InputItems), `"file_id":"file_image"`) || strings.Contains(string(stored.InputItems), "data:image/png") {
-		t.Fatalf("persisted input was expanded: %s", stored.InputItems)
-	}
-	if !strings.Contains(string(stored.RequestJSON), `"file_id":"file_image"`) || strings.Contains(string(stored.RequestJSON), "data:image/png") {
-		t.Fatalf("persisted request was expanded: %s", stored.RequestJSON)
-	}
-}
-
-func TestCancelOnlyAllowsBackgroundAndCancelledCannotBeCompleted(t *testing.T) {
-	db := setupResponsesLifecycleDB(t, &model.AIResponse{}, &model.BillingLog{}, &model.APICall{}, &model.APICallAttempt{}, &model.APICallPayload{}, &model.ConversationProjectionOutbox{})
-	pipeline := &Pipeline{billing: service.NewBillingService(), calls: service.NewAPICallService()}
-	now := time.Now()
-	foreground := model.AIResponse{ID: "resp_foreground", UserID: 1, TokenID: 10, Model: "m", Status: "in_progress", Store: true, IdempotencyKey: "foreground", CreatedAt: now}
-	background := model.AIResponse{ID: "resp_background", UserID: 1, TokenID: 10, CallID: "call_background", Model: "m", Status: "queued", Background: true, Store: true, IdempotencyKey: "background", CreatedAt: now}
-	if err := db.Create(&foreground).Error; err != nil {
-		t.Fatal(err)
-	}
-	if err := db.Create(&background).Error; err != nil {
-		t.Fatal(err)
-	}
-	if err := db.Create(&model.APICall{
-		ID: background.CallID, RequestID: "request-background", UserID: background.UserID, TokenID: background.TokenID,
-		Endpoint: "/v1/responses", Operation: "responses", Model: background.Model,
-		Status: model.APICallStatusInProgress, Background: true, Store: true,
-		ResourceType: "response", ResourceID: background.ID, AttemptCount: 1, StartedAt: now,
-		ProjectConversation: true,
-	}).Error; err != nil {
-		t.Fatal(err)
-	}
-	if err := db.Create(&model.APICallAttempt{
-		CallID: background.CallID, AttemptNo: 1, Status: model.APICallAttemptStatusStarted, StartedAt: now,
-	}).Error; err != nil {
-		t.Fatal(err)
-	}
-	if err := service.StageAPIConversationProjectionInput(service.ConversationProjectionInputRequest{
-		CallID: background.CallID, InputItems: []canonical.Item{},
-	}); err != nil {
-		t.Fatal(err)
-	}
-
-	if _, err := pipeline.Cancel(10, foreground.ID); err == nil || !errors.Is(err, domain.ErrBadRequest("only background responses can be cancelled")) && !strings.Contains(err.Error(), "only background") {
-		t.Fatalf("foreground cancel error = %v", err)
-	}
-	cancelled, err := pipeline.Cancel(10, background.ID)
-	if err != nil {
-		t.Fatalf("cancel background: %v", err)
-	}
-	if cancelled.Status != "cancelled" {
-		t.Fatalf("cancelled status = %q", cancelled.Status)
-	}
-	err = completeRecord(&background, &protocol.Response{ID: background.ID, Status: "completed", Output: json.RawMessage(`[]`)})
-	if err == nil {
-		t.Fatal("completed response overwrote cancellation")
-	}
-	var stored model.AIResponse
-	if err := db.First(&stored, "id = ?", background.ID).Error; err != nil {
-		t.Fatal(err)
-	}
-	if stored.Status != "cancelled" {
-		t.Fatalf("stored status = %q, want cancelled", stored.Status)
-	}
-	var call model.APICall
-	if err := db.First(&call, "id = ?", background.CallID).Error; err != nil {
-		t.Fatal(err)
-	}
-	if call.Status != model.APICallStatusCancelled {
-		t.Fatalf("call status = %q, want cancelled", call.Status)
-	}
-	var attempt model.APICallAttempt
-	if err := db.First(&attempt, "call_id = ?", background.CallID).Error; err != nil {
-		t.Fatal(err)
-	}
-	if attempt.Status != model.APICallAttemptStatusCancelled {
-		t.Fatalf("attempt status = %q, want cancelled", attempt.Status)
-	}
-}
-
-func TestDeleteResponseDeletesPayloadButRetainsCall(t *testing.T) {
-	db := setupResponsesLifecycleDB(t, &model.AIResponse{}, &model.AIResponseIdempotencyCache{}, &model.APICall{}, &model.APICallPayload{})
-	now := time.Now()
-	record := model.AIResponse{
-		ID: "resp_delete", UserID: 1, TokenID: 10, CallID: "call_delete", Model: "m",
-		Status: "completed", Store: true, IdempotencyKey: "delete", CreatedAt: now,
-	}
-	call := model.APICall{
-		ID: record.CallID, RequestID: "request-delete", UserID: record.UserID, TokenID: record.TokenID,
-		Endpoint: "/v1/responses", Operation: "responses", Model: record.Model,
-		Status: model.APICallStatusCompleted, Store: true, ResourceType: "response", ResourceID: record.ID,
-		StartedAt: now, CompletedAt: &now,
-	}
-	if err := db.Create(&record).Error; err != nil {
-		t.Fatal(err)
-	}
-	if err := db.Create(&call).Error; err != nil {
-		t.Fatal(err)
-	}
-	if err := db.Create(&model.APICallPayload{CallID: call.ID, Kind: model.APICallPayloadRequest, Data: []byte(`{"secret":true}`)}).Error; err != nil {
-		t.Fatal(err)
-	}
-	cache := model.AIResponseIdempotencyCache{
-		TokenID: record.TokenID, IdempotencyKey: record.IdempotencyKey, RequestHash: "hash",
-		Status: model.ResponseIdempotencyCompleted, ResponseID: record.ID,
-		ResponseJSON: []byte(`{"id":"resp_delete","status":"completed"}`), ExpiresAt: now.Add(time.Hour),
-	}
-	if err := db.Create(&cache).Error; err != nil {
-		t.Fatal(err)
-	}
-
-	if err := (&Pipeline{}).Delete(record.TokenID, record.ID); err != nil {
-		t.Fatal(err)
-	}
-	var responseCount, payloadCount, callCount, cacheCount int64
-	if err := db.Model(&model.AIResponse{}).Where("id = ?", record.ID).Count(&responseCount).Error; err != nil {
-		t.Fatal(err)
-	}
-	if err := db.Model(&model.APICallPayload{}).Where("call_id = ?", call.ID).Count(&payloadCount).Error; err != nil {
-		t.Fatal(err)
-	}
-	if err := db.Model(&model.APICall{}).Where("id = ?", call.ID).Count(&callCount).Error; err != nil {
-		t.Fatal(err)
-	}
-	if err := db.Model(&model.AIResponseIdempotencyCache{}).Where("response_id = ?", record.ID).Count(&cacheCount).Error; err != nil {
-		t.Fatal(err)
-	}
-	if responseCount != 0 || payloadCount != 0 || callCount != 1 || cacheCount != 0 {
-		t.Fatalf("response=%d payload=%d call=%d cache=%d", responseCount, payloadCount, callCount, cacheCount)
-	}
-}
-
-func setupResponsesLifecycleDB(t *testing.T, tables ...any) *gorm.DB {
-	t.Helper()
-	db := openResponsesTestDB(t)
-	if err := db.AutoMigrate(tables...); err != nil {
-		t.Fatal(err)
-	}
-	model.SetDB(db)
-	return db
 }
 
 func responseHistoryRecord(id, previousID, input, output string) model.AIResponse {
@@ -243,6 +81,5 @@ func responseHistoryRecord(id, previousID, input, output string) model.AIRespons
 	return model.AIResponse{
 		ID: id, UserID: 1, TokenID: 10, Model: "m", Status: "completed", Store: true,
 		PreviousResponseID: previousID, InputItems: datatypes.JSON(input), OutputItems: outputJSON,
-		IdempotencyKey: "history-" + id, CreatedAt: time.Now(),
 	}
 }

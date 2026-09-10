@@ -7,19 +7,21 @@ import (
 	"database/sql"
 	"encoding/hex"
 	"fmt"
+	"time"
 
 	"github.com/mirainya/Prism/internal/gateway/security"
 )
 
 type BlobInput struct {
-	KeyringID     uint64
-	KEKVersion    uint32
-	Purpose       string
-	SchemaVersion uint32
-	Owner         []byte
-	Plaintext     []byte
-	KEK           []byte
-	HMACKey       []byte
+	KeyringID      uint64
+	KEKVersion     uint32
+	Purpose        string
+	SchemaVersion  uint32
+	Owner          []byte
+	Plaintext      []byte
+	KEK            []byte
+	HMACKey        []byte
+	RetentionUntil *time.Time
 }
 
 // PutEncryptedBlob creates the row and its key-wrap in one transaction. A
@@ -96,11 +98,13 @@ func OpenBlob(envelope BlobEnvelope, blobID uint64, owner, kek, hmacKey []byte) 
 	}
 	digest := security.HMACSHA256(hmacKey, plain)
 	if len(envelope.ContentHMAC) != len(digest)*2 {
+		clear(plain)
 		return nil, security.ErrAuthentication
 	}
 	encoded := make([]byte, len(digest)*2)
 	hex.Encode(encoded, digest[:])
 	if subtle.ConstantTimeCompare(encoded, []byte(envelope.ContentHMAC)) != 1 {
+		clear(plain)
 		return nil, security.ErrAuthentication
 	}
 	return plain, nil

@@ -3,6 +3,7 @@
 package routing
 
 import (
+	"github.com/mirainya/Prism/internal/gateway/billing"
 	"github.com/mirainya/Prism/internal/model"
 	"github.com/shopspring/decimal"
 )
@@ -48,6 +49,7 @@ type RouteResult struct {
 	SKUID               uint
 	RouteID             uint
 	OfferingID          uint
+	CostPlanID          uint
 	ProductTransportID  uint
 	CredentialPoolID    uint
 	CredentialID        uint
@@ -73,4 +75,6 @@ type RouteResult struct {
 	OutputPrice     decimal.Decimal
 	Currency        string
 	CurrencyVersion uint
+	DeliveryMode    string
+	SellSchedule    *billing.RateSchedule
 }

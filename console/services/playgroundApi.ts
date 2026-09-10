@@ -1,67 +1,18 @@
 import {
-    ChannelOption,
-    PlaygroundCapability,
     PlaygroundModelInfo,
     PlaygroundConversation,
     PlaygroundMessage,
     PlaygroundDebugDetail,
-    PlaygroundTaskListParams,
-    PlaygroundTaskListResponse,
-    PlaygroundTaskDetail,
     ConversationTurnRecord,
 } from '../types';
 import { request, getAuthHeader, API_BASE } from './request';
 
-const normalizePlaygroundChannels = (channels: any[]): ChannelOption[] => {
-    const seen = new Set<string>();
-    const result: ChannelOption[] = [];
-
-    for (const rawChannel of channels || []) {
-        const channel: ChannelOption = {
-            channelId: rawChannel.channel_id || 0,
-            channelType: rawChannel.channel_type || '',
-            channelName: rawChannel.channel_name || '',
-            model: rawChannel.model || '',
-            routeOperation: rawChannel.route_operation || '',
-            price: rawChannel.price || 0,
-            interactionMode: rawChannel.interaction_mode || '',
-            paramSchema: rawChannel.param_schema || null,
-        };
-        const selectionId = `${channel.channelType}::${channel.model}::${channel.interactionMode || 'sync'}::${channel.routeOperation || ''}`;
-        if (seen.has(selectionId)) continue;
-        seen.add(selectionId);
-        result.push(channel);
-    }
-
-    return result;
-};
-
-const normalizeModelOperations = (capability: any) => {
-    const operations = (capability.operations || []).map((operation: any) => ({
-        id: operation.id,
-        path: operation.path || '',
-        supportsStream: Boolean(operation.supports_stream),
-        paramSchema: operation.param_schema || null,
-    }));
-    if (operations.length > 0) return operations;
-
-    const fallbackOperation = capability.type === 'image'
-        ? 'images.generate'
-        : capability.type === 'video'
-            ? 'videos.generate'
-            : capability.type === 'chat'
-                ? 'chat.completions'
-                : '';
-    return fallbackOperation ? [{ id: fallbackOperation, path: '', supportsStream: false, paramSchema: null }] : [];
-};
-
 export const playgroundListModels = async (tokenId: string): Promise<PlaygroundModelInfo[]> => {
-    const data = await request<any[]>(`/playground/${tokenId}/capabilities`);
-    return (data || [])
-        .filter(model => (model.operations || []).some((operation: any) => operation.id === 'chat.completions'))
+    const response = await request<{ data?: any[] }>(`/playground/${tokenId}/models`);
+    return (response?.data || [])
         .map(model => ({
-            id: model.id || model.code,
-            owned_by: 'prism',
+            id: model.id,
+            owned_by: model.owned_by || 'prism',
             max_tokens: model.max_tokens,
             group: model.group,
             supports_stream: model.supports_stream,
@@ -70,21 +21,9 @@ export const playgroundListModels = async (tokenId: string): Promise<PlaygroundM
             supports_response_format: model.supports_response_format,
             supports_multimodal: model.supports_multimodal,
             thinking: model.thinking,
+			supported_operations: model.supported_operations || [],
+			supported_endpoints: model.supported_endpoints || [],
         }));
-};
-
-export const playgroundListCapabilities = async (tokenId: string): Promise<PlaygroundCapability[]> => {
-    const json = await request<any[]>(`/playground/${tokenId}/capabilities`);
-    return (json || []).map(cap => ({
-        id: cap.id || cap.code,
-        code: cap.code,
-        name: cap.name,
-        type: cap.type || 'other',
-        description: cap.description || '',
-        standardParams: cap.param_schema || cap.standard_params || {},
-        operations: normalizeModelOperations(cap),
-        channels: normalizePlaygroundChannels(cap.channels || []),
-    }));
 };
 
 export const playgroundChatCompletions = async (
@@ -361,7 +300,7 @@ export const playgroundGetDebug = async (
         requestHeaders: data.request_headers,
         requestBody: data.request_body,
         responseBody: data.response_body,
-        status: data.error_message ? 'failed' : 'completed',
+        status: data.status || (data.error_message ? 'failed' : 'completed'),
         usage: {
             prompt_tokens: data.usage_prompt_tokens || 0,
             completion_tokens: data.usage_completion_tokens || 0,
@@ -370,100 +309,85 @@ export const playgroundGetDebug = async (
     };
 };
 
-export const playgroundInvokeCapability = async (
-    tokenId: string,
-    capability: string,
-    params: Record<string, any>,
-): Promise<any> => {
-    return request(`/playground/${tokenId}/capabilities/${capability}`, {
-        method: 'POST',
-        body: JSON.stringify(params),
-    });
-};
-
-export const playgroundListTasks = async (
-    tokenId: string,
-    params?: PlaygroundTaskListParams,
-): Promise<PlaygroundTaskListResponse> => {
-    const query = new URLSearchParams();
-    if (params?.page) query.append('page', String(params.page));
-    if (params?.page_size) query.append('page_size', String(params.page_size));
-    if (params?.snapshot_at) query.append('snapshot_at', params.snapshot_at);
-    if (params?.status) query.append('status', params.status);
-    if (params?.capability) query.append('capability', params.capability);
-    if (params?.keyword) query.append('keyword', params.keyword);
-    const url = query.toString()
-        ? `/playground/${tokenId}/tasks?${query}`
-        : `/playground/${tokenId}/tasks`;
-    const data = await request<any>(url);
-    return {
-        items: (data.items || []).map((item: any) => ({
-            id: item.id,
-            taskNo: item.task_no,
-            capability: item.capability,
-            capabilityName: item.capability_name,
-            channel: item.channel,
-            status: item.status,
-            progress: item.progress || 0,
-            cost: Number(item.cost) || 0,
-            refunded: Boolean(item.refunded),
-            error: item.error,
-            createdAt: item.created_at,
-            completedAt: item.completed_at,
-        })),
-        total: data.total || 0,
-        page: data.page || 1,
-        page_size: data.page_size || params?.page_size || 20,
-        snapshot_at: data.snapshot_at,
-    };
-};
-
-export const playgroundGetTask = async (tokenId: string, taskNo: string, includeParams = false): Promise<PlaygroundTaskDetail> => {
-    const suffix = includeParams ? '?include_params=true' : '';
-    const data = await request<any>(`/playground/${tokenId}/tasks/${taskNo}${suffix}`);
-    return {
-        taskId: data.task_id,
-        taskNo: data.task_no,
-        status: data.status,
-        progress: data.progress || 0,
-        result: data.result,
-        error: data.error || '',
-        cost: Number(data.cost) || 0,
-        rawParams: data.raw_params,
-        mappedParams: data.mapped_params,
-        vendorResponse: data.vendor_response,
-        vendorTaskId: data.vendor_task_id,
-        createdAt: data.created_at,
-        startedAt: data.started_at,
-        completedAt: data.completed_at,
-    };
-};
-
-export const playgroundCancelTask = async (tokenId: string, taskNo: string): Promise<void> => {
-    await request(`/playground/${tokenId}/tasks/${taskNo}/cancel`, { method: 'POST' });
-};
-
 // --- Video Playground API ---
 
 export interface VideoCreateParams {
     model: string;
     prompt: string;
-    channel_id?: number;
     resolution?: string;
     ratio?: string;
     duration?: number;
     generate_audio?: boolean;
     task_mode?: string;
     service_tier?: 'standard' | 'priority' | 'vip';
+    callback_url?: string;
     content?: VideoContentItem[];
     params?: Record<string, string | number | boolean>;
 }
+
+interface CanonicalVideoReference {
+    id?: string;
+    type: 'image' | 'video' | 'audio';
+    role: VideoContentItem['role'];
+    url?: string;
+    asset_id?: string;
+    duration_seconds?: number;
+}
+
+interface CanonicalVideoRequest {
+    model: string;
+    prompt?: string;
+    resolution?: string;
+    aspect_ratio?: string;
+    duration?: number;
+    generate_audio?: boolean;
+    service_tier?: VideoCreateParams['service_tier'];
+    callback_url?: string;
+    references?: CanonicalVideoReference[];
+    provider_options?: {
+        seedance?: {
+            camera_fixed?: boolean;
+            return_last_frame?: boolean;
+            web_search?: boolean;
+        };
+    };
+}
+
+export const toCanonicalVideoRequest = (params: VideoCreateParams): CanonicalVideoRequest => {
+    const seedanceOptions = params.params
+        ? {
+            camera_fixed: typeof params.params.camera_fixed === 'boolean' ? params.params.camera_fixed : undefined,
+            return_last_frame: typeof params.params.return_last_frame === 'boolean' ? params.params.return_last_frame : undefined,
+            web_search: typeof params.params.web_search === 'boolean' ? params.params.web_search : undefined,
+        }
+        : undefined;
+    const hasSeedanceOptions = seedanceOptions && Object.values(seedanceOptions).some(value => value !== undefined);
+    return {
+        model: params.model,
+        prompt: params.prompt,
+        resolution: params.resolution,
+        aspect_ratio: params.ratio,
+        duration: params.duration,
+        generate_audio: params.generate_audio,
+        service_tier: params.service_tier,
+        callback_url: params.callback_url,
+        references: params.content?.map(item => ({
+            id: item.client_ref_id,
+            type: item.type.replace('_url', '') as CanonicalVideoReference['type'],
+            role: item.role,
+            url: item.url,
+            asset_id: item.asset_id,
+            duration_seconds: item.duration_seconds,
+        })),
+        provider_options: hasSeedanceOptions ? { seedance: seedanceOptions } : undefined,
+    };
+};
 
 export interface VideoEstimate {
     estimated_cost: string;
     base_cost: string;
     markup_ratio: string;
-    pricing_mode: 'fixed' | 'upstream_estimate';
+    pricing_mode: 'fixed' | 'upstream_estimate' | 'catalog';
     service_tier?: string;
     unit_cost?: number;
     units?: number;
@@ -501,7 +425,6 @@ export interface VideoTask {
     queue_status?: string;
     queue_position?: number;
     queue_limit?: number;
-    priority_queue?: boolean;
     h_channel_points_vip?: boolean;
     priority_surcharge_percent?: number;
     progress: number;
@@ -537,8 +460,6 @@ export interface PlaygroundVideoModelOptions {
     max_video_duration_total?: number;
     max_audio_duration_total?: number;
     parameters?: PlaygroundVideoParameter[];
-    allow_local_cancel: boolean;
-    cancel_statuses: string[];
 }
 
 export interface PlaygroundVideoServiceTierOption {
@@ -566,25 +487,15 @@ export interface PlaygroundVideoParameter {
     conflicts_with?: string[];
 }
 
-export interface PlaygroundVideoChannelOption {
-    id: number;
-    name: string;
-    models: string[];
-    model_options: Record<string, PlaygroundVideoModelOptions>;
-}
-
 export interface PlaygroundVideoModelsResponse {
     models: string[];
     model_options?: Record<string, PlaygroundVideoModelOptions>;
-    channels?: PlaygroundVideoChannelOption[];
 }
 
 const normalizeVideoModelOptions = (value: PlaygroundVideoModelOptions | null | undefined): PlaygroundVideoModelOptions => {
-    const options: PlaygroundVideoModelOptions = value || { allow_local_cancel: false, cancel_statuses: [] };
+    const options: PlaygroundVideoModelOptions = value || {};
     return {
         ...options,
-        allow_local_cancel: Boolean(options.allow_local_cancel),
-        cancel_statuses: Array.isArray(options.cancel_statuses) ? options.cancel_statuses.filter(Boolean) : [],
         parameters: Array.isArray(options.parameters)
             ? options.parameters.filter(Boolean).map(parameter => ({
                 ...parameter,
@@ -607,24 +518,16 @@ export const playgroundListVideoModels = async (tokenId: string): Promise<Playgr
     const modelOptions = Object.fromEntries(
         Object.entries(payload.model_options || {}).map(([model, options]) => [model, normalizeVideoModelOptions(options as PlaygroundVideoModelOptions)]),
     );
-    const channels = (payload.channels || []).filter(Boolean).map(channel => ({
-        ...channel,
-        models: Array.isArray(channel.models) ? channel.models.filter(Boolean) : [],
-        model_options: Object.fromEntries(
-            Object.entries(channel.model_options || {}).map(([model, options]) => [model, normalizeVideoModelOptions(options as PlaygroundVideoModelOptions)]),
-        ),
-    }));
     return {
         models: Array.isArray(payload.models) ? payload.models.filter(Boolean) : [],
         model_options: modelOptions,
-        channels,
     };
 };
 
 export const playgroundCreateVideo = async (tokenId: string, params: VideoCreateParams): Promise<{ id: string; status: string }> => {
     return await request<{ id: string; status: string }>(`/playground/${tokenId}/videos/generations`, {
         method: 'POST',
-        body: JSON.stringify(params),
+        body: JSON.stringify(toCanonicalVideoRequest(params)),
     });
 };
 
@@ -635,7 +538,7 @@ export const playgroundEstimateVideo = async (
 ): Promise<VideoEstimate> => {
     return await request<VideoEstimate>(`/playground/${tokenId}/videos/estimate`, {
         method: 'POST',
-        body: JSON.stringify(params),
+        body: JSON.stringify(toCanonicalVideoRequest(params)),
         signal,
     });
 };
@@ -672,12 +575,4 @@ export const playgroundListVideos = async (tokenId: string): Promise<{ items: Vi
 
 export const playgroundGetVideo = async (tokenId: string, taskId: string): Promise<VideoTask> => {
     return await request<VideoTask>(`/playground/${tokenId}/videos/generations/${taskId}`);
-};
-
-export const playgroundCancelVideo = async (tokenId: string, taskId: string): Promise<void> => {
-    await request(`/playground/${tokenId}/videos/generations/${taskId}/cancel`, { method: 'POST' });
-};
-
-export const playgroundPriorityQueueVideo = async (tokenId: string, taskId: string): Promise<void> => {
-    await request(`/playground/${tokenId}/videos/generations/${taskId}/priority-queue`, { method: 'POST' });
 };

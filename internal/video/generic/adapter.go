@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"math"
 	"net/http"
 	"strconv"
 	"strings"
@@ -14,6 +13,7 @@ import (
 
 	"github.com/mirainya/Prism/internal/video"
 	"github.com/mirainya/Prism/internal/video/taskhttp"
+	"github.com/shopspring/decimal"
 	"github.com/tidwall/gjson"
 )
 
@@ -49,6 +49,10 @@ func (a *Adapter) BuildRequest(_ context.Context, request *video.GenerateRequest
 	if err := a.ready(); err != nil {
 		return nil, err
 	}
+	return a.buildRequest(request)
+}
+
+func (a *Adapter) buildRequest(request *video.GenerateRequest) (*video.ProviderRequest, error) {
 	if request == nil {
 		return nil, errors.New("generic video request is required")
 	}
@@ -270,10 +274,10 @@ func (a *Adapter) Submit(ctx context.Context, request *video.ProviderRequest) (*
 	}, nil
 }
 
-func (a *Adapter) Estimate(ctx context.Context, request *video.GenerateRequest) (float64, error) {
+func (a *Adapter) Estimate(ctx context.Context, request *video.GenerateRequest) (decimal.Decimal, error) {
 	estimate, err := a.EstimateDetailed(ctx, request)
 	if err != nil {
-		return 0, err
+		return decimal.Zero, err
 	}
 	return estimate.EstimatedCost, nil
 }
@@ -301,19 +305,30 @@ func (a *Adapter) EstimateDetailed(ctx context.Context, request *video.GenerateR
 	if err != nil {
 		return nil, fmt.Errorf("parse generic estimate response: %w", err)
 	}
-	result := firstResult(payload, a.config.Response.EstimatedCostPaths)
-	if !result.Exists() || result.Type == gjson.Null || result.IsObject() || result.IsArray() {
+	estimatedCost, err := firstMoney(payload, a.config.Response.EstimatedCostPaths)
+	if err != nil {
+		return nil, err
+	}
+	if estimatedCost == nil {
 		return nil, errors.New("generic estimate response is missing estimated cost")
 	}
-	estimatedCost, err := strconv.ParseFloat(strings.TrimSpace(result.String()), 64)
-	if err != nil || estimatedCost < 0 || math.IsNaN(estimatedCost) || math.IsInf(estimatedCost, 0) {
-		return nil, errors.New("generic estimate response contains an invalid estimated cost")
+	actualCost, err := firstMoney(payload, a.config.Response.ActualCostPaths)
+	if err != nil {
+		return nil, err
+	}
+	unitCost, err := firstMoney(payload, a.config.Response.UnitCostPaths)
+	if err != nil {
+		return nil, err
+	}
+	units, err := firstMoney(payload, a.config.Response.UnitsPaths)
+	if err != nil {
+		return nil, err
 	}
 	return &video.ProviderEstimate{
-		EstimatedCost: estimatedCost,
-		ActualCost:    firstFloat(payload, a.config.Response.ActualCostPaths),
-		UnitCost:      firstFloat(payload, a.config.Response.UnitCostPaths),
-		Units:         firstFloat(payload, a.config.Response.UnitsPaths),
+		EstimatedCost: *estimatedCost,
+		ActualCost:    actualCost,
+		UnitCost:      unitCost,
+		Units:         units,
 		BillingMode:   firstText(payload, a.config.Response.BillingModePaths),
 		BillingTier:   firstText(payload, a.config.Response.BillingTierPaths),
 		PricingSource: firstText(payload, a.config.Response.PricingSourcePaths),
@@ -419,16 +434,16 @@ func (a *Adapter) CanAction(action string, status video.VideoTaskStatus) bool {
 	return false
 }
 
-func (a *Adapter) ActionSurchargePercent(action string) float64 {
+func (a *Adapter) ActionSurchargePercent(action string) decimal.Decimal {
 	if a == nil || a.configErr != nil {
-		return 0
+		return decimal.Zero
 	}
 	if action == "priority_queue" {
-		if tier, ok := a.config.ServiceTiers["priority"]; ok && tier.SurchargePercent > 0 {
+		if tier, ok := a.config.ServiceTiers["priority"]; ok && tier.SurchargePercent.IsPositive() {
 			return tier.SurchargePercent
 		}
 	}
-	return 0
+	return decimal.Zero
 }
 
 func (a *Adapter) Action(ctx context.Context, action, providerTaskID string) (*video.ProviderMetadata, error) {
@@ -456,7 +471,7 @@ func (a *Adapter) Action(ctx context.Context, action, providerTaskID string) (*v
 		if err != nil {
 			return nil, fmt.Errorf("parse generic action response: %w", err)
 		}
-		return a.parseProviderMetadata(payload), nil
+		return a.parseProviderMetadata(payload)
 	}
 	return nil, nil
 }
@@ -558,28 +573,40 @@ func (a *Adapter) parseResponse(body []byte, defaultStatus string) (*parsedRespo
 	if status == video.VideoTaskStatusCompleted && result == nil {
 		return nil, errors.New("completed upstream response is missing video URL")
 	}
+	metadata, err := a.parseProviderMetadata(payload)
+	if err != nil {
+		return nil, err
+	}
 	return &parsedResponse{
 		ProviderTaskID: providerTaskID, Status: status, Percent: percent, Result: result,
 		Error:    firstText(payload, a.config.Response.ErrorPaths),
-		Metadata: a.parseProviderMetadata(payload),
+		Metadata: metadata,
 	}, nil
 }
 
-func (a *Adapter) parseProviderMetadata(payload []byte) *video.ProviderMetadata {
+func (a *Adapter) parseProviderMetadata(payload []byte) (*video.ProviderMetadata, error) {
+	surcharge, err := firstMoney(payload, a.config.Response.PrioritySurchargePercentPaths)
+	if err != nil {
+		return nil, err
+	}
+	cost, err := firstMoney(payload, a.config.Response.EstimatedCostPaths)
+	if err != nil {
+		return nil, err
+	}
 	metadata := &video.ProviderMetadata{
 		QueueStatus:              firstText(payload, a.config.Response.QueueStatusPaths),
 		QueuePosition:            firstInt(payload, a.config.Response.QueuePositionPaths),
 		QueueLimit:               firstInt(payload, a.config.Response.QueueLimitPaths),
 		PriorityQueue:            firstBool(payload, a.config.Response.PriorityQueuePaths),
 		PointsVIP:                firstBool(payload, a.config.Response.PointsVIPPaths),
-		PrioritySurchargePercent: firstFloat(payload, a.config.Response.PrioritySurchargePercentPaths),
-		EstimatedCost:            firstFloat(payload, a.config.Response.EstimatedCostPaths),
+		PrioritySurchargePercent: surcharge,
+		EstimatedCost:            cost,
 	}
 	if metadata.QueueStatus == "" && metadata.QueuePosition == 0 && metadata.QueueLimit == 0 &&
-		metadata.PriorityQueue == nil && metadata.PointsVIP == nil && metadata.PrioritySurchargePercent == 0 && metadata.EstimatedCost == 0 {
-		return nil
+		metadata.PriorityQueue == nil && metadata.PointsVIP == nil && metadata.PrioritySurchargePercent == nil && metadata.EstimatedCost == nil {
+		return nil, nil
 	}
-	return metadata
+	return metadata, nil
 }
 
 func (a *Adapter) responsePayload(body []byte) ([]byte, error) {

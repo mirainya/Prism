@@ -8,10 +8,12 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/glebarez/sqlite"
 	"github.com/mirainya/Prism/internal/model"
+	"github.com/mirainya/Prism/internal/tokenauth"
 	"gorm.io/gorm"
 )
 
@@ -40,12 +42,19 @@ func TestAuthSupportsAnthropicAPIKeyHeader(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := db.AutoMigrate(&model.Token{}); err != nil {
+	if err := db.AutoMigrate(&model.User{}, &model.Token{}); err != nil {
 		t.Fatal(err)
 	}
 	model.SetDB(db)
-	rawKey := "sk-prism-anthropic-test"
-	token := model.Token{UserID: 7, Key: HashTokenKey(rawKey), Status: 1}
+	user := model.User{BaseModel: model.BaseModel{ID: 7}, Username: "anthropic-owner", Status: 1}
+	if err := db.Create(&user).Error; err != nil {
+		t.Fatal(err)
+	}
+	rawKey, selector, digest, err := tokenauth.Generate()
+	if err != nil {
+		t.Fatal(err)
+	}
+	token := model.Token{UserID: 7, Selector: selector, SecretDigest: digest, SecretDigestVersion: tokenauth.DigestVersion, AuthVersion: 1, Status: 1}
 	if err := db.Create(&token).Error; err != nil {
 		t.Fatal(err)
 	}
@@ -64,6 +73,19 @@ func TestAuthSupportsAnthropicAPIKeyHeader(t *testing.T) {
 	router.ServeHTTP(response, request)
 	if response.Code != http.StatusNoContent {
 		t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
+	}
+
+	now := time.Now().UTC()
+	if err := db.Model(&model.Token{}).Where("id=?", token.ID).
+		Updates(map[string]any{"status": 0, "revoked_at": now, "auth_version": gorm.Expr("auth_version + 1")}).Error; err != nil {
+		t.Fatal(err)
+	}
+	revokedRequest := httptest.NewRequest(http.MethodPost, "/v1/messages", strings.NewReader(`{}`))
+	revokedRequest.Header.Set("x-api-key", rawKey)
+	revokedResponse := httptest.NewRecorder()
+	router.ServeHTTP(revokedResponse, revokedRequest)
+	if revokedResponse.Code != http.StatusUnauthorized {
+		t.Fatalf("revoked token status=%d body=%s", revokedResponse.Code, revokedResponse.Body.String())
 	}
 }
 

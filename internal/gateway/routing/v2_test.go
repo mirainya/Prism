@@ -1,271 +1,80 @@
 package routing
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"testing"
-	"time"
 
 	"github.com/glebarez/sqlite"
 	"github.com/mirainya/Prism/internal/model"
-	"gorm.io/datatypes"
 	"gorm.io/gorm"
 )
 
-func TestSelectTransportPrefersNativeResponses(t *testing.T) {
-	db := newTransportRoutingDB(t)
-	channel := createRouteFixture(t, db, "openai", model.ProtocolOpenAI, 1, datatypes.JSON(`{"chat":true,"responses":true}`))
-	ability := routeFixtureAbility(t, db, channel.ID)
-	for _, row := range []model.GwAbilityTransport{
-		{AbilityID: ability.ID, Transport: model.UpstreamTransportOpenAIChat, Status: 1},
-		{AbilityID: ability.ID, Transport: model.UpstreamTransportOpenAIResponses, Status: 1, Config: datatypes.JSON(`{"header":"value"}`)},
-	} {
-		if err := db.Create(&row).Error; err != nil {
-			t.Fatalf("create transport: %v", err)
-		}
-	}
-
-	route, err := NewRouter().SelectTransport("test-model", RouteRequirements{CapabilityResponses: true}, RouteOptions{
-		AllowedTransports:   []model.UpstreamTransport{model.UpstreamTransportOpenAIChat, model.UpstreamTransportOpenAIResponses},
-		PreferredTransports: []model.UpstreamTransport{model.UpstreamTransportOpenAIResponses},
-		ResponsesRequest:    true,
-	})
-	if err != nil {
-		t.Fatalf("select transport: %v", err)
-	}
-	if route.Transport != model.UpstreamTransportOpenAIResponses || route.ExecutionMode != ExecutionModeResponsesNative {
-		t.Fatalf("selected transport=%q mode=%q", route.Transport, route.ExecutionMode)
-	}
-	if !route.Capabilities[CapabilityResponses] || route.TransportConfig["header"] != "value" {
-		t.Fatalf("route semantics were not preserved: %#v", route)
+func TestSelectTransportRequiresStableIdentity(t *testing.T) {
+	_, err := NewRouter().SelectTransport(context.Background(), "test-model", nil, RouteOptions{})
+	if !errors.Is(err, ErrInvalidSelectionKey) {
+		t.Fatalf("error = %v, want ErrInvalidSelectionKey", err)
 	}
 }
 
-func TestSelectTransportSkipsTransportCircuitState(t *testing.T) {
-	db := newTransportRoutingDB(t)
-	channel := createRouteFixture(t, db, "openai", model.ProtocolOpenAI, 1, datatypes.JSON(`{"chat":true,"responses":true}`))
-	ability := routeFixtureAbility(t, db, channel.ID)
-	for _, transport := range []model.UpstreamTransport{model.UpstreamTransportOpenAIChat, model.UpstreamTransportOpenAIResponses} {
-		if err := db.Create(&model.GwAbilityTransport{AbilityID: ability.ID, Transport: transport, Status: 1}).Error; err != nil {
-			t.Fatalf("create transport: %v", err)
-		}
-	}
-	var key model.GwChannelKey
-	if err := db.Where("channel_id = ?", channel.ID).First(&key).Error; err != nil {
-		t.Fatalf("load key: %v", err)
-	}
-	if err := db.Create(&model.GwRouteState{KeyID: key.ID, ModelName: "test-model", Transport: model.UpstreamTransportOpenAIResponses, DisabledUntil: time.Now().Add(time.Minute)}).Error; err != nil {
-		t.Fatalf("create state: %v", err)
-	}
-
-	route, err := NewRouter().SelectTransport("test-model", RouteRequirements{CapabilityResponses: true}, RouteOptions{
-		AllowedTransports:   []model.UpstreamTransport{model.UpstreamTransportOpenAIChat, model.UpstreamTransportOpenAIResponses},
-		PreferredTransports: []model.UpstreamTransport{model.UpstreamTransportOpenAIResponses},
-		ResponsesRequest:    true,
-	})
-	if err != nil {
-		t.Fatalf("select fallback: %v", err)
-	}
-	if route.Transport != model.UpstreamTransportOpenAIChat || route.ExecutionMode != ExecutionModeResponsesConverted {
-		t.Fatalf("expected converted fallback, got transport=%q mode=%q", route.Transport, route.ExecutionMode)
-	}
-}
-
-func TestSelectTransportExcludesOnlyAttemptCombination(t *testing.T) {
-	db := newTransportRoutingDB(t)
-	channel := createRouteFixture(t, db, "openai", model.ProtocolOpenAI, 1, datatypes.JSON(`{"chat":true,"responses":true}`))
-	ability := routeFixtureAbility(t, db, channel.ID)
-	for _, transportID := range []model.UpstreamTransport{model.UpstreamTransportOpenAIChat, model.UpstreamTransportOpenAIResponses} {
-		if err := db.Create(&model.GwAbilityTransport{AbilityID: ability.ID, Transport: transportID, Status: 1}).Error; err != nil {
-			t.Fatalf("create transport: %v", err)
-		}
-	}
-	var key model.GwChannelKey
-	if err := db.Where("channel_id = ?", channel.ID).First(&key).Error; err != nil {
-		t.Fatal(err)
-	}
-
-	route, err := NewRouter().SelectTransport("test-model", RouteRequirements{CapabilityResponses: true}, RouteOptions{
-		AllowedTransports:   []model.UpstreamTransport{model.UpstreamTransportOpenAIChat, model.UpstreamTransportOpenAIResponses},
-		PreferredTransports: []model.UpstreamTransport{model.UpstreamTransportOpenAIResponses},
-		ExcludeAttempts:     []TransportAttempt{{KeyID: key.ID, Transport: model.UpstreamTransportOpenAIResponses}},
-		ResponsesRequest:    true,
-	})
-	if err != nil {
-		t.Fatalf("select fallback transport: %v", err)
-	}
-	if route.KeyID != key.ID || route.Transport != model.UpstreamTransportOpenAIChat {
-		t.Fatalf("excluded the whole key: key=%d transport=%q", route.KeyID, route.Transport)
-	}
-}
-
-func TestSelectTransportPreferenceWinsBeforeAbilityPriority(t *testing.T) {
-	db := newTransportRoutingDB(t)
-	nativeChannel := createRouteFixture(t, db, "native", model.ProtocolOpenAI, 1, datatypes.JSON(`{"responses":true}`))
-	nativeAbility := routeFixtureAbility(t, db, nativeChannel.ID)
-	if err := db.Create(&model.GwAbilityTransport{AbilityID: nativeAbility.ID, Transport: model.UpstreamTransportOpenAIResponses, Status: 1}).Error; err != nil {
-		t.Fatalf("create native transport: %v", err)
-	}
-	chatChannel := createRouteFixture(t, db, "chat", model.ProtocolOpenAI, 10, datatypes.JSON(`{"responses":true}`))
-	chatAbility := routeFixtureAbility(t, db, chatChannel.ID)
-	if err := db.Create(&model.GwAbilityTransport{AbilityID: chatAbility.ID, Transport: model.UpstreamTransportOpenAIChat, Status: 1}).Error; err != nil {
-		t.Fatalf("create chat transport: %v", err)
-	}
-
-	route, err := NewRouter().SelectTransport("test-model", RouteRequirements{CapabilityResponses: true}, RouteOptions{
-		AllowedTransports:   []model.UpstreamTransport{model.UpstreamTransportOpenAIChat, model.UpstreamTransportOpenAIResponses},
-		PreferredTransports: []model.UpstreamTransport{model.UpstreamTransportOpenAIResponses},
-		ResponsesRequest:    true,
-	})
-	if err != nil {
-		t.Fatalf("select transport: %v", err)
-	}
-	if route.Transport != model.UpstreamTransportOpenAIResponses || route.ChannelID != nativeChannel.ID {
-		t.Fatalf("preference did not win: transport=%q channel=%d", route.Transport, route.ChannelID)
-	}
-}
-
-func TestSelectTransportRequiresExplicitTransport(t *testing.T) {
-	db := newTransportRoutingDB(t)
-	channel := createRouteFixture(t, db, "legacy", model.ProtocolOpenAI, 1, nil)
-	_ = routeFixtureAbility(t, db, channel.ID)
-	if _, err := NewRouter().SelectTransport("test-model", RouteRequirements{CapabilityChat: true}, RouteOptions{}); !errors.Is(err, ErrNoRoute) {
-		t.Fatalf("legacy ability without transport error=%v, want ErrNoRoute", err)
-	}
-}
-
-func TestSelectTransportPreservesCapabilityErrors(t *testing.T) {
-	db := newTransportRoutingDB(t)
-	channel := createRouteFixture(t, db, "chat-only", model.ProtocolOpenAI, 1, datatypes.JSON(`["chat"]`))
-	ability := routeFixtureAbility(t, db, channel.ID)
-	if err := db.Create(&model.GwAbilityTransport{AbilityID: ability.ID, Transport: model.UpstreamTransportOpenAIChat, Status: 1}).Error; err != nil {
-		t.Fatalf("create transport: %v", err)
-	}
-	if _, err := NewRouter().SelectTransport("test-model", RouteRequirements{CapabilityResponses: true}, RouteOptions{}); !errors.Is(err, ErrCapabilityUnavailable) {
-		t.Fatalf("capability error=%v, want ErrCapabilityUnavailable", err)
-	}
-}
-
-func TestSelectTransportDistinguishesIncompatibleTransport(t *testing.T) {
-	db := newTransportRoutingDB(t)
-	channel := createRouteFixture(t, db, "chat-transport", model.ProtocolOpenAI, 1, datatypes.JSON(`["responses"]`))
-	ability := routeFixtureAbility(t, db, channel.ID)
-	if err := db.Create(&model.GwAbilityTransport{AbilityID: ability.ID, Transport: model.UpstreamTransportOpenAIChat, Status: 1}).Error; err != nil {
-		t.Fatalf("create transport: %v", err)
-	}
-
-	_, err := NewRouter().SelectTransport("test-model", RouteRequirements{CapabilityResponses: true}, RouteOptions{
-		AllowedTransports: []model.UpstreamTransport{model.UpstreamTransportOpenAIResponses},
-	})
-	if !errors.Is(err, ErrNoCompatibleTransport) {
-		t.Fatalf("transport error=%v, want ErrNoCompatibleTransport", err)
-	}
-}
-
-func TestSelectTransportPreservesTemporaryNoRouteError(t *testing.T) {
-	db := newTransportRoutingDB(t)
-	channel := createRouteFixture(t, db, "temporarily-disabled", model.ProtocolOpenAI, 1, datatypes.JSON(`["responses"]`))
-	ability := routeFixtureAbility(t, db, channel.ID)
-	if err := db.Create(&model.GwAbilityTransport{AbilityID: ability.ID, Transport: model.UpstreamTransportOpenAIResponses, Status: 1}).Error; err != nil {
-		t.Fatalf("create transport: %v", err)
-	}
-	var key model.GwChannelKey
-	if err := db.Where("channel_id = ?", channel.ID).First(&key).Error; err != nil {
-		t.Fatalf("load key: %v", err)
-	}
-	if err := db.Create(&model.GwRouteState{
-		KeyID: key.ID, ModelName: "test-model", Transport: model.UpstreamTransportOpenAIResponses,
-		DisabledUntil: time.Now().Add(time.Minute),
-	}).Error; err != nil {
-		t.Fatalf("create state: %v", err)
-	}
-
-	_, err := NewRouter().SelectTransport("test-model", RouteRequirements{CapabilityResponses: true}, RouteOptions{
-		AllowedTransports: []model.UpstreamTransport{model.UpstreamTransportOpenAIResponses},
-	})
-	if !errors.Is(err, ErrNoRoute) {
-		t.Fatalf("temporary route error=%v, want ErrNoRoute", err)
-	}
-	if errors.Is(err, ErrNoCompatibleTransport) {
-		t.Fatalf("temporary route error=%v, must not be ErrNoCompatibleTransport", err)
-	}
-}
-
-func TestSelectTransportTreatsFullCompatibleKeyAsTemporaryNoRoute(t *testing.T) {
-	db := newTransportRoutingDB(t)
-	compatible := createRouteFixture(t, db, "full-compatible", model.ProtocolOpenAI, 1, datatypes.JSON(`["responses"]`))
-	compatibleAbility := routeFixtureAbility(t, db, compatible.ID)
-	if err := db.Create(&model.GwAbilityTransport{AbilityID: compatibleAbility.ID, Transport: model.UpstreamTransportOpenAIResponses, Status: 1}).Error; err != nil {
-		t.Fatalf("create compatible transport: %v", err)
-	}
-	if err := db.Model(&model.GwChannelKey{}).Where("channel_id = ?", compatible.ID).Updates(map[string]any{"max_conc": 1, "current_conc": 1}).Error; err != nil {
-		t.Fatalf("fill compatible key: %v", err)
-	}
-
-	incompatible := createRouteFixture(t, db, "available-incompatible", model.ProtocolOpenAI, 1, datatypes.JSON(`["responses"]`))
-	incompatibleAbility := routeFixtureAbility(t, db, incompatible.ID)
-	if err := db.Create(&model.GwAbilityTransport{AbilityID: incompatibleAbility.ID, Transport: model.UpstreamTransportOpenAIChat, Status: 1}).Error; err != nil {
-		t.Fatalf("create incompatible transport: %v", err)
-	}
-
-	_, err := NewRouter().SelectTransport("test-model", RouteRequirements{CapabilityResponses: true}, RouteOptions{
-		AllowedTransports: []model.UpstreamTransport{model.UpstreamTransportOpenAIResponses},
-	})
-	if !errors.Is(err, ErrNoRoute) {
-		t.Fatalf("full compatible route error=%v, want ErrNoRoute", err)
-	}
-}
-
-func TestSelectTransportTreatsLegacyCapabilitiesAsEmpty(t *testing.T) {
-	db := newTransportRoutingDB(t)
-	channel := createRouteFixture(t, db, "legacy", model.ProtocolOpenAI, 1, nil)
-	ability := routeFixtureAbility(t, db, channel.ID)
-	if err := db.Create(&model.GwAbilityTransport{AbilityID: ability.ID, Transport: model.UpstreamTransportOpenAIChat, Status: 1}).Error; err != nil {
-		t.Fatalf("create transport: %v", err)
-	}
-	if _, err := NewRouter().SelectTransport("test-model", RouteRequirements{CapabilityChat: true}, RouteOptions{}); !errors.Is(err, ErrCapabilityUnavailable) {
-		t.Fatalf("legacy capability error=%v, want ErrCapabilityUnavailable", err)
-	}
-}
-
-func newTransportRoutingDB(t *testing.T) *gorm.DB {
-	t.Helper()
+func TestSelectTransportNeverFallsBackToLegacyRoutes(t *testing.T) {
 	db, err := gorm.Open(sqlite.Open(fmt.Sprintf("file:%s?mode=memory&cache=shared", t.Name())), &gorm.Config{})
 	if err != nil {
-		t.Fatalf("open database: %v", err)
+		t.Fatal(err)
 	}
-	if err := db.AutoMigrate(&model.GwChannel{}, &model.GwChannelKey{}, &model.GwAbility{}, &model.GwAbilityTransport{}, &model.GwRouteState{}); err != nil {
-		t.Fatalf("migrate routing tables: %v", err)
+	if err := db.AutoMigrate(&model.GwChannel{}, &model.GwChannelKey{}, &model.GwAbility{}); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Exec(`CREATE TABLE gw_catalog_runtime_state (id INTEGER PRIMARY KEY, active_release_id INTEGER NULL, active_deployment_generation_id INTEGER NULL)`).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Exec(`INSERT INTO gw_catalog_runtime_state(id,active_release_id,active_deployment_generation_id) VALUES (1,NULL,NULL)`).Error; err != nil {
+		t.Fatal(err)
+	}
+	channel := &model.GwChannel{Name: "legacy", Protocol: model.ProtocolOpenAI, BaseURL: "https://legacy.example", Status: 1}
+	if err := db.Create(channel).Error; err != nil {
+		t.Fatal(err)
+	}
+	key := &model.GwChannelKey{ChannelID: channel.ID, Name: "legacy-key", APIKey: "secret", Status: 1}
+	if err := db.Create(key).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Create(&model.GwAbility{ModelName: "test-model", ChannelID: channel.ID, KeyID: key.ID, Status: 1}).Error; err != nil {
+		t.Fatal(err)
 	}
 	model.SetDB(db)
-	return db
+
+	_, err = NewRouter().SelectTransport(context.Background(), "test-model", nil, RouteOptions{SelectionKey: t.Name()})
+	if !errors.Is(err, ErrNoRoute) {
+		t.Fatalf("error = %v, want ErrNoRoute", err)
+	}
+	var stored model.GwChannelKey
+	if err := db.First(&stored, key.ID).Error; err != nil {
+		t.Fatal(err)
+	}
+	if stored.CurrentConc != 0 {
+		t.Fatalf("legacy concurrency changed to %d", stored.CurrentConc)
+	}
 }
 
-func routeFixtureAbility(t *testing.T, db *gorm.DB, channelID uint) *model.GwAbility {
-	t.Helper()
-	var ability model.GwAbility
-	if err := db.Where("channel_id = ?", channelID).First(&ability).Error; err != nil {
-		t.Fatalf("load ability: %v", err)
+func TestSemanticCapabilitiesAcceptObjectAndList(t *testing.T) {
+	for _, raw := range [][]byte{[]byte(`{"chat":true,"vision":false}`), []byte(`["chat"]`)} {
+		capabilities := semanticCapabilities(raw)
+		if !capabilities[CapabilityChat] || capabilities[CapabilityVision] {
+			t.Fatalf("unexpected capabilities: %#v", capabilities)
+		}
 	}
-	return &ability
 }
 
-func createRouteFixture(t *testing.T, db *gorm.DB, name string, protocol model.Protocol, priority int, capabilities datatypes.JSON) *model.GwChannel {
-	t.Helper()
-	channel := &model.GwChannel{Name: name, Protocol: protocol, BaseURL: "https://" + name + ".example", Status: 1}
-	if err := db.Create(channel).Error; err != nil {
-		t.Fatalf("create channel: %v", err)
+func TestExecutionMode(t *testing.T) {
+	if got := executionMode(false, model.UpstreamTransportOpenAIResponses); got != ExecutionModeChat {
+		t.Fatalf("chat mode = %q", got)
 	}
-	key := &model.GwChannelKey{ChannelID: channel.ID, Name: name + "-key", APIKey: "provider-key", Weight: 10, Status: 1}
-	if err := db.Create(key).Error; err != nil {
-		t.Fatalf("create key: %v", err)
+	if got := executionMode(true, model.UpstreamTransportOpenAIResponses); got != ExecutionModeResponsesNative {
+		t.Fatalf("native mode = %q", got)
 	}
-	ability := &model.GwAbility{
-		ModelName: "test-model", ChannelID: channel.ID, KeyID: key.ID,
-		VendorModel: "vendor-" + name, Priority: priority, Capabilities: capabilities, Status: 1,
+	if got := executionMode(true, model.UpstreamTransportOpenAIChat); got != ExecutionModeResponsesConverted {
+		t.Fatalf("converted mode = %q", got)
 	}
-	if err := db.Create(ability).Error; err != nil {
-		t.Fatalf("create ability: %v", err)
-	}
-	return channel
 }

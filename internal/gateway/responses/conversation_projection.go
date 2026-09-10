@@ -9,6 +9,7 @@ import (
 
 	"github.com/mirainya/Prism/internal/gateway/canonical"
 	openairesponses "github.com/mirainya/Prism/internal/gateway/codec/openai_responses"
+	"github.com/mirainya/Prism/internal/gateway/execution"
 	"github.com/mirainya/Prism/internal/model"
 	protocol "github.com/mirainya/Prism/internal/provider/responses"
 	"github.com/mirainya/Prism/internal/service"
@@ -128,29 +129,7 @@ func projectResponseConversation(record *model.AIResponse) (uint, error) {
 	if err != nil {
 		return 0, err
 	}
-	if err := linkResponseReplayCalls(record.ID, conversationID); err != nil {
-		logResponseConversationProjectionError("link Responses replay conversations", record.CallID, err)
-	}
 	return conversationID, nil
-}
-
-// stageResponseConversationReadyBestEffort marks output ready immediately
-// before a terminal transition. Empty fallback output never replaces a real
-// or partial snapshot written by the engine.
-func stageResponseConversationReadyBestEffort(record *model.AIResponse, projection *responseConversationProjection) {
-	if projection == nil || projection.response == nil {
-		stageResponseConversationOutputIfMissingBestEffort(record, projection)
-		return
-	}
-	stageResponseConversationOutputBestEffort(record, projection)
-}
-
-func stageResponseConversationInputTx(tx *gorm.DB, record *model.AIResponse, source *responseConversationProjection) error {
-	request, err := responseConversationInputRequest(record, source)
-	if err != nil {
-		return err
-	}
-	return service.StageAPIConversationProjectionInputTx(tx, request)
 }
 
 func responseConversationInputRequest(record *model.AIResponse, source *responseConversationProjection) (service.ConversationProjectionInputRequest, error) {
@@ -174,9 +153,11 @@ func responseConversationInputRequest(record *model.AIResponse, source *response
 			return service.ConversationProjectionInputRequest{}, errors.New("stored Responses conversation input is missing")
 		}
 		conversationID := uint(0)
-		var call model.APICall
-		if err := model.DB().Select("conversation_id").First(&call, "id = ?", record.CallID).Error; err == nil {
-			conversationID = call.ConversationID
+		var staged model.ConversationProjectionOutbox
+		if err := model.DB().Select("conversation_id").First(&staged, "call_id = ?", record.CallID).Error; err == nil {
+			conversationID = staged.ConversationID
+		} else if !errors.Is(err, gorm.ErrRecordNotFound) {
+			return service.ConversationProjectionInputRequest{}, fmt.Errorf("load staged Responses conversation input: %w", err)
 		}
 		var err error
 		projection, err = newResponseConversationProjection(&request, conversationID)
@@ -207,16 +188,6 @@ func stageResponseConversationOutput(record *model.AIResponse, projection *respo
 	}
 	_, err = service.StageAPIConversationProjectionOutputIfPresent(request)
 	return err
-}
-
-func stageResponseConversationOutputIfMissingBestEffort(record *model.AIResponse, projection *responseConversationProjection) {
-	request, err := responseConversationOutputRequest(record, projection)
-	if err == nil {
-		_, err = service.StageAPIConversationProjectionOutputIfMissing(request)
-	}
-	if err != nil {
-		logResponseConversationProjectionError("stage missing Responses conversation output", responseRecordCallID(record), err)
-	}
 }
 
 func responseConversationOutputRequest(record *model.AIResponse, projection *responseConversationProjection) (service.ConversationProjectionOutputRequest, error) {
@@ -288,43 +259,15 @@ func canonicalResponseFromRecord(record *model.AIResponse) (*canonical.Response,
 	return result, nil
 }
 
-func linkResponseReplayCalls(responseID string, conversationID uint) error {
-	if strings.TrimSpace(responseID) == "" || conversationID == 0 {
-		return nil
-	}
-	return model.DB().Model(&model.APICall{}).
-		Where("resource_type = ? AND resource_id = ? AND operation = ? AND conversation_id = 0", "response", responseID, "responses.replay").
-		Update("conversation_id", conversationID).Error
-}
-
-func responseAPICallStatus(callID string) model.APICallStatus {
+func responseCallStatus(callID string) execution.CallState {
 	if strings.TrimSpace(callID) == "" {
 		return ""
 	}
-	var status model.APICallStatus
-	_ = model.DB().Model(&model.APICall{}).Where("id = ?", callID).Pluck("status", &status).Error
+	var status execution.CallState
+	if err := model.DB().Table("gw_api_calls").Where("public_id = ?", callID).Pluck("status", &status).Error; err != nil {
+		return ""
+	}
 	return status
-}
-
-func linkResponseReplayBestEffort(callID string, record *model.AIResponse) {
-	if strings.TrimSpace(callID) == "" || record == nil {
-		return
-	}
-	var original model.APICall
-	err := model.DB().Select("conversation_id").First(&original, "id = ?", record.CallID).Error
-	if errors.Is(err, gorm.ErrRecordNotFound) || (err == nil && original.ConversationID == 0) {
-		return
-	}
-	if err != nil {
-		logResponseConversationProjectionError("load original Responses conversation", callID, err)
-		return
-	}
-	result := model.DB().Model(&model.APICall{}).
-		Where("id = ? AND operation = ? AND conversation_id = 0", callID, "responses.replay").
-		Update("conversation_id", original.ConversationID)
-	if result.Error != nil {
-		logResponseConversationProjectionError("link Responses replay conversation", callID, result.Error)
-	}
 }
 
 func responseRecordCallID(record *model.AIResponse) string {

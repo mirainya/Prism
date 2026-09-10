@@ -10,9 +10,9 @@ var pricingService = service.NewPricingService()
 
 // GetPricing 获取公开的价格列表
 func GetPricing(c *gin.Context) {
-	result, err := pricingService.GetPricing()
+	result, err := pricingService.GetPricing(c.Request.Context())
 	if err != nil {
-		resp.ErrorMsg(c, 500, 500, err.Error())
+		resp.ErrorMsg(c, 503, 503, "pricing is unavailable")
 		return
 	}
 	resp.Success(c, result)

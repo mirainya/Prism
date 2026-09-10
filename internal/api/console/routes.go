@@ -27,7 +27,6 @@ func RegisterRoutes(group *gin.RouterGroup) {
 	group.PUT("/tokens/:id", UpdateToken)
 	group.POST("/tokens/:id/recharge", RechargeToken)
 	group.DELETE("/tokens/:id", DeleteToken)
-	group.GET("/capability-channels", ListCapabilityChannels)
 
 	// 仪表盘
 	group.GET("/dashboard/stats", DashboardStats)
@@ -51,7 +50,6 @@ func RegisterRoutes(group *gin.RouterGroup) {
 
 	// Playground 代理（通过 JWT + token_id，无需原始 API Key）
 	group.GET("/playground/:token_id/models", PlaygroundListModels)
-	group.GET("/playground/:token_id/capabilities", PlaygroundListCapabilities)
 	group.GET("/playground/:token_id/conversations", PlaygroundListConversations)
 	group.GET("/playground/:token_id/conversations/:conversation_id/messages", PlaygroundGetConversationMessages)
 	group.GET("/playground/:token_id/conversations/:conversation_id/turns", PlaygroundGetConversationTurns)
@@ -60,10 +58,6 @@ func RegisterRoutes(group *gin.RouterGroup) {
 	group.POST("/playground/:token_id/responses", PlaygroundResponses)
 	group.POST("/playground/:token_id/messages", PlaygroundAnthropicMessages)
 	group.POST("/playground/:token_id/upload", PlaygroundUploadFile)
-	group.POST("/playground/:token_id/capabilities/:capability", PlaygroundInvokeCapability)
-	group.GET("/playground/:token_id/tasks", PlaygroundListTasks)
-	group.GET("/playground/:token_id/tasks/:task_no", PlaygroundGetTask)
-	group.POST("/playground/:token_id/tasks/:task_no/cancel", PlaygroundCancelTask)
 
 	// Video playground
 	group.GET("/playground/:token_id/videos/models", PlaygroundListVideoModels)
@@ -72,6 +66,4 @@ func RegisterRoutes(group *gin.RouterGroup) {
 	group.POST("/playground/:token_id/videos/generations", PlaygroundCreateVideo)
 	group.GET("/playground/:token_id/videos/generations", PlaygroundListVideos)
 	group.GET("/playground/:token_id/videos/generations/:id", PlaygroundGetVideo)
-	group.POST("/playground/:token_id/videos/generations/:id/cancel", PlaygroundCancelVideo)
-	group.POST("/playground/:token_id/videos/generations/:id/priority-queue", PlaygroundPriorityQueueVideo)
 }

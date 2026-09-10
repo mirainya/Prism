@@ -19,6 +19,8 @@ const (
 	conversationProjectionMaxBatch   = 1000
 	conversationProjectionRetryBase  = time.Minute
 	conversationProjectionRetryMax   = time.Hour
+	staleCallPendingCode             = "stale_reconciliation_pending"
+	staleCallFinalCode               = "execution_abandoned"
 )
 
 var (
@@ -100,8 +102,10 @@ func ReconcilePendingAPIConversations(ctx context.Context, limit int) (int, erro
 // StageInput upserts only request-side data and preserves any output already
 // staged by a concurrent terminal path.
 func (s *ConversationProjectionOutboxService) StageInput(request ConversationProjectionInputRequest) error {
-	return s.database().Transaction(func(tx *gorm.DB) error {
-		return s.StageInputTx(tx, request)
+	return retryConversationWrite(func() error {
+		return s.database().Transaction(func(tx *gorm.DB) error {
+			return s.StageInputTx(tx, request)
+		})
 	})
 }
 
@@ -122,6 +126,30 @@ func (s *ConversationProjectionOutboxService) StageInputTx(tx *gorm.DB, request 
 	call, conversation, err := lockConversationProjectionTarget(tx, callID, request.ConversationID, resolvePrevious)
 	if err != nil {
 		return err
+	}
+	var staged model.ConversationProjectionOutbox
+	stagedErr := tx.Clauses(clause.Locking{Strength: "UPDATE"}).
+		Select("call_id", "conversation_id").
+		First(&staged, "call_id = ?", callID).Error
+	if stagedErr != nil && !errors.Is(stagedErr, gorm.ErrRecordNotFound) {
+		return stagedErr
+	}
+	if stagedErr == nil && staged.ConversationID != 0 {
+		if request.ConversationID != 0 && request.ConversationID != staged.ConversationID {
+			return fmt.Errorf(
+				"%w: call %s conversation id %d does not match staged conversation id %d",
+				ErrAPICallInvalidInput, callID, request.ConversationID, staged.ConversationID,
+			)
+		}
+		request.ConversationID = staged.ConversationID
+		call.ConversationID = staged.ConversationID
+		resolvePrevious = false
+		if conversation == nil || conversation.ID != staged.ConversationID {
+			conversation, err = loadOwnedConversationForUpdateTx(tx, staged.ConversationID, call.UserID, call.TokenID)
+			if err != nil {
+				return fmt.Errorf("load staged conversation: %w", err)
+			}
+		}
 	}
 	if conversation == nil && resolvePrevious && call.ConversationID != 0 {
 		conversation, err = loadOwnedConversationForUpdateTx(tx, call.ConversationID, call.UserID, call.TokenID)
@@ -279,14 +307,12 @@ func (s *ConversationProjectionOutboxService) Project(callID string) (uint, erro
 		return 0, err
 	}
 
-	var call model.APICall
-	if err := s.database().First(&call, "id = ?", callID).Error; err != nil {
-		if errors.Is(err, gorm.ErrRecordNotFound) {
-			err = fmt.Errorf("%w: %s", ErrAPICallNotFound, callID)
-		}
+	facts, err := loadConversationCallFactsTx(s.database(), callID, false)
+	if err != nil {
 		return 0, s.recordFailure(&entry, err)
 	}
-	status, err := conversationTurnStatusForAPICall(&call)
+	call := &facts.Call
+	status, err := facts.turnStatus()
 	if err != nil {
 		return 0, fmt.Errorf("%w: %s", ErrConversationProjectionNotFinal, call.Status)
 	}
@@ -339,16 +365,15 @@ func (s *ConversationProjectionOutboxService) Reconcile(ctx context.Context, lim
 	}
 	now := s.now()
 	var callIDs []string
+	terminalPredicate := `EXISTS (
+			SELECT 1 FROM gw_api_calls AS gateway_call
+			WHERE gateway_call.public_id = projection.call_id
+			  AND gateway_call.status IN ('completed','failed','cancelled','indeterminate')
+		)`
 	err := s.database().WithContext(ctx).
 		Table("conversation_projection_outbox AS projection").
 		Select("projection.call_id").
-		Joins("JOIN api_calls AS api_call ON api_call.id = projection.call_id").
-		Where("api_call.status IN ?", []model.APICallStatus{
-			model.APICallStatusCompleted,
-			model.APICallStatusFailed,
-			model.APICallStatusCancelled,
-		}).
-		Where("NOT (api_call.status = ? AND api_call.error_code = ?)", model.APICallStatusFailed, staleCallPendingCode).
+		Where(terminalPredicate).
 		Where("projection.next_attempt_at IS NULL OR projection.next_attempt_at <= ?", now).
 		Order("projection.updated_at ASC, projection.call_id ASC").
 		Limit(limit).
@@ -467,25 +492,12 @@ func lockConversationProjectionTarget(
 	conversationID uint,
 	resolvePrevious bool,
 ) (*model.APICall, *model.Conversation, error) {
-	var call model.APICall
-	if err := tx.Select("user_id", "token_id", "conversation_id", "project_conversation").First(&call, "id = ?", callID).Error; err != nil {
-		if errors.Is(err, gorm.ErrRecordNotFound) {
-			return nil, nil, fmt.Errorf("%w: %s", ErrAPICallNotFound, callID)
-		}
+	facts, err := loadConversationCallFactsTx(tx, callID, true)
+	if err != nil {
 		return nil, nil, err
 	}
-	if !call.ProjectConversation {
-		return nil, nil, fmt.Errorf("%w: call %s is not configured for conversation projection", ErrAPICallInvalidInput, callID)
-	}
-	if call.ConversationID != conversationID && !resolvePrevious {
-		return nil, nil, fmt.Errorf(
-			"%w: call %s conversation id %d does not match projection conversation id %d",
-			ErrAPICallInvalidInput,
-			callID,
-			call.ConversationID,
-			conversationID,
-		)
-	}
+	call := facts.Call
+	call.ConversationID = conversationID
 	if conversationID == 0 {
 		return &call, nil, nil
 	}
@@ -497,28 +509,11 @@ func lockConversationProjectionTarget(
 }
 
 func linkConversationProjectionCallTx(tx *gorm.DB, callID string, conversationID uint) error {
-	result := tx.Model(&model.APICall{}).
-		Where("id = ? AND conversation_id = 0 AND project_conversation = ?", callID, true).
-		Update("conversation_id", conversationID)
-	if result.Error != nil || result.RowsAffected > 0 {
-		return result.Error
+	if conversationID == 0 {
+		return fmt.Errorf("%w: conversation id is required", ErrAPICallInvalidInput)
 	}
-	var call model.APICall
-	if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).
-		Select("conversation_id", "project_conversation").
-		First(&call, "id = ?", callID).Error; err != nil {
-		if errors.Is(err, gorm.ErrRecordNotFound) {
-			return fmt.Errorf("%w: %s", ErrAPICallNotFound, callID)
-		}
-		return err
-	}
-	if !call.ProjectConversation || call.ConversationID != conversationID {
-		return fmt.Errorf(
-			"%w: call %s conversation id %d does not match resolved conversation id %d",
-			ErrAPICallInvalidInput, callID, call.ConversationID, conversationID,
-		)
-	}
-	return nil
+	_, err := loadConversationCallFactsTx(tx, callID, true)
+	return err
 }
 
 func projectedConversationID(callID string, db *gorm.DB) (uint, bool, error) {

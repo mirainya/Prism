@@ -3,23 +3,16 @@ package console
 import (
 	"context"
 	"encoding/json"
-	stderrors "errors"
-	"fmt"
 	"math"
-	"net/http"
-	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/mirainya/Prism/internal/api/middleware"
+	"github.com/mirainya/Prism/internal/api/open"
 	"github.com/mirainya/Prism/internal/api/resp"
+	"github.com/mirainya/Prism/internal/gateway/repository"
 	"github.com/mirainya/Prism/internal/model"
-	"github.com/mirainya/Prism/internal/service"
-	"github.com/mirainya/Prism/internal/video"
 	"github.com/mirainya/Prism/pkg/errors"
-	"gorm.io/gorm"
 )
-
-var playgroundVideoEngine *video.Engine
 
 type playgroundVideoModelOptions struct {
 	Resolutions                   []string                           `json:"resolutions,omitempty"`
@@ -43,8 +36,6 @@ type playgroundVideoModelOptions struct {
 	MaxVideoDuration              float64                            `json:"max_video_duration_total,omitempty"`
 	MaxAudioDuration              float64                            `json:"max_audio_duration_total,omitempty"`
 	Parameters                    []playgroundVideoParameter         `json:"parameters,omitempty"`
-	AllowLocalCancel              bool                               `json:"allow_local_cancel"`
-	CancelStatuses                []string                           `json:"cancel_statuses"`
 }
 
 type playgroundVideoServiceTierOption struct {
@@ -52,13 +43,6 @@ type playgroundVideoServiceTierOption struct {
 	Label            string   `json:"label"`
 	AddsResolutions  []string `json:"adds_resolutions,omitempty"`
 	SurchargePercent float64  `json:"surcharge_percent,omitempty"`
-}
-
-type playgroundVideoServiceTierSettings struct {
-	Label            string         `json:"label"`
-	AddsResolutions  []string       `json:"adds_resolutions"`
-	SurchargePercent float64        `json:"surcharge_percent"`
-	RequestParams    map[string]any `json:"request_params"`
 }
 
 type playgroundVideoParameterOption struct {
@@ -79,62 +63,12 @@ type playgroundVideoParameter struct {
 	ConflictsWith []string                         `json:"conflicts_with,omitempty"`
 }
 
-type playgroundVideoChannelOption struct {
-	ID           uint                                   `json:"id"`
-	Name         string                                 `json:"name"`
-	Models       []string                               `json:"models"`
-	ModelOptions map[string]playgroundVideoModelOptions `json:"model_options"`
-}
-
 type playgroundVideoModelsResponse struct {
 	Models       []string                               `json:"models"`
 	ModelOptions map[string]playgroundVideoModelOptions `json:"model_options"`
-	Channels     []playgroundVideoChannelOption         `json:"channels"`
-}
-
-type playgroundVideoModelValidation struct {
-	Resolutions                   []string                   `json:"resolutions"`
-	Ratios                        []string                   `json:"ratios"`
-	DurationMin                   int                        `json:"duration_min"`
-	DurationMax                   int                        `json:"duration_max"`
-	DurationMaxWithVideoReference int                        `json:"duration_max_with_video_reference"`
-	TaskModes                     []string                   `json:"task_modes"`
-	RequireMedia                  bool                       `json:"require_media"`
-	RequireVisualMediaWithAudio   bool                       `json:"require_visual_media_with_audio"`
-	AllowGeneratedAudio           *bool                      `json:"allow_generated_audio"`
-	AllowedRoles                  []string                   `json:"allowed_roles"`
-	MaxImages                     int                        `json:"max_images"`
-	MaxVideos                     int                        `json:"max_videos"`
-	MaxAudios                     int                        `json:"max_audios"`
-	MaxMedia                      int                        `json:"max_media"`
-	MediaDurationMin              float64                    `json:"media_duration_min"`
-	MediaDurationMax              float64                    `json:"media_duration_max"`
-	MaxVideoDuration              float64                    `json:"max_video_duration_total"`
-	MaxAudioDuration              float64                    `json:"max_audio_duration_total"`
-	Parameters                    []playgroundVideoParameter `json:"parameters"`
-	AvailableUntil                string                     `json:"available_until"`
-}
-
-type playgroundVideoAdapterSettings struct {
-	ServiceTiers map[string]playgroundVideoServiceTierSettings `json:"service_tiers"`
-	Validation   struct {
-		Models map[string]playgroundVideoModelValidation `json:"models"`
-	} `json:"validation"`
-	Cancel struct {
-		Enabled         bool     `json:"enabled"`
-		AllowedStatuses []string `json:"allowed_statuses"`
-	} `json:"cancel"`
-	LocalCancel struct {
-		Enabled        *bool    `json:"enabled"`
-		DisabledModels []string `json:"disabled_models"`
-	} `json:"local_cancel"`
 }
 
 var playgroundVideoTaskTypeOrder = []string{"text", "first_frame", "first_last_frame", "multimodal", "video_edit", "video_extension"}
-
-func SetVideoEngine(e *video.Engine) {
-	playgroundVideoEngine = e
-}
 
 // PlaygroundListVideoModels GET /api/playground/:token_id/videos/models
 func PlaygroundListVideoModels(c *gin.Context) {
@@ -152,229 +86,50 @@ func PlaygroundListVideoModels(c *gin.Context) {
 // listVideoModels returns the public, configuration-driven video capabilities
 // shared by the playground and the authenticated API documentation.
 func listVideoModels(ctx context.Context) (*playgroundVideoModelsResponse, error) {
-
-	var channels []video.VideoChannel
-	if err := model.DB().Where("status = ?", "active").Order("priority DESC, id ASC").Find(&channels).Error; err != nil {
+	db, err := model.DB().DB()
+	if err != nil {
 		return nil, err
 	}
-	var activeKeys []video.VideoChannelKey
-	if err := model.DB().Where("status = ?", "active").Order("channel_id ASC, id ASC").Find(&activeKeys).Error; err != nil {
+	store, err := repository.New(db)
+	if err != nil {
 		return nil, err
 	}
-	representativeKeys := make(map[uint]*video.VideoChannelKey, len(activeKeys))
-	channelKeys := make(map[uint][]*video.VideoChannelKey, len(activeKeys))
-	for index := range activeKeys {
-		key := &activeKeys[index]
-		channelKeys[key.ChannelID] = append(channelKeys[key.ChannelID], key)
-		if representativeKeys[key.ChannelID] == nil {
-			representativeKeys[key.ChannelID] = key
-		}
+	rows, err := store.ListActivePublicCatalog(ctx)
+	if err != nil {
+		return nil, err
 	}
-	discoveredCapabilities := discoverPlaygroundVideoCapabilities(ctx, channels, channelKeys)
-
+	models := make([]string, 0)
 	seen := make(map[string]bool)
-	var models []string
 	modelOptions := make(map[string]playgroundVideoModelOptions)
-	channelOptions := make([]playgroundVideoChannelOption, 0, len(channels))
-	for _, ch := range channels {
-		if representativeKeys[ch.ID] == nil {
+	for _, row := range rows {
+		if row.HTTPMethod != "POST" || row.RouteTemplate != "/v1/videos/generations" {
 			continue
 		}
-		mappings, err := video.ParseVideoModelMappings(ch.Models)
-		if err != nil {
-			continue
+		var tiers []string
+		if json.Unmarshal(row.ServiceTiers, &tiers) != nil {
+			return nil, errors.ErrInternalError
 		}
-		var envelope struct {
-			Adapter playgroundVideoAdapterSettings `json:"adapter"`
+		var options playgroundVideoModelOptions
+		if len(row.CapabilityConstraints) > 0 && json.Unmarshal(row.CapabilityConstraints, &options) != nil {
+			return nil, errors.ErrInternalError
 		}
-		_ = json.Unmarshal(ch.ExtraConfig, &envelope)
-		discovered := discoveredCapabilities[ch.ID]
-		availableMappings := make([]video.VideoModelMapping, 0, len(mappings))
-		for _, mapping := range mappings {
-			rule := envelope.Adapter.Validation.Models[mapping.VendorModel]
-			if !playgroundVideoModelAvailable(rule.AvailableUntil) {
-				continue
-			}
-			if len(discovered) > 0 {
-				if _, exists := discovered[mapping.VendorModel]; !exists {
-					continue
-				}
-			}
-			availableMappings = append(availableMappings, mapping)
+		options.ServiceTiers = appendUniqueOrdered(options.ServiceTiers, tiers...)
+		if !seen[row.APIName] {
+			seen[row.APIName] = true
+			models = append(models, row.APIName)
+			modelOptions[row.APIName] = clonePlaygroundVideoOptions(options)
+		} else {
+			modelOptions[row.APIName] = mergePlaygroundVideoOptions(modelOptions[row.APIName], options)
 		}
-		mappings = availableMappings
-		if len(mappings) == 0 {
-			continue
-		}
-		for _, mapping := range mappings {
-			if !seen[mapping.ModelName] {
-				seen[mapping.ModelName] = true
-				models = append(models, mapping.ModelName)
-			}
-		}
-		publicModels := make([]string, 0, len(mappings))
-		perChannelOptions := make(map[string]playgroundVideoModelOptions, len(mappings))
-		for _, mapping := range mappings {
-			publicModels = append(publicModels, mapping.ModelName)
-			options := envelope.Adapter.Validation.Models[mapping.VendorModel]
-			channelModelOptions := playgroundVideoOptionsForChannel(ch, mapping.VendorModel, options, envelope.Adapter)
-			if capability, exists := discovered[mapping.VendorModel]; exists {
-				channelModelOptions = restrictPlaygroundVideoOptions(channelModelOptions, capability)
-			}
-			perChannelOptions[mapping.ModelName] = channelModelOptions
-
-			current, exists := modelOptions[mapping.ModelName]
-			if !exists {
-				modelOptions[mapping.ModelName] = clonePlaygroundVideoOptions(channelModelOptions)
-			} else {
-				modelOptions[mapping.ModelName] = mergePlaygroundVideoOptions(current, channelModelOptions)
-			}
-		}
-		channelOptions = append(channelOptions, playgroundVideoChannelOption{
-			ID: ch.ID, Name: ch.Name, Models: publicModels, ModelOptions: perChannelOptions,
-		})
 	}
 	for modelName, options := range modelOptions {
 		options.TaskTypes = orderVideoTaskTypes(options.TaskTypes)
+		if len(options.TaskTypes) == 0 {
+			options.TaskTypes = []string{"text", "first_frame", "first_last_frame", "multimodal", "video_edit", "video_extension"}
+		}
 		modelOptions[modelName] = options
 	}
-
-	return &playgroundVideoModelsResponse{Models: models, ModelOptions: modelOptions, Channels: channelOptions}, nil
-}
-
-func playgroundVideoOptionsForChannel(
-	channel video.VideoChannel,
-	modelName string,
-	rule playgroundVideoModelValidation,
-	settings playgroundVideoAdapterSettings,
-) playgroundVideoModelOptions {
-	allowLocalCancel := true
-	cancelStatuses := make([]string, 0)
-	switch channel.AdapterType {
-	case "generic":
-		allowLocalCancel = channel.EffectiveCancelMode() != video.CancelModeDisabled
-		for _, disabledModel := range settings.LocalCancel.DisabledModels {
-			if disabledModel == modelName {
-				allowLocalCancel = false
-				break
-			}
-		}
-		if channel.EffectiveCancelMode() == video.CancelModeProvider && settings.Cancel.Enabled {
-			cancelStatuses = append([]string(nil), settings.Cancel.AllowedStatuses...)
-			if len(cancelStatuses) == 0 {
-				cancelStatuses = []string{string(video.VideoTaskStatusSubmitted), string(video.VideoTaskStatusTracking)}
-			}
-		}
-	case "seedance":
-		if channel.EffectiveCancelMode() == video.CancelModeProvider {
-			cancelStatuses = []string{string(video.VideoTaskStatusSubmitted)}
-		}
-	}
-
-	serviceTierOptions := configuredVideoServiceTierOptions(settings, rule.Parameters)
-	return playgroundVideoModelOptions{
-		Resolutions:                   append([]string(nil), rule.Resolutions...),
-		Ratios:                        append([]string(nil), rule.Ratios...),
-		DurationMin:                   rule.DurationMin,
-		DurationMax:                   rule.DurationMax,
-		DurationMaxWithVideoReference: rule.DurationMaxWithVideoReference,
-		TaskTypes:                     orderVideoTaskTypes(videoTaskTypesForChannel(channel, rule)),
-		ServiceTiers:                  videoServiceTierValues(serviceTierOptions),
-		ServiceTierOptions:            serviceTierOptions,
-		RequireVisualMediaWithAudio:   rule.RequireVisualMediaWithAudio,
-		AllowGeneratedAudio:           cloneBool(rule.AllowGeneratedAudio),
-		AllowedRoles:                  append([]string(nil), rule.AllowedRoles...),
-		MaxImages:                     rule.MaxImages,
-		MaxVideos:                     rule.MaxVideos,
-		MaxAudios:                     rule.MaxAudios,
-		MaxMedia:                      rule.MaxMedia,
-		MediaDurationMin:              rule.MediaDurationMin,
-		MediaDurationMax:              rule.MediaDurationMax,
-		MaxVideoDuration:              rule.MaxVideoDuration,
-		MaxAudioDuration:              rule.MaxAudioDuration,
-		Parameters:                    filterServiceTierParameters(rule.Parameters, settings),
-		AllowLocalCancel:              allowLocalCancel,
-		CancelStatuses:                cancelStatuses,
-	}
-}
-
-func configuredVideoServiceTierOptions(
-	settings playgroundVideoAdapterSettings,
-	parameters []playgroundVideoParameter,
-) []playgroundVideoServiceTierOption {
-	if len(settings.ServiceTiers) == 0 {
-		return []playgroundVideoServiceTierOption{{Value: "standard", Label: "标准队列"}}
-	}
-	result := make([]playgroundVideoServiceTierOption, 0, len(settings.ServiceTiers))
-	for _, tier := range []string{"standard", "priority", "vip"} {
-		definition, exists := settings.ServiceTiers[tier]
-		if !exists {
-			continue
-		}
-		label := definition.Label
-		if label == "" {
-			label = map[string]string{"standard": "标准队列", "priority": "优先队列", "vip": "积分 VIP"}[tier]
-		}
-		addsResolutions := append([]string(nil), definition.AddsResolutions...)
-		if len(addsResolutions) == 0 {
-			addsResolutions = serviceTierParameterResolutions(definition.RequestParams, parameters)
-		}
-		result = append(result, playgroundVideoServiceTierOption{
-			Value: tier, Label: label, AddsResolutions: addsResolutions,
-			SurchargePercent: definition.SurchargePercent,
-		})
-	}
-	if len(result) == 0 {
-		return []playgroundVideoServiceTierOption{{Value: "standard", Label: "标准队列"}}
-	}
-	return result
-}
-
-func videoServiceTierValues(options []playgroundVideoServiceTierOption) []string {
-	result := make([]string, 0, len(options))
-	for _, option := range options {
-		result = append(result, option.Value)
-	}
-	return result
-}
-
-func serviceTierParameterResolutions(requestParams map[string]any, parameters []playgroundVideoParameter) []string {
-	result := make([]string, 0)
-	for name, requestValue := range requestParams {
-		for _, parameter := range parameters {
-			if parameter.Name != name {
-				continue
-			}
-			requestJSON, _ := json.Marshal(requestValue)
-			for _, option := range parameter.Options {
-				optionJSON, _ := json.Marshal(option.Value)
-				if string(requestJSON) == string(optionJSON) {
-					result = appendUniqueOrdered(result, option.AddsResolutions...)
-				}
-			}
-		}
-	}
-	return result
-}
-
-func filterServiceTierParameters(
-	parameters []playgroundVideoParameter,
-	settings playgroundVideoAdapterSettings,
-) []playgroundVideoParameter {
-	controlled := make(map[string]struct{})
-	for _, tier := range settings.ServiceTiers {
-		for name := range tier.RequestParams {
-			controlled[name] = struct{}{}
-		}
-	}
-	result := make([]playgroundVideoParameter, 0, len(parameters))
-	for _, parameter := range parameters {
-		if _, exists := controlled[parameter.Name]; exists {
-			continue
-		}
-		result = append(result, parameter)
-	}
-	return clonePlaygroundVideoParameters(result)
+	return &playgroundVideoModelsResponse{Models: models, ModelOptions: modelOptions}, nil
 }
 
 func mergePlaygroundVideoOptions(current, next playgroundVideoModelOptions) playgroundVideoModelOptions {
@@ -399,8 +154,6 @@ func mergePlaygroundVideoOptions(current, next playgroundVideoModelOptions) play
 	current.MaxVideoDuration = mergeMaximumFloatConstraint(current.MaxVideoDuration, next.MaxVideoDuration)
 	current.MaxAudioDuration = mergeMaximumFloatConstraint(current.MaxAudioDuration, next.MaxAudioDuration)
 	current.Parameters = mergePlaygroundVideoParameters(current.Parameters, next.Parameters)
-	current.AllowLocalCancel = current.AllowLocalCancel || next.AllowLocalCancel
-	current.CancelStatuses = appendUniqueOrdered(current.CancelStatuses, next.CancelStatuses...)
 	return current
 }
 
@@ -497,7 +250,6 @@ func clonePlaygroundVideoOptions(options playgroundVideoModelOptions) playground
 	options.AllowGeneratedAudio = cloneBool(options.AllowGeneratedAudio)
 	options.AllowedRoles = append([]string(nil), options.AllowedRoles...)
 	options.Parameters = clonePlaygroundVideoParameters(options.Parameters)
-	options.CancelStatuses = append([]string{}, options.CancelStatuses...)
 	return options
 }
 
@@ -563,67 +315,6 @@ func mergePlaygroundVideoParameters(current, next []playgroundVideoParameter) []
 	return result
 }
 
-func videoTaskTypesForChannel(channel video.VideoChannel, rule playgroundVideoModelValidation) []string {
-	var capabilities map[string]bool
-	_ = json.Unmarshal(channel.Capabilities, &capabilities)
-
-	supportsMode := func(mode string) bool {
-		if len(rule.TaskModes) > 0 {
-			for _, candidate := range rule.TaskModes {
-				if candidate == mode {
-					return true
-				}
-			}
-			return false
-		}
-		switch mode {
-		case "text":
-			return !rule.RequireMedia
-		case "references":
-			return true
-		default:
-			return false
-		}
-	}
-	supportsRole := func(role string) bool {
-		if len(rule.AllowedRoles) == 0 {
-			return true
-		}
-		for _, candidate := range rule.AllowedRoles {
-			if candidate == role {
-				return true
-			}
-		}
-		return false
-	}
-
-	types := make([]string, 0, len(playgroundVideoTaskTypeOrder))
-	if supportsMode("text") {
-		types = append(types, "text")
-	}
-	if supportsMode("video_extension") {
-		types = append(types, "video_extension")
-	}
-	if supportsMode("video_edit") {
-		types = append(types, "video_edit")
-	}
-	if !supportsMode("references") {
-		return orderVideoTaskTypes(types)
-	}
-	firstFrame := capabilities["first_frame"] && supportsRole("first_frame")
-	lastFrame := capabilities["last_frame"] && supportsRole("last_frame")
-	if firstFrame {
-		types = append(types, "first_frame")
-	}
-	if firstFrame && lastFrame {
-		types = append(types, "first_last_frame")
-	}
-	if supportsRole("reference_image") || supportsRole("reference_video") || supportsRole("reference_audio") {
-		types = append(types, "multimodal")
-	}
-	return orderVideoTaskTypes(types)
-}
-
 func appendUniqueOrdered(target []string, values ...string) []string {
 	seen := make(map[string]struct{}, len(target)+len(values))
 	for _, value := range target {
@@ -659,43 +350,8 @@ func PlaygroundCreateVideo(c *gin.Context) {
 	if !ok {
 		return
 	}
-
-	if playgroundVideoEngine == nil {
-		resp.ErrorMsg(c, http.StatusInternalServerError, 500, "video engine not initialized")
-		return
-	}
-
-	var raw map[string]any
-	if err := c.ShouldBindJSON(&raw); err != nil {
-		resp.BadRequest(c, errors.WithMessage(errors.ErrInvalidParams, err.Error()))
-		return
-	}
-
-	req, err := buildPlaygroundVideoRequest(raw, token)
-	if err != nil {
-		resp.BadRequest(c, errors.WithMessage(errors.ErrInvalidParams, err.Error()))
-		return
-	}
-
-	result, err := playgroundVideoEngine.CreateTask(c.Request.Context(), req)
-	if err != nil {
-		if stderrors.Is(err, video.ErrInvalidTaskRequest) || stderrors.Is(err, video.ErrInvalidAsset) || stderrors.Is(err, video.ErrAssetNotReady) {
-			resp.BadRequest(c, errors.WithMessage(errors.ErrInvalidParams, err.Error()))
-			return
-		}
-		if stderrors.Is(err, video.ErrAssetNotFound) {
-			resp.NotFound(c, errors.WithMessage(errors.ErrInvalidParams, err.Error()))
-			return
-		}
-		if stderrors.Is(err, video.ErrNoChannel) || stderrors.Is(err, video.ErrNoKey) {
-			resp.ErrorMsg(c, http.StatusServiceUnavailable, 503, err.Error())
-			return
-		}
-		resp.ErrorMsg(c, http.StatusInternalServerError, 500, err.Error())
-		return
-	}
-
-	resp.Success(c, gin.H{"id": result.TaskID, "status": "queued", "service_tier": req.ServiceTier})
+	setPlaygroundVideoToken(c, token)
+	open.CreateVideoGeneration(c)
 }
 
 // PlaygroundEstimateVideo POST /api/playground/:token_id/videos/estimate
@@ -704,126 +360,8 @@ func PlaygroundEstimateVideo(c *gin.Context) {
 	if !ok {
 		return
 	}
-	if playgroundVideoEngine == nil {
-		resp.ErrorMsg(c, http.StatusServiceUnavailable, 503, "video engine not initialized")
-		return
-	}
-	var raw map[string]any
-	if err := c.ShouldBindJSON(&raw); err != nil {
-		resp.BadRequest(c, errors.WithMessage(errors.ErrInvalidParams, err.Error()))
-		return
-	}
-	req, err := buildPlaygroundVideoRequest(raw, token)
-	if err != nil {
-		resp.BadRequest(c, errors.WithMessage(errors.ErrInvalidParams, err.Error()))
-		return
-	}
-	estimate, err := playgroundVideoEngine.EstimateTask(c.Request.Context(), req)
-	if err != nil {
-		writePlaygroundVideoEstimateError(c, err)
-		return
-	}
-	response := gin.H{
-		"estimated_cost": estimate.EstimatedCost.String(),
-		"base_cost":      estimate.BaseCost.String(),
-		"markup_ratio":   estimate.MarkupRatio.String(),
-		"pricing_mode":   estimate.PricingMode,
-		"service_tier":   req.ServiceTier,
-	}
-	if detail := estimate.ProviderEstimate; detail != nil {
-		response["unit_cost"] = detail.UnitCost
-		response["units"] = detail.Units
-		response["billing_mode"] = detail.BillingMode
-		response["billing_tier"] = detail.BillingTier
-		response["pricing_source"] = detail.PricingSource
-		response["currency"] = detail.Currency
-	}
-	resp.Success(c, response)
-}
-
-func buildPlaygroundVideoRequest(raw map[string]any, token *model.Token) (*video.CreateTaskRequest, error) {
-	if token == nil {
-		return nil, video.ErrInvalidTaskRequest
-	}
-	modelName, _ := raw["model"].(string)
-	prompt, _ := raw["prompt"].(string)
-	if modelName == "" {
-		return nil, fmt.Errorf("model is required")
-	}
-	req := &video.CreateTaskRequest{
-		UserID: token.UserID, TokenID: token.ID, Model: modelName, Prompt: prompt,
-		TaskMode: "text", Audio: true,
-	}
-	if value, exists := raw["channel_id"]; exists && value != nil {
-		number, ok := value.(float64)
-		if !ok || number < 0 || number > 9007199254740991 || math.Trunc(number) != number {
-			return nil, fmt.Errorf("channel_id must be a non-negative integer")
-		}
-		req.ChannelID = uint(number)
-	}
-	if value, ok := raw["resolution"].(string); ok {
-		req.Resolution = value
-	}
-	if value, ok := raw["ratio"].(string); ok {
-		req.Ratio = value
-	}
-	if value, ok := raw["duration"].(float64); ok {
-		req.Duration = int(value)
-	}
-	if value, ok := raw["generate_audio"].(bool); ok {
-		req.Audio = value
-	}
-	if value, ok := raw["task_mode"].(string); ok {
-		req.TaskMode = value
-	}
-	if value, ok := raw["service_tier"].(string); ok {
-		req.ServiceTier = value
-	}
-	if rawContent, ok := raw["content"]; ok {
-		encoded, err := json.Marshal(rawContent)
-		if err != nil {
-			return nil, fmt.Errorf("invalid content: %w", err)
-		}
-		if err := json.Unmarshal(encoded, &req.Content); err != nil {
-			return nil, fmt.Errorf("invalid content: %w", err)
-		}
-	}
-	params := make(map[string]any)
-	reserved := map[string]bool{
-		"model": true, "prompt": true, "callback_url": true, "channel_id": true,
-		"resolution": true, "ratio": true, "duration": true,
-		"generate_audio": true, "task_mode": true, "content": true, "params": true,
-		"service_tier": true,
-	}
-	for key, value := range raw {
-		if !reserved[key] {
-			params[key] = value
-		}
-	}
-	if nested, ok := raw["params"].(map[string]any); ok {
-		for key, value := range nested {
-			params[key] = value
-		}
-	} else if value, exists := raw["params"]; exists && value != nil {
-		return nil, fmt.Errorf("params must be an object")
-	}
-	if len(params) > 0 {
-		req.Params = params
-	}
-	return req, nil
-}
-
-func writePlaygroundVideoEstimateError(c *gin.Context, err error) {
-	switch {
-	case stderrors.Is(err, video.ErrInvalidTaskRequest), stderrors.Is(err, video.ErrInvalidAsset), stderrors.Is(err, video.ErrAssetNotReady):
-		resp.BadRequest(c, errors.WithMessage(errors.ErrInvalidParams, err.Error()))
-	case stderrors.Is(err, video.ErrAssetNotFound):
-		resp.NotFound(c, errors.WithMessage(errors.ErrInvalidParams, err.Error()))
-	case stderrors.Is(err, video.ErrNoChannel), stderrors.Is(err, video.ErrNoKey), stderrors.Is(err, video.ErrEngineUnavailable), stderrors.Is(err, video.ErrEstimateNotSupported):
-		resp.ErrorMsg(c, http.StatusServiceUnavailable, 503, err.Error())
-	default:
-		resp.ErrorMsg(c, http.StatusBadGateway, 502, err.Error())
-	}
+	setPlaygroundVideoToken(c, token)
+	open.EstimateVideoGeneration(c)
 }
 
 // PlaygroundGetVideo GET /api/playground/:token_id/videos/generations/:id
@@ -832,63 +370,8 @@ func PlaygroundGetVideo(c *gin.Context) {
 	if !ok {
 		return
 	}
-
-	taskID := c.Param("id")
-	var task video.VideoTask
-	if err := model.DB().Where("id = ? AND token_id = ?", taskID, token.ID).First(&task).Error; err != nil {
-		if err == gorm.ErrRecordNotFound {
-			resp.NotFound(c, errors.ErrTaskNotFound)
-			return
-		}
-		resp.InternalError(c, errors.ErrInternalError)
-		return
-	}
-
-	detail := gin.H{
-		"id":           task.ID,
-		"model":        task.Model,
-		"service_tier": task.ServiceTier,
-		"status":       string(task.Status),
-		"progress":     task.Progress,
-		"prompt":       task.Prompt,
-		"resolution":   task.Resolution,
-		"ratio":        task.Ratio,
-		"duration":     task.Duration,
-		"created_at":   task.CreatedAt.Format(time.RFC3339),
-	}
-	if metadata := video.DecodeProviderMetadata(task.ProviderMetadata); metadata != nil {
-		detail["queue_status"] = metadata.QueueStatus
-		detail["queue_position"] = metadata.QueuePosition
-		detail["queue_limit"] = metadata.QueueLimit
-		detail["priority_queue"] = metadata.PriorityQueue
-		detail["h_channel_points_vip"] = metadata.PointsVIP
-		detail["priority_surcharge_percent"] = metadata.PrioritySurchargePercent
-	}
-	if task.ErrorMessage != "" {
-		detail["error_message"] = task.ErrorMessage
-	}
-	if len(task.ResultJSON) > 2 {
-		var result any
-		if json.Unmarshal(task.ResultJSON, &result) == nil {
-			detail["result"] = result
-		}
-	}
-	if task.CompletedAt != nil {
-		detail["completed_at"] = task.CompletedAt.Format(time.RFC3339)
-	}
-	if middleware.GetUserRole(c) == string(model.UserRoleAdmin) {
-		if len(task.ProviderResponse) > 2 {
-			var vendor any
-			if json.Unmarshal(task.ProviderResponse, &vendor) == nil {
-				detail["vendor_response"] = vendor
-			}
-		}
-		detail["provider_task_id"] = task.ProviderTaskID
-		detail["channel_id"] = task.ChannelID
-		detail["key_id"] = task.KeyID
-	}
-
-	resp.Success(c, detail)
+	setPlaygroundVideoToken(c, token)
+	open.GetVideoGeneration(c)
 }
 
 // PlaygroundListVideos GET /api/playground/:token_id/videos/generations
@@ -897,137 +380,11 @@ func PlaygroundListVideos(c *gin.Context) {
 	if !ok {
 		return
 	}
-
-	var tasks []video.VideoTask
-	query := model.DB().Where("token_id = ?", token.ID).Order("created_at DESC").Limit(50)
-	if status := c.Query("status"); status != "" {
-		query = query.Where("status = ?", status)
-	}
-	if err := query.Find(&tasks).Error; err != nil {
-		resp.InternalError(c, errors.ErrInternalError)
-		return
-	}
-
-	items := make([]gin.H, 0, len(tasks))
-	for _, t := range tasks {
-		item := gin.H{
-			"id":           t.ID,
-			"channel_id":   t.ChannelID,
-			"model":        t.Model,
-			"status":       string(t.Status),
-			"progress":     t.Progress,
-			"service_tier": t.ServiceTier,
-			"prompt":       t.Prompt,
-			"resolution":   t.Resolution,
-			"ratio":        t.Ratio,
-			"duration":     t.Duration,
-			"created_at":   t.CreatedAt.Format(time.RFC3339),
-		}
-		if t.ErrorMessage != "" {
-			item["error_message"] = t.ErrorMessage
-		}
-		if metadata := video.DecodeProviderMetadata(t.ProviderMetadata); metadata != nil {
-			item["queue_status"] = metadata.QueueStatus
-			item["queue_position"] = metadata.QueuePosition
-			item["queue_limit"] = metadata.QueueLimit
-			item["priority_queue"] = metadata.PriorityQueue
-			item["h_channel_points_vip"] = metadata.PointsVIP
-			item["priority_surcharge_percent"] = metadata.PrioritySurchargePercent
-		}
-		if len(t.ResultJSON) > 2 {
-			var result any
-			if json.Unmarshal(t.ResultJSON, &result) == nil {
-				item["result"] = result
-			}
-		}
-		if t.CompletedAt != nil {
-			item["completed_at"] = t.CompletedAt.Format(time.RFC3339)
-		}
-		items = append(items, item)
-	}
-
-	resp.Success(c, gin.H{"items": items, "total": len(items)})
+	setPlaygroundVideoToken(c, token)
+	open.ListVideoGenerations(c)
 }
 
-// PlaygroundCancelVideo POST /api/playground/:token_id/videos/generations/:id/cancel
-func PlaygroundCancelVideo(c *gin.Context) {
-	token, ok := getPlaygroundToken(c)
-	if !ok {
-		return
-	}
-
-	taskID := c.Param("id")
-	var task video.VideoTask
-	if err := model.DB().Where("id = ? AND token_id = ?", taskID, token.ID).First(&task).Error; err != nil {
-		if err == gorm.ErrRecordNotFound {
-			resp.NotFound(c, errors.ErrTaskNotFound)
-			return
-		}
-		resp.InternalError(c, errors.ErrInternalError)
-		return
-	}
-
-	if task.Status.IsTerminal() {
-		resp.BadRequest(c, errors.WithMessage(errors.ErrInvalidParams, "task already in terminal state"))
-		return
-	}
-
-	cancelled, err := playgroundVideoEngine.CancelVideoTask(c.Request.Context(), &task)
-	if err != nil {
-		if stderrors.Is(err, video.ErrCancelNotSupported) || stderrors.Is(err, video.ErrCancelNotAllowed) {
-			resp.ErrorMsg(c, http.StatusConflict, 409, err.Error())
-			return
-		}
-		resp.ErrorMsg(c, http.StatusBadGateway, 502, err.Error())
-		return
-	}
-	status := video.VideoTaskStatusCancelled
-	if !cancelled {
-		if loadErr := model.DB().Select("status").First(&task, "id = ?", task.ID).Error; loadErr != nil {
-			resp.InternalError(c, errors.ErrInternalError)
-			return
-		}
-		status = task.Status
-	}
-	resp.Success(c, gin.H{"id": task.ID, "status": status})
-}
-
-// PlaygroundPriorityQueueVideo upgrades a submitted video task using the
-// channel's configured priority_queue action.
-func PlaygroundPriorityQueueVideo(c *gin.Context) {
-	token, ok := getPlaygroundToken(c)
-	if !ok {
-		return
-	}
-	var task video.VideoTask
-	if err := model.DB().Where("id = ? AND token_id = ?", c.Param("id"), token.ID).First(&task).Error; err != nil {
-		if err == gorm.ErrRecordNotFound {
-			resp.NotFound(c, errors.ErrTaskNotFound)
-			return
-		}
-		resp.InternalError(c, errors.ErrInternalError)
-		return
-	}
-	if playgroundVideoEngine == nil {
-		resp.ErrorMsg(c, http.StatusServiceUnavailable, 503, "video engine not initialized")
-		return
-	}
-	metadata, err := playgroundVideoEngine.UpgradeVideoTaskPriority(c.Request.Context(), &task)
-	if err != nil {
-		if stderrors.Is(err, service.ErrInsufficientTokenBalance) || stderrors.Is(err, service.ErrInsufficientUserBalance) {
-			resp.BadRequest(c, errors.WithMessage(errors.ErrInsufficientQuota, err.Error()))
-			return
-		}
-		if stderrors.Is(err, video.ErrActionNotSupported) {
-			resp.ErrorMsg(c, http.StatusNotImplemented, 501, err.Error())
-			return
-		}
-		if stderrors.Is(err, video.ErrActionNotAllowed) {
-			resp.ErrorMsg(c, http.StatusConflict, 409, err.Error())
-			return
-		}
-		resp.ErrorMsg(c, http.StatusBadGateway, 502, err.Error())
-		return
-	}
-	resp.Success(c, gin.H{"id": task.ID, "action": "priority_queue", "service_tier": "priority", "queue": metadata})
+func setPlaygroundVideoToken(c *gin.Context, token *model.Token) {
+	c.Set(middleware.ContextKeyTokenID, token.ID)
+	c.Set(middleware.ContextKeyToken, token)
 }

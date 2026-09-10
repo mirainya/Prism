@@ -9,7 +9,6 @@ import (
 	"strings"
 
 	"github.com/gin-gonic/gin"
-	"github.com/google/uuid"
 	"github.com/mirainya/Prism/internal/api/middleware"
 	"github.com/mirainya/Prism/internal/api/resp"
 	"github.com/mirainya/Prism/internal/gateway/pipeline"
@@ -22,30 +21,22 @@ import (
 	"go.uber.org/zap"
 )
 
-type playgroundPayloadStreamWriter struct {
+type playgroundStreamWriter struct {
 	writer   gwstream.Writer
-	capture  io.Writer
 	writeErr error
 }
 
-func (w *playgroundPayloadStreamWriter) Write(data []byte) (int, error) {
+func (w *playgroundStreamWriter) Write(data []byte) (int, error) {
 	written, err := w.writer.Write(data)
 	if err != nil {
 		w.writeErr = err
 	} else if written != len(data) {
 		w.writeErr = io.ErrShortWrite
 	}
-	if written > 0 && w.capture != nil {
-		captured := written
-		if captured > len(data) {
-			captured = len(data)
-		}
-		_, _ = w.capture.Write(data[:captured])
-	}
 	return written, err
 }
 
-func (w *playgroundPayloadStreamWriter) Flush() { w.writer.Flush() }
+func (w *playgroundStreamWriter) Flush() { w.writer.Flush() }
 
 // PlaygroundChatCompletions POST /api/playground/:token_id/chat/completions
 // 走共享 gateway pipeline(与 /v1 同源)。会话续聊/历史/火山 B 模式由本 handler 编排,
@@ -97,7 +88,7 @@ func PlaygroundChatCompletions(c *gin.Context) {
 		return
 	}
 	fullMessages := append(append([]chat.ChatMessage{}, cc.History...), newMessages...)
-	callID := "call_" + uuid.NewString()
+	callID := service.GenerateUnifiedCallID()
 	c.Header("X-Prism-Call-ID", callID)
 	downstreamRequest, _ := json.Marshal(req)
 
@@ -162,11 +153,7 @@ func playgroundStream(c *gin.Context, req *service.CompletionRequest, cc *servic
 	c.Header("X-Accel-Buffering", "no")
 	c.Status(http.StatusOK)
 
-	capture := service.NewAPICallService().NewPayloadCaptureBestEffort(
-		session.CallID(), session.AttemptID(), model.APICallPayloadResponse, "text/event-stream",
-	)
-	defer capture.SaveBestEffort()
-	writer := &playgroundPayloadStreamWriter{writer: gwstream.Writer(c.Writer), capture: capture}
+	writer := &playgroundStreamWriter{writer: gwstream.Writer(c.Writer)}
 	agg, streamErr := gwstream.ProxyStream(writer, session.UpstreamResp.Body)
 	clientDisconnected := writer.writeErr != nil || c.Request.Context().Err() != nil
 	provRespID, finalizeErr := session.FinalizeStreamDelivery(streamErr, clientDisconnected)

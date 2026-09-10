@@ -9,8 +9,6 @@ import {
     Wallet,
     PlusCircle,
     Edit2,
-    ChevronUp,
-    ChevronDown,
 } from 'lucide-react';
 import { Modal, useAppDialog } from '../components/ui';
 import {
@@ -19,10 +17,8 @@ import {
     deleteToken,
     rechargeToken,
     updateToken,
-    fetchAllCapabilityChannels
 } from '../services/api';
-import {ApiToken, ChannelPriorityItem, CapabilityWithChannels} from '../types';
-import { ChannelConfigEditor } from './ChannelConfigEditor';
+import {ApiToken} from '../types';
 import { STATUS_COLORS, STATUS_LABELS } from '../constants';
 
 const Tokens: React.FC = () => {
@@ -47,14 +43,7 @@ const Tokens: React.FC = () => {
     const [showEditModal, setShowEditModal] = useState(false);
     const [editTokenId, setEditTokenId] = useState<string>('');
     const [editTokenName, setEditTokenName] = useState<string>('');
-    const [editChannelPriorities, setEditChannelPriorities] = useState<ChannelPriorityItem[]>([]);
     const [isEditing, setIsEditing] = useState(false);
-    const [capabilityChannels, setCapabilityChannels] = useState<CapabilityWithChannels[]>([]);
-    const [isLoadingCapabilities, setIsLoadingCapabilities] = useState(false);
-
-    // 创建时的渠道配置
-    const [createChannelPriorities, setCreateChannelPriorities] = useState<ChannelPriorityItem[]>([]);
-    const [showChannelConfig, setShowChannelConfig] = useState(false);
 
   const loadTokens = () => {
     setIsLoading(true);
@@ -87,7 +76,7 @@ const Tokens: React.FC = () => {
     setIsCreating(true);
     try {
         const balance = parseFloat(newTokenBalance) || 0;
-        const result = await createToken(newTokenName, balance, createChannelPriorities.length > 0 ? createChannelPriorities : undefined);
+        const result = await createToken(newTokenName, balance);
       setNewTokenKey(result.key);
       loadTokens();
     } catch (err: any) {
@@ -139,22 +128,10 @@ const Tokens: React.FC = () => {
     };
 
     // 打开编辑弹窗
-    const openEditModal = async (token: ApiToken) => {
+    const openEditModal = (token: ApiToken) => {
         setEditTokenId(token.id);
         setEditTokenName(token.name);
-        setEditChannelPriorities(token.channelPriorities || []);
         setShowEditModal(true);
-
-        // 加载能力渠道列表
-        setIsLoadingCapabilities(true);
-        try {
-            const caps = await fetchAllCapabilityChannels();
-            setCapabilityChannels(caps);
-        } catch (err: any) {
-            console.error('加载能力渠道列表失败:', err);
-        } finally {
-            setIsLoadingCapabilities(false);
-        }
     };
 
     // 保存编辑
@@ -163,7 +140,6 @@ const Tokens: React.FC = () => {
         try {
             await updateToken(editTokenId, {
                 name: editTokenName,
-                channelPriorities: editChannelPriorities,
             });
             loadTokens();
             setShowEditModal(false);
@@ -179,8 +155,6 @@ const Tokens: React.FC = () => {
         setNewTokenName('');
         setNewTokenBalance('');
         setNewTokenKey('');
-        setCreateChannelPriorities([]);
-        setShowChannelConfig(false);
     };
 
 
@@ -223,11 +197,6 @@ const Tokens: React.FC = () => {
                 <span className={`px-2 py-0.5 rounded-full text-[10px] font-bold uppercase ${STATUS_COLORS[token.status]}`}>
                   {STATUS_LABELS[token.status]}
                 </span>
-                  {token.channelPriorities && token.channelPriorities.length > 0 && (
-                      <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-blue-100 text-blue-700">
-                          已配置渠道
-                      </span>
-                  )}
               </div>
               <div className="flex items-center gap-2 text-xs md:text-sm text-[var(--text-secondary)] font-mono overflow-hidden">
                 <code className="truncate max-w-[180px] md:max-w-none">{token.key}</code>
@@ -351,43 +320,6 @@ const Tokens: React.FC = () => {
                           className="w-full px-4 py-3 border border-[var(--border-soft)] rounded-lg focus:outline-none focus:ring-2 focus:ring-[var(--primary)]"
                   />
                 </div>
-
-                  {/* 渠道配置区域 */}
-                  <div className="modal-section">
-                      <button
-                          type="button"
-                          onClick={async () => {
-                              if (!showChannelConfig && capabilityChannels.length === 0) {
-                                  setIsLoadingCapabilities(true);
-                                  try {
-                                      const caps = await fetchAllCapabilityChannels();
-                                      setCapabilityChannels(caps);
-                                  } catch (err) {
-                                      console.error('加载能力渠道列表失败:', err);
-                                  } finally {
-                                      setIsLoadingCapabilities(false);
-                                  }
-                              }
-                              setShowChannelConfig(!showChannelConfig);
-                          }}
-                          className="flex items-center gap-2 text-sm text-[var(--primary)] hover:text-[var(--primary)]"
-                      >
-                          {showChannelConfig ? <ChevronUp size={16}/> : <ChevronDown size={16}/>}
-                          {showChannelConfig ? '收起渠道配置' : '配置渠道优先级 (可选)'}
-                      </button>
-                      {showChannelConfig && (
-                          <div className="mt-3">
-                              <p className="text-xs text-[var(--text-secondary)] mb-2">为每个能力配置渠道调用顺序，调用时将按优先级选择可用渠道</p>
-                              <ChannelConfigEditor
-                                  priorities={createChannelPriorities}
-                                  setPriorities={setCreateChannelPriorities}
-                                  capabilities={capabilityChannels}
-                                  loading={isLoadingCapabilities}
-                              />
-                          </div>
-                      )}
-                  </div>
-
                 </div>
                 <div className="modal-footer">
                   <button type="button" onClick={closeModal} className="modal-button modal-button-secondary">取消</button>
@@ -458,18 +390,6 @@ const Tokens: React.FC = () => {
                                 className="w-full px-4 py-3 border border-[var(--border-soft)] rounded-lg focus:outline-none focus:ring-2 focus:ring-[var(--primary)]"
                             />
                         </div>
-
-                        <div className="modal-section">
-                            <h4 className="font-medium text-[var(--text-primary)] mb-2">渠道优先级配置</h4>
-                            <p className="text-xs text-[var(--text-secondary)] mb-3">为每个能力配置渠道调用顺序，调用时将按优先级选择可用渠道</p>
-                            <ChannelConfigEditor
-                                priorities={editChannelPriorities}
-                                setPriorities={setEditChannelPriorities}
-                                capabilities={capabilityChannels}
-                                loading={isLoadingCapabilities}
-                            />
-                        </div>
-
                       </div>
                       <div className="modal-footer">
                         <button type="button" onClick={() => setShowEditModal(false)} className="modal-button modal-button-secondary">取消</button>

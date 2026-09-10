@@ -3,7 +3,7 @@ package main
 import (
 	"context"
 	"database/sql"
-	"encoding/base64"
+	"errors"
 	"fmt"
 	"log"
 	"net/http"
@@ -14,27 +14,28 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/hibiken/asynq"
 	"github.com/mirainya/Prism/internal/api"
 	"github.com/mirainya/Prism/internal/gateway"
-	"github.com/mirainya/Prism/internal/gateway/engine"
-	responsepipeline "github.com/mirainya/Prism/internal/gateway/responses"
+	"github.com/mirainya/Prism/internal/gateway/repository"
 	gatewayruntime "github.com/mirainya/Prism/internal/gateway/runtime"
+	"github.com/mirainya/Prism/internal/gateway/security"
 	schemamigrate "github.com/mirainya/Prism/internal/migrate"
 	"github.com/mirainya/Prism/internal/model"
 	"github.com/mirainya/Prism/internal/provider"
-	"github.com/mirainya/Prism/internal/video"
-	videobootstrap "github.com/mirainya/Prism/internal/video/bootstrap"
-	"github.com/mirainya/Prism/internal/worker"
 	"github.com/mirainya/Prism/pkg/cache"
 	"github.com/mirainya/Prism/pkg/config"
 	"github.com/mirainya/Prism/pkg/database"
 	"github.com/mirainya/Prism/pkg/logger"
-	"github.com/mirainya/Prism/pkg/queue"
+	"go.uber.org/zap"
 	"gorm.io/gorm"
 )
 
 func main() {
+	if len(os.Args) == 2 && (os.Args[1] == "version" || os.Args[1] == "--version") {
+		fmt.Printf("Prism %s (%s)\n", Version, BuildTime)
+		return
+	}
+
 	// 同时支持从源码目录启动和直接运行已安装的二进制，因此配置文件要在
 	// 当前工作目录与可执行文件目录中依次查找。
 	execPath, err := os.Executable()
@@ -70,9 +71,15 @@ func main() {
 	}
 
 	log.Printf("loading config from: %s", configPath)
+	migrationCommand := len(os.Args) > 1 && os.Args[1] == "migrate"
 
 	if err := config.Load(configPath); err != nil {
 		log.Fatalf("failed to load config: %v", err)
+	}
+	if !migrationCommand {
+		if err := config.ValidateRuntime(); err != nil {
+			log.Fatalf("invalid runtime configuration: %v", err)
+		}
 	}
 	config.Watch()
 
@@ -80,7 +87,6 @@ func main() {
 		log.Fatalf("failed to init logger: %v", err)
 	}
 
-	migrationCommand := len(os.Args) > 1 && os.Args[1] == "migrate"
 	var db *gorm.DB
 	if migrationCommand {
 		db, err = database.ConnectForMigrations()
@@ -101,73 +107,50 @@ func main() {
 	if err := schemamigrate.EnsureCurrent(context.Background(), db); err != nil {
 		log.Fatalf("database schema is not current: %v", err)
 	}
-	if sqlDB, err := db.DB(); err != nil {
+	sqlDB, err := db.DB()
+	if err != nil {
 		log.Fatalf("failed to open runtime readiness database: %v", err)
-	} else if err := gatewayruntime.RequireConfiguredReadiness(context.Background(), sqlDB); err != nil {
-		log.Fatalf("unified gateway runtime is not ready: %v", err)
 	}
-	if config.C.Server.ShouldResetGatewayConcurrency() {
-		if err := model.DB().Model(&model.GwChannelKey{}).Where("current_conc <> 0").Update("current_conc", 0).Error; err != nil {
-			log.Fatalf("failed to reset gateway concurrency: %v", err)
-		}
+	stopDeploymentReadiness, readinessProbeErr := startDeploymentReadinessReporter(sqlDB)
+	if stopDeploymentReadiness == nil {
+		log.Fatalf("failed to initialize deployment readiness reporter: %v", readinessProbeErr)
+	}
+	defer stopDeploymentReadiness()
+	runtimeErr := gatewayruntime.RequireConfiguredReadiness(context.Background(), sqlDB)
+	if readinessProbeErr != nil && !errors.Is(readinessProbeErr, repository.ErrNotFound) {
+		runtimeErr = errors.Join(gatewayruntime.ErrNotReady, readinessProbeErr, runtimeErr)
+	}
+	runtimeReady := runtimeErr == nil
+	dataPlaneGate := gatewayruntime.NewReadinessGate(runtimeReady)
+	if !runtimeReady {
+		logger.Warn("unified gateway data plane disabled; control plane remains available", zap.Error(runtimeErr))
 	}
 
 	if err := cache.Init(); err != nil {
 		log.Fatalf("failed to init cache: %v", err)
 	}
-
-	if err := queue.InitClient(); err != nil {
-		log.Fatalf("failed to init queue client: %v", err)
-	}
-
 	// 基础设施必须先于网关和 Worker 初始化；后两者会立即使用这些全局连接。
 	provider.InitHTTPClient()
 	v2Engine, err := gateway.NewV2Engine()
 	if err != nil {
 		log.Fatalf("failed to initialize Gateway V2: %v", err)
 	}
-	videoEngine := videobootstrap.New()
-	if videoEngine == nil {
-		log.Fatal("failed to initialize video engine")
-	}
-
-	// 启动 Worker 前先恢复数据库中已提交但未完成的工作。数据库保存任务意图，
-	// Redis 队列只负责投递，因此服务异常退出后可以从数据库重建缺失的队列项。
-	reconciled, err := responsepipeline.ReconcilePendingResponseRefunds(context.Background())
+	stopCatalogWorker, err := startCatalogSourceWorker(db)
 	if err != nil {
-		log.Fatalf("failed to reconcile response refunds: %v", err)
+		log.Fatalf("failed to initialize catalog discovery worker: %v", err)
 	}
-	if reconciled > 0 {
-		logger.Info(fmt.Sprintf("reconciled %d response refunds", reconciled))
+	defer stopCatalogWorker()
+	stopUnifiedWorker := func() {}
+	if runtimeReady {
+		stopUnifiedWorker, err = startUnifiedWorker(db, v2Engine, dataPlaneGate)
+		if err != nil {
+			log.Fatalf("failed to initialize unified async worker: %v", err)
+		}
 	}
-	recovered, err := responsepipeline.RequeuePendingBackground(context.Background())
-	if err != nil {
-		log.Fatalf("failed to recover background responses: %v", err)
-	}
-	if recovered > 0 {
-		logger.Info(fmt.Sprintf("requeued %d background responses", recovered))
-	}
-	recoveredTasks, err := worker.RecoverPendingTaskSubmissions(context.Background())
-	if err != nil {
-		log.Fatalf("failed to recover pending task submissions: %v", err)
-	}
-	if recoveredTasks > 0 {
-		logger.Info(fmt.Sprintf("recovered %d pending task submissions", recoveredTasks))
-	}
-	recoveredVideos, err := worker.RecoverPendingVideoSubmissions(context.Background())
-	if err != nil {
-		log.Fatalf("failed to recover pending video submissions: %v", err)
-	}
-	if recoveredVideos > 0 {
-		logger.Info(fmt.Sprintf("recovered %d pending video submissions", recoveredVideos))
-	}
-	workerSrv := startWorker(v2Engine, videoEngine)
-
-	// 启动 Scheduler
-	scheduler := startScheduler()
+	defer stopUnifiedWorker()
 
 	// 设置路由并启动 HTTP 服务
-	r := api.SetupRouter(v2Engine, videoEngine)
+	r := api.SetupRouter(v2Engine, dataPlaneGate.Require)
 	addr := fmt.Sprintf(":%d", config.C.Server.Port)
 	httpSrv := &http.Server{
 		Addr:    addr,
@@ -197,18 +180,15 @@ func main() {
 	}
 
 	// 2. 关闭 Worker（等待正在处理的任务完成）
-	workerSrv.Shutdown()
+	stopUnifiedWorker()
+	stopCatalogWorker()
+	stopDeploymentReadiness()
 	logger.Info("worker stopped")
 
-	// 3. 关闭 Scheduler
-	scheduler.Shutdown()
-	logger.Info("scheduler stopped")
-
-	// 4. 关闭队列客户端和缓存
-	queue.Close()
+	// 3. 关闭缓存
 	cache.Close()
 
-	// 5. 关闭数据库
+	// 4. 关闭数据库
 	closeDatabase(db)
 
 	logger.Info("server exited gracefully")
@@ -216,7 +196,7 @@ func main() {
 
 func runMigrationCommand(ctx context.Context, db *gorm.DB, args []string) error {
 	if len(args) != 1 {
-		return fmt.Errorf("usage: prism migrate <up|status|adopt|audit|audit-deep|import-legacy|verify-crypto>")
+		return fmt.Errorf("usage: prism migrate <up|status|adopt|audit|audit-deep|import-legacy|import-runtime|import-video-assets|import-ai-files|verify-crypto|cleanup-legacy>")
 	}
 	switch args[0] {
 	case "up":
@@ -290,7 +270,7 @@ func runMigrationCommand(ctx context.Context, db *gorm.DB, args []string) error 
 		if err != nil {
 			return err
 		}
-		fmt.Printf("missing_target_tables=%v legacy_tables=%v unmapped_channels=%d unmapped_keys=%d unmapped_abilities=%d open_issues=%d migration_runs=%d succeeded_runs=%d ready_for_cleanup=%t\n", report.MissingTargetTables, report.LegacyTablesPresent, report.UnmappedLegacyChannels, report.UnmappedLegacyKeys, report.UnmappedLegacyAbilities, report.OpenMigrationIssues, report.MigrationRunCount, report.SucceededMigrationRuns, report.ReadyForCleanup())
+		fmt.Printf("missing_target_tables=%v missing_audit_tables=%v legacy_tables=%v unverified_history=%v unmapped_channels=%d unmapped_keys=%d unmapped_abilities=%d open_issues=%d migration_runs=%d succeeded_runs=%d ready_for_cleanup=%t\n", report.MissingTargetTables, report.MissingAuditTables, report.LegacyTablesPresent, report.UnverifiedLegacyHistory, report.UnmappedLegacyChannels, report.UnmappedLegacyKeys, report.UnmappedLegacyAbilities, report.OpenMigrationIssues, report.MigrationRunCount, report.SucceededMigrationRuns, report.ReadyForCleanup())
 		return nil
 	case "import-legacy":
 		sqlDB, err := db.DB()
@@ -311,6 +291,45 @@ func runMigrationCommand(ctx context.Context, db *gorm.DB, args []string) error 
 		}
 		fmt.Printf("imported channels=%d credentials=%d models=%d abilities=%d release_id=%d\n", report.Channels, report.Credentials, report.Models, report.Abilities, report.ReleaseID)
 		return nil
+	case "import-runtime":
+		sqlDB, err := db.DB()
+		if err != nil {
+			return err
+		}
+		hmacKey, err := migrationKey("PRISM_GATEWAY_HMAC_B64")
+		if err != nil {
+			return err
+		}
+		report, importErr := schemamigrate.ImportLegacyRuntime(ctx, sqlDB, schemamigrate.ImportOptions{HMACKey: hmacKey})
+		fmt.Printf("legacy runtime import: run_id=%d source_rows=%d billing_accounts=%d budget_windows=%d calls=%d attempts=%d payloads=%d request_logs=%d capability_tasks=%d video_tasks=%d responses=%d async_executions=%d billing_evidence=%d balance_evidence=%d skipped=%d issues=%d source_revision_hmac=%s\n",
+			report.RunID, report.SourceRows, report.BillingAccounts, report.BudgetWindows, report.Calls, report.Attempts, report.Payloads, report.RequestLogs,
+			report.CapabilityTasks, report.VideoTasks, report.Responses, report.AsyncExecutions,
+			report.BillingEvidence, report.BalanceEvidence, report.Skipped, report.Issues, report.SourceRevisionHMAC)
+		return importErr
+	case "import-video-assets":
+		sqlDB, err := db.DB()
+		if err != nil {
+			return err
+		}
+		hmacKey, err := migrationKey("PRISM_GATEWAY_HMAC_B64")
+		if err != nil {
+			return err
+		}
+		report, importErr := schemamigrate.ImportLegacyVideoAssets(ctx, sqlDB, schemamigrate.ImportOptions{HMACKey: hmacKey})
+		fmt.Printf("imported legacy video assets: imported=%d skipped=%d issues=%d run_id=%d\n", report.Imported, report.Skipped, report.Issues, report.RunID)
+		return importErr
+	case "import-ai-files":
+		sqlDB, err := db.DB()
+		if err != nil {
+			return err
+		}
+		hmacKey, err := migrationKey("PRISM_GATEWAY_HMAC_B64")
+		if err != nil {
+			return err
+		}
+		report, importErr := schemamigrate.ImportLegacyAIFiles(ctx, sqlDB, schemamigrate.ImportOptions{HMACKey: hmacKey})
+		fmt.Printf("imported legacy AI files: imported=%d skipped=%d issues=%d run_id=%d\n", report.Imported, report.Skipped, report.Issues, report.RunID)
+		return importErr
 	case "verify-crypto":
 		sqlDB, err := db.DB()
 		if err != nil {
@@ -325,8 +344,18 @@ func runMigrationCommand(ctx context.Context, db *gorm.DB, args []string) error 
 		}
 		fmt.Println("encrypted credential verification passed")
 		return nil
+	case "cleanup-legacy":
+		sqlDB, err := db.DB()
+		if err != nil {
+			return err
+		}
+		if err := schemamigrate.CleanupLegacyGateway(ctx, sqlDB); err != nil {
+			return err
+		}
+		fmt.Println("legacy gateway configuration tables removed")
+		return nil
 	default:
-		return fmt.Errorf("unknown migration command %q; use up, status, adopt, audit, audit-deep, import-legacy, or verify-crypto", args[0])
+		return fmt.Errorf("unknown migration command %q; use up, status, adopt, audit, audit-deep, import-legacy, import-runtime, import-video-assets, import-ai-files, verify-crypto, or cleanup-legacy", args[0])
 	}
 }
 
@@ -335,8 +364,8 @@ func migrationKey(name string) ([]byte, error) {
 	if value == "" {
 		return nil, fmt.Errorf("%s is required", name)
 	}
-	decoded, err := base64.StdEncoding.DecodeString(value)
-	if err != nil || len(decoded) != 32 {
+	decoded, err := security.DecodeBase64Key(value)
+	if err != nil {
 		return nil, fmt.Errorf("%s must be base64-encoded 32 bytes", name)
 	}
 	return decoded, nil
@@ -354,59 +383,4 @@ func closeDatabase(db *gorm.DB) {
 	if err == nil {
 		_ = sqlDB.Close()
 	}
-}
-
-func startWorker(v2Engine *engine.Engine, videoEngine *video.Engine) *asynq.Server {
-	srv := queue.NewServer()
-	mux := asynq.NewServeMux()
-	worker.RegisterHandlers(mux, v2Engine, videoEngine)
-
-	go func() {
-		logger.Info("worker starting...")
-		if err := srv.Run(mux); err != nil {
-			log.Printf("worker stopped: %v", err)
-		}
-	}()
-
-	return srv
-}
-
-func startScheduler() *asynq.Scheduler {
-	cfg := config.C.Redis
-	scheduler := asynq.NewScheduler(
-		asynq.RedisClientOpt{
-			Addr:     cfg.Addr,
-			Password: cfg.Password,
-			DB:       cfg.DB,
-		},
-		nil,
-	)
-
-	_, err := scheduler.Register("*/5 * * * *", worker.NewTimeoutCheckTask(), asynq.Queue("low"))
-	if err != nil {
-		log.Fatalf("failed to register timeout check task: %v", err)
-	}
-	_, err = scheduler.Register("* * * * *", worker.NewResponseRecoveryTask(), asynq.Queue("low"))
-	if err != nil {
-		log.Fatalf("failed to register response recovery task: %v", err)
-	}
-	_, err = scheduler.Register("17 * * * *", worker.NewAPICallPayloadCleanupTask(), asynq.Queue("low"))
-	if err != nil {
-		log.Fatalf("failed to register API call payload cleanup task: %v", err)
-	}
-
-	// 模型发现是低频维护任务，不应与每分钟执行的状态恢复任务共用频率。
-	_, err = scheduler.Register("0 */6 * * *", worker.NewModelDiscoverySyncTask(), asynq.Queue("low"))
-	if err != nil {
-		log.Fatalf("failed to register model discovery sync task: %v", err)
-	}
-
-	go func() {
-		logger.Info("scheduler starting...")
-		if err := scheduler.Run(); err != nil {
-			log.Printf("scheduler stopped: %v", err)
-		}
-	}()
-
-	return scheduler
 }

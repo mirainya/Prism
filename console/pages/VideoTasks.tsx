@@ -19,16 +19,16 @@ import {
   type LucideIcon,
 } from 'lucide-react';
 import {
-  fetchVideoChannels,
   fetchVideoTasks,
   getVideoTask,
-  type VideoChannel,
   type VideoCallPayload,
   type VideoTask,
   type VideoTaskListParams,
 } from '../services/videoApi';
+import { fetchUnifiedChannels, type UnifiedChannel } from '../services/unifiedChannelApi';
 import { Drawer, Pagination, Select } from '../components/ui';
 import { PageHeader } from '../components/shell';
+import { UnifiedRequestLogs } from './unified_gateway/UnifiedRequestLogs';
 
 const DEFAULT_PAGE_SIZE = 20;
 const INPUT_CLASS = 'mt-1 w-full min-w-0 rounded-lg border border-[var(--border-soft)] bg-[var(--surface-card)] px-3 py-2 text-sm text-[var(--text-primary)] outline-none transition placeholder:text-[var(--text-tertiary)] focus:border-[var(--primary)] focus:ring-2 focus:ring-[var(--focus-ring)]';
@@ -337,7 +337,9 @@ const TaskOverview: React.FC<{ task: VideoTask; channelName: string }> = ({ task
 };
 
 const TaskResult: React.FC<{ task: VideoTask }> = ({ task }) => {
-  const videoURLs = useMemo(() => extractVideoURLs(task.result_json), [task.result_json]);
+  const resultPayload = task.call_payloads?.find(payload => payload.kind === 'result');
+  const result = task.result_json ?? parsePayload(resultPayload);
+  const videoURLs = useMemo(() => extractVideoURLs(result), [result]);
   return (
     <div className="space-y-5">
       {videoURLs.length > 0 && (
@@ -345,52 +347,20 @@ const TaskResult: React.FC<{ task: VideoTask }> = ({ task }) => {
           {videoURLs.map(url => <VideoPreview key={url} url={url} />)}
         </section>
       )}
-      <JsonPanel value={task.result_json} emptyText="暂无任务结果" />
+      <JsonPanel value={result} emptyText={task.result_payload_expired ? '结果正文已按保留策略清理' : '暂无任务结果'} />
     </div>
   );
 };
 
 const TaskRequest: React.FC<{ task: VideoTask }> = ({ task }) => {
   const payloads = task.call_payloads || [];
-  const clientPayload = [...payloads].reverse().find(payload => payload.kind === 'request');
-  const upstreamPayloads = payloads.filter(payload => payload.kind === 'upstream_request');
-  const clientRequest = parsePayload(clientPayload) ?? {
-    model: task.model,
-    prompt: task.prompt,
-    resolution: task.resolution,
-    ratio: task.ratio,
-    duration: task.duration,
-    generate_audio: task.generate_audio,
-    task_mode: task.task_mode,
-    service_tier: task.service_tier,
-    content: task.content_json,
-    params: task.params_json,
-  };
+  const requestPayload = payloads.find(payload => payload.kind === 'request');
+  const clientRequest = parsePayload(requestPayload);
   return (
-    <div className="space-y-6">
+    <div>
       <section>
-        <h3 className="mb-2 text-sm font-bold text-[var(--text-primary)]">调用参数</h3>
-        <JsonPanel value={clientRequest} emptyText="未保存调用参数" />
-      </section>
-      <section>
-        <h3 className="mb-2 text-sm font-bold text-[var(--text-primary)]">实际上游请求</h3>
-        {upstreamPayloads.length === 0 ? (
-          <div className="py-12 text-center text-sm text-[var(--text-secondary)]">该任务未记录实际上游请求</div>
-        ) : (
-          <div className="space-y-4">
-            {upstreamPayloads.map(payload => (
-              <div key={payload.id}>
-                <div className="mb-2 flex flex-wrap items-center gap-2 text-xs text-[var(--text-secondary)]">
-                  <span>尝试 #{payload.attempt_id || '-'}</span>
-                  <span>·</span>
-                  <span>{formatDate(payload.created_at)}</span>
-                  {payload.truncated && <span className="rounded-md bg-yellow-100 px-2 py-1 font-semibold text-yellow-700">已截断</span>}
-                </div>
-                <JsonPanel value={parsePayload(payload)} emptyText="上游请求为空" />
-              </div>
-            ))}
-          </div>
-        )}
+        <h3 className="mb-2 text-sm font-bold text-[var(--text-primary)]">统一调用参数</h3>
+        <JsonPanel value={clientRequest} emptyText={task.request_payload_expired ? '请求正文已按保留策略清理' : '未保存调用参数'} />
       </section>
     </div>
   );
@@ -398,7 +368,7 @@ const TaskRequest: React.FC<{ task: VideoTask }> = ({ task }) => {
 
 const VideoTasks: React.FC = () => {
   const [tasks, setTasks] = useState<VideoTask[]>([]);
-  const [channels, setChannels] = useState<VideoChannel[]>([]);
+  const [channels, setChannels] = useState<UnifiedChannel[]>([]);
   const [total, setTotal] = useState(0);
   const [page, setPage] = useState(1);
   const [pageSize, setPageSize] = useState(DEFAULT_PAGE_SIZE);
@@ -418,7 +388,7 @@ const VideoTasks: React.FC = () => {
 
   useEffect(() => {
     let active = true;
-    fetchVideoChannels().then(items => { if (active) setChannels(items); }).catch(() => {});
+    fetchUnifiedChannels(1, 100, '', '').then(result => { if (active) setChannels(result.items || []); }).catch(() => {});
     return () => { active = false; };
   }, []);
 
@@ -437,7 +407,8 @@ const VideoTasks: React.FC = () => {
       setTasks(response.items || []);
       setTotal(response.total || 0);
       snapshotAt.current = response.snapshot_at || snapshotAt.current;
-      const lastPage = Math.max(1, Math.ceil((response.total || 0) / pageSize));
+      const effectivePageSize = response.page_size || pageSize;
+      const lastPage = Math.max(1, Math.ceil((response.total || 0) / effectivePageSize));
       if (page > lastPage) setPage(lastPage);
     }).catch(error => {
       if (!active || requestNo !== listRequest.current) return;
@@ -450,7 +421,7 @@ const VideoTasks: React.FC = () => {
     return () => { active = false; };
   }, [filters, page, pageSize, refreshKey]);
 
-  const channelNames = useMemo(() => new Map(channels.map(channel => [channel.id, channel.name])), [channels]);
+  const channelNames = useMemo(() => new Map(channels.map(channel => [channel.id, channel.display_name])), [channels]);
 
   const updateDraft = <K extends keyof FilterDraft>(key: K, value: FilterDraft[K]) => {
     setDraft(current => ({ ...current, [key]: value }));
@@ -484,7 +455,7 @@ const VideoTasks: React.FC = () => {
     snapshotAt.current = '';
     setPage(1);
     setRefreshKey(value => value + 1);
-    fetchVideoChannels().then(setChannels).catch(() => {});
+    fetchUnifiedChannels(1, 100, '', '').then(result => setChannels(result.items || [])).catch(() => {});
   };
 
   const changePageSize = (value: number) => {
@@ -558,7 +529,7 @@ const VideoTasks: React.FC = () => {
               <Select value={draft.service_tier} onChange={value => updateDraft('service_tier', value)} className="mt-1" options={[{ label: '全部档位', value: '' }, ...Object.entries(SERVICE_TIER_LABELS).map(([value, label]) => ({ label, value }))]} />
             </div>
             <div className="text-xs font-semibold text-[var(--text-secondary)]">渠道
-              <Select value={draft.channel_id} onChange={value => updateDraft('channel_id', value)} className="mt-1" options={[{ label: '全部渠道', value: '' }, ...channels.map(channel => ({ label: channel.name, value: String(channel.id) }))]} />
+              <Select value={draft.channel_id} onChange={value => updateDraft('channel_id', value)} className="mt-1" options={[{ label: '全部渠道', value: '' }, ...channels.map(channel => ({ label: channel.display_name, value: String(channel.id) }))]} />
             </div>
             <label className="text-xs font-semibold text-[var(--text-secondary)]">用户 ID
               <input type="number" min="1" value={draft.user_id} onChange={event => updateDraft('user_id', event.target.value)} placeholder="用户 ID" className={INPUT_CLASS} />
@@ -665,7 +636,7 @@ const VideoTasks: React.FC = () => {
             })}
           </div>
         )}
-        <div className="flex-1 overflow-y-auto p-5">
+        <div className={activeTab === 'upstream' ? 'flex min-h-0 flex-1 flex-col' : 'flex-1 overflow-y-auto p-5'}>
           {detailLoading ? (
             <VideoTaskDetailSkeleton />
           ) : detailError ? (
@@ -677,7 +648,7 @@ const VideoTasks: React.FC = () => {
           ) : selectedTask && activeTab === 'result' ? (
             <TaskResult task={selectedTask} />
           ) : selectedTask && activeTab === 'upstream' ? (
-            <JsonPanel value={{ response: selectedTask.provider_response, metadata: selectedTask.provider_metadata }} emptyText="未保存上游响应" />
+            selectedTask.gateway_call_id ? <UnifiedRequestLogs callId={selectedTask.gateway_call_id} /> : <div className="py-16 text-center text-sm text-[var(--text-secondary)]">暂无上游请求记录</div>
           ) : (
             <div className="py-16 text-center text-sm text-[var(--text-secondary)]">任务详情不可用</div>
           )}

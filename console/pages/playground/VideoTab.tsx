@@ -1,9 +1,9 @@
 import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import { Loader2, AlertCircle, Video, XCircle, CheckCircle2, Clock, Play, Download, Plus, Trash2, Upload, AtSign, Type, Image as ImageIcon, Images, Layers3, Film, Scissors } from 'lucide-react';
 import {
-  playgroundCreateVideo, playgroundListVideos, playgroundCancelVideo, playgroundPriorityQueueVideo,
+  playgroundCreateVideo, playgroundListVideos,
   playgroundEstimateVideo, playgroundListVideoModels, playgroundUploadVideoAsset,
-  VideoTask, VideoEstimate, VideoCreateParams, VideoContentItem, PlaygroundVideoModelOptions, PlaygroundVideoChannelOption,
+  VideoTask, VideoEstimate, VideoCreateParams, VideoContentItem, PlaygroundVideoModelOptions,
   PlaygroundVideoServiceTierOption,
 } from '../../services/playgroundApi';
 import { Input, SegmentedControl, Select } from '../../components/ui';
@@ -164,8 +164,6 @@ const ProgressRing: React.FC<{ percent: number }> = ({ percent }) => {
 const VideoTab: React.FC<{ tokenId: string }> = ({ tokenId }) => {
   const [models, setModels] = useState<string[]>([]);
   const [modelOptions, setModelOptions] = useState<Record<string, PlaygroundVideoModelOptions>>({});
-  const [channels, setChannels] = useState<PlaygroundVideoChannelOption[]>([]);
-  const [channelId, setChannelId] = useState('0');
   const [model, setModel] = useState('');
   const [taskType, setTaskType] = useState<VideoTaskType>('text');
   const [prompt, setPrompt] = useState('');
@@ -186,14 +184,7 @@ const VideoTab: React.FC<{ tokenId: string }> = ({ tokenId }) => {
   const [filter, setFilter] = useState<FilterType>('all');
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const promptRef = useRef<HTMLTextAreaElement | null>(null);
-  const selectedChannel = channels.find(channel => String(channel.id) === channelId);
-  const availableModels = selectedChannel?.models || models;
-  const activeModelOptions = selectedChannel?.model_options || modelOptions;
-  const channelSelectOptions = [
-    { label: '自动选择', value: '0' },
-    ...channels.map(channel => ({ label: channel.name, value: String(channel.id) })),
-  ];
-  const currentModelOptions = activeModelOptions[model];
+  const currentModelOptions = modelOptions[model];
   const configuredTaskTypes = currentModelOptions?.task_types;
   const taskTypeOptions: VideoTaskType[] = configuredTaskTypes?.length
     ? configuredTaskTypes
@@ -292,7 +283,7 @@ const VideoTab: React.FC<{ tokenId: string }> = ({ tokenId }) => {
       return option ? [[parameter.name, option.value]] : [];
     }));
     return {
-      model, prompt: prompt.trim(), ...(channelId !== '0' ? { channel_id: Number(channelId) } : {}), resolution,
+      model, prompt: prompt.trim(), resolution,
       ...(ratio ? { ratio } : {}),
       duration: Number(duration), generate_audio: generateAudio,
       task_mode: taskMode,
@@ -300,7 +291,7 @@ const VideoTab: React.FC<{ tokenId: string }> = ({ tokenId }) => {
       ...(content.length > 0 ? { content } : {}),
       ...(Object.keys(params).length > 0 ? { params } : {}),
     };
-  }, [model, prompt, channelId, resolution, ratio, duration, generateAudio, taskMode, serviceTier, references, visibleParameters, parameterValues]);
+  }, [model, prompt, resolution, ratio, duration, generateAudio, taskMode, serviceTier, references, visibleParameters, parameterValues]);
   const estimateReady = Boolean(
     model && (taskType === 'text' ? prompt.trim() : prompt.trim() || references.length > 0) &&
     (taskType === 'text' || references.length > 0) &&
@@ -309,12 +300,12 @@ const VideoTab: React.FC<{ tokenId: string }> = ({ tokenId }) => {
   );
 
   useEffect(() => {
-    setModel(current => availableModels.includes(current) ? current : (availableModels[0] || ''));
-  }, [availableModels, channelId]);
+    setModel(current => models.includes(current) ? current : (models[0] || ''));
+  }, [models]);
 
   useEffect(() => {
     setTaskType(current => taskTypeOptions.includes(current) ? current : (taskTypeOptions[0] || 'text'));
-  }, [model, activeModelOptions]);
+  }, [model, modelOptions]);
 
   useEffect(() => {
     setReferences(items => {
@@ -344,8 +335,6 @@ const VideoTab: React.FC<{ tokenId: string }> = ({ tokenId }) => {
   }, [taskType]);
 
   useEffect(() => {
-    // 渠道切换会经历一次“模型已变、参数尚未回填”的中间渲染。
-    // 中间状态不应清空已有值，否则完整配置回来后会被错误重置为第一个选项。
     if (resolutionOptions.length > 0) {
       setResolution(value => resolutionOptions.includes(value) ? value : resolutionOptions[0]);
     }
@@ -375,7 +364,7 @@ const VideoTab: React.FC<{ tokenId: string }> = ({ tokenId }) => {
         return firstKind ? [makeReference(firstKind, taskType, 0)] : [];
       });
     }
-  }, [model, activeModelOptions, taskType, serviceTierOptions]);
+  }, [model, modelOptions, taskType, serviceTierOptions]);
 
   useEffect(() => {
 	const parameters = visibleParameters;
@@ -395,13 +384,12 @@ const VideoTab: React.FC<{ tokenId: string }> = ({ tokenId }) => {
       const fallback = parameter.default ?? parameter.options?.[0]?.value ?? '';
       return [parameter.name, validCurrent ? current[parameter.name] : parameterValueKey(fallback)];
     })));
-  }, [model, activeModelOptions, taskMode]);
+  }, [model, modelOptions, taskMode]);
 
   useEffect(() => {
     playgroundListVideoModels(tokenId).then(result => {
       setModels(result.models);
       setModelOptions(result.model_options || {});
-      setChannels(result.channels || []);
       if (result.models.length > 0 && !model) setModel(result.models[0]);
     }).catch(() => {});
   }, [tokenId]);
@@ -614,24 +602,6 @@ const VideoTab: React.FC<{ tokenId: string }> = ({ tokenId }) => {
     }
   };
 
-  const handleCancel = async (e: React.MouseEvent, taskId: string) => {
-    e.stopPropagation();
-    try {
-      await playgroundCancelVideo(tokenId, taskId);
-      await loadTasks();
-    } catch {}
-  };
-
-  const handlePriorityQueue = async (e: React.MouseEvent, taskId: string) => {
-    e.stopPropagation();
-    try {
-      await playgroundPriorityQueueVideo(tokenId, taskId);
-      await loadTasks();
-    } catch (error: any) {
-      setError(error?.message || '升级优先队列失败');
-    }
-  };
-
   const filteredTasks = tasks.filter(t => {
     if (filter === 'all') return true;
     if (filter === 'active') return !isTerminal(t.status);
@@ -656,14 +626,9 @@ const VideoTab: React.FC<{ tokenId: string }> = ({ tokenId }) => {
         </h3>
 
          <div className="mb-3">
-           <div className="text-xs text-[var(--text-secondary)] mb-1 font-medium">渠道</div>
-           <Select options={channelSelectOptions} value={channelId} onChange={setChannelId} />
-         </div>
-
-         <div className="mb-3">
            <div className="text-xs text-[var(--text-secondary)] mb-1 font-medium">模型</div>
-           {availableModels.length > 0 ? (
-             <EnumSelect options={availableModels} value={model} onChange={setModel} />
+             {models.length > 0 ? (
+               <EnumSelect options={models} value={model} onChange={setModel} />
           ) : (
             <div className="text-xs text-[var(--text-tertiary)] py-2">加载中...</div>
           )}
@@ -890,16 +855,7 @@ const VideoTab: React.FC<{ tokenId: string }> = ({ tokenId }) => {
             </div>
           ) : (
             <div className="grid grid-cols-1 lg:grid-cols-2 xl:grid-cols-2 2xl:grid-cols-3 gap-3">
-              {filteredTasks.map(task => {
-                const taskOptions = channels.find(channel => channel.id === task.channel_id)?.model_options[task.model]
-                  || modelOptions[task.model];
-                const allowCancel = task.status === 'queued'
-                  ? taskOptions?.allow_local_cancel !== false
-                  : taskOptions ? Boolean(taskOptions.cancel_statuses?.includes(task.status)) : true;
-                const allowPriority = (task.status === 'submitted' || task.status === 'tracking') &&
-                  task.service_tier === 'standard' && Boolean(taskOptions?.service_tiers?.includes('priority'));
-                return <TaskCard key={task.id} task={task} onCancel={handleCancel} onPriority={handlePriorityQueue} allowCancel={allowCancel} allowPriority={allowPriority} />;
-              })}
+              {filteredTasks.map(task => <TaskCard key={task.id} task={task} />)}
             </div>
           )}
         </div>
@@ -908,7 +864,7 @@ const VideoTab: React.FC<{ tokenId: string }> = ({ tokenId }) => {
   );
 };
 
-const TaskCard: React.FC<{ task: VideoTask; onCancel: (e: React.MouseEvent, id: string) => void; onPriority: (e: React.MouseEvent, id: string) => void; allowCancel: boolean; allowPriority: boolean }> = ({ task, onCancel, onPriority, allowCancel, allowPriority }) => {
+const TaskCard: React.FC<{ task: VideoTask }> = ({ task }) => {
   const statusMap: Record<string, { label: string; icon: React.ReactNode; cls: string }> = {
     queued: { label: '排队中', icon: <Clock size={12} />, cls: 'bg-gray-100 text-gray-600' },
     submitted: { label: '已提交', icon: <Loader2 size={12} className="animate-spin" />, cls: 'bg-blue-50 text-blue-600' },
@@ -976,12 +932,6 @@ const TaskCard: React.FC<{ task: VideoTask; onCancel: (e: React.MouseEvent, id: 
         <div className="flex min-w-0 items-center justify-between gap-2">
           <span className="min-w-0 truncate text-xs text-[var(--text-tertiary)]">{new Date(task.created_at).toLocaleString()}</span>
           <div className="flex shrink-0 items-center gap-2">
-          {allowPriority && (
-            <button onClick={e => onPriority(e, task.id)} className="text-xs text-[var(--primary)] hover:opacity-80 font-medium">升级优先</button>
-          )}
-          {!isTerminal(task.status) && allowCancel && (
-            <button onClick={e => onCancel(e, task.id)} className="text-xs text-red-500 hover:text-red-600 font-medium">取消</button>
-          )}
           {task.status === 'completed' && task.result?.video_url ? (
             <a href={task.result.video_url} download className="text-xs text-[var(--primary)] hover:underline flex items-center gap-0.5">
               <Download size={11} /> 下载

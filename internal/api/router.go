@@ -16,16 +16,19 @@ import (
 	"github.com/mirainya/Prism/internal/api/open"
 	"github.com/mirainya/Prism/internal/gateway"
 	"github.com/mirainya/Prism/internal/gateway/engine"
+	gatewayruntime "github.com/mirainya/Prism/internal/gateway/runtime"
 	"github.com/mirainya/Prism/internal/model"
-	"github.com/mirainya/Prism/internal/video"
 	"github.com/mirainya/Prism/pkg/cache"
 	"github.com/mirainya/Prism/pkg/metrics"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 )
 
-func SetupRouter(executionEngine *engine.Engine, videoEngine *video.Engine) *gin.Engine {
+func SetupRouter(executionEngine *engine.Engine, readiness gatewayruntime.ReadinessCheck) *gin.Engine {
 	if executionEngine == nil {
 		panic("Gateway V2 engine is required")
+	}
+	if readiness == nil {
+		panic("Gateway data-plane readiness is required")
 	}
 	r := gin.New()
 
@@ -74,25 +77,24 @@ func SetupRouter(executionEngine *engine.Engine, videoEngine *video.Engine) *gin
 	// 管理员专用 API
 	adminGroup := r.Group("/api/admin")
 	adminGroup.Use(middleware.JWTAuth(), middleware.AdminOnly())
-	admin.SetVideoEngine(videoEngine)
 	admin.RegisterRoutes(adminGroup)
 
-	// v1 API (Token 鉴权，用于 AI 调用)。chat/completions 已切到网关 pipeline,
-	// 其余(capabilities/images/videos/models)仍由 open 处理。
+	// v1 API (Token 鉴权，用于 AI 调用)。旧 capability/task/image 运行链已停用。
 	apiV1 := r.Group("/v1")
-	apiV1.Use(middleware.Auth(), middleware.RateLimitByToken())
+	apiV1.Use(middleware.Auth(), middleware.GatewayReadiness(readiness), middleware.RateLimitByToken())
 	gw.RegisterChat(apiV1)
 	gw.RegisterAnthropic(apiV1)
 	gw.RegisterResponses(apiV1)
 	gw.RegisterFiles(apiV1)
-	open.InitVideoEngine(videoEngine)
-	console.SetVideoEngine(videoEngine)
+	if model.HasDB() {
+		if sqlDB, err := model.DB().DB(); err == nil {
+			open.InitUnifiedVideoGateway(sqlDB)
+		}
+	}
 	open.RegisterRoutes(apiV1)
 
-	// 内部接口 (上游回调)
-	internalGroup := r.Group("/internal")
-	internalGroup.Use(middleware.CallbackAuth())
-	callback.RegisterRoutes(internalGroup)
+	// Unified callbacks authenticate with an execution-scoped token.
+	callback.RegisterUnifiedRoutes(r.Group("/internal/gateway"))
 
 	// 嵌入的前端静态文件
 	distFS, _ := fs.Sub(consolefs.DistFS, "dist")

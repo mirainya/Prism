@@ -30,14 +30,3 @@ func (p *Pipeline) CreateWithOptions(ctx context.Context, userID, tokenID uint, 
 	}
 	return p.createV2(ctx, userID, tokenID, request, idempotencyKey, options.RequestID, options.ConversationID, options.ThinkingLevel)
 }
-
-func (p *Pipeline) ExecuteBackground(ctx context.Context, responseID string, finalAttempt bool, attempts ...int) error {
-	if p == nil || p.v2 == nil || p.engine == nil {
-		return errors.New("Gateway V2 engine is not initialized")
-	}
-	attempt := 0
-	if len(attempts) > 0 {
-		attempt = attempts[0]
-	}
-	return p.executeBackgroundV2(ctx, responseID, finalAttempt, attempt)
-}

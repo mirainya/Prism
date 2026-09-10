@@ -9,6 +9,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 )
 
@@ -21,11 +22,13 @@ func validHexDigest(value string, bytesLen int) bool {
 }
 
 var (
-	ErrNotFound      = errors.New("gateway repository: row not found")
-	ErrConflict      = errors.New("gateway repository: optimistic concurrency conflict")
-	ErrInvalidInput  = errors.New("gateway repository: invalid input")
-	ErrAlreadyExists = errors.New("gateway repository: row already exists")
-	ErrInsufficient  = errors.New("gateway repository: insufficient balance or budget")
+	ErrNotFound            = errors.New("gateway repository: row not found")
+	ErrConflict            = errors.New("gateway repository: optimistic concurrency conflict")
+	ErrIdempotencyConflict = errors.New("gateway repository: idempotency key was reused with a different request")
+	ErrIdempotencyExpired  = errors.New("gateway repository: idempotency replay window has expired")
+	ErrInvalidInput        = errors.New("gateway repository: invalid input")
+	ErrAlreadyExists       = errors.New("gateway repository: row already exists")
+	ErrInsufficient        = errors.New("gateway repository: insufficient balance or budget")
 )
 
 // DB is implemented by *sql.DB and *sql.Tx. It makes every repository method
@@ -40,16 +43,27 @@ type rowQuerier interface {
 	QueryRowContext(context.Context, string, ...any) *sql.Row
 }
 
-type Store struct{ db *sql.DB }
+type Store struct {
+	db                              *sql.DB
+	forUpdateClause, forShareClause string
+}
 
 func New(db *sql.DB) (*Store, error) {
 	if db == nil {
 		return nil, ErrInvalidInput
 	}
-	return &Store{db: db}, nil
+	driverName := strings.ToLower(fmt.Sprintf("%T", db.Driver()))
+	store := &Store{db: db, forUpdateClause: " FOR UPDATE", forShareClause: " FOR SHARE"}
+	if strings.Contains(driverName, "sqlite") {
+		store.forUpdateClause, store.forShareClause = "", ""
+	}
+	return store, nil
 }
 
 func (s *Store) DB() *sql.DB { return s.db }
+
+func (s *Store) forUpdate(query string) string { return query + s.forUpdateClause }
+func (s *Store) forShare(query string) string  { return query + s.forShareClause }
 
 func (s *Store) WithTx(ctx context.Context, fn func(*sql.Tx) error) error {
 	if fn == nil {
@@ -87,4 +101,18 @@ func lastID(result sql.Result) (uint64, error) {
 func affected(result sql.Result) (bool, error) {
 	n, err := result.RowsAffected()
 	return n == 1, err
+}
+
+func requireOneRow(result sql.Result, err error) error {
+	if err != nil {
+		return err
+	}
+	ok, err := affected(result)
+	if err != nil {
+		return err
+	}
+	if !ok {
+		return ErrConflict
+	}
+	return nil
 }

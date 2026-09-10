@@ -2,156 +2,95 @@
   <img src="console/assets/logo.svg" width="120" alt="Prism Logo" />
 </p>
 
-<h1 align="center">Prism</h1>
+<h1 align="center">Prism v2.0.0</h1>
 
-<p align="center">
-  多协议转换、能力感知路由和可视化管理的 AI Gateway
-</p>
+<p align="center">统一目录、协议转换、精确计费与异步执行的 AI Gateway</p>
 
-Prism 使用 Go + React 构建，对外提供 OpenAI Chat Completions、OpenAI Responses 和 Anthropic Messages 接口，并根据请求内容选择兼容的上游协议。前端构建产物嵌入 Go 二进制，可作为单个服务部署。
-
-> Gateway V2 是内部执行架构名称；公开 API 仍位于 `/v1`，没有 `/v2` HTTP 接口。
-
-> 本 README 描述当前已实现结构。统一目录、凭据、异步执行、素材交付与计费的目标架构以 [`docs/specs/2026-09-04-unified-gateway-catalog-billing-architecture.md`](docs/specs/2026-09-04-unified-gateway-catalog-billing-architecture.md) 为准；迁移完成前不得把目标表名或流程当作已部署能力。
+Prism 使用 Go + React 构建。公开 API 位于 `/v1`；“Gateway V2”是内部架构名称，不代表存在 `/v2` HTTP API。前端构建产物嵌入 Go 二进制，可作为单个服务部署。
 
 ## 架构
 
 ```text
 客户端
-  -> Gin Handler（鉴权、校验、协议错误格式）
-  -> Downstream Codec（Chat / Responses / Messages）
-  -> Canonical Request / Response / Event
-  -> Engine（执行计划、选路、重试、计费、调用账本、交付与流生命周期）
-  -> Router（语义能力、Transport、并发、熔断、权重）
-  -> Upstream Transport
+  -> Gin Handler（认证、限流、协议校验）
+  -> Downstream Codec
+  -> Canonical Request / Event
+  -> Gateway Engine（路由、调用、尝试、预授权、结算）
+  -> Product Transport / Adapter
   -> 上游 API
 ```
 
-| 层 | 职责 |
-|---|---|
-| `gateway/codec` | 解码下游请求，并把响应或 SSE 编码为下游协议 |
-| `gateway/canonical` | 表示消息、多模态内容、工具、推理、usage 和流事件 |
-| `gateway/engine` | 生成执行计划，管理重试、计费预授权、调用账本、请求日志和交付终态 |
-| `gateway/routing` | 从 `gw_*` 数据中选择能力与 Transport，管理并发和熔断 |
-| `gateway/transport` | 处理上游 URL、鉴权、请求编码、HTTP/SSE 和响应解码 |
-| `gateway/responses` | 管理 Responses 存储、续话、幂等、后台任务、取消和恢复 |
+统一目录固定一次执行所使用的发布版、产品、SKU、线路、Offering、成本方案、凭据及凭据版本。图片使用统一同步能力生命周期；后台 Responses 和视频由 MySQL 中的持久 Outbox 与租约 Worker 执行，不使用 Redis 任务队列。
 
-图片、视频等异步能力目前仍由 `api/open -> service -> worker` 执行，与对话 Gateway V2 并存。
+## 公开 API
 
-## 协议支持
+| 方法 | 路径 | 用途 |
+|---|---|---|
+| POST | `/v1/chat/completions` | OpenAI Chat Completions |
+| POST | `/v1/messages` | Anthropic Messages |
+| POST | `/v1/responses` | OpenAI Responses |
+| GET / DELETE / POST | `/v1/responses/:id` 相关路由 | 查询、删除、取消后台 Response、读取输入项 |
+| POST / GET / DELETE | `/v1/files` 相关路由 | 文件上传、列表、详情、内容与删除 |
+| POST | `/v1/images/generations` | OpenAI 风格图片生成 |
+| POST | `/v1/images/edits` | OpenAI 风格图片编辑 |
+| POST | `/v1/videos/generations` | 视频生成 |
+| POST | `/v1/videos/estimate` | 视频价格估算 |
+| GET | `/v1/videos/generations` | 视频列表 |
+| GET | `/v1/videos/generations/:id` | 视频详情 |
+| GET | `/v1/videos/generations/:id/queue` | 单任务队列状态 |
+| GET | `/v1/videos/queue` | 当前 Token 的活动视频任务 |
+| POST / GET / DELETE | `/v1/videos/assets` 相关路由 | 视频输入素材 |
+| GET | `/v1/models`、`/v1/models/:code` | 公开模型目录 |
 
-### 下游接口
+所有 `/v1/*` 路由使用 API Token：
 
-| 接口 | 用途 |
-|---|---|
-| `POST /v1/chat/completions` | OpenAI Chat Completions，支持流式与非流式 |
-| `POST /v1/responses` | OpenAI Responses，支持流式、存储、续话和后台执行 |
-| `POST /v1/messages` | Anthropic Messages，支持流式与非流式 |
-| `/v1/files` | 按 Token 隔离的文件上传、查询、下载和删除 |
-
-### 上游 Transport
-
-| Transport ID | 上游协议 |
-|---|---|
-| `openai_chat` | `POST /v1/chat/completions` |
-| `openai_responses` | `POST /v1/responses` |
-| `anthropic_messages` | `POST /v1/messages` |
-| `google_generate_content` | Gemini `generateContent` / `streamGenerateContent` |
-| `volcengine_responses_v3` | 火山方舟 `POST /api/v3/responses` |
-
-每个 Transport 会针对当前 canonical 请求返回 `exact`、`converted` 或 `unsupported`。Engine 优先选择原生协议，仅在字段和能力可表达时转换；无法兼容的请求返回 `400 unsupported_model_capability`，临时没有可用路由时返回 `503 model_unavailable`。
-
-Chat、Responses 和 Messages 并不与某个模型固定绑定。一个公开模型能使用哪些下游协议，由其语义能力、已启用 Transport 和当前请求共同决定。
-
-火山方舟的 `thinking`、`caching`、`session`、`context_management` 等扩展只会交给原生 v3 Transport。Responses 转 Chat 时允许忽略 `include: ["reasoning.encrypted_content"]`，但不会伪造加密推理内容。
-
-Google Transport 当前仅接受 `/v1/responses` 下游，且不映射 Responses `reasoning` 控制项；Provider proof 仅回放给原签发 Provider。
-
-## 路由模型
-
-| 数据表 | 作用 |
-|---|---|
-| `gw_channels` | 上游 Base URL、协议、附加请求头和渠道配置 |
-| `gw_channel_keys` | API Key、权重、状态和最大并发 |
-| `gw_abilities` | 公开模型到上游模型的映射、能力、优先级和价格 |
-| `gw_ability_transports` | 为每条能力显式声明可用 Transport |
-| `gw_route_states` | 按 Key、公开模型和 Transport 记录临时熔断状态 |
-| `gw_model_meta` | 展示名、分组、排序、思考档和最大输出元数据，不参与选路 |
-
-路由不会根据渠道类型猜测上游端点。原生 Transport 优先，其后比较 Ability 优先级，同档 Key 按权重选择。一次请求最多尝试 3 个可用路由，并在请求结束后释放并发占用。
-
-## 主要能力
-
-- 文本、图片、文件、音频、视频、函数工具、推理和结构化输出的 canonical 表达；实际支持范围由 Transport 与 Ability 能力共同校验。
-- Responses 使用 Prism `resp_` ID，支持 `Idempotency-Key`、`previous_response_id`、`GET`、`DELETE`、取消和 `input_items`。幂等结果保留 24 小时，`store: false` 也能完整重放。
-- 上游执行前预授权计费，终态 usage 到达后按实际用量结算；未指定输出上限时的 `4096` 仅用于预授权估算，不代表模型最大输出。
-- 所有对话协议和能力调用都写入 `api_calls`；它是用户调用历史、状态、usage、计费和资源关联的全调用事实源。每次真实上游执行写入 `api_call_attempts`，响应头返回 `X-Prism-Call-ID`。
-- `tasks` 只保存图片、视频等异步能力任务的资源状态和结果，不承担通用调用日志职责；任务通过 `call_id` 返回统一调用记录。
-- 所有 API 请求写入不含正文和凭据的 `api_access_logs`；控制台状态变更写入 `audit_events`；扣费、退款、充值和初始额度写入追加式 `balance_entries`。升级时会为历史非零余额写入幂等 `opening_balance` 基线。
-- 用户 API Token 仅在创建时返回一次，数据库只保留 SHA256 哈希与后四位提示；渠道和网关密钥不会由管理接口返回原值。
-- `api_call_payloads` 中的下游与上游原始 HTTP 请求/响应正文默认不保存。启用后会先脱敏、限长、按期限删除；配置独立密钥后使用 AES-256-GCM 加密。该策略不控制结构化的 Conversation 投影。
-- Playground 复用同一个 Gateway Engine，支持 Chat、Responses、Messages、多模态粘贴/拖放、能力调用、历史记录和调试信息。Playground 与三种开放对话 API 均按 `conversations -> conversation_turns -> conversation_items` 保存有序 canonical 内容，旧 `messages` 表与消息接口保留为兼容投影。
-- 图片与视频生成支持统一能力接口、同步/轮询/回调渠道及后台任务。异步提交使用确定性 Asynq Task ID；服务启动时和定时超时检查都会从 SQL 任务意图恢复缺失队列项。
-- `callback_url` 仅允许解析到公网地址的 HTTP/HTTPS URL；本机、内网、链路本地、多播等地址会在创建任务前被拒绝。
-- `/health` 检查 MySQL 与 Redis，`/metrics` 暴露 Prometheus 指标。
-
-普通 `/v1/chat/completions`、`/v1/messages` 和 `/v1/responses` 都会进入 `api_calls`，并在调用终态后投影到 Conversation。成功、失败、取消和客户端中断都会保存 canonical 输入及已产生的输出，通过 `call_id` 关联调用、最终尝试和请求日志。`store: false` 不关闭该投影，只影响 Responses 资源正文及查询；Responses 资源状态仍单独存储在 `ai_responses`，异步能力资源状态单独存储在 `tasks`。
-
-`/v1/chat/completions`、`/v1/messages` 和 `/v1/responses` 均可通过请求头 `X-Prism-Conversation-ID` 显式续接当前 Token 的 Prism 对话；Chat 还接受请求体 `conversation_id`，两处同时提供时必须一致。显式 ID 有效时，响应头返回同一 `X-Prism-Conversation-ID`；隐式匹配或新建对话时不返回该头。未提供显式 ID 时，Prism 会使用 `previous_response_id` 或唯一的完整历史前缀识别续话，歧义时创建新对话。
-
-三种对话接口的 JSON 请求体上限均为 `32 MiB`。Chat 与 Responses 的大文件可先上传到 `/v1/files`，再通过 `file_id` 引用；Messages 使用 Anthropic 原生的 URL、Base64 或上游文件引用。
-
-## 项目结构
-
-```text
-Prism/
-├── cmd/server/                    # 服务入口与依赖初始化
-├── configs/                       # 示例、Docker 与本地配置
-├── console/                       # React 管理端，dist 嵌入 Go 二进制
-├── database/migrations/           # 按时间排序的数据迁移
-├── internal/
-│   ├── api/                       # Console、Admin、V1 与回调路由
-│   ├── gateway/
-│   │   ├── canonical/             # 协议中立模型和事件
-│   │   ├── codec/                 # 三种下游协议编解码
-│   │   ├── conformance/           # 跨协议一致性校验
-│   │   ├── engine/                # 执行、重试、计费与日志
-│   │   ├── handler/               # Chat、Responses、Messages、Files
-│   │   ├── limits/                # 协议入口共享的请求限制
-│   │   ├── pipeline/              # Chat 边界编排与 Playground 复用
-│   │   ├── responses/             # Responses 生命周期
-│   │   ├── routing/               # 选路、并发和熔断
-│   │   ├── stream/                # 流式聚合（结算、日志、存会话）
-│   │   └── transport/             # 五种上游 Transport
-│   ├── model/                     # GORM 数据模型
-│   ├── service/                   # 管理、计费与异步能力业务
-│   └── worker/                    # Asynq 后台任务
-├── pkg/                           # 配置、数据库、缓存、日志、指标等组件
-├── API_REFERENCE.md               # 静态 API 参考
-├── Dockerfile
-└── docker-compose.yml
+```http
+Authorization: Bearer sk-prism-...
 ```
+
+也兼容 `x-api-key`。不存在 `/v1/channels`、`/v1/capabilities`、通用 `/v1/tasks` 或视频取消接口。
+
+完整行为见 [API_REFERENCE.md](API_REFERENCE.md)。
+
+## 统一数据模型
+
+所有新执行事实使用 `gw_*` 表：
+
+| 领域 | 主要数据 |
+|---|---|
+| 目录 | 发布版、模型、产品、SKU、Operation Contract、Transport、Route、Offering |
+| 凭据 | 渠道、凭据池、用途授权、加密凭据版本、请求/任务名额 |
+| 执行 | Call、Attempt、请求日志、加密 Payload、资源、异步执行、Outbox |
+| 计费 | 售价、成本方案、预授权、结算事件、上游成本证据与事件 |
+| 交付 | 媒体资产、结果交付、来源、状态事件、客户端回调投递与尝试 |
+| 控制面 | 目录发现、审核、部署代次、成员就绪证明、运行状态 |
+
+旧 `api_calls`、`tasks`、`ai_responses` 等表只作为迁移源或兼容数据存在，不再是新调用的执行事实源。历史清理必须通过深度审计，不能直接删除。
+
+## 运行时 Worker
+
+服务进程按数据库状态启动以下 SQL Worker：
+
+- 目录发现 Worker；
+- 异步提交、查询与恢复 Worker；
+- 后台 Responses Attempt Worker；
+- 上游回调消费 Worker；
+- 客户端回调投递 Worker；
+- 结果交付到期与恢复 Worker；
+- 能力调用恢复、敏感正文清理和媒体资产清理 Worker。
+
+Worker 使用数据库租约认领任务。未知提交结果会保留为待恢复或人工核验，不会擅自重复生成。
 
 ## 快速开始
 
-### 环境要求
+### 环境
 
-- Go 1.25.6+
-- Node.js `^20.19.0` 或 `>=22.12.0`（Vite 6 运行时要求）
-- MySQL 8+（CI 持续验证版本；现有 MySQL 5.7 实例可运行，但 5.7 已停止官方维护且不在持续验证范围）
-- Redis 7+
+- Go 1.26.6+
+- Node.js `^20.19.0` 或 `>=22.12.0`
+- Oracle MySQL 8.0.16+
+- Redis 7+，仅用于缓存和限流等运行依赖
 
-### Docker Compose（本地体验）
-
-```bash
-git clone https://github.com/mirainya/Prism.git
-cd Prism
-docker compose up -d --build
-```
-
-访问 `http://localhost:23523/`。Compose 文件包含固定的示例数据库密码、JWT 密钥，并公开 MySQL 与 Redis 端口，不应直接用于公网生产环境；生产部署前必须修改凭据、限制端口并提供独立配置。
-
-### 手动构建
+### 构建
 
 ```bash
 git clone https://github.com/mirainya/Prism.git
@@ -163,97 +102,69 @@ npm ci
 npm run build
 cd ..
 
-go build -trimpath -ldflags="-s -w" -o prism ./cmd/server
+VERSION=2.0.0
+BUILD_TIME="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+SOURCE_REVISION="$(git rev-parse HEAD)"
+go build -trimpath -ldflags="-s -w -X main.Version=${VERSION} -X main.BuildTime=${BUILD_TIME} -X github.com/mirainya/Prism/internal/gateway/adapter.BuildRevision=${SOURCE_REVISION}" -o prism ./cmd/server
 ./prism migrate up
 ./prism
 ```
 
-`console/dist` 未提交到仓库，构建后端前必须先构建前端。Windows 可运行 `build.bat` 生成 Linux AMD64 二进制。
+Windows 可运行 `build.bat` 生成 Linux AMD64 软件包。版本可用 `./prism version` 检查。
 
-数据库结构只由 `database/migrations/` 管理，服务启动时不会执行 GORM AutoMigrate。全新安装先运行 `./prism migrate up`；服务发现旧库、失败中的迁移或待执行迁移时会拒绝启动。Docker Compose 已包含一次性 `migrate` 服务，会在 Prism 启动前完成该步骤。
-
-2026-07-18 基线之前创建的实例必须先停止全部 Prism HTTP 与 Worker 进程并备份数据库，按文件名顺序执行尚未应用的旧迁移至 `20260718_120000_add_conversation_turn_context_mode.sql`，再运行 `./prism migrate adopt`。完成登记后，后续升级统一运行 `./prism migrate up`。不要滚动混跑新旧版本；历史回填需要稳定快照，旧版本也不认识新的迁移状态。
-
-迁移状态可通过 `./prism migrate status` 查看。完整规则见 [`database/migrations/README.md`](database/migrations/README.md)。
-
-当前版本没有管理员自举命令。首次部署需先注册用户，再由数据库管理员将该用户的 `users.role` 提升为 `admin`，才能配置网关。
-
-### 开发模式
+Docker 本地体验：
 
 ```bash
-# 后端：http://localhost:23523
-go run ./cmd/server
-
-# 前端：http://localhost:3001
-cd console
-npm ci
-npm run dev
+docker compose up -d --build
 ```
 
-前端开发服务器默认把 `/api` 转发到 `http://localhost:23523`；调试 `/v1` 时直接使用后端端口。
+示例 Compose 包含开发凭据并公开 MySQL、Redis 端口，不可直接用于公网生产。
 
-## API 概览
+## 数据库迁移
 
-V1 接口支持以下两种认证头：
+`database/migrations/` 是唯一生产结构来源，服务不会执行 GORM AutoMigrate。服务发现旧库、失败迁移或待执行迁移时会拒绝启动。
 
-```http
-Authorization: Bearer sk-prism-...
+```bash
+./prism migrate status
+./prism migrate up
+./prism migrate audit
+./prism migrate audit-deep
 ```
 
-```http
-x-api-key: sk-prism-...
+基线前旧库应停服、备份，应用旧迁移至 `20260718_120000_add_conversation_turn_context_mode.sql`，然后执行：
+
+```bash
+./prism migrate adopt
+./prism migrate up
 ```
 
-除三个对话入口和 Files API 外，V1 还提供：
+统一网关迁移还提供 `import-legacy`、`import-runtime`、`import-video-assets`、`import-ai-files`、`verify-crypto` 和 `cleanup-legacy`。具体顺序见 [统一网关运行与发布](docs/unified_gateway_operations.md)。
 
-- `GET /v1/models`、`GET /v1/models/:code`
-- `GET /v1/channels`、`GET /v1/capabilities`
-- `POST /v1/capabilities/:capability`
-- `POST /v1/images/generations`、`POST /v1/videos/generations`
-- `GET /v1/tasks/:task_no`、`POST /v1/tasks/:task_no/cancel`
+## 加密密钥
 
-Responses 资源接口包括：
+存在统一目录或执行数据时，生产环境必须提供四个独立的 32 字节 Base64 密钥：
 
-- `GET /v1/responses/:id`
-- `DELETE /v1/responses/:id`
-- `POST /v1/responses/:id/cancel`
-- `GET /v1/responses/:id/input_items`
+```text
+PRISM_GATEWAY_KEK_B64
+PRISM_GATEWAY_HMAC_B64
+PRISM_GATEWAY_PAYLOAD_KEK_B64
+PRISM_GATEWAY_PAYLOAD_HMAC_B64
+```
 
-完整请求示例见 [`API_REFERENCE.md`](API_REFERENCE.md)。登录控制台后可访问 `/#/api-docs` 使用在线文档与试用面板。
+前两个保护渠道凭据，后两个保护请求、结果及回调资料。升级时不得替换已有凭据 KEK，否则历史密文将无法解密。
 
-## 管理后台
+## 管理控制台
 
-- 网关渠道：管理 Gateway V2 渠道、Key、模型发现与导入。
-- 对话模型：管理 Ability、Transport 探测、公开模型元数据、分组与排序；可编辑 Ability 的对外模型名，让同一 Key 下同一上游模型以不同公开名区分（如 super / free）。
-- 能力渠道与能力配置：管理图片、视频等异步能力的渠道、账号和参数。
-- Playground：测试 Chat、Responses、Messages 和异步能力，查看历史与调试信息。
-- 用户与令牌：管理用户角色、余额、API Token、限流和充值。
-- 调用记录：查看所有协议与能力调用的 Call、上游 Attempt、usage、计费、正文保留状态和资源关联。
-- 异步任务：查看图片、视频等任务资源；列表使用 `snapshot_at` 稳定分页，并可通过 `call_id` 进入对应调用记录。
-- 审计与流水：查看 API 访问日志、控制台审计事件和用户/Token 余额流水。
-- 对话与上游日志：按轮次查看 Playground 会话、附件、`call_id` 和调用状态，以及管理员可见的上游请求详情。
-- 仪表盘与 API 文档：查看用量统计，并在登录状态下试用接口。
+控制台包括仪表盘、Playground、Token、统一网关渠道与凭据池、目录发布版、目录来源与发现、币种与费率证据、统一调用、只读视频任务、访问日志、审计事件、余额流水和对话记录。
 
-## 配置
+旧“能力渠道”“视频渠道”和独立能力配置页面不再是 v2.0.0 的配置入口。图片、视频和对话均从统一目录选路。
 
-复制 [`configs/config.example.yaml`](configs/config.example.yaml) 为 `configs/config.yaml`。重点配置包括：
+首次安装不会创建默认管理员。注册用户后，由数据库管理员将该用户的 `users.role` 设置为 `admin`。
 
-- `server.port`、`server.jwt_secret`
-- `server.reset_gateway_concurrency_on_start`：多实例共用数据库时必须设为 `false`
-- `database.*`、`redis.*`
-- `worker.*`、`http_client.*`
-- `file_storage.max_total_size_mb`
-- `rate_limit.*`
-- `observability.retain_api_call_payloads`：是否将下游与上游原始 HTTP 正文保存到 `api_call_payloads`，默认 `false`；不影响 canonical Conversation 投影或任务参数
-- `observability.api_call_payload_retention_hours`、`api_call_payload_max_bytes`、`api_call_payload_encryption_key`：正文默认保留 168 小时、最多 256 KiB，可使用独立 AES-256-GCM 密钥
-- `observability.api_call_metadata_retention_days`：Call、Attempt 与上游请求日志元数据，默认 90 天
-- `observability.resource_history_retention_days`：终态异步任务（含任务参数）与闲置 Conversation 历史，默认 90 天
-- `observability.api_access_log_retention_days`、`audit_event_retention_days`：访问日志默认 30 天，审计事件默认 180 天
-- `observability.billing_ledger_retention_days`：计费日志和余额流水，默认 365 天
+## 健康与检查
 
-数据库、Redis、Worker、HTTP Client 和监听端口都在启动时初始化，修改这些配置后需要重启服务。
-
-## 检查
+- `GET /health`：MySQL 与 Redis 健康状态
+- `GET /metrics`：Prometheus 指标
 
 ```bash
 go test ./...
@@ -266,8 +177,15 @@ npx tsc --noEmit
 npm run build
 ```
 
+## 文档
+
+- [API 参考](API_REFERENCE.md)
+- [使用教程](docs/USAGE_GUIDE.md)
+- [项目地图](docs/PROJECT_MAP.md)
+- [视频架构](docs/VIDEO_ARCHITECTURE.md)
+- [统一网关运行与发布](docs/unified_gateway_operations.md)
+- [v2.0.0 验收状态](docs/unified_gateway_acceptance.md)
+
 ## License
 
 MIT
-
-第三方项目声明见 [`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md)。

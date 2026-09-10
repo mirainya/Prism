@@ -17,6 +17,8 @@ import (
 
 var ErrV2StreamMissingTerminal = errors.New("gateway v2 responses stream ended before a terminal event")
 
+var errV2StreamDownstreamWrite = errors.New("write downstream Responses stream")
+
 // V2StreamSummary contains the terminal state collected while forwarding a
 // Gateway V2 stream. Response remains canonical so persistence and billing can
 // consume it without decoding the downstream wire format again.
@@ -103,7 +105,7 @@ func consumeV2Stream(ctx context.Context, writer io.Writer, stream v2EventSource
 			}
 			if writeErr := writeV2SSEFrame(writer, frame); writeErr != nil {
 				abortV2Stream(stream, writeErr, true)
-				return aggregator.summary(), writeErr
+				return aggregator.summary(), fmt.Errorf("%w: %w", errV2StreamDownstreamWrite, writeErr)
 			}
 			if flusher, ok := writer.(interface{ Flush() }); ok {
 				flusher.Flush()

@@ -3,7 +3,9 @@ package filestorage
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -26,7 +28,45 @@ type xfsResponse struct {
 }
 
 type UploadResult struct {
-	URL string `json:"url"`
+	ID           string `json:"id"`
+	URL          string `json:"url"`
+	RawURL       string `json:"rawUrl"`
+	Size         int64  `json:"size"`
+	Filename     string `json:"filename"`
+	Path         string `json:"path"`
+	ContentType  string `json:"contentType"`
+	Platform     string `json:"platform"`
+	ObjectID     string `json:"objectId"`
+	ObjectType   string `json:"objectType"`
+	HashInfo     string `json:"hashInfo"`
+	UploadID     string `json:"uploadId"`
+	UploadStatus int    `json:"uploadStatus"`
+}
+
+func (r UploadResult) StorageKey() string {
+	for _, candidate := range []string{
+		joinStorageIdentity(r.Platform, r.ObjectID),
+		joinStorageIdentity(r.Platform, r.ID),
+		joinStorageIdentity(r.Platform, strings.TrimLeft(r.Path, "/")+r.Filename),
+	} {
+		if candidate != "" && len(candidate) <= 512 {
+			return candidate
+		}
+	}
+	digest := sha256.Sum256([]byte(r.URL))
+	return "xfs:sha256:" + hex.EncodeToString(digest[:])
+}
+
+func joinStorageIdentity(platform, value string) string {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return ""
+	}
+	platform = strings.TrimSpace(platform)
+	if platform == "" {
+		platform = "default"
+	}
+	return "xfs:" + platform + ":" + value
 }
 
 // IsBase64Data 判断字符串是否为 base64 图片数据
@@ -118,10 +158,58 @@ func TransferReader(ctx context.Context, data io.Reader, contentType string, cap
 	return upload(ctx, data, contentType, capabilityCode)
 }
 
+// UploadReader streams an object and returns the durable storage identity and
+// locator reported by x-file-storage.
+func UploadReader(ctx context.Context, data io.Reader, contentType, capabilityCode string) (UploadResult, error) {
+	cfg := config.C.FileStorage
+	storagePath := fmt.Sprintf("%s%s/%s/", cfg.UploadPath, capabilityCode, time.Now().Format("2006/01/02"))
+	return UploadReaderAtPath(ctx, data, contentType, storagePath)
+}
+
+// UploadReaderAtPath is used when the caller has already allocated a globally
+// unique logical object path before starting the external write.
+func UploadReaderAtPath(ctx context.Context, data io.Reader, contentType, storagePath string) (UploadResult, error) {
+	return uploadReaderAtPath(ctx, data, contentType, storagePath, uuid.New().String()+extensionForContentType(contentType))
+}
+
+// UploadReaderAtPathWithFilename writes to a caller-allocated object name.
+// Retrying the same path and filename lets recovery reconcile an upload whose
+// database acknowledgement failed.
+func UploadReaderAtPathWithFilename(ctx context.Context, data io.Reader, contentType, storagePath, filename string) (UploadResult, error) {
+	filename = strings.TrimSpace(filename)
+	if filename == "" || len(filename) > 255 || filename == "." || filename == ".." || strings.ContainsAny(filename, `/\\`) || strings.ContainsAny(filename, "\r\n\x00") {
+		return UploadResult{}, fmt.Errorf("invalid storage filename")
+	}
+	return uploadReaderAtPath(ctx, data, contentType, storagePath, filename)
+}
+
+func uploadReaderAtPath(ctx context.Context, data io.Reader, contentType, storagePath, filename string) (UploadResult, error) {
+	cfg := config.C.FileStorage
+	if cfg.BaseURL == "" || cfg.APIKey == "" {
+		return UploadResult{}, fmt.Errorf("file storage not configured")
+	}
+	if data == nil {
+		return UploadResult{}, fmt.Errorf("file data is empty")
+	}
+	storagePath = strings.TrimLeft(strings.TrimSpace(storagePath), "/")
+	if storagePath == "" || strings.Contains(storagePath, "..") {
+		return UploadResult{}, fmt.Errorf("invalid storage path")
+	}
+	if !strings.HasSuffix(storagePath, "/") {
+		storagePath += "/"
+	}
+	return uploadResult(ctx, data, contentType, storagePath, filename)
+}
+
 func upload(ctx context.Context, data io.Reader, contentType string, capabilityCode string) (string, error) {
 	cfg := config.C.FileStorage
-
 	storagePath := fmt.Sprintf("%s%s/%s/", cfg.UploadPath, capabilityCode, time.Now().Format("2006/01/02"))
+	result, err := uploadResult(ctx, data, contentType, storagePath, uuid.New().String()+extensionForContentType(contentType))
+	return result.URL, err
+}
+
+func extensionForContentType(contentType string) string {
+	contentType = strings.ToLower(strings.TrimSpace(strings.Split(contentType, ";")[0]))
 	ext := ".png"
 	if strings.Contains(contentType, "jpeg") || strings.Contains(contentType, "jpg") {
 		ext = ".jpg"
@@ -141,8 +229,11 @@ func upload(ctx context.Context, data io.Reader, contentType string, capabilityC
 			ext = ".aac"
 		}
 	}
-	filename := uuid.New().String() + ext
+	return ext
+}
 
+func uploadResult(ctx context.Context, data io.Reader, contentType, storagePath, filename string) (UploadResult, error) {
+	cfg := config.C.FileStorage
 	pipeReader, pipeWriter := io.Pipe()
 	writer := multipart.NewWriter(pipeWriter)
 	endpoint := strings.TrimRight(cfg.BaseURL, "/") + "/api/v1/upload"
@@ -150,7 +241,7 @@ func upload(ctx context.Context, data io.Reader, contentType string, capabilityC
 	if err != nil {
 		_ = pipeReader.Close()
 		_ = pipeWriter.Close()
-		return "", fmt.Errorf("create request: %w", err)
+		return UploadResult{}, fmt.Errorf("create request: %w", err)
 	}
 	req.Header.Set("Content-Type", writer.FormDataContentType())
 	req.Header.Set("X-Api-Key", cfg.APIKey)
@@ -159,29 +250,32 @@ func upload(ctx context.Context, data io.Reader, contentType string, capabilityC
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		_ = pipeReader.CloseWithError(err)
-		return "", fmt.Errorf("upload request: %w", err)
+		return UploadResult{}, fmt.Errorf("upload request: %w", err)
 	}
 	defer resp.Body.Close()
 
 	body, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
 	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
-		return "", fmt.Errorf("xfilestorage upload returned HTTP %d", resp.StatusCode)
+		return UploadResult{}, fmt.Errorf("xfilestorage upload returned HTTP %d", resp.StatusCode)
 	}
 	var xfsResp xfsResponse
 	if err := json.Unmarshal(body, &xfsResp); err != nil {
-		return "", fmt.Errorf("parse response: %w", err)
+		return UploadResult{}, fmt.Errorf("parse response: %w", err)
 	}
 	if xfsResp.Code != 200 {
-		return "", fmt.Errorf("xfilestorage error: %s", xfsResp.Message)
+		return UploadResult{}, fmt.Errorf("xfilestorage error: %s", xfsResp.Message)
 	}
 
 	var result UploadResult
 	if err := json.Unmarshal(xfsResp.Data, &result); err != nil {
-		return "", fmt.Errorf("parse upload result: %w", err)
+		return UploadResult{}, fmt.Errorf("parse upload result: %w", err)
 	}
 
 	result.URL = normalizePublicURL(result.URL)
-	return result.URL, nil
+	if result.URL == "" {
+		return UploadResult{}, fmt.Errorf("xfilestorage returned an empty URL")
+	}
+	return result, nil
 }
 
 func writeMultipartUpload(pipeWriter *io.PipeWriter, writer *multipart.Writer, data io.Reader, filename, storagePath string) {
@@ -242,6 +336,90 @@ func DeleteURL(ctx context.Context, rawURL string) error {
 	}
 	if xfsResp.Code != http.StatusOK && xfsResp.Code != http.StatusNotFound {
 		return fmt.Errorf("xfilestorage error: %s", xfsResp.Message)
+	}
+	return nil
+}
+
+// OpenDownload opens a private, authenticated stream through x-file-storage.
+// The supplied locator is only sent as a query value to the configured storage
+// service, so callers never connect directly to a database-controlled host.
+func OpenDownload(ctx context.Context, rawURL string) (*http.Response, error) {
+	cfg := config.C.FileStorage
+	if cfg.BaseURL == "" || cfg.APIKey == "" {
+		return nil, fmt.Errorf("file storage not configured")
+	}
+	rawURL = strings.TrimSpace(rawURL)
+	if rawURL == "" {
+		return nil, fmt.Errorf("file storage locator is empty")
+	}
+	endpoint := strings.TrimRight(cfg.BaseURL, "/") + "/api/v1/file/download?url=" + url.QueryEscape(rawURL)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
+	if err != nil {
+		return nil, fmt.Errorf("create download request: %w", err)
+	}
+	req.Header.Set("X-Api-Key", cfg.APIKey)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("download request: %w", err)
+	}
+	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
+		_ = resp.Body.Close()
+		return nil, fmt.Errorf("xfilestorage download returned HTTP %d", resp.StatusCode)
+	}
+	return resp, nil
+}
+
+func ReadURL(ctx context.Context, rawURL string, maxBytes int64) ([]byte, error) {
+	if maxBytes <= 0 {
+		return nil, fmt.Errorf("download size limit must be positive")
+	}
+	resp, err := OpenDownload(ctx, rawURL)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	data, err := io.ReadAll(io.LimitReader(resp.Body, maxBytes+1))
+	if err != nil {
+		return nil, fmt.Errorf("read download: %w", err)
+	}
+	if int64(len(data)) > maxBytes {
+		return nil, fmt.Errorf("download exceeds %d bytes", maxBytes)
+	}
+	return data, nil
+}
+
+// VerifyURL reads the stored object through the authenticated storage proxy
+// and verifies the immutable length and SHA-256 before callers publish it.
+func VerifyURL(ctx context.Context, rawURL string, expectedBytes int64, expectedSHA256 string) error {
+	if expectedBytes <= 0 {
+		return fmt.Errorf("expected object size must be positive")
+	}
+	expectedSHA256 = strings.ToLower(strings.TrimSpace(expectedSHA256))
+	if len(expectedSHA256) != sha256.Size*2 {
+		return fmt.Errorf("expected object SHA-256 is invalid")
+	}
+	if _, err := hex.DecodeString(expectedSHA256); err != nil {
+		return fmt.Errorf("expected object SHA-256 is invalid")
+	}
+	response, err := OpenDownload(ctx, rawURL)
+	if err != nil {
+		return err
+	}
+	defer response.Body.Close()
+	if response.ContentLength >= 0 && response.ContentLength != expectedBytes {
+		return fmt.Errorf("stored object length is %d, expected %d", response.ContentLength, expectedBytes)
+	}
+	hash := sha256.New()
+	count, err := io.Copy(hash, io.LimitReader(response.Body, expectedBytes+1))
+	if err != nil {
+		return fmt.Errorf("read stored object: %w", err)
+	}
+	if count != expectedBytes {
+		return fmt.Errorf("stored object length is %d, expected %d", count, expectedBytes)
+	}
+	actual := hex.EncodeToString(hash.Sum(nil))
+	if actual != expectedSHA256 {
+		return fmt.Errorf("stored object SHA-256 does not match")
 	}
 	return nil
 }

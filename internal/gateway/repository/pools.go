@@ -15,7 +15,7 @@ type PoolInput struct {
 }
 
 func (s *Store) CreateCredentialPool(ctx context.Context, tx *sql.Tx, in PoolInput) (uint64, error) {
-	if tx == nil || in.ChannelID == 0 || in.PoolCode == "" || len(in.PoolCode) > 128 || in.DisplayName == "" || len(in.DisplayName) > 128 {
+	if tx == nil || in.ChannelID == 0 || !channelCodePattern.MatchString(in.PoolCode) || !validDisplayName(in.DisplayName) || !validPoolLimit(in.RequestLimit) || !validPoolLimit(in.TaskLimit) {
 		return 0, ErrInvalidInput
 	}
 	now := nowUTC()

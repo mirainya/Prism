@@ -168,6 +168,38 @@ func TestEventAccumulatorPreservesTruncatedAnthropicToolArguments(t *testing.T) 
 	}
 }
 
+func TestEventAccumulatorKeepsCompleteDeltaOverPartialSnapshot(t *testing.T) {
+	acc := NewEventAccumulator()
+	tool := Item{ID: "tool_1", Type: "function_call", CallID: "tool_1", Name: "weather"}
+	acc.Observe(Event{Type: EventOutputItemAdded, ToolIndex: 0, Item: &tool})
+	acc.Observe(Event{Type: EventToolArgumentsDelta, ToolIndex: 0, Item: &tool, Delta: `{"city":"Tokyo","unit":"C"}`})
+	// A stop frame that carries only a partial snapshot must not clobber the
+	// authoritative delta accumulation.
+	stop := Item{ID: "tool_1", Type: "function_call", CallID: "tool_1", Name: "weather", Arguments: json.RawMessage(`{"city":"Tokyo"}`)}
+	acc.Observe(Event{Type: EventOutputItemDone, ToolIndex: 0, Item: &stop})
+
+	output := acc.Snapshot().Output
+	if len(output) != 1 || string(output[0].Arguments) != `{"city":"Tokyo","unit":"C"}` {
+		t.Fatalf("delta-authoritative arguments were overwritten by a partial snapshot: %#v", output)
+	}
+}
+
+func TestEventAccumulatorRecoversInvalidDeltaWithValidSnapshot(t *testing.T) {
+	acc := NewEventAccumulator()
+	tool := Item{ID: "tool_1", Type: "function_call", CallID: "tool_1", Name: "weather"}
+	acc.Observe(Event{Type: EventOutputItemAdded, ToolIndex: 0, Item: &tool})
+	// Truncated delta (upstream cut off mid-string).
+	acc.Observe(Event{Type: EventToolArgumentsDelta, ToolIndex: 0, Item: &tool, Delta: `{"city":"Tok`})
+	// Final Item.Arguments carries the full, valid JSON — accept it as recovery.
+	stop := Item{ID: "tool_1", Type: "function_call", CallID: "tool_1", Name: "weather", Arguments: json.RawMessage(`{"city":"Tokyo"}`)}
+	acc.Observe(Event{Type: EventOutputItemDone, ToolIndex: 0, Item: &stop})
+
+	output := acc.Snapshot().Output
+	if len(output) != 1 || string(output[0].Arguments) != `{"city":"Tokyo"}` {
+		t.Fatalf("invalid delta was not recovered by final snapshot: %#v", output)
+	}
+}
+
 func TestEventAccumulatorUsesCompleteToolArgumentsFromDoneEvent(t *testing.T) {
 	acc := NewEventAccumulator()
 	tool := Item{ID: "tool_1", Type: "function_call", CallID: "tool_1", Name: "weather", Arguments: json.RawMessage(`{}`)}

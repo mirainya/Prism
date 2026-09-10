@@ -10,7 +10,6 @@ import (
 	transportgoogle "github.com/mirainya/Prism/internal/gateway/transport/google"
 	transportopenai "github.com/mirainya/Prism/internal/gateway/transport/openai"
 	transportvolcengine "github.com/mirainya/Prism/internal/gateway/transport/volcengine"
-	"github.com/mirainya/Prism/internal/service"
 )
 
 // NewV2Engine is the sole composition point for Gateway V2 transports.
@@ -31,10 +30,5 @@ func NewV2Engine() (*engine.Engine, error) {
 		}
 	}
 	registry.Freeze()
-	return engine.New(
-		routing.NewRouter(),
-		registry,
-		service.NewBillingService(),
-		service.NewAPICallService(),
-	)
+	return engine.New(routing.NewRouter(), registry)
 }

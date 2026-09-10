@@ -58,10 +58,11 @@ func Login(c *gin.Context) {
 	resp.Success(c, gin.H{
 		"token": loginResp.Token,
 		"user": gin.H{
-			"id":       loginResp.User.ID,
-			"username": loginResp.User.Username,
-			"role":     loginResp.User.Role,
-			"balance":  loginResp.User.Balance,
+			"id":         loginResp.User.ID,
+			"username":   loginResp.User.Username,
+			"role":       loginResp.User.Role,
+			"balance":    loginResp.Funds.Available,
+			"total_used": loginResp.Funds.Used,
 		},
 	})
 }

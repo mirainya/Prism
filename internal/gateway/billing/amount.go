@@ -18,11 +18,14 @@ var (
 
 var canonicalDecimal = regexp.MustCompile(`^-?(0|[1-9][0-9]*)(\.[0-9]+)?$`)
 
+var maxSQLDecimal = decimal.RequireFromString("99999999999999999999.999999999999999999")
+var oneDecimal = decimal.NewFromInt(1)
+
 // Amount is an exact decimal value accepted by the billing boundary.
 type Amount struct{ value decimal.Decimal }
 
 func ParseAmount(input string, maxScale int32, nonNegative bool) (Amount, error) {
-	if input == "" || maxScale < 0 || maxScale > 18 || !canonicalDecimal.MatchString(input) {
+	if input == "" || len(input) > 64 || maxScale < 0 || maxScale > 18 || !canonicalDecimal.MatchString(input) {
 		return Amount{}, ErrInvalidAmount
 	}
 	value, err := decimal.NewFromString(input)
@@ -66,6 +69,24 @@ func (a Amount) Mul(other Amount) Amount { return Amount{value: a.value.Mul(othe
 
 // RoundHalfEven applies the documented default rounding mode at a fixed scale.
 func (a Amount) RoundHalfEven(scale int32) Amount { return Amount{value: a.value.RoundBank(scale)} }
+
+func (a Amount) Round(scale int32, mode string) (Amount, error) {
+	if scale < 0 || scale > 18 {
+		return Amount{}, ErrInvalidAmount
+	}
+	switch mode {
+	case "half_even":
+		return a.RoundHalfEven(scale), nil
+	case "half_up":
+		return Amount{value: a.value.Round(scale)}, nil
+	case "floor":
+		return Amount{value: a.value.RoundFloor(scale)}, nil
+	case "ceiling":
+		return Amount{value: a.value.RoundCeil(scale)}, nil
+	default:
+		return Amount{}, ErrInvalidRate
+	}
+}
 
 func (a Amount) EnsureRange(max Amount) error {
 	if a.value.IsNegative() || a.value.GreaterThan(max.value) {

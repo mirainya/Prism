@@ -7,7 +7,9 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/mirainya/Prism/internal/api/resp"
+	"github.com/mirainya/Prism/internal/gateway/adapter"
 	"github.com/mirainya/Prism/internal/gateway/repository"
+	gatewayruntime "github.com/mirainya/Prism/internal/gateway/runtime"
 	"github.com/mirainya/Prism/internal/model"
 	pkgErrors "github.com/mirainya/Prism/pkg/errors"
 )
@@ -16,23 +18,34 @@ import (
 // It is intentionally read-only: activating a catalog release remains a
 // separate audited control-plane operation.
 func UnifiedGatewayOverview(c *gin.Context) {
-	db, err := model.DB().DB()
+	orm := model.DB()
+	db, err := orm.DB()
 	if err != nil {
 		resp.InternalError(c, pkgErrors.ErrInternalError)
 		return
 	}
 	ctx := c.Request.Context()
+	var queryErr error
 	count := func(table string) int64 {
 		var n int64
 		if err := db.QueryRowContext(ctx, "SELECT COUNT(*) FROM `"+table+"`").Scan(&n); err != nil {
+			queryErr = err
 			return 0
 		}
 		return n
 	}
+	legacyCount := func(table string) int64 {
+		if !orm.Migrator().HasTable(table) {
+			return 0
+		}
+		return count(table)
+	}
 
-	var activeRelease sql.NullInt64
+	var activeRelease, activeDeployment sql.NullInt64
 	var releaseVersion int64
-	_ = db.QueryRowContext(ctx, "SELECT active_release_id,state_version FROM gw_catalog_runtime_state WHERE id=1").Scan(&activeRelease, &releaseVersion)
+	if err := db.QueryRowContext(ctx, "SELECT active_release_id,active_deployment_generation_id,state_version FROM gw_catalog_runtime_state WHERE id=1").Scan(&activeRelease, &activeDeployment, &releaseVersion); err != nil {
+		queryErr = err
+	}
 	var activeReleaseValue any
 	if activeRelease.Valid {
 		activeReleaseValue = activeRelease.Int64
@@ -40,10 +53,19 @@ func UnifiedGatewayOverview(c *gin.Context) {
 
 	var deploymentStatus string
 	var deploymentID int64
-	_ = db.QueryRowContext(ctx, "SELECT id,status FROM gw_deployment_generations ORDER BY id DESC LIMIT 1").Scan(&deploymentID, &deploymentStatus)
+	if activeDeployment.Valid {
+		deploymentID = activeDeployment.Int64
+		if err := db.QueryRowContext(ctx, "SELECT status FROM gw_deployment_generations WHERE id=?", deploymentID).Scan(&deploymentStatus); err != nil && err != sql.ErrNoRows {
+			queryErr = err
+		}
+	}
+	var latestGenerationNo int64
+	if err := db.QueryRowContext(ctx, "SELECT COALESCE(MAX(generation_no),0) FROM gw_deployment_generations").Scan(&latestGenerationNo); err != nil {
+		queryErr = err
+	}
 
-	legacyChannels := count("gw_channels")
-	legacyAbilities := count("gw_abilities")
+	legacyChannels := legacyCount("gw_channels")
+	legacyAbilities := legacyCount("gw_abilities")
 	targetChannels := count("gateway_channels")
 	targetModels := count("gw_models")
 	targetCredentials := count("gw_credentials")
@@ -54,23 +76,63 @@ func UnifiedGatewayOverview(c *gin.Context) {
 	sellRates := count("gw_sell_rates")
 	costRates := count("gw_cost_rates")
 	currencies := count("billing_currency_definitions")
+	if queryErr != nil {
+		resp.InternalError(c, pkgErrors.ErrInternalError)
+		return
+	}
+	blockers := make([]string, 0)
+	for _, check := range []struct {
+		blocked bool
+		code    string
+	}{
+		{targetChannels == 0, "channels_missing"},
+		{targetModels == 0, "models_missing"},
+		{targetCredentials == 0, "credentials_missing"},
+		{targetReleases == 0, "catalog_missing"},
+		{targetOfferings == 0 || targetRoutes == 0, "routes_missing"},
+		{sellRates == 0, "sell_rates_missing"},
+		{costRates == 0, "cost_rates_missing"},
+		{currencies == 0, "currency_missing"},
+		{!activeRelease.Valid, "catalog_inactive"},
+		{deploymentID == 0, "deployment_inactive"},
+		{legacyChannels > 0 || legacyAbilities > 0, "legacy_data_present"},
+	} {
+		if check.blocked {
+			blockers = append(blockers, check.code)
+		}
+	}
+	identity, identityErr := gatewayruntime.CurrentProcessIdentity()
+	runtimeReady := false
+	if activeRelease.Valid && activeRelease.Int64 > 0 && deploymentID > 0 {
+		runtimeReady = identityErr == nil && gatewayruntime.CheckReadiness(ctx, db, uint64(deploymentID), uint64(activeRelease.Int64)) == nil
+		if !runtimeReady {
+			blockers = append(blockers, "runtime_not_ready")
+		}
+	}
 
 	state := "target_empty"
-	if targetChannels > 0 && targetModels > 0 && targetReleases > 0 && activeRelease.Valid {
+	if runtimeReady && len(blockers) == 0 {
 		state = "target_configured"
-	} else if legacyChannels > 0 || legacyAbilities > 0 {
-		state = "legacy_runtime"
+	} else if targetChannels > 0 || targetReleases > 0 || legacyChannels > 0 || legacyAbilities > 0 {
+		state = "migration_pending"
 	}
-	readyForCutover := legacyChannels == 0 && legacyAbilities == 0 && targetChannels > 0 && targetModels > 0 && targetCredentials > 0 && targetReleases > 0 && targetOfferings > 0 && targetRoutes > 0 && sellRates > 0 && costRates > 0 && currencies > 0 && activeRelease.Valid && deploymentStatus == "active"
 
 	resp.Success(c, gin.H{
-		"state":             state,
-		"ready_for_cutover": readyForCutover,
+		"state":               state,
+		"ready_for_cutover":   runtimeReady && len(blockers) == 0,
+		"runtime_ready":       runtimeReady,
+		"management_revision": 4,
+		"blockers":            blockers,
 		"runtime": gin.H{
 			"active_release_id":     activeReleaseValue,
 			"release_state_version": releaseVersion,
 			"deployment_id":         deploymentID,
 			"deployment_status":     deploymentStatus,
+			"latest_generation_no":  latestGenerationNo,
+		},
+		"process": gin.H{
+			"instance_id": identity.InstanceID, "role": identity.Role,
+			"adapter_digest": identity.AdapterDigest, "semantic_digest": adapter.SemanticDigest(),
 		},
 		"target": gin.H{
 			"channels":         targetChannels,
@@ -85,9 +147,9 @@ func UnifiedGatewayOverview(c *gin.Context) {
 			"currencies":       currencies,
 		},
 		"legacy": gin.H{
-			"channels":       legacyChannels,
-			"abilities":      legacyAbilities,
-			"runtime_active": legacyChannels > 0 || legacyAbilities > 0,
+			"channels":     legacyChannels,
+			"abilities":    legacyAbilities,
+			"data_present": legacyChannels > 0 || legacyAbilities > 0,
 		},
 	})
 }
@@ -130,6 +192,10 @@ func unifiedGatewayPagination(c *gin.Context) (int, int, bool) {
 			return 0, 0, false
 		}
 	}
+	if page-1 > int(^uint(0)>>1)/size {
+		resp.BadRequest(c, pkgErrors.WithMessage(pkgErrors.ErrInvalidParams, "page offset is too large"))
+		return 0, 0, false
+	}
 	return page, size, true
 }
 
@@ -151,7 +217,7 @@ func UnifiedGatewayCatalog(c *gin.Context) {
 		resp.InternalError(c, pkgErrors.ErrInternalError)
 		return
 	}
-	rows, err := db.QueryContext(ctx, `SELECT id,release_no,status,semantic_version,content_hash,semantic_digest,published_at,created_at FROM gw_catalog_releases ORDER BY id DESC LIMIT ? OFFSET ?`, size, (page-1)*size)
+	rows, err := db.QueryContext(ctx, `SELECT id,release_no,status,config_version,semantic_version,content_hash,semantic_digest,published_at,created_at,updated_at FROM gw_catalog_releases ORDER BY id DESC LIMIT ? OFFSET ?`, size, (page-1)*size)
 	if err != nil {
 		resp.InternalError(c, pkgErrors.ErrInternalError)
 		return
@@ -159,14 +225,14 @@ func UnifiedGatewayCatalog(c *gin.Context) {
 	defer rows.Close()
 	items := make([]gin.H, 0, size)
 	for rows.Next() {
-		var id, releaseNo int64
+		var id, releaseNo, configVersion int64
 		var status, semanticVersion, contentHash, semanticDigest string
-		var publishedAt, createdAt sql.NullTime
-		if err := rows.Scan(&id, &releaseNo, &status, &semanticVersion, &contentHash, &semanticDigest, &publishedAt, &createdAt); err != nil {
+		var publishedAt, createdAt, updatedAt sql.NullTime
+		if err := rows.Scan(&id, &releaseNo, &status, &configVersion, &semanticVersion, &contentHash, &semanticDigest, &publishedAt, &createdAt, &updatedAt); err != nil {
 			resp.InternalError(c, pkgErrors.ErrInternalError)
 			return
 		}
-		items = append(items, gin.H{"id": id, "release_no": releaseNo, "status": status, "semantic_version": semanticVersion, "content_hash": contentHash, "semantic_digest": semanticDigest, "published_at": nullableTime(publishedAt), "created_at": nullableTime(createdAt)})
+		items = append(items, gin.H{"id": id, "release_no": releaseNo, "status": status, "config_version": configVersion, "semantic_version": semanticVersion, "content_hash": contentHash, "semantic_digest": semanticDigest, "published_at": nullableTime(publishedAt), "created_at": nullableTime(createdAt), "updated_at": nullableTime(updatedAt)})
 	}
 	if err := rows.Err(); err != nil {
 		resp.InternalError(c, pkgErrors.ErrInternalError)
@@ -182,6 +248,17 @@ func UnifiedGatewayCredentials(c *gin.Context) {
 	if !ok {
 		return
 	}
+	where := ""
+	args := make([]any, 0, 3)
+	if raw := c.Query("pool_id"); raw != "" {
+		poolID, err := strconv.ParseUint(raw, 10, 64)
+		if err != nil || poolID == 0 {
+			unifiedChannelError(c, repository.ErrInvalidInput)
+			return
+		}
+		where = " WHERE c.credential_pool_id=?"
+		args = append(args, poolID)
+	}
 	db, err := model.DB().DB()
 	if err != nil {
 		resp.InternalError(c, pkgErrors.ErrInternalError)
@@ -189,11 +266,11 @@ func UnifiedGatewayCredentials(c *gin.Context) {
 	}
 	ctx := c.Request.Context()
 	var total int64
-	if err := db.QueryRowContext(ctx, "SELECT COUNT(*) FROM gw_credentials").Scan(&total); err != nil {
+	if err := db.QueryRowContext(ctx, "SELECT COUNT(*) FROM gw_credentials c"+where, args...).Scan(&total); err != nil {
 		resp.InternalError(c, pkgErrors.ErrInternalError)
 		return
 	}
-	rows, err := db.QueryContext(ctx, `SELECT c.id,c.channel_id,c.credential_pool_id,c.credential_code,c.status,c.config_version,c.request_limit,c.task_limit,c.weight,c.current_version_id,p.pool_code,p.display_name FROM gw_credentials c LEFT JOIN gw_credential_pools p ON p.id=c.credential_pool_id ORDER BY c.id DESC LIMIT ? OFFSET ?`, size, (page-1)*size)
+	rows, err := db.QueryContext(ctx, `SELECT c.id,c.channel_id,c.credential_pool_id,c.credential_code,c.status,c.config_version,c.request_limit,c.task_limit,c.weight,c.current_version_id,p.pool_code,p.display_name FROM gw_credentials c LEFT JOIN gw_credential_pools p ON p.id=c.credential_pool_id`+where+` ORDER BY c.id DESC LIMIT ? OFFSET ?`, append(args, size, (page-1)*size)...)
 	if err != nil {
 		resp.InternalError(c, pkgErrors.ErrInternalError)
 		return
@@ -215,6 +292,14 @@ func UnifiedGatewayCredentials(c *gin.Context) {
 	}
 	if err := rows.Err(); err != nil {
 		resp.InternalError(c, pkgErrors.ErrInternalError)
+		return
+	}
+	if err := rows.Close(); err != nil {
+		unifiedChannelError(c, err)
+		return
+	}
+	if err := appendUnifiedCredentialPurposes(ctx, db, items); err != nil {
+		unifiedChannelError(c, err)
 		return
 	}
 	resp.Success(c, unifiedGatewayPage{Items: items, Page: page, PageSize: size, Total: total})
@@ -317,7 +402,7 @@ func UnifiedGatewayCallDetail(c *gin.Context) {
 		resp.InternalError(c, pkgErrors.ErrInternalError)
 		return
 	}
-	resp.Success(c, gin.H{"call": call, "attempts": unifiedGatewayPage{Items: attempts, Page: page, PageSize: size, Total: total}})
+	resp.Success(c, gin.H{"call": call, "attempts": unifiedGatewayPage{Items: attempts, Page: page, PageSize: size, Total: total}, "request_logs_available": true})
 }
 
 func UnifiedGatewayPublishCatalog(c *gin.Context) {

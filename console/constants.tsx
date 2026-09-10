@@ -1,26 +1,19 @@
 import { ReactElement } from 'react';
 import {
     LayoutDashboard,
-    Layers,
     Layers3,
     Users,
     Key,
     FileText,
-    Zap,
     Book,
     Activity,
     MessageSquare,
     Lock,
     Play,
-    Bot,
-    Server,
     ScrollText,
-    Film,
     Video,
     Gauge,
     Network,
-    Puzzle,
-    Clapperboard,
     Sparkles,
     ClipboardList,
 } from 'lucide-react';
@@ -57,28 +50,7 @@ export const ROUTE_GROUPS: RouteGroup[] = [
     icon: <Network size={18} />,
     roles: ['admin'],
     children: [
-      { path: '/gateway-channels', name: '网关渠道', icon: <Server size={20} />, roles: ['admin'] },
       { path: '/unified-gateway', name: '统一网关', icon: <Layers3 size={20} />, roles: ['admin'] },
-      { path: '/chat-models', name: '对话模型', icon: <Bot size={20} />, roles: ['admin'] },
-    ],
-  },
-  {
-    key: 'capability',
-    label: '能力',
-    icon: <Puzzle size={18} />,
-    roles: ['admin'],
-    children: [
-      { path: '/channels', name: '能力渠道', icon: <Layers size={20} />, roles: ['admin'] },
-      { path: '/capabilities', name: '能力配置', icon: <Zap size={20} />, roles: ['admin'] },
-    ],
-  },
-  {
-    key: 'video',
-    label: '视频',
-    icon: <Clapperboard size={18} />,
-    roles: ['admin'],
-    children: [
-      { path: '/video-channels', name: '视频渠道', icon: <Film size={20} />, roles: ['admin'] },
     ],
   },
   {

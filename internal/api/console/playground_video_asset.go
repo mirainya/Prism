@@ -39,6 +39,7 @@ func PlaygroundCreateVideoAsset(c *gin.Context) {
 	defer opened.Close()
 
 	request := &video.CreateAssetRequest{
+		UserID:      token.UserID,
 		TokenID:     token.ID,
 		Kind:        c.PostForm("kind"),
 		ContentType: file.Header.Get("Content-Type"),
@@ -54,7 +55,7 @@ func PlaygroundCreateVideoAsset(c *gin.Context) {
 		request.DurationSeconds = &duration
 	}
 
-	asset, err := video.NewAssetService(model.DB()).Create(c.Request.Context(), request)
+	asset, err := video.NewUnifiedAssetService(model.DB()).Create(c.Request.Context(), request)
 	if err != nil {
 		writePlaygroundVideoAssetError(c, err)
 		return
@@ -65,10 +66,12 @@ func PlaygroundCreateVideoAsset(c *gin.Context) {
 func writePlaygroundVideoAssetError(c *gin.Context, err error) {
 	switch {
 	case stderrors.Is(err, video.ErrFileTooLarge):
-		resp.ErrorMsg(c, http.StatusRequestEntityTooLarge, 413, err.Error())
+		resp.ErrorMsg(c, http.StatusRequestEntityTooLarge, 413, "video asset is too large")
 	case stderrors.Is(err, video.ErrInvalidAsset), stderrors.Is(err, video.ErrAssetNotReady):
-		resp.BadRequest(c, perrors.WithMessage(perrors.ErrInvalidParams, err.Error()))
+		resp.BadRequest(c, perrors.WithMessage(perrors.ErrInvalidParams, "invalid video asset"))
+	case stderrors.Is(err, video.ErrAssetInUse):
+		resp.ErrorMsg(c, http.StatusConflict, 409, "video asset is still in use")
 	default:
-		resp.ErrorMsg(c, http.StatusInternalServerError, 500, err.Error())
+		resp.ErrorMsg(c, http.StatusInternalServerError, 500, "video asset operation failed")
 	}
 }

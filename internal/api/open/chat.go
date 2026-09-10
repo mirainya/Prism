@@ -1,94 +1,44 @@
 package open
 
 import (
-	"encoding/json"
 	"net/http"
 
 	"github.com/gin-gonic/gin"
 	"github.com/mirainya/Prism/internal/api/resp"
-	"github.com/mirainya/Prism/internal/model"
 	"github.com/mirainya/Prism/internal/service"
 )
 
 // GetChatModelDetail GET /v1/models/:code
-// 与 chat 同源:从 gw 可路由模型(gw_abilities+gw_model_meta)查,不可路由则 404。
+// Model metadata comes from the executable routes in the active catalog.
 func GetChatModelDetail(c *gin.Context) {
 	code := c.Param("code")
-	svc := service.NewGatewayAdminService()
-	rows, err := svc.ListModels()
+	rows, err := service.NewQueryService().ListAvailableCapabilities(c.Request.Context(), "", "chat")
 	if err != nil {
-		resp.ErrorMsg(c, http.StatusInternalServerError, 500, err.Error())
-		return
-	}
-	transports, err := svc.ListModelTransports()
-	if err != nil {
-		resp.ErrorMsg(c, http.StatusInternalServerError, 500, err.Error())
+		resp.ErrorMsg(c, http.StatusServiceUnavailable, 503, "model catalog is unavailable")
 		return
 	}
 	for _, m := range rows {
-		if m.ModelName != code || m.KeyAvailable <= 0 {
+		if m.ID != code {
 			continue
 		}
-		item := gin.H{
-			"id":       m.ModelName,
-			"object":   "model",
-			"owned_by": "prism",
-		}
-		addModelProtocolSupport(item, transports[m.ModelName])
-		if m.DisplayName != "" {
-			item["name"] = m.DisplayName
-		}
-		if m.MaxTokens > 0 {
-			item["max_tokens"] = m.MaxTokens
-		}
-		if len(m.Features) > 0 {
-			var features []string
-			if json.Unmarshal(m.Features, &features) == nil && len(features) > 0 {
-				item["features"] = features
-			}
-		}
-		c.JSON(http.StatusOK, item)
+		c.JSON(http.StatusOK, publicChatModel(m))
 		return
 	}
 	resp.ErrorMsg(c, http.StatusNotFound, 404, "model not found")
 }
 
 // ListChatModelsPublic GET /v1/models
-// 与 chat 同源:只列 gw 可路由(key_available>0)模型,避免客户端选到 chat 会 404 的模型。
+// Only models with an executable chat operation in the active catalog appear.
 func ListChatModelsPublic(c *gin.Context) {
-	svc := service.NewGatewayAdminService()
-	rows, err := svc.ListModels()
+	rows, err := service.NewQueryService().ListAvailableCapabilities(c.Request.Context(), "", "chat")
 	if err != nil {
-		resp.ErrorMsg(c, http.StatusInternalServerError, 500, err.Error())
-		return
-	}
-	transports, err := svc.ListModelTransports()
-	if err != nil {
-		resp.ErrorMsg(c, http.StatusInternalServerError, 500, err.Error())
+		resp.ErrorMsg(c, http.StatusServiceUnavailable, 503, "model catalog is unavailable")
 		return
 	}
 
 	data := make([]gin.H, 0, len(rows))
 	for _, m := range rows {
-		if m.KeyAvailable <= 0 {
-			continue
-		}
-		item := gin.H{
-			"id":       m.ModelName,
-			"object":   "model",
-			"owned_by": "prism",
-		}
-		addModelProtocolSupport(item, transports[m.ModelName])
-		if m.MaxTokens > 0 {
-			item["max_tokens"] = m.MaxTokens
-		}
-		if len(m.Features) > 0 {
-			var features []string
-			if json.Unmarshal(m.Features, &features) == nil && len(features) > 0 {
-				item["features"] = features
-			}
-		}
-		data = append(data, item)
+		data = append(data, publicChatModel(m))
 	}
 
 	c.JSON(http.StatusOK, gin.H{
@@ -97,11 +47,37 @@ func ListChatModelsPublic(c *gin.Context) {
 	})
 }
 
-func addModelProtocolSupport(item gin.H, transports []model.UpstreamTransport) {
-	item["native_transports"] = transports
-	if len(transports) == 0 {
-		item["supported_endpoints"] = []string{}
-		return
+func publicChatModel(model service.AvailableModelCapability) gin.H {
+	endpoints := make([]string, 0, len(model.Operations))
+	operations := make([]string, 0, len(model.Operations))
+	for _, operation := range model.Operations {
+		if operation.Path != "" && !containsPublicModelValue(endpoints, operation.Path) {
+			endpoints = append(endpoints, operation.Path)
+		}
+		if operation.ID != "" && !containsPublicModelValue(operations, operation.ID) {
+			operations = append(operations, operation.ID)
+		}
 	}
-	item["supported_endpoints"] = []string{"/v1/chat/completions", "/v1/responses", "/v1/messages"}
+	item := gin.H{
+		"id":                   model.ID,
+		"object":               "model",
+		"owned_by":             "prism",
+		"name":                 model.Name,
+		"model_code":           model.ModelCode,
+		"visibility":           model.Visibility,
+		"features":             model.Features,
+		"native_transports":    model.Transports,
+		"supported_operations": operations,
+		"supported_endpoints":  endpoints,
+	}
+	return item
+}
+
+func containsPublicModelValue(values []string, target string) bool {
+	for _, value := range values {
+		if value == target {
+			return true
+		}
+	}
+	return false
 }

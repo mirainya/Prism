@@ -1,0 +1,217 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+# Do not grant the release token to verification or build steps. The publish
+# job below receives the one permission it needs only after verification passes.
+permissions: {}
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  verify:
+    permissions:
+      contents: read
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    outputs:
+      version: ${{ steps.metadata.outputs.version }}
+      artifact_name: ${{ steps.metadata.outputs.artifact_name }}
+
+    services:
+      mysql:
+        image: docker.io/library/mysql:8.0@sha256:d0304ed9fdb64a3f6c7ad11a5fb4f13abfc10e6dfa3f288d652e7320c34df7f9
+        env:
+          MYSQL_ROOT_PASSWORD: prism-release
+          MYSQL_DATABASE: prism
+        ports:
+          - 3306:3306
+        options: >-
+          --health-cmd="mysqladmin ping -h localhost -pprism-release"
+          --health-interval=5s
+          --health-timeout=3s
+          --health-retries=20
+      redis:
+        image: docker.io/library/redis:7-alpine@sha256:7aec734b2bb298a1d769fd8729f13b8514a41bf90fcdd1f38ec52267fbaa8ee6
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd="redis-cli ping"
+          --health-interval=5s
+          --health-timeout=3s
+          --health-retries=20
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Set up Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Set up Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: console/package-lock.json
+
+      - name: Validate tag and record build metadata
+        id: metadata
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          # The workflow is tag-only; reject malformed or ambiguous refs before
+          # using the tag value in build paths and release metadata.
+          test "$GITHUB_REF" = "refs/tags/$GITHUB_REF_NAME"
+          semver_re='^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$'
+          if [[ ! "$GITHUB_REF_NAME" =~ $semver_re ]]; then
+            echo "release tags must use semantic version form vMAJOR.MINOR.PATCH[-PRERELEASE][+BUILD]" >&2
+            exit 1
+          fi
+
+          # Ensure the checked-out commit is exactly the commit that triggered
+          # this run, including annotated tags.
+          tag_commit="$(git rev-list -n1 "$GITHUB_REF_NAME^{commit}")"
+          test "$tag_commit" = "$GITHUB_SHA"
+
+          version="${GITHUB_REF_NAME#v}"
+          package_version="$(node -p "require('./console/package.json').version")"
+          test "$version" = "$package_version"
+          build_time="$(git show -s --format=%cI "$GITHUB_SHA")"
+          artifact_name="prism-release-${GITHUB_RUN_ID}"
+          {
+            echo "VERSION=$version"
+            echo "BUILD_TIME=$build_time"
+            echo "SOURCE_REVISION=$GITHUB_SHA"
+          } >> "$GITHUB_ENV"
+          {
+            echo "version=$version"
+            echo "artifact_name=$artifact_name"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Build embedded console
+        working-directory: console
+        run: |
+          set -euo pipefail
+          npm ci
+          npm audit --audit-level=high
+          npm test
+          npx tsc --noEmit
+          npm run build
+
+      - name: Verify backend
+        run: |
+          set -euo pipefail
+          go test ./...
+          go vet ./...
+          go run honnef.co/go/tools/cmd/staticcheck@v0.7.0 '-checks=all,-ST*' ./...
+          go run golang.org/x/vuln/cmd/govulncheck@v1.7.0 ./...
+
+      - name: Test concurrent runtime paths
+        run: go test -race ./internal/gateway/... ./internal/api/... ./internal/service/... ./internal/video/...
+
+      - name: Test MySQL migrations and imports
+        env:
+          PRISM_MIGRATION_TEST_DSN: "root:prism-release@tcp(127.0.0.1:3306)/prism?charset=utf8mb4&parseTime=true&loc=UTC&multiStatements=true"
+        run: go test -tags=integration ./internal/migrate -count=1
+
+      - name: Install Chromium
+        working-directory: console
+        run: npx playwright install --with-deps chromium
+
+      - name: Test authenticated console
+        env:
+          PRISM_CONSOLE_TEST_DSN: "root:prism-release@tcp(127.0.0.1:3306)/?charset=utf8mb4&parseTime=true&loc=UTC&multiStatements=true"
+          PRISM_CONSOLE_TEST_REDIS: "127.0.0.1:6379"
+          PRISM_BROWSER_CHANNEL: chromium
+        run: go test -tags=integration ./internal/api -run '^TestUnifiedConsoleMySQLBrowser$' -count=1
+
+      - name: Build release binaries
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p release/stage/linux/configs release/stage/linux/docs
+          mkdir -p release/stage/windows/configs release/stage/windows/docs
+
+          ldflags="-s -w -X main.Version=${VERSION} -X main.BuildTime=${BUILD_TIME} -X github.com/mirainya/Prism/internal/gateway/adapter.BuildRevision=${SOURCE_REVISION}"
+          CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -ldflags="$ldflags" -o release/stage/linux/prism ./cmd/server
+          CGO_ENABLED=0 GOOS=windows GOARCH=amd64 go build -trimpath -ldflags="$ldflags" -o release/stage/windows/prism.exe ./cmd/server
+
+          for target in linux windows; do
+            cp configs/config.example.yaml "release/stage/${target}/configs/"
+            cp docs/unified_gateway_operations.md "release/stage/${target}/docs/"
+            cp README.md LICENSE THIRD_PARTY_NOTICES.md "release/stage/${target}/"
+          done
+
+          linux_dir="prism-v${VERSION}-linux-amd64"
+          windows_dir="prism-v${VERSION}-windows-amd64"
+          mv release/stage/linux "release/stage/${linux_dir}"
+          mv release/stage/windows "release/stage/${windows_dir}"
+
+          tar --sort=name --owner=0 --group=0 --numeric-owner \
+            --mtime="${BUILD_TIME}" -C release/stage -cf "release/${linux_dir}.tar" "$linux_dir"
+          gzip -n "release/${linux_dir}.tar"
+          (cd release/stage && zip -X -q -r "../${windows_dir}.zip" "$windows_dir")
+          (cd release && sha256sum *.tar.gz *.zip > SHA256SUMS)
+
+          release/stage/${linux_dir}/prism version | grep -F "Prism ${VERSION} (${BUILD_TIME})"
+
+      - name: Upload verified release artifacts
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: ${{ steps.metadata.outputs.artifact_name }}
+          path: |
+            release/*.tar.gz
+            release/*.zip
+            release/SHA256SUMS
+          if-no-files-found: error
+          retention-days: 7
+
+  publish:
+    needs: verify
+    permissions:
+      actions: read
+      contents: write
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+
+    steps:
+      - name: Download verified release artifacts
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: ${{ needs.verify.outputs.artifact_name }}
+          path: release
+
+      - name: Verify artifact checksums
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -s release/SHA256SUMS
+          (cd release && sha256sum --check SHA256SUMS)
+          test "$(find release -maxdepth 1 -type f -name '*.tar.gz' | wc -l)" -eq 1
+          test "$(find release -maxdepth 1 -type f -name '*.zip' | wc -l)" -eq 1
+
+      - name: Publish GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh release create "$GITHUB_REF_NAME" \
+            release/*.tar.gz \
+            release/*.zip \
+            release/SHA256SUMS \
+            --verify-tag \
+            --generate-notes \
+            --title "Prism ${{ needs.verify.outputs.version }}"

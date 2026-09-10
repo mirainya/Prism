@@ -1,17 +1,26 @@
 package model
 
-import "github.com/shopspring/decimal"
+import (
+	"time"
+
+	"github.com/shopspring/decimal"
+)
 
 type Token struct {
 	BaseModel
-	UserID    uint            `gorm:"default:0;index;comment:用户ID" json:"user_id"`
-	Key       string          `gorm:"type:varchar(64);uniqueIndex;not null;comment:API密钥(hash)" json:"key"`
-	KeyHint   string          `gorm:"type:varchar(20);comment:密钥提示(后四位)" json:"key_hint"`
-	Name      string          `gorm:"type:varchar(50);comment:令牌名称" json:"name"`
-	Balance   decimal.Decimal `gorm:"type:decimal(20,8);not null;default:0;comment:剩余额度" json:"balance"`
-	TotalUsed decimal.Decimal `gorm:"type:decimal(20,8);not null;default:0;comment:已使用额度" json:"total_used"`
-	RateLimit int             `gorm:"default:60;comment:速率限制(次/分钟)" json:"rate_limit"`
-	Status    int8            `gorm:"default:1;comment:状态(1启用/0禁用)" json:"status"`
+	UserID              uint            `gorm:"default:0;index;comment:用户ID" json:"user_id"`
+	Selector            string          `gorm:"type:varchar(64);uniqueIndex;comment:公开选择子" json:"-"`
+	SecretDigest        []byte          `gorm:"type:binary(32);comment:秘密摘要" json:"-"`
+	SecretDigestVersion uint16          `gorm:"not null;default:1;comment:秘密摘要算法版本" json:"-"`
+	AuthVersion         uint64          `gorm:"not null;default:1;comment:授权状态版本" json:"auth_version"`
+	KeyHint             string          `gorm:"type:varchar(20);comment:密钥提示(后四位)" json:"key_hint"`
+	Name                string          `gorm:"type:varchar(50);comment:令牌名称" json:"name"`
+	Balance             decimal.Decimal `gorm:"type:decimal(20,8);not null;default:0;comment:剩余额度" json:"balance"`
+	TotalUsed           decimal.Decimal `gorm:"type:decimal(20,8);not null;default:0;comment:已使用额度" json:"total_used"`
+	RateLimit           int             `gorm:"default:60;comment:速率限制(次/分钟)" json:"rate_limit"`
+	Status              int8            `gorm:"default:1;comment:状态(1启用/0禁用)" json:"status"`
+	ExpiresAt           *time.Time      `gorm:"comment:授权失效时间" json:"expires_at,omitempty"`
+	RevokedAt           *time.Time      `gorm:"comment:撤销时间" json:"revoked_at,omitempty"`
 }
 
 func (Token) TableName() string {

@@ -3,6 +3,7 @@ package handler
 
 import (
 	"bytes"
+	"context"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
@@ -13,7 +14,6 @@ import (
 	"strings"
 
 	"github.com/gin-gonic/gin"
-	"github.com/google/uuid"
 	"github.com/mirainya/Prism/internal/api/middleware"
 	"github.com/mirainya/Prism/internal/api/openaierror"
 	"github.com/mirainya/Prism/internal/domain"
@@ -22,7 +22,6 @@ import (
 	"github.com/mirainya/Prism/internal/gateway/pipeline"
 	"github.com/mirainya/Prism/internal/gateway/routing"
 	"github.com/mirainya/Prism/internal/gateway/stream"
-	"github.com/mirainya/Prism/internal/gateway/transport"
 	"github.com/mirainya/Prism/internal/model"
 	"github.com/mirainya/Prism/internal/provider/chat"
 	"github.com/mirainya/Prism/internal/service"
@@ -33,30 +32,22 @@ type ChatHandler struct {
 	pipe *pipeline.Pipeline
 }
 
-type payloadStreamWriter struct {
+type deliveryStreamWriter struct {
 	writer   stream.Writer
-	capture  io.Writer
 	writeErr error
 }
 
-func (w *payloadStreamWriter) Write(data []byte) (int, error) {
+func (w *deliveryStreamWriter) Write(data []byte) (int, error) {
 	written, err := w.writer.Write(data)
 	if err != nil {
 		w.writeErr = err
 	} else if written != len(data) {
 		w.writeErr = io.ErrShortWrite
 	}
-	if written > 0 && w.capture != nil {
-		captured := written
-		if captured > len(data) {
-			captured = len(data)
-		}
-		_, _ = w.capture.Write(data[:captured])
-	}
 	return written, err
 }
 
-func (w *payloadStreamWriter) Flush() { w.writer.Flush() }
+func (w *deliveryStreamWriter) Flush() { w.writer.Flush() }
 
 type stopSequences []string
 
@@ -173,13 +164,13 @@ func (h *ChatHandler) Completions(c *gin.Context) {
 	if conversationID > 0 {
 		c.Header(prismConversationIDHeader, strconv.FormatUint(uint64(conversationID), 10))
 	}
-	resolvedMessages, err := resolveOwnedChatFiles(token.ID, req.Messages)
+	resolvedMessages, err := resolveOwnedChatFiles(c.Request.Context(), token.ID, req.Messages)
 	if err != nil {
 		param := "messages"
 		openaierror.InvalidRequest(c, err.Error(), &param, "file_not_found")
 		return
 	}
-	callID := "call_" + uuid.NewString()
+	callID := service.GenerateUnifiedCallID()
 	requestID := middleware.GetRequestID(c.Request.Context())
 	downstreamRequest, _ := json.Marshal(req)
 	c.Header("X-Prism-Call-ID", callID)
@@ -229,19 +220,6 @@ func (h *ChatHandler) Completions(c *gin.Context) {
 		respondChatPipelineError(c, err)
 		return
 	}
-	store := req.Store != nil && *req.Store
-	// Call 与会话输入先于上游执行原子写入，保证任何失败终态都有可投影的输入历史。
-	if err := createAPIConversationCall(&service.StartCallRequest{
-		ID: callID, RequestID: requestID, UserID: token.UserID, TokenID: token.ID,
-		Endpoint: "/v1/chat/completions", Operation: string(transport.OperationChat), Model: req.Model,
-		IsStream: req.Stream, Store: store, ConversationID: conversationID,
-	}, service.ConversationProjectionInputRequest{
-		ConversationID: conversationID, PreviousResponseID: req.PreviousResponseID,
-		InputItems: canonical.CloneItems(canonicalRequest.Items),
-	}); err != nil {
-		respondChatPipelineError(c, err)
-		return
-	}
 	projectionBase := service.ConversationProjectionRequest{
 		UserID: token.UserID, TokenID: token.ID, Model: req.Model, CallID: callID,
 		ConversationID: conversationID, PreviousResponseID: req.PreviousResponseID,
@@ -284,12 +262,7 @@ func (h *ChatHandler) Completions(c *gin.Context) {
 		c.Header("X-Accel-Buffering", "no")
 		c.Status(http.StatusOK)
 
-		callService := service.NewAPICallService()
-		capture := callService.NewPayloadCaptureBestEffort(
-			session.CallID(), session.AttemptID(), model.APICallPayloadResponse, "text/event-stream",
-		)
-		defer capture.SaveBestEffort()
-		writer := &payloadStreamWriter{writer: stream.Writer(c.Writer), capture: capture}
+		writer := &deliveryStreamWriter{writer: stream.Writer(c.Writer)}
 		_, streamErr := stream.ProxyStream(writer, session.UpstreamResp.Body)
 		session.Cleanup()
 		clientDisconnected := writer.writeErr != nil || c.Request.Context().Err() != nil
@@ -339,10 +312,6 @@ func (h *ChatHandler) Completions(c *gin.Context) {
 		}
 		return
 	}
-	service.NewAPICallService().RecordPayloadBestEffort(&model.APICallPayload{
-		CallID: chatResp.CallID, AttemptID: chatResp.AttemptID,
-		Kind: model.APICallPayloadResponse, ContentType: "application/json", Data: encoded,
-	})
 	c.Header("Content-Type", "application/json; charset=utf-8")
 	c.Status(http.StatusOK)
 	written, writeErr := c.Writer.Write(encoded)
@@ -370,23 +339,10 @@ func completeChatDelivery(response *service.CompletionResponse) error {
 	if response == nil || response.CallID == "" {
 		return nil
 	}
-	if response.CompleteDelivery != nil {
-		return response.CompleteDelivery()
+	if response.CompleteDelivery == nil {
+		return errors.New("unified chat delivery callback is missing")
 	}
-	completion := &service.CompleteCallRequest{
-		FinalAttemptID: response.AttemptID, HTTPStatus: http.StatusOK,
-		ProviderResponseID: response.ProviderResponseID, CompleteStartedAttempt: true,
-		ConversationProjection: chatConversationProjectionOutput(response),
-	}
-	if response.Usage != nil {
-		completion.InputTokens = response.Usage.PromptTokens
-		completion.OutputTokens = response.Usage.CompletionTokens
-		completion.TotalTokens = response.Usage.TotalTokens
-		if raw, err := json.Marshal(response.Usage); err == nil {
-			completion.UsageJSON = raw
-		}
-	}
-	return service.NewAPICallService().CompleteCall(response.CallID, completion)
+	return response.CompleteDelivery()
 }
 
 func failChatDelivery(response *service.CompletionResponse, err error, clientDisconnected bool) error {
@@ -396,36 +352,10 @@ func failChatDelivery(response *service.CompletionResponse, err error, clientDis
 	if err == nil {
 		err = errors.New("downstream response delivery failed")
 	}
-	if response.FailDelivery != nil {
-		return response.FailDelivery(err, clientDisconnected)
+	if response.FailDelivery == nil {
+		return errors.New("unified chat delivery failure callback is missing")
 	}
-	projection := chatConversationProjectionOutput(response)
-	if clientDisconnected {
-		return service.NewAPICallService().CancelCall(response.CallID, &service.CancelCallRequest{
-			FinalAttemptID: response.AttemptID, ErrorType: "cancelled", ErrorCode: "client_disconnected",
-			ErrorMessage: err.Error(), ClientDisconnected: true, ConversationProjection: projection,
-		})
-	}
-	return service.NewAPICallService().FailCall(response.CallID, &service.FailCallRequest{
-		FinalAttemptID: response.AttemptID, HTTPStatus: http.StatusBadGateway,
-		ErrorType: "server_error", ErrorCode: "downstream_delivery_failed", ErrorMessage: err.Error(),
-		ConversationProjection: projection,
-	})
-}
-
-func chatConversationProjectionOutput(response *service.CompletionResponse) *service.ConversationProjectionOutputRequest {
-	if response == nil || response.CanonicalResponse == nil {
-		return nil
-	}
-	providerResponseID := response.ProviderResponseID
-	if providerResponseID == "" {
-		providerResponseID = canonicalProviderResponseID(*response.CanonicalResponse)
-	}
-	return &service.ConversationProjectionOutputRequest{
-		CallID: response.CallID, OutputItems: canonical.CloneItems(response.CanonicalResponse.Output),
-		RequestLogID: response.RequestLogID, ProviderResponseID: providerResponseID,
-		FinishReason: response.CanonicalResponse.FinishReason,
-	}
+	return response.FailDelivery(err, clientDisconnected)
 }
 
 func validateChatMessages(messages []chat.ChatMessage) (message, param, code string) {
@@ -534,7 +464,7 @@ func validateChatMessages(messages []chat.ChatMessage) (message, param, code str
 	return "", "", ""
 }
 
-func resolveOwnedChatFiles(tokenID uint, messages []chat.ChatMessage) ([]chat.ChatMessage, error) {
+func resolveOwnedChatFiles(ctx context.Context, tokenID uint, messages []chat.ChatMessage) ([]chat.ChatMessage, error) {
 	result := append([]chat.ChatMessage(nil), messages...)
 	for messageIndex := range result {
 		parts, ok := result[messageIndex].Content.([]any)
@@ -555,8 +485,8 @@ func resolveOwnedChatFiles(tokenID uint, messages []chat.ChatMessage) ([]chat.Ch
 			if !ok || fileID == "" {
 				continue
 			}
-			var file model.AIFile
-			if err := model.DB().Select("id", "filename", "mime_type", "content").Where("id = ? AND token_id = ?", fileID, tokenID).First(&file).Error; err != nil {
+			file, err := service.LoadOwnedAIFile(ctx, tokenID, fileID, true)
+			if err != nil {
 				return nil, fmt.Errorf("file_id %q was not found", fileID)
 			}
 			newFile := make(map[string]any, len(fileObject)+1)

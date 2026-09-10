@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -92,11 +93,31 @@ func TestSetupRouterRegistersResponsesAndFiles(t *testing.T) {
 	}
 }
 
+func TestSetupRouterDoesNotExposeUnsupportedVideoMutations(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	previousLogger := logger.L
+	logger.L = zap.NewNop()
+	t.Cleanup(func() { logger.L = previousLogger })
+	router := setupRouterForTest(t)
+	unsupported := map[string]struct{}{
+		"POST /v1/videos/generations/:id/cancel":                               {},
+		"POST /v1/videos/generations/:id/priority-queue":                       {},
+		"POST /api/playground/:token_id/videos/generations/:id/cancel":         {},
+		"POST /api/playground/:token_id/videos/generations/:id/priority-queue": {},
+	}
+	for _, route := range router.Routes() {
+		key := route.Method + " " + route.Path
+		if _, found := unsupported[key]; found {
+			t.Errorf("unsupported video mutation is registered: %s", key)
+		}
+	}
+}
+
 func setupRouterForTest(t *testing.T) *gin.Engine {
 	t.Helper()
 	executionEngine, err := gateway.NewV2Engine()
 	if err != nil {
 		t.Fatal(err)
 	}
-	return SetupRouter(executionEngine, nil)
+	return SetupRouter(executionEngine, func(context.Context) error { return nil })
 }

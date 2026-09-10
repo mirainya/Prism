@@ -69,6 +69,7 @@ func TestRequestLoggerOmitsAIRequestBodiesWithoutReadingThem(t *testing.T) {
 		"/v1/responses",
 		"/api/playground/1/messages",
 		"/internal/callback/v1/provider/task/signature",
+		"/internal/gateway/callback/generic-video",
 	}
 
 	for _, path := range paths {
@@ -258,6 +259,28 @@ func TestRequestLoggerSanitizesQueryCredentials(t *testing.T) {
 	}
 	if !strings.Contains(loggedQuery, "%5BREDACTED%5D") {
 		t.Fatalf("query log was not redacted: %s", loggedQuery)
+	}
+}
+
+func TestRequestLoggerRedactsUnifiedCallbackTokenQuery(t *testing.T) {
+	logs := installObservedLogger(t)
+	router := newLoggerTestRouter(func(c *gin.Context) {
+		c.Status(http.StatusAccepted)
+	})
+	router.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(
+		http.MethodPost,
+		"/internal/gateway/callback/generic-video?callback_token=sensitive-binding-token",
+		strings.NewReader(`{"status":"success"}`),
+	))
+
+	entry := logs.All()[0]
+	context := entry.ContextMap()
+	if _, exists := context["request"]; exists {
+		t.Fatal("unified callback body was logged")
+	}
+	query, _ := context["query"].(string)
+	if strings.Contains(query, "sensitive-binding-token") || !strings.Contains(query, "%5BREDACTED%5D") {
+		t.Fatalf("unified callback token was not redacted: %q", query)
 	}
 }
 

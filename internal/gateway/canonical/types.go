@@ -10,6 +10,7 @@ const (
 	EndpointOpenAIChat      Endpoint = "openai_chat"
 	EndpointOpenAIResponses Endpoint = "openai_responses"
 	EndpointAnthropic       Endpoint = "anthropic_messages"
+	EndpointOpenAIImages    Endpoint = "openai_images"
 )
 
 // Feature is a semantic model capability. Wire protocols and upstream paths are

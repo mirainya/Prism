@@ -13,8 +13,12 @@ const DebugPanel: React.FC<{
   onExpandFull?: () => void;
   currentConversationMeta?: PlaygroundConversation | null;
 }> = ({ debugDetail, lastPayload, compact = false, showAllDetails = false, onExpandFull, currentConversationMeta }) => {
-  const contextModeLabel = (m?: string) =>
-    m === 'stateful' ? 'B · 有状态(仅发新消息)' : m === 'full_history' ? 'A · 全量历史' : '';
+  const contextModeLabel = (mode?: string) => ({
+    new: '新会话',
+    explicit: '显式续话',
+    inferred: '历史匹配续话',
+    snapshot: '历史快照',
+  }[mode || ''] || mode || '');
 
   const summaryRows = [
     { label: '日志 ID', value: debugDetail?.requestLogId || currentConversationMeta?.lastRequestLogId || '-' },

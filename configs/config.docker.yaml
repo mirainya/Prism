@@ -3,7 +3,6 @@
 
 server:
   port: 23523
-  reset_gateway_concurrency_on_start: true # Set false when multiple Prism instances share one database
   jwt_secret: "change-this-to-a-secure-random-string"
 
 database:
@@ -19,27 +18,25 @@ redis:
   db: 0
 
 file_storage:
-  max_total_size_mb: 1024   # Per-token Files API quota
-
-storage:
-  type: ""             # 留空禁用, 或 "tencent" 启用腾讯云 COS
-  tencent:
-    secret_id: ""
-    secret_key: ""
-    region: ""
-    bucket: ""
-    cdn: ""
-
-worker:
-  concurrency: 10
-  poll_interval: 5s
-  max_retry: 3
+  base_url: ""              # x-file-storage service URL; blank disables managed file storage
+  api_key: ""               # x-file-storage API key
+  upload_path: "Prism/"
+  max_file_size_mb: 64
+  max_total_size_mb: 1024    # Per-token Files API quota
+  allowed_types:
+    - "image/png"
+    - "image/jpeg"
+    - "image/gif"
+    - "image/webp"
+    - "application/pdf"
+    - "text/plain"
+    - "text/csv"
+    - "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
 
 observability:
   retain_api_call_payloads: false
   api_call_payload_retention_hours: 168
   api_call_payload_max_bytes: 262144
-  api_call_payload_encryption_key: ""
   api_call_metadata_retention_days: 90
   resource_history_retention_days: 90 # 终态异步任务与闲置 Playground 对话历史
   api_access_log_retention_days: 30

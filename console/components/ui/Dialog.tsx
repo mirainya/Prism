@@ -16,6 +16,7 @@ interface DialogProps {
   motion?: DialogMotion;
   dismissible?: boolean;
   initialFocusRef?: RefObject<HTMLElement | null>;
+  zIndex?: number;
 }
 
 const transitionMilliseconds = 200;
@@ -81,6 +82,7 @@ export const Dialog: React.FC<DialogProps> = ({
   motion = 'center',
   dismissible = true,
   initialFocusRef,
+  zIndex = 50,
 }) => {
   const [mounted, setMounted] = useState(open);
   const [visible, setVisible] = useState(false);
@@ -167,7 +169,8 @@ export const Dialog: React.FC<DialogProps> = ({
   const stateClass = visible ? motionClasses[motion].open : motionClasses[motion].closed;
   return createPortal(
     <div
-      className={`fixed inset-0 z-50 flex ${containerClassName} ${visible ? 'pointer-events-auto' : 'pointer-events-none'}`}
+      className={`fixed inset-0 flex ${containerClassName} ${visible ? 'pointer-events-auto' : 'pointer-events-none'}`}
+      style={{ zIndex }}
       data-state={visible ? 'open' : 'closed'}
     >
       <div

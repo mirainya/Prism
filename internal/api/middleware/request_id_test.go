@@ -68,3 +68,21 @@ func TestCORSAllowsConversationHeaderOnPreflight(t *testing.T) {
 		t.Fatalf("allowed headers = %q", allowed)
 	}
 }
+
+func TestCORSAllowsAPIKeyOnPreflight(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	router := gin.New()
+	router.Use(CORS())
+
+	request := httptest.NewRequest(http.MethodOptions, "/v1/messages", nil)
+	request.Header.Set("Access-Control-Request-Headers", "X-API-Key")
+	response := httptest.NewRecorder()
+	router.ServeHTTP(response, request)
+
+	if response.Code != http.StatusNoContent {
+		t.Fatalf("status = %d, want %d", response.Code, http.StatusNoContent)
+	}
+	if allowed := response.Header().Get("Access-Control-Allow-Headers"); !strings.Contains(allowed, "X-API-Key") {
+		t.Fatalf("allowed headers = %q", allowed)
+	}
+}

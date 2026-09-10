@@ -3,6 +3,7 @@ package engine
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/url"
 	"strings"
@@ -10,67 +11,54 @@ import (
 	"time"
 
 	"github.com/mirainya/Prism/internal/gateway/canonical"
+	"github.com/mirainya/Prism/internal/gateway/repository"
 	"github.com/mirainya/Prism/internal/gateway/routing"
 	"github.com/mirainya/Prism/internal/gateway/transport"
-	"github.com/mirainya/Prism/internal/model"
-	"github.com/mirainya/Prism/internal/service"
 )
 
 // RequestLog is one concrete upstream attempt. Its request fields are taken
 // from PreparedRequest, never reconstructed from the downstream request.
 type RequestLog struct {
-	record  *model.ChannelRequestLog
+	record  *RequestLogRecord
 	started time.Time
 	mu      sync.Mutex
 	events  []canonical.Event
+	unified *unifiedRequestLog
+}
+
+type RequestLogRecord struct {
+	ID uint
 }
 
 type RequestLogLink struct {
 	CallID    string
 	AttemptID uint
+	unified   *unifiedLifecycle
 }
 
 func StartRequestLog(route *routing.RouteResult, prepared transport.PreparedRequest, operation transport.Operation, links ...RequestLogLink) (*RequestLog, error) {
-	if route == nil {
-		return nil, errors.New("route is required")
+	if !unifiedRoute(route) {
+		return nil, fmt.Errorf("%w: request logs require a unified route", repository.ErrInvalidInput)
 	}
 	requestAt := time.Now()
-	path, requestURL := logURL(prepared.URL)
-	headers, _ := json.Marshal(redactedHeaders(prepared.Headers))
 	link := RequestLogLink{}
 	if len(links) > 0 {
 		link = links[0]
 	}
-	// 统一 Call 已在 api_call_payloads 按策略保存正文，旧调用路径才把脱敏正文写入请求日志。
-	requestBody := ""
-	if link.CallID == "" {
-		requestBody = string(redactedJSON(prepared.Body))
+	if link.unified == nil || link.unified.attemptID == 0 {
+		return nil, errors.New("unified request log requires its fixed attempt")
 	}
-	record := &model.ChannelRequestLog{
-		CallID:            link.CallID,
-		AttemptID:         link.AttemptID,
-		ChannelID:         route.ChannelID,
-		AccountID:         route.KeyID,
-		CapabilityCode:    route.ModelName,
-		RequestType:       requestType(operation),
-		IsStream:          prepared.Stream,
-		ModelCode:         route.ModelName,
-		VendorModel:       route.VendorModel,
-		UpstreamTransport: route.Transport,
-		RequestPath:       path,
-		Method:            prepared.Method,
-		URL:               requestURL,
-		RequestHeaders:    string(headers),
-		RequestBody:       requestBody,
-		RequestAt:         requestAt,
-	}
-	if err := model.DB().Create(record).Error; err != nil {
+	unified, err := beginUnifiedRequestLog(link.unified, prepared, operation)
+	if err != nil {
 		return nil, err
 	}
-	return &RequestLog{record: record, started: requestAt}, nil
+	if unified == nil || unified.id == 0 {
+		return nil, errors.New("unified request log was not created")
+	}
+	return &RequestLog{record: &RequestLogRecord{ID: uint(unified.id)}, started: requestAt, unified: unified}, nil
 }
 
-func (l *RequestLog) Record() *model.ChannelRequestLog {
+func (l *RequestLog) Record() *RequestLogRecord {
 	if l == nil {
 		return nil
 	}
@@ -104,6 +92,9 @@ func (l *RequestLog) CompleteStream(statusCode int, requestErr error) error {
 	body, _ := json.Marshal(events)
 	// 日志仅提取终态、usage 和预览；完整 canonical 事件另由可选 Payload 保留。
 	response := responseFromEvents(events)
+	if len(events) == 0 {
+		response = nil
+	}
 	return l.complete(body, response, statusCode, requestErr)
 }
 
@@ -122,41 +113,8 @@ func (l *RequestLog) complete(body []byte, response *canonical.Response, statusC
 	if l == nil || l.record == nil || l.record.ID == 0 {
 		return nil
 	}
-	if statusCode == 0 {
-		statusCode = http.StatusOK
-		if requestErr != nil {
-			statusCode = errorStatus(requestErr)
-		}
-	}
-	updates := map[string]any{
-		"duration_ms": time.Since(l.started).Milliseconds(),
-		"status_code": statusCode,
-	}
-	if l.record.CallID == "" {
-		updates["response_body"] = string(redactedJSON(body))
-	}
-	if requestErr != nil {
-		updates["error_message"] = service.SanitizeAPICallErrorMessage(requestErr.Error())
-	}
-	if response != nil {
-		updates["finish_reason"] = response.FinishReason
-		if l.record.CallID == "" {
-			updates["response_preview"] = responsePreview(response)
-		}
-		if response.Usage != nil {
-			updates["usage_prompt_tokens"] = response.Usage.InputTokens
-			updates["usage_completion_tokens"] = response.Usage.OutputTokens
-			updates["usage_total_tokens"] = response.Usage.TotalTokens
-		}
-	}
-	return model.DB().Model(&model.ChannelRequestLog{}).Where("id = ?", l.record.ID).Updates(updates).Error
-}
-
-func requestType(operation transport.Operation) model.RequestType {
-	if operation == transport.OperationResponses {
-		return model.RequestTypeResponses
-	}
-	return model.RequestTypeChat
+	_ = body
+	return l.unified.finish(response != nil, statusCode, requestErr, time.Since(l.started))
 }
 
 func logURL(raw string) (string, string) {

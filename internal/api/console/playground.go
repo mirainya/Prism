@@ -1,8 +1,6 @@
 package console
 
 import (
-	stderrors "errors"
-	"fmt"
 	"net/http"
 
 	"github.com/gin-gonic/gin"
@@ -17,9 +15,7 @@ import (
 	"github.com/mirainya/Prism/pkg/errors"
 )
 
-var capabilityService = service.NewUnifiedService()
 var queryService = service.NewQueryService()
-var playgroundDashboardService = service.NewDashboardService()
 
 // chatPipeline 由 router 注入的共享网关 pipeline(playground chat 走它,与 /v1 同源)。
 var chatPipeline *pipeline.Pipeline
@@ -78,9 +74,8 @@ func PlaygroundAnthropicMessages(c *gin.Context) {
 
 func getPlaygroundToken(c *gin.Context) (*model.Token, bool) {
 	userID := middleware.GetUserID(c)
-	var tokenID uint
-	if _, err := fmt.Sscanf(c.Param("token_id"), "%d", &tokenID); err != nil {
-		resp.BadRequest(c, errors.WithMessage(errors.ErrInvalidParams, "invalid token_id"))
+	tokenID, err := resp.ParseUintParam(c, "token_id")
+	if err != nil {
 		return nil, false
 	}
 
@@ -92,24 +87,6 @@ func getPlaygroundToken(c *gin.Context) (*model.Token, bool) {
 	return &token, true
 }
 
-// PlaygroundListCapabilities GET /api/playground/:token_id/capabilities
-func PlaygroundListCapabilities(c *gin.Context) {
-	token, ok := getPlaygroundToken(c)
-	if !ok {
-		return
-	}
-	_ = token
-
-	channelType := c.Query("channel")
-	capabilityType := c.Query("type")
-	result, err := queryService.ListAvailableCapabilities(channelType, capabilityType)
-	if err != nil {
-		resp.ErrorMsg(c, http.StatusInternalServerError, 500, "failed to get capabilities")
-		return
-	}
-	resp.Success(c, result)
-}
-
 // PlaygroundListModels GET /api/playground/:token_id/models
 func PlaygroundListModels(c *gin.Context) {
 	token, ok := getPlaygroundToken(c)
@@ -118,19 +95,29 @@ func PlaygroundListModels(c *gin.Context) {
 	}
 	_ = token
 
-	models, err := service.NewGatewayAdminService().ListPlaygroundModels()
+	models, err := queryService.ListAvailableCapabilities(c.Request.Context(), "", "chat")
 	if err != nil {
 		resp.InternalError(c, errors.ErrInternalError)
 		return
 	}
 
+	resp.Success(c, playgroundChatModelList(models))
+}
+
+func playgroundChatModelList(models []service.AvailableModelCapability) gin.H {
 	data := make([]gin.H, 0, len(models))
 	for _, m := range models {
+		operations := make([]string, 0, len(m.Operations))
+		endpoints := make([]string, 0, len(m.Operations))
+		for _, operation := range m.Operations {
+			operations = appendUniquePlaygroundModelValue(operations, operation.ID)
+			endpoints = appendUniquePlaygroundModelValue(endpoints, operation.Path)
+		}
 		data = append(data, gin.H{
 			"id":                       m.ID,
-			"object":                   m.Object,
-			"created":                  m.Created,
-			"owned_by":                 m.OwnedBy,
+			"object":                   "model",
+			"created":                  0,
+			"owned_by":                 "prism",
 			"supports_stream":          m.SupportsStream,
 			"default_stream":           m.DefaultStream,
 			"supports_tools":           m.SupportsTools,
@@ -139,57 +126,25 @@ func PlaygroundListModels(c *gin.Context) {
 			"max_tokens":               m.MaxTokens,
 			"group":                    m.Group,
 			"thinking":                 m.Thinking,
+			"supported_operations":     operations,
+			"supported_endpoints":      endpoints,
 		})
 	}
 
-	c.JSON(http.StatusOK, gin.H{
+	return gin.H{
 		"object": "list",
 		"data":   data,
-	})
+	}
 }
 
-// PlaygroundInvokeCapability POST /api/playground/:token_id/capabilities/:capability
-func PlaygroundInvokeCapability(c *gin.Context) {
-	token, ok := getPlaygroundToken(c)
-	if !ok {
-		return
+func appendUniquePlaygroundModelValue(values []string, value string) []string {
+	if value == "" {
+		return values
 	}
-
-	capability := c.Param("capability")
-	var body struct {
-		Channel         string         `json:"channel"`
-		Model           string         `json:"model"`
-		Operation       string         `json:"operation"`
-		InteractionMode string         `json:"interaction_mode"`
-		CallbackURL     string         `json:"callback_url"`
-		Params          map[string]any `json:"params"`
-	}
-	if err := c.ShouldBindJSON(&body); err != nil {
-		resp.ErrorMsg(c, http.StatusBadRequest, 400, "invalid request body")
-		return
-	}
-
-	userID := middleware.GetUserID(c)
-	result, err := capabilityService.Invoke(c.Request.Context(), &service.InvokeRequest{
-		UserID:          userID,
-		TokenID:         token.ID,
-		Capability:      capability,
-		RouteOperation:  body.Operation,
-		Channel:         body.Channel,
-		Model:           body.Model,
-		InteractionMode: body.InteractionMode,
-		CallbackURL:     body.CallbackURL,
-		Params:          body.Params,
-		// playground: sync/stream 慢上游不阻塞按钮,立即返回 task_no 由前端轮询
-		Async: true,
-	})
-	if err != nil {
-		if stderrors.Is(err, service.ErrVideoEndpointRequired) {
-			resp.BadRequest(c, errors.WithMessage(errors.ErrInvalidParams, err.Error()))
-			return
+	for _, candidate := range values {
+		if candidate == value {
+			return values
 		}
-		resp.ErrorMsg(c, http.StatusInternalServerError, 500, err.Error())
-		return
 	}
-	resp.Success(c, result)
+	return append(values, value)
 }

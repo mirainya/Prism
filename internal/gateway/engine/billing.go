@@ -3,33 +3,12 @@ package engine
 import (
 	"context"
 	"database/sql"
-	"encoding/json"
-	"fmt"
-	"unicode/utf8"
+	"errors"
 
+	gatewaybilling "github.com/mirainya/Prism/internal/gateway/billing"
 	"github.com/mirainya/Prism/internal/gateway/canonical"
 	"github.com/mirainya/Prism/internal/gateway/repository"
-	"github.com/mirainya/Prism/internal/gateway/routing"
-	"github.com/mirainya/Prism/internal/model"
-	"github.com/mirainya/Prism/internal/service"
-	"github.com/shopspring/decimal"
 )
-
-const (
-	defaultOutput    int64 = 4096
-	billingPrecision int32 = 8
-)
-
-// Reservation 先按请求上限预授权，终态再根据 usage 结算差额。
-// Retain 用于已产生部分输出但拿不到最终 usage 的保守结算。
-type Reservation struct {
-	billing         *service.BillingService
-	tokenID, userID uint
-	route           *routing.RouteResult
-	amount          decimal.Decimal
-	key             string
-	billingContext  service.BillingContext
-}
 
 type reservationLifecycle interface {
 	Cancel() error
@@ -40,24 +19,34 @@ type reservationLifecycle interface {
 type unifiedReservation struct {
 	store                 *repository.Store
 	callID, reservationID uint64
-	amount                decimal.Decimal
-	route                 *routing.RouteResult
+	pricing               gatewaybilling.RateSchedule
 }
 
-func (r *unifiedReservation) Cancel() error { return r.resolve("released", "reservation_released") }
-func (r *unifiedReservation) Retain() error { return r.resolve("settled", "reservation_settled") }
-func (r *unifiedReservation) Settle(u *canonical.Usage) error {
+func (r *unifiedReservation) Cancel() error {
+	return r.resolve("released", "reservation_released")
+}
+
+func (r *unifiedReservation) Retain() error {
+	return r.resolve("unknown_hold", "reservation_held_unknown")
+}
+
+func (r *unifiedReservation) Settle(usage *canonical.Usage) error {
 	if r == nil || r.store == nil || r.reservationID == 0 {
 		return nil
 	}
-	actual := decimal.Zero
-	if u != nil {
-		actual = cost(r.route, int64(u.InputTokens), int64(u.OutputTokens)).RoundCeil(billingPrecision)
+	facts, err := canonicalBillingFacts(usage)
+	if err != nil {
+		return errors.Join(err, r.Retain())
+	}
+	charge, err := r.pricing.Evaluate(facts)
+	if err != nil {
+		return errors.Join(err, r.Retain())
 	}
 	return r.store.WithTx(context.Background(), func(tx *sql.Tx) error {
-		return r.store.SettleReservation(context.Background(), tx, r.reservationID, actual.String())
+		return r.store.SettleReservation(context.Background(), tx, r.reservationID, charge.Amount.String())
 	})
 }
+
 func (r *unifiedReservation) resolve(target, event string) error {
 	if r == nil || r.store == nil || r.reservationID == 0 {
 		return nil
@@ -65,151 +54,4 @@ func (r *unifiedReservation) resolve(target, event string) error {
 	return r.store.WithTx(context.Background(), func(tx *sql.Tx) error {
 		return r.store.ResolveReservation(context.Background(), tx, r.reservationID, target, event)
 	})
-}
-
-func Reserve(b *service.BillingService, tokenID, userID uint, route *routing.RouteResult, req canonical.Request, key string) (*Reservation, error) {
-	return reserveWithBillingContext(b, tokenID, userID, route, req, key, service.BillingContext{})
-}
-
-func reserveWithBillingContext(
-	b *service.BillingService,
-	tokenID, userID uint,
-	route *routing.RouteResult,
-	req canonical.Request,
-	key string,
-	billingContext service.BillingContext,
-) (*Reservation, error) {
-	if b == nil {
-		return nil, fmt.Errorf("billing service is required")
-	}
-	amount := estimate(route, req).RoundCeil(billingPrecision)
-	reserveKey, settleKey := "", ""
-	if key != "" {
-		reserveKey = key + ":reserve"
-		settleKey = key + ":settle"
-	}
-	r := &Reservation{
-		billing: b, tokenID: tokenID, userID: userID, route: route,
-		amount: amount, key: settleKey, billingContext: billingContext,
-	}
-	if amount.IsPositive() {
-		reserveContext := billingContext
-		reserveContext.Phase = model.BillingPhaseReserve
-		if err := b.DeductWithBillingContext(tokenID, userID, amount, reserveKey, reserveContext); err != nil {
-			return nil, err
-		}
-	}
-	return r, nil
-}
-func (r *Reservation) Cancel() error {
-	if r == nil || !r.amount.IsPositive() {
-		return nil
-	}
-	billingContext := r.billingContext
-	billingContext.Phase = model.BillingPhaseRefund
-	return r.billing.SettleReservationWithBillingContext(
-		r.tokenID, r.userID, r.amount, decimal.Zero, r.key, billingContext,
-	)
-}
-func (r *Reservation) Settle(u *canonical.Usage) error {
-	if r == nil || !r.amount.IsPositive() {
-		return nil
-	}
-	if u == nil {
-		return r.settle(decimal.Zero, model.BillingPhaseSettle)
-	}
-	actual := cost(r.route, int64(u.InputTokens), int64(u.OutputTokens))
-	return r.settle(actual.RoundCeil(billingPrecision), model.BillingPhaseSettle)
-}
-
-func (r *Reservation) Retain() error {
-	if r == nil || !r.amount.IsPositive() {
-		return nil
-	}
-	return r.settle(r.amount, model.BillingPhaseSettle)
-}
-
-func (r *Reservation) settle(actual decimal.Decimal, phase string) error {
-	billingContext := r.billingContext
-	billingContext.Phase = phase
-	return r.billing.SettleReservationWithBillingContext(
-		r.tokenID, r.userID, r.amount, actual, r.key, billingContext,
-	)
-}
-func estimate(route *routing.RouteResult, req canonical.Request) decimal.Decimal {
-	if route == nil {
-		return decimal.Zero
-	}
-	if route.PriceMode == "request" {
-		return route.InputPrice
-	}
-	// 未声明输出上限时 4096 仅用于预授权估算，不限制实际模型输出。
-	out := defaultOutput
-	if req.MaxOutputTokens != nil && *req.MaxOutputTokens > 0 {
-		out = int64(*req.MaxOutputTokens)
-	}
-	return cost(route, estimateInputTokens(req), out)
-}
-
-func estimateInputTokens(req canonical.Request) int64 {
-	tokens := int64(8)
-	tokens += estimateTextTokens(req.Instructions) + estimateTextTokens(req.User)
-	for _, item := range req.Items {
-		tokens += 4 + estimateTextTokens(string(item.Role)) + estimateTextTokens(item.Name)
-		for _, content := range item.Content {
-			tokens += 3 + estimateTextTokens(content.Text) + estimateTextTokens(content.Transcript)
-			switch content.Type {
-			case "input_image", "image", "image_url":
-				tokens += 1024
-			case "input_file", "file", "document", "input_audio", "audio", "input_video", "video":
-				tokens += 2048
-			}
-		}
-		tokens += estimateRawTokens(item.Arguments) + estimateRawTokens(item.Output)
-	}
-	for _, tool := range req.Tools {
-		tokens += 8 + estimateTextTokens(tool.Name) + estimateTextTokens(tool.Description)
-		tokens += estimateRawTokens(tool.InputSchema) + estimateRawTokens(tool.Options)
-	}
-	if req.ResponseFormat != nil {
-		tokens += 8 + estimateTextTokens(req.ResponseFormat.Name) + estimateTextTokens(req.ResponseFormat.Description)
-		tokens += estimateRawTokens(req.ResponseFormat.Schema)
-	}
-	for key, value := range req.Metadata {
-		tokens += estimateTextTokens(key) + estimateTextTokens(value)
-	}
-	if tokens < 1 {
-		return 1
-	}
-	return tokens
-}
-
-func estimateRawTokens(raw json.RawMessage) int64 {
-	if len(raw) == 0 {
-		return 0
-	}
-	return estimateTextTokens(string(raw))
-}
-
-func estimateTextTokens(value string) int64 {
-	if value == "" {
-		return 0
-	}
-	var ascii, nonASCII int64
-	for len(value) > 0 {
-		r, size := utf8.DecodeRuneInString(value)
-		value = value[size:]
-		if r < utf8.RuneSelf {
-			ascii++
-		} else {
-			nonASCII++
-		}
-	}
-	return (ascii+3)/4 + nonASCII
-}
-func cost(route *routing.RouteResult, input, output int64) decimal.Decimal {
-	if route.PriceMode == "request" {
-		return route.InputPrice
-	}
-	return route.InputPrice.Mul(decimal.NewFromInt(input)).Add(route.OutputPrice.Mul(decimal.NewFromInt(output))).Div(decimal.NewFromInt(1000000))
 }

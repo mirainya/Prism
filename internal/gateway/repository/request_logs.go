@@ -34,6 +34,7 @@ type RequestLogResult struct {
 	DurationMS                        *uint64
 	ErrorCode                         string
 	RequestComplete, ResponseComplete bool
+	ResponsePayload                   *BlobInput `json:"-"`
 }
 
 func (s *Store) CompleteRequestLog(ctx context.Context, tx *sql.Tx, id uint64, status string, result RequestLogResult) error {
@@ -52,8 +53,17 @@ func (s *Store) CompleteRequestLog(ctx context.Context, tx *sql.Tx, id uint64, s
 	if !validRequestLogTransition(current, status) {
 		return ErrConflict
 	}
+	if result.ResponsePayload != nil {
+		if _, err := s.PutRequestLogPayload(ctx, tx, id, "response", *result.ResponsePayload); err != nil {
+			return err
+		}
+	}
 	now := nowUTC()
-	res, err := tx.ExecContext(ctx, `UPDATE gw_channel_request_logs SET status=?,response_bytes_hmac=?,request_bytes_complete=?,response_bytes_complete=?,http_status=?,duration_ms=?,error_code=?,completed_at=? WHERE id=? AND status IN ('prepared','dispatching','sent','unknown')`, status, emptyAsNull(result.ResponseBytesHMAC), result.RequestComplete, result.ResponseComplete, nullableUint16(result.HTTPStatus), nullableUint64(result.DurationMS), result.ErrorCode, now, id)
+	var completedAt any = now
+	if status == "dispatching" || status == "sent" {
+		completedAt = nil
+	}
+	res, err := tx.ExecContext(ctx, `UPDATE gw_channel_request_logs SET status=?,response_bytes_hmac=?,request_bytes_complete=?,response_bytes_complete=?,http_status=?,duration_ms=?,error_code=?,completed_at=? WHERE id=? AND status IN ('prepared','dispatching','sent','unknown')`, status, emptyAsNull(result.ResponseBytesHMAC), result.RequestComplete, result.ResponseComplete, nullableUint16(result.HTTPStatus), nullableUint64(result.DurationMS), result.ErrorCode, completedAt, id)
 	if err != nil {
 		return fmt.Errorf("complete request log: %w", err)
 	}
@@ -65,42 +75,6 @@ func (s *Store) CompleteRequestLog(ctx context.Context, tx *sql.Tx, id uint64, s
 		return ErrConflict
 	}
 	return nil
-}
-
-type SlotInput struct {
-	CredentialID, CredentialPoolID uint64
-	Scope                          string
-	RequestLogID, AttemptID        *uint64
-}
-
-func (s *Store) AcquireCredentialSlot(ctx context.Context, tx *sql.Tx, in SlotInput) (uint64, error) {
-	if tx == nil || in.CredentialID == 0 || in.CredentialPoolID == 0 || (in.Scope != "request" && in.Scope != "task") || (in.Scope == "request" && (in.RequestLogID == nil || in.AttemptID != nil)) || (in.Scope == "task" && (in.AttemptID == nil || in.RequestLogID != nil)) {
-		return 0, ErrInvalidInput
-	}
-	var poolStatus string
-	if err := tx.QueryRowContext(ctx, `SELECT status FROM gw_credential_pools WHERE id=? FOR UPDATE`, in.CredentialPoolID).Scan(&poolStatus); err == sql.ErrNoRows {
-		return 0, ErrNotFound
-	} else if err != nil {
-		return 0, err
-	}
-	if poolStatus == "disabled" || (in.Scope == "request" && poolStatus != "active") {
-		return 0, ErrConflict
-	}
-	var credentialStatus string
-	if err := tx.QueryRowContext(ctx, `SELECT status FROM gw_credentials WHERE id=? AND credential_pool_id=? FOR UPDATE`, in.CredentialID, in.CredentialPoolID).Scan(&credentialStatus); err == sql.ErrNoRows {
-		return 0, ErrNotFound
-	} else if err != nil {
-		return 0, err
-	}
-	if credentialStatus == "disabled" || (in.Scope == "request" && credentialStatus != "active") {
-		return 0, ErrConflict
-	}
-	now := nowUTC()
-	result, err := tx.ExecContext(ctx, `INSERT INTO gw_credential_slots(credential_id,credential_pool_id,scope,request_log_id,attempt_id,state,state_version,acquired_at) VALUES (?,?,?,?,?,'active',1,?)`, in.CredentialID, in.CredentialPoolID, in.Scope, nullableID(in.RequestLogID), nullableID(in.AttemptID), now)
-	if err != nil {
-		return 0, fmt.Errorf("acquire credential slot: %w", err)
-	}
-	return lastID(result)
 }
 
 func (s *Store) ReleaseCredentialSlot(ctx context.Context, tx *sql.Tx, id uint64, recoveryRequired bool) error {
@@ -151,7 +125,7 @@ func emptyAsNull(value string) any {
 
 func validRequestAction(value string) bool {
 	switch value {
-	case "submit", "recover", "query", "cancel", "named_action", "result_fetch", "catalog_discovery", "entitlement_probe", "commercial_check":
+	case "submit", "recover", "query", "cancel", "reconcile_delivery", "named_action", "result_fetch", "catalog_discovery", "entitlement_probe", "commercial_check":
 		return true
 	default:
 		return false

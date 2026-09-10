@@ -109,3 +109,42 @@ func TestOpenAIImageExecutionContextSurvivesClientCancellation(t *testing.T) {
 		t.Fatalf("execution context was canceled with client: %v", err)
 	}
 }
+
+func TestImageSSEParserHandlesSplitCRLFAndMultilineData(t *testing.T) {
+	var events [][]byte
+	parser := newImageSSEParser(func(payload []byte) {
+		events = append(events, append([]byte(nil), payload...))
+	})
+	for _, chunk := range [][]byte{
+		[]byte(": comment\r"),
+		[]byte("\ndata: {\"type\":\r\n"),
+		[]byte("data: \"image_generation.partial_image\"}\r"),
+		[]byte("\n\r\ndata: [DONE]\n\n"),
+	} {
+		if err := parser.Write(chunk); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := parser.Finish(); err != nil {
+		t.Fatal(err)
+	}
+	if len(events) != 2 || string(events[0]) != "{\"type\":\n\"image_generation.partial_image\"}" || string(events[1]) != "[DONE]" {
+		t.Fatalf("events = %q", events)
+	}
+}
+
+func TestImageSSESessionForwardsPartialBeforePersistedCompletion(t *testing.T) {
+	recorder := &imageSSEFlushRecorder{}
+	session := startImageSSESession(recorder)
+	if err := session.Observe([]byte("data: {\"type\":\"image_generation.partial_image\",\"b64_json\":\"cGFydGlhbA==\"}\n\n")); err != nil {
+		t.Fatal(err)
+	}
+	session.Complete(recorder, OpenAIImageResponse{Created: 42, Data: []OpenAIImageData{{URL: "https://delivery.example/image.png"}}})
+
+	body := recorder.String()
+	partial := strings.Index(body, "image_generation.partial_image")
+	completed := strings.Index(body, "image_generation.completed")
+	if partial < 0 || completed <= partial || !strings.HasSuffix(body, "data: [DONE]\n\n") {
+		t.Fatalf("SSE body = %s", body)
+	}
+}

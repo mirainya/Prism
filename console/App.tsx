@@ -8,28 +8,22 @@ import Home from './pages/Home';
 import Pricing from './pages/Pricing';
 // 登录后的页面按路由懒加载,避免全部打进首屏主 bundle
 const Dashboard = lazy(() => import('./pages/Dashboard'));
-const Channels = lazy(() => import('./pages/Channels'));
-const GatewayChannels = lazy(() => import('./pages/GatewayChannels'));
-const Capabilities = lazy(() => import('./pages/Capabilities'));
 const Users = lazy(() => import('./pages/Users'));
 const Tokens = lazy(() => import('./pages/Tokens'));
 const Logs = lazy(() => import('./pages/Logs'));
 const CallLogs = lazy(() => import('./pages/CallLogs'));
 const Observability = lazy(() => import('./pages/Observability'));
-const RequestLogs = lazy(() => import('./pages/RequestLogs'));
 const ApiDocs = lazy(() => import('./pages/ApiDocs'));
 const ChatLogs = lazy(() => import('./pages/ChatLogs'));
-const ChatModels = lazy(() => import('./pages/GatewayModels'));
 const UnifiedGateway = lazy(() => import('./pages/UnifiedGateway'));
 const ChangePassword = lazy(() => import('./pages/ChangePassword'));
 const Playground = lazy(() => import('./pages/Playground'));
-const VideoChannels = lazy(() => import('./pages/VideoChannels'));
-const VideoChannelEditor = lazy(() => import('./pages/VideoChannelEditor'));
 const VideoTasks = lazy(() => import('./pages/VideoTasks'));
 import { User, UserRole } from './types';
 import { login, register, logout, getCurrentUser } from './services/api';
 import {LogIn, UserPlus, ArrowLeft} from 'lucide-react';
 import logo from '@/assets/logo.svg';
+import { APP_VERSION } from './version';
 
 const App: React.FC = () => {
   const [user, setUser] = useState<User | null>(null);
@@ -237,7 +231,7 @@ const App: React.FC = () => {
           </div>
 
           <p className="mt-8 text-center text-xs text-[var(--text-secondary)]">
-              棱镜 v1.0.0
+              棱镜 v{APP_VERSION}
           </p>
         </div>
       </div>
@@ -258,17 +252,9 @@ const App: React.FC = () => {
 
           {isAdmin && (
             <>
-              <Route path="/channels" element={<Channels />} />
-              <Route path="/gateway-channels" element={<GatewayChannels />} />
               <Route path="/unified-gateway" element={<UnifiedGateway />} />
-              <Route path="/chat-models" element={<ChatModels />} />
-              <Route path="/capabilities" element={<Capabilities />} />
-              <Route path="/video-channels" element={<VideoChannels />} />
-              <Route path="/video-channels/new" element={<VideoChannelEditor />} />
-              <Route path="/video-channels/:id/edit" element={<VideoChannelEditor />} />
               <Route path="/video-tasks" element={<VideoTasks />} />
               <Route path="/users" element={<Users />} />
-              <Route path="/request-logs" element={<RequestLogs />} />
             </>
           )}
 

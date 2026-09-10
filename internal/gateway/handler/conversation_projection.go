@@ -10,7 +10,6 @@ import (
 	"github.com/mirainya/Prism/internal/gateway/canonical"
 	"github.com/mirainya/Prism/internal/model"
 	"github.com/mirainya/Prism/internal/service"
-	"gorm.io/gorm"
 )
 
 const (
@@ -70,24 +69,6 @@ func parsePositiveConversationID(value string) (uint, error) {
 func requestJSONHasField(data []byte, field string) bool {
 	var object map[string]json.RawMessage
 	return json.Unmarshal(data, &object) == nil && object[field] != nil
-}
-
-func createAPIConversationCall(
-	callRequest *service.StartCallRequest,
-	projectionRequest service.ConversationProjectionInputRequest,
-) error {
-	if callRequest == nil {
-		return errors.New("API call request is required")
-	}
-	callRequest.ProjectConversation = true
-	return model.DB().Transaction(func(tx *gorm.DB) error {
-		call, err := service.NewAPICallService().StartCallTx(tx, callRequest)
-		if err != nil {
-			return err
-		}
-		projectionRequest.CallID = call.ID
-		return service.StageAPIConversationProjectionInputTx(tx, projectionRequest)
-	})
 }
 
 func projectAPIConversationBestEffort(action string, request service.ConversationProjectionRequest) bool {

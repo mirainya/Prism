@@ -4,8 +4,8 @@ on:
   push:
   pull_request:
 
-permissions:
-  contents: read
+# Every job declares its own minimal token permissions.
+permissions: {}
 
 concurrency:
   group: ci-${{ github.workflow }}-${{ github.ref }}
@@ -13,21 +13,25 @@ concurrency:
 
 jobs:
   verify:
-    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    runs-on: ubuntu-24.04
     timeout-minutes: 15
 
     steps:
       - name: Check out repository
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
       - name: Set up Go
-        uses: actions/setup-go@v7
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version-file: go.mod
           cache: true
 
       - name: Set up Node.js
-        uses: actions/setup-node@v7
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: 22
           cache: npm
@@ -36,6 +40,10 @@ jobs:
       - name: Install frontend dependencies
         working-directory: console
         run: npm ci
+
+      - name: Audit frontend dependencies
+        working-directory: console
+        run: npm audit --audit-level=high
 
       - name: Check frontend types
         working-directory: console
@@ -55,22 +63,28 @@ jobs:
       - name: Vet backend
         run: go vet ./...
 
+      - name: Audit backend dependencies
+        run: go run golang.org/x/vuln/cmd/govulncheck@v1.7.0 ./...
+
       - name: Check backend statically
         run: go run honnef.co/go/tools/cmd/staticcheck@v0.7.0 '-checks=all,-ST*' ./...
 
       - name: Build container image
         run: |
-          docker build --tag prism:ci .
+          docker build --build-arg BUILD_TIME=ci --build-arg SOURCE_REVISION="$(git rev-parse HEAD)" --tag prism:ci .
           test "$(docker image inspect prism:ci --format '{{.Config.User}}')" = "prism"
           test "$(docker image inspect prism:ci --format '{{json .Config.Healthcheck.Test}}')" != "null"
+          docker run --rm prism:ci ./prism version | grep -F 'Prism 2.0.0 (ci)'
 
   migration:
-    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    runs-on: ubuntu-24.04
     timeout-minutes: 10
 
     services:
       mysql:
-        image: mysql:8.0
+        image: docker.io/library/mysql:8.0@sha256:d0304ed9fdb64a3f6c7ad11a5fb4f13abfc10e6dfa3f288d652e7320c34df7f9
         env:
           MYSQL_ROOT_PASSWORD: prism-ci
           MYSQL_DATABASE: prism
@@ -84,15 +98,78 @@ jobs:
 
     steps:
       - name: Check out repository
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
       - name: Set up Go
-        uses: actions/setup-go@v7
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version-file: go.mod
           cache: true
 
-      - name: Test MySQL migration lifecycle
+      - name: Test MySQL migrations and imports
         env:
           PRISM_MIGRATION_TEST_DSN: "root:prism-ci@tcp(127.0.0.1:3306)/prism?charset=utf8mb4&parseTime=true&loc=UTC&multiStatements=true"
-        run: go test -tags=integration ./internal/migrate -run TestMySQLMigrationLifecycle -count=1
+        run: go test -tags=integration ./internal/migrate -count=1
+
+  console-browser:
+    permissions:
+      contents: read
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+
+    services:
+      mysql:
+        image: docker.io/library/mysql:8.0@sha256:d0304ed9fdb64a3f6c7ad11a5fb4f13abfc10e6dfa3f288d652e7320c34df7f9
+        env:
+          MYSQL_ROOT_PASSWORD: prism-ci
+        ports:
+          - 3306:3306
+        options: >-
+          --health-cmd="mysqladmin ping -h localhost -pprism-ci"
+          --health-interval=5s
+          --health-timeout=3s
+          --health-retries=20
+      redis:
+        image: docker.io/library/redis:7-alpine@sha256:7aec734b2bb298a1d769fd8729f13b8514a41bf90fcdd1f38ec52267fbaa8ee6
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd="redis-cli ping"
+          --health-interval=5s
+          --health-timeout=3s
+          --health-retries=20
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Set up Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: console/package-lock.json
+
+      - name: Install and build frontend
+        working-directory: console
+        run: |
+          npm ci
+          npm run build
+          npx playwright install --with-deps chromium
+
+      - name: Test authenticated console in a browser
+        env:
+          PRISM_CONSOLE_TEST_DSN: "root:prism-ci@tcp(127.0.0.1:3306)/?charset=utf8mb4&parseTime=true&loc=UTC&multiStatements=true"
+          PRISM_CONSOLE_TEST_REDIS: "127.0.0.1:6379"
+          PRISM_BROWSER_CHANNEL: chromium
+        run: go test -tags=integration ./internal/api -run '^TestUnifiedConsoleMySQLBrowser$' -count=1

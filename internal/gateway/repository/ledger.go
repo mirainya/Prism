@@ -16,9 +16,9 @@ type LedgerPostingEntry struct {
 	Amount    string
 }
 
-// PostLedger writes one balanced double-entry transaction. Account rows are
+// postLedger writes one balanced double-entry transaction. Account rows are
 // locked in ascending ID order, which is the same order every caller must use.
-func (s *Store) PostLedger(ctx context.Context, tx *sql.Tx, billingEventID uint64, currency string, currencyVersion uint32, entries []LedgerPostingEntry) (uint64, error) {
+func (s *Store) postLedger(ctx context.Context, tx *sql.Tx, billingEventID uint64, currency string, currencyVersion uint32, entries []LedgerPostingEntry) (uint64, error) {
 	if tx == nil || billingEventID == 0 || currency == "" || currencyVersion == 0 || len(entries) < 2 {
 		return 0, ErrInvalidInput
 	}
@@ -63,7 +63,7 @@ func (s *Store) PostLedger(ctx context.Context, tx *sql.Tx, billingEventID uint6
 	sort.Slice(ids, func(i, j int) bool { return ids[i] < ids[j] })
 	for _, id := range ids {
 		var locked uint64
-		if err := tx.QueryRowContext(ctx, `SELECT id FROM ledger_accounts WHERE id=? AND currency_code=? AND currency_version=? FOR UPDATE`, id, currency, currencyVersion).Scan(&locked); err == sql.ErrNoRows {
+		if err := tx.QueryRowContext(ctx, s.forUpdate(`SELECT id FROM ledger_accounts WHERE id=? AND currency_code=? AND currency_version=?`), id, currency, currencyVersion).Scan(&locked); err == sql.ErrNoRows {
 			return 0, ErrNotFound
 		} else if err != nil {
 			return 0, err
@@ -91,11 +91,11 @@ func (s *Store) PostLedger(ctx context.Context, tx *sql.Tx, billingEventID uint6
 		if operator == "-" {
 			query = `UPDATE ledger_accounts SET balance=balance-? WHERE id=? AND currency_code=? AND currency_version=?`
 		}
-		if _, err = tx.ExecContext(ctx, query, delta, entry.AccountID, currency, currencyVersion); err != nil {
+		if err = requireOneRow(tx.ExecContext(ctx, query, delta, entry.AccountID, currency, currencyVersion)); err != nil {
 			return 0, err
 		}
 	}
-	if _, err = tx.ExecContext(ctx, `UPDATE ledger_transactions SET state='posted',posted_at=? WHERE id=? AND state='assembling'`, now, transactionID); err != nil {
+	if err = requireOneRow(tx.ExecContext(ctx, `UPDATE ledger_transactions SET state='posted',posted_at=? WHERE id=? AND state='assembling'`, now, transactionID)); err != nil {
 		return 0, err
 	}
 	return transactionID, nil

@@ -12,7 +12,7 @@ var queryServiceConsole = service.NewQueryService()
 
 // ListCapabilityChannels 返回每个能力可用的渠道列表
 func ListCapabilityChannels(c *gin.Context) {
-	result, err := queryServiceConsole.ListCapabilityChannels()
+	result, err := queryServiceConsole.ListCapabilityChannels(c.Request.Context())
 	if err != nil {
 		resp.ErrorMsg(c, http.StatusInternalServerError, 500, "failed to get capability channels")
 		return

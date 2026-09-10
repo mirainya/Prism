@@ -4,27 +4,14 @@ import "github.com/gin-gonic/gin"
 
 // RegisterRoutes 注册 /v1 Token 认证路由
 func RegisterRoutes(group *gin.RouterGroup) {
-	// 查询接口
-	group.GET("/channels", ListAvailableChannels)
-	group.GET("/capabilities", ListAvailableCapabilities)
-
-	// 统一能力接口
-	group.POST("/capabilities/:capability", InvokeCapability)
-
-	// 任务管理
-	group.GET("/tasks/:task_no", GetTaskByNo)
-	group.POST("/tasks/:task_no/cancel", CancelTask)
-
-	// OpenAI 标准图像接口(同步返图,自动适配同步/异步渠道)
 	group.POST("/images/generations", CreateImageGenerationOpenAI)
 	group.POST("/images/edits", CreateImageEditOpenAI)
 	group.POST("/videos/generations", CreateVideoGeneration)
 	group.POST("/videos/estimate", EstimateVideoGeneration)
+	group.GET("/videos/generations", ListVideoGenerations)
 	group.GET("/videos/generations/:id", GetVideoGeneration)
 	group.GET("/videos/generations/:id/queue", GetVideoGenerationQueue)
 	group.GET("/videos/queue", ListVideoQueue)
-	group.POST("/videos/generations/:id/cancel", CancelVideoGeneration)
-	group.POST("/videos/generations/:id/priority-queue", PriorityQueueVideoGeneration)
 	group.POST("/videos/assets", CreateVideoAsset)
 	group.POST("/videos/uploads", CreateVideoAsset)
 	group.GET("/videos/assets/:asset_id", GetVideoAsset)

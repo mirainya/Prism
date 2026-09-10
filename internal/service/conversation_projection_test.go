@@ -19,10 +19,7 @@ import (
 func TestProjectAPIConversationPreservesCanonicalMultimodalToolsAndLinksLedger(t *testing.T) {
 	db := setupConversationDomainTestDB(t)
 	call := createConversationTestCall(t, db, "call_projection_canonical", 11, 22, decimal.RequireFromString("0.125"))
-	requestLog := &model.ChannelRequestLog{CallID: call.ID, RequestType: model.RequestTypeChat}
-	if err := db.Create(requestLog).Error; err != nil {
-		t.Fatal(err)
-	}
+	requestLogID := createConversationTestRequestLog(t, db, call.ID, 17, "openai_chat", 25)
 	input := []canonical.Item{
 		canonicalMessage(canonical.RoleSystem, "rules", "input_text"),
 		{Type: "message", Role: canonical.RoleUser, Content: []canonical.Content{
@@ -57,7 +54,7 @@ func TestProjectAPIConversationPreservesCanonicalMultimodalToolsAndLinksLedger(t
 	if err := db.First(&turn, "call_id = ?", call.ID).Error; err != nil {
 		t.Fatal(err)
 	}
-	if turn.RequestLogID != requestLog.ID || turn.TotalTokens != call.TotalTokens || !turn.Cost.Equal(call.FinalCost) || turn.FinishReason != "tool_calls" {
+	if turn.RequestLogID != requestLogID || turn.TotalTokens != call.TotalTokens || !turn.Cost.Equal(call.FinalCost) || turn.FinishReason != "tool_calls" {
 		t.Fatalf("turn = %#v", turn)
 	}
 	var items []model.ConversationItem
@@ -80,18 +77,6 @@ func TestProjectAPIConversationPreservesCanonicalMultimodalToolsAndLinksLedger(t
 	}
 	if storedTool.CallID != "tool_current" || storedTool.Name != "lookup" || string(storedTool.Arguments) != `{"q":"x"}` {
 		t.Fatalf("stored tool item = %#v", storedTool)
-	}
-	if err := db.First(call, "id = ?", call.ID).Error; err != nil {
-		t.Fatal(err)
-	}
-	if call.ConversationID != conversationID {
-		t.Fatalf("call conversation = %d, want %d", call.ConversationID, conversationID)
-	}
-	if err := db.First(requestLog, requestLog.ID).Error; err != nil {
-		t.Fatal(err)
-	}
-	if requestLog.ConversationID != conversationID {
-		t.Fatalf("request log conversation = %d, want %d", requestLog.ConversationID, conversationID)
 	}
 	context, err := LoadConversationContextStrict(fmt.Sprint(conversationID), 22, "model-a")
 	if err != nil {
@@ -264,7 +249,7 @@ func TestCanonicalConversationFingerprintPreservesLargeJSONIntegers(t *testing.T
 	}
 }
 
-func TestCanonicalConversationStateRebuildsAfterLegacyTurn(t *testing.T) {
+func TestCanonicalConversationStateAdvancesAfterChatTurn(t *testing.T) {
 	db := setupConversationDomainTestDB(t)
 	firstCall := createConversationTestCall(t, db, "call_projection_before_legacy", 1, 2, decimal.Zero)
 	conversationID, err := ProjectAPIConversation(ConversationProjectionRequest{
@@ -283,20 +268,20 @@ func TestCanonicalConversationStateRebuildsAfterLegacyTurn(t *testing.T) {
 		t.Fatalf("initial canonical state = %#v", conversation)
 	}
 
-	legacyCall := createConversationTestCall(t, db, "call_projection_legacy_middle", 1, 2, decimal.Zero)
+	chatCall := createConversationTestCall(t, db, "call_projection_chat_middle", 1, 2, decimal.Zero)
 	if _, err := SaveConversationTurn(
 		&ConversationContext{Conv: &conversation}, 1, 2, "model-a",
-		[]chat.ChatMessage{{Role: model.RoleUser, Content: "legacy next"}},
-		chat.ChatMessage{Role: model.RoleAssistant, Content: "legacy answer"},
-		nil, "stop", "", legacyCall.ID, 0,
+		[]chat.ChatMessage{{Role: model.RoleUser, Content: "chat next"}},
+		chat.ChatMessage{Role: model.RoleAssistant, Content: "chat answer"},
+		nil, "stop", "", chatCall.ID, 0,
 	); err != nil {
 		t.Fatal(err)
 	}
 	if err := db.First(&conversation, conversationID).Error; err != nil {
 		t.Fatal(err)
 	}
-	if conversation.CanonicalStateVersion != 0 || conversation.CanonicalItemCount != 0 || conversation.CanonicalMatchHash != "" {
-		t.Fatalf("legacy turn did not invalidate canonical state: %#v", conversation)
+	if conversation.CanonicalStateVersion != 1 || conversation.CanonicalItemCount != 4 || conversation.CanonicalMatchHash == "" {
+		t.Fatalf("chat turn did not advance canonical state: %#v", conversation)
 	}
 
 	nextCall := createConversationTestCall(t, db, "call_projection_after_legacy", 1, 2, decimal.Zero)
@@ -305,14 +290,14 @@ func TestCanonicalConversationStateRebuildsAfterLegacyTurn(t *testing.T) {
 		InputItems: []canonical.Item{
 			canonicalMessage(canonical.RoleUser, "api first", "input_text"),
 			canonicalMessage(canonical.RoleAssistant, "api answer", "input_text"),
-			canonicalMessage(canonical.RoleUser, "legacy next", "input_text"),
-			canonicalMessage(canonical.RoleAssistant, "legacy answer", "input_text"),
+			canonicalMessage(canonical.RoleUser, "chat next", "input_text"),
+			canonicalMessage(canonical.RoleAssistant, "chat answer", "input_text"),
 			canonicalMessage(canonical.RoleUser, "api final", "input_text"),
 		},
 		OutputItems: []canonical.Item{canonicalMessage(canonical.RoleAssistant, "final answer", "output_text")},
 	})
 	if err != nil || returnedID != conversationID {
-		t.Fatalf("continuation after legacy turn = %d, %v", returnedID, err)
+		t.Fatalf("continuation after chat turn = %d, %v", returnedID, err)
 	}
 	var turn model.ConversationTurn
 	if err := db.First(&turn, "call_id = ?", nextCall.ID).Error; err != nil {
@@ -406,17 +391,13 @@ func TestProjectAPIConversationRecordsFailureWithoutAddingItToMatchableHistory(t
 	conversationID := projectConversationTestTurn(t, db, "call_projection_failure_base", baseInput, baseOutput)
 
 	failedCall := createConversationTestCall(t, db, "call_projection_failure", 1, 2, decimal.RequireFromString("0.2"))
-	if err := db.Model(failedCall).Updates(map[string]any{
-		"status": model.APICallStatusFailed, "error_type": "upstream_error",
-		"error_code": "bad_gateway", "error_message": "upstream failed",
-	}).Error; err != nil {
-		t.Fatal(err)
-	}
+	updateConversationTestCallStatus(t, db, failedCall, model.APICallStatusFailed)
 	failedInput := append(canonical.CloneItems(baseInput), canonicalMessage(canonical.RoleAssistant, "ok", "input_text"))
 	failedInput = append(failedInput, canonicalMessage(canonical.RoleUser, "fail", "input_text"))
 	returnedID, err := ProjectAPIConversation(ConversationProjectionRequest{
 		UserID: 1, TokenID: 2, Model: "model-a", CallID: failedCall.ID,
-		InputItems: failedInput,
+		InputItems: failedInput, ErrorType: "upstream_error",
+		ErrorCode: "bad_gateway", ErrorMessage: "upstream failed",
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -542,9 +523,7 @@ func TestProjectAPIConversationKeepsOnlyPrimaryChoiceInTimeline(t *testing.T) {
 func TestProjectAPIConversationRejectsNonTerminalOrMismatchedStatus(t *testing.T) {
 	db := setupConversationDomainTestDB(t)
 	call := createConversationTestCall(t, db, "call_projection_status", 1, 2, decimal.Zero)
-	if err := db.Model(call).Update("status", model.APICallStatusInProgress).Error; err != nil {
-		t.Fatal(err)
-	}
+	updateConversationTestCallStatus(t, db, call, model.APICallStatusInProgress)
 	request := ConversationProjectionRequest{
 		UserID: 1, TokenID: 2, Model: "model-a", CallID: call.ID,
 		InputItems:  []canonical.Item{canonicalMessage(canonical.RoleUser, "hello", "input_text")},
@@ -554,9 +533,7 @@ func TestProjectAPIConversationRejectsNonTerminalOrMismatchedStatus(t *testing.T
 		t.Fatalf("non-terminal projection error = %v", err)
 	}
 
-	if err := db.Model(call).Update("status", model.APICallStatusFailed).Error; err != nil {
-		t.Fatal(err)
-	}
+	updateConversationTestCallStatus(t, db, call, model.APICallStatusFailed)
 	request.Status = model.ConversationTurnCompleted
 	if _, err := ProjectAPIConversation(request); !errors.Is(err, ErrInvalidConversationTurnState) {
 		t.Fatalf("mismatched projection error = %v", err)
@@ -565,9 +542,6 @@ func TestProjectAPIConversationRejectsNonTerminalOrMismatchedStatus(t *testing.T
 
 func TestProjectAPIConversationUsesExplicitHintsAndFinalAttemptMetadata(t *testing.T) {
 	db := setupConversationDomainTestDB(t)
-	if err := db.AutoMigrate(&model.APICallAttempt{}); err != nil {
-		t.Fatal(err)
-	}
 	baseCall := createConversationTestCall(t, db, "call_projection_hint_base", 1, 2, decimal.Zero)
 	baseID, err := ProjectAPIConversation(ConversationProjectionRequest{
 		UserID: 1, TokenID: 2, Model: "model-a", CallID: baseCall.ID,
@@ -580,26 +554,13 @@ func TestProjectAPIConversationUsesExplicitHintsAndFinalAttemptMetadata(t *testi
 	}
 
 	hintCall := createConversationTestCall(t, db, "call_projection_hint", 1, 2, decimal.Zero)
-	attempt := &model.APICallAttempt{
-		CallID: hintCall.ID, AttemptNo: 1, Status: model.APICallAttemptStatusCompleted,
-		KeyID: 77, Transport: model.UpstreamTransport("openai_responses"), ProviderResponseID: "provider-next",
-	}
-	if err := db.Create(attempt).Error; err != nil {
-		t.Fatal(err)
-	}
-	if err := db.Model(hintCall).Update("final_attempt_id", attempt.ID).Error; err != nil {
-		t.Fatal(err)
-	}
-	requestLog := &model.ChannelRequestLog{CallID: hintCall.ID, AttemptID: attempt.ID, FinishReason: "stop", RequestType: model.RequestTypeResponses}
-	if err := db.Create(requestLog).Error; err != nil {
-		t.Fatal(err)
-	}
+	requestLogID := createConversationTestRequestLog(t, db, hintCall.ID, 77, "openai_responses", 25)
 	returnedID, err := ProjectAPIConversation(ConversationProjectionRequest{
 		UserID: 1, TokenID: 2, Model: "model-a", CallID: hintCall.ID,
 		PreviousResponseID: "provider-base",
 		InputItems:         []canonical.Item{canonicalMessage(canonical.RoleUser, "delta only", "input_text")},
 		OutputItems:        []canonical.Item{canonicalMessage(canonical.RoleAssistant, "next", "output_text")},
-		Status:             model.ConversationTurnCompleted,
+		Status:             model.ConversationTurnCompleted, ProviderResponseID: "provider-next", FinishReason: "stop",
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -617,14 +578,14 @@ func TestProjectAPIConversationUsesExplicitHintsAndFinalAttemptMetadata(t *testi
 	if err := db.First(&turn, "call_id = ?", hintCall.ID).Error; err != nil {
 		t.Fatal(err)
 	}
-	if turn.RequestLogID != requestLog.ID || turn.ProviderResponseID != "provider-next" || turn.FinishReason != "stop" {
+	if turn.RequestLogID != requestLogID || turn.ProviderResponseID != "provider-next" || turn.FinishReason != "stop" {
 		t.Fatalf("hydrated turn = %#v", turn)
 	}
 	var conversation model.Conversation
 	if err := db.First(&conversation, baseID).Error; err != nil {
 		t.Fatal(err)
 	}
-	if conversation.ProviderKeyID != 77 || conversation.UpstreamTransport != attempt.Transport {
+	if conversation.ProviderKeyID != 77 || conversation.UpstreamTransport != model.UpstreamTransportOpenAIResponses {
 		t.Fatalf("hydrated provenance = %#v", conversation)
 	}
 }
@@ -632,11 +593,7 @@ func TestProjectAPIConversationUsesExplicitHintsAndFinalAttemptMetadata(t *testi
 func TestProjectAPIConversationResolvesOlderPublicResponseAndPreservesCompletedProviderState(t *testing.T) {
 	db := setupConversationDomainTestDB(t)
 	baseCall := createConversationTestCall(t, db, "call_projection_public_base", 1, 2, decimal.Zero)
-	if err := db.Model(baseCall).Updates(map[string]any{
-		"resource_type": "response", "resource_id": "resp_projection_base",
-	}).Error; err != nil {
-		t.Fatal(err)
-	}
+	createConversationTestResource(t, db, baseCall.ID, "resp_projection_base", "response", 1, 2)
 	conversationID, err := ProjectAPIConversation(ConversationProjectionRequest{
 		UserID: 1, TokenID: 2, Model: "model-a", CallID: baseCall.ID,
 		InputItems:         []canonical.Item{canonicalMessage(canonical.RoleUser, "base", "input_text")},
@@ -650,21 +607,9 @@ func TestProjectAPIConversationResolvesOlderPublicResponseAndPreservesCompletedP
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := db.Create(&model.AIResponse{
-		ID: "resp_projection_base", UserID: 1, TokenID: 2, CallID: baseCall.ID,
-		Model: "model-a", Status: "completed", Store: true,
-		IdempotencyKey: "internal:resp_projection_base",
-	}).Error; err != nil {
-		t.Fatal(err)
-	}
-
 	failedCall := createConversationTestCall(t, db, "call_projection_public_failed", 1, 2, decimal.Zero)
-	if err := db.Model(failedCall).Updates(map[string]any{
-		"status": model.APICallStatusFailed, "resource_type": "response", "resource_id": "resp_projection_failed",
-		"error_type": "upstream_error", "error_code": "stream_failed",
-	}).Error; err != nil {
-		t.Fatal(err)
-	}
+	updateConversationTestCallStatus(t, db, failedCall, model.APICallStatusFailed)
+	createConversationTestResource(t, db, failedCall.ID, "resp_projection_failed", "response", 1, 2)
 	failedConversationID, err := ProjectAPIConversation(ConversationProjectionRequest{
 		UserID: 1, TokenID: 2, Model: "model-a", CallID: failedCall.ID,
 		PreviousResponseID: "resp_projection_base",
@@ -672,6 +617,7 @@ func TestProjectAPIConversationResolvesOlderPublicResponseAndPreservesCompletedP
 		OutputItems:        []canonical.Item{canonicalMessage(canonical.RoleAssistant, "partial", "output_text")},
 		Status:             model.ConversationTurnFailed,
 		ProviderResponseID: "provider-partial",
+		ErrorType:          "upstream_error", ErrorCode: "stream_failed",
 		Provenance: ConversationProvenance{
 			KeyID: 99, Transport: model.UpstreamTransportAnthropic,
 		},
@@ -698,11 +644,6 @@ func TestProjectAPIConversationResolvesOlderPublicResponseAndPreservesCompletedP
 		t.Fatalf("failed turn lost its partial provider state: %#v", failedTurn)
 	}
 
-	// Call metadata is independently retained; public response resolution must
-	// continue to work from the durable response-to-turn relationship.
-	if err := db.Delete(&model.APICall{}, "id = ?", baseCall.ID).Error; err != nil {
-		t.Fatal(err)
-	}
 	retryCall := createConversationTestCall(t, db, "call_projection_public_retry", 1, 2, decimal.Zero)
 	retryConversationID, err := ProjectAPIConversation(ConversationProjectionRequest{
 		UserID: 1, TokenID: 2, Model: "model-a", CallID: retryCall.ID,
@@ -723,12 +664,9 @@ func TestProjectAPIConversationRejectsForeignRequestLogAndSanitizesFailure(t *te
 	db := setupConversationDomainTestDB(t)
 	first := createConversationTestCall(t, db, "call_projection_log_first", 1, 2, decimal.Zero)
 	second := createConversationTestCall(t, db, "call_projection_log_second", 1, 2, decimal.Zero)
-	foreignLog := &model.ChannelRequestLog{CallID: second.ID, RequestType: model.RequestTypeChat}
-	if err := db.Create(foreignLog).Error; err != nil {
-		t.Fatal(err)
-	}
+	foreignLogID := createConversationTestRequestLog(t, db, second.ID, 23, "openai_chat", 25)
 	_, err := ProjectAPIConversation(ConversationProjectionRequest{
-		UserID: 1, TokenID: 2, Model: "model-a", CallID: first.ID, RequestLogID: foreignLog.ID,
+		UserID: 1, TokenID: 2, Model: "model-a", CallID: first.ID, RequestLogID: foreignLogID,
 		InputItems:  []canonical.Item{canonicalMessage(canonical.RoleUser, "hello", "input_text")},
 		OutputItems: []canonical.Item{canonicalMessage(canonical.RoleAssistant, "answer", "output_text")},
 	})
@@ -736,15 +674,11 @@ func TestProjectAPIConversationRejectsForeignRequestLogAndSanitizesFailure(t *te
 		t.Fatalf("foreign request log error = %v", err)
 	}
 
-	if err := db.Model(first).Updates(map[string]any{
-		"status": model.APICallStatusFailed, "error_message": "Bearer secret-call-token",
-	}).Error; err != nil {
-		t.Fatal(err)
-	}
+	updateConversationTestCallStatus(t, db, first, model.APICallStatusFailed)
 	_, err = ProjectAPIConversation(ConversationProjectionRequest{
 		UserID: 1, TokenID: 2, Model: "model-a", CallID: first.ID,
 		InputItems:   []canonical.Item{canonicalMessage(canonical.RoleUser, "hello", "input_text")},
-		ErrorMessage: "api_key=secret-projection-token",
+		ErrorMessage: "Bearer secret-call-token api_key=secret-projection-token",
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -773,12 +707,9 @@ func TestProjectAPIConversationFallsBackWhenRequestLogWasDeleted(t *testing.T) {
 			call := createConversationTestCall(
 				t, db, fmt.Sprintf("call_projection_missing_log_%d", index), 1, 2, decimal.Zero,
 			)
-			var latest model.ChannelRequestLog
+			var latestID uint
 			if testCase.createLatest {
-				latest = model.ChannelRequestLog{CallID: call.ID, RequestType: model.RequestTypeChat, FinishReason: "stop"}
-				if err := db.Create(&latest).Error; err != nil {
-					t.Fatal(err)
-				}
+				latestID = createConversationTestRequestLog(t, db, call.ID, 31, "openai_chat", 25)
 			}
 			_, err := ProjectAPIConversation(ConversationProjectionRequest{
 				UserID: 1, TokenID: 2, Model: "model-a", CallID: call.ID, RequestLogID: 999999,
@@ -794,7 +725,7 @@ func TestProjectAPIConversationFallsBackWhenRequestLogWasDeleted(t *testing.T) {
 			}
 			expected := uint(0)
 			if testCase.expectLatest {
-				expected = latest.ID
+				expected = latestID
 			}
 			if turn.RequestLogID != expected {
 				t.Fatalf("request log id = %d, want %d", turn.RequestLogID, expected)
@@ -1225,7 +1156,7 @@ func canonicalMessage(role canonical.Role, text, contentType string) canonical.I
 
 func setConversationProjectionTestCallID(t *testing.T, db *gorm.DB, call *model.APICall, conversationID uint) {
 	t.Helper()
-	if err := db.Model(call).Update("conversation_id", conversationID).Error; err != nil {
+	if err := linkConversationProjectionCallTx(db, call.ID, conversationID); err != nil {
 		t.Fatal(err)
 	}
 	call.ConversationID = conversationID

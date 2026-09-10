@@ -7,7 +7,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/google/uuid"
 	"github.com/mirainya/Prism/internal/gateway/canonical"
 	openairesponses "github.com/mirainya/Prism/internal/gateway/codec/openai_responses"
 	"github.com/mirainya/Prism/internal/gateway/engine"
@@ -17,7 +16,11 @@ import (
 )
 
 type V2Executor struct {
-	engine *engine.Engine
+	engine gatewayExecutor
+}
+
+type gatewayExecutor interface {
+	Execute(context.Context, canonical.Request, engine.ExecuteOptions) (*engine.Result, error)
 }
 
 type V2Result struct {
@@ -69,7 +72,7 @@ func (e *V2Executor) Execute(ctx context.Context, request *protocol.Request, pub
 		providerResponseID = result.Response.ID
 	}
 	if strings.TrimSpace(publicResponseID) == "" {
-		publicResponseID = "resp_" + strings.ReplaceAll(uuid.NewString(), "-", "")
+		publicResponseID = newResponseID()
 	}
 	canonicalResponse := *result.Response
 	canonicalResponse.Output = canonical.CloneItems(result.Response.Output)

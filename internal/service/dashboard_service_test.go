@@ -21,7 +21,7 @@ func TestDashboardStatsUseCallsWithoutCountingRetries(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	assertTodayStats(t, userStats.Today, 3, 2, 1, 3.25)
+	assertTodayStats(t, userStats.Today, 4, 2, 2, 3.25)
 	today := seed.today.Format("01-02")
 	var todayTrend *DailyStats
 	for index := range userStats.WeeklyTrend {
@@ -30,7 +30,7 @@ func TestDashboardStatsUseCallsWithoutCountingRetries(t *testing.T) {
 			break
 		}
 	}
-	if todayTrend == nil || todayTrend.Requests != 3 || todayTrend.Errors != 1 || math.Abs(todayTrend.Cost-3.25) > 0.0001 {
+	if todayTrend == nil || todayTrend.Requests != 4 || todayTrend.Errors != 2 || math.Abs(todayTrend.Cost-3.25) > 0.0001 {
 		t.Fatalf("today trend=%#v", todayTrend)
 	}
 	userDistribution := capabilityDistribution(userStats.CapabilityDist)
@@ -42,7 +42,7 @@ func TestDashboardStatsUseCallsWithoutCountingRetries(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	assertTodayStats(t, adminStats.Today, 4, 3, 1, 12.25)
+	assertTodayStats(t, adminStats.Today, 6, 4, 2, 12.25)
 	adminDistribution := capabilityDistribution(adminStats.CapabilityDist)
 	if adminDistribution["image-model"] != 2 || adminDistribution["video-model"] != 1 {
 		t.Fatalf("admin capability distribution=%v", adminDistribution)
@@ -52,11 +52,11 @@ func TestDashboardStatsUseCallsWithoutCountingRetries(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if userEnhanced.TokenUsage.TotalPromptTokens != 21 || userEnhanced.TokenUsage.TotalCompletionTokens != 5 || userEnhanced.TokenUsage.TotalTokens != 26 {
+	if userEnhanced.TokenUsage.TotalPromptTokens != 0 || userEnhanced.TokenUsage.TotalCompletionTokens != 0 || userEnhanced.TokenUsage.TotalTokens != 0 {
 		t.Fatalf("user token usage=%#v", userEnhanced.TokenUsage)
 	}
 	userRankings := modelRankingMap(userEnhanced.ModelRankings)
-	if userRankings["shared-model"].Calls != 3 || userRankings["shared-model"].TotalTokens != 22 || userRankings["response-model"].Calls != 1 {
+	if userRankings["shared-model"].Calls != 2 || userRankings["shared-model"].TotalTokens != 0 || userRankings["response-model"].Calls != 1 || userRankings["video-model"].Calls != 1 {
 		t.Fatalf("user model rankings=%v", userRankings)
 	}
 	userRates := channelRateMap(userEnhanced.ChannelRates)
@@ -84,7 +84,7 @@ func TestDashboardStatsUseCallsWithoutCountingRetries(t *testing.T) {
 	if adminRates[model.APICallRouteGatewayV2+":10"].ChannelType != "gateway-a" {
 		t.Fatalf("admin channel details missing: %#v", adminRates[model.APICallRouteGatewayV2+":10"])
 	}
-	if adminEnhanced.TokenUsage.TotalTokens != 126 {
+	if adminEnhanced.TokenUsage.TotalTokens != 0 {
 		t.Fatalf("admin token usage=%#v", adminEnhanced.TokenUsage)
 	}
 }
@@ -139,12 +139,7 @@ func TestListTasksKeepsStableSnapshotAcrossPages(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	inserted := model.Task{
-		TaskNo: "task-inserted-after-snapshot", UserID: seed.userOne, TokenID: seed.tokenOne,
-		ModelCode: "image-model", Status: model.TaskStatusSuccess,
-		BaseModel: model.BaseModel{CreatedAt: snapshot.Add(time.Second), UpdatedAt: snapshot.Add(time.Second)},
-	}
-	if err := model.DB().Create(&inserted).Error; err != nil {
+	if err := createUnifiedDashboardTask(model.DB(), 100, "task-inserted-after-snapshot", seed.userOne, seed.tokenOne, "image-model", "completed", snapshot.Add(time.Second)); err != nil {
 		t.Fatal(err)
 	}
 
@@ -156,6 +151,39 @@ func TestListTasksKeepsStableSnapshotAcrossPages(t *testing.T) {
 	}
 	if second.Total != 2 || len(second.Items) != 1 || second.Items[0].TaskNo != "task-user-image" {
 		t.Fatalf("second page=%#v", second)
+	}
+}
+
+func TestUnifiedConsoleCallsUseGatewayLedger(t *testing.T) {
+	seed := seedDashboardStats(t)
+	result, err := NewAPICallService().ListCalls(&ListCallsRequest{
+		Page: 1, PageSize: 20, ActorUserID: seed.userOne,
+		Model: "image-model", Status: model.APICallStatusCompleted,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Total != 1 || len(result.Items) != 1 || result.Items[0].ID != "call-image" || result.Items[0].Model != "image-model" {
+		t.Fatalf("unified calls=%#v", result)
+	}
+}
+
+func TestConversationCallFactsPreferUnifiedLedger(t *testing.T) {
+	seed := seedDashboardStats(t)
+	db := model.DB()
+	if err := db.AutoMigrate(&model.APICall{}); err != nil {
+		t.Fatal(err)
+	}
+	legacy := dashboardCall("call-image", 999, 999, "legacy-model", model.APICallStatusFailed, 0, 0, 0, 0, seed.today)
+	if err := db.Create(&legacy).Error; err != nil {
+		t.Fatal(err)
+	}
+	facts, err := loadConversationCallFactsTx(db, "call-image", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if facts.Call.UserID != seed.userOne || facts.Call.Model != "image-model" {
+		t.Fatalf("conversation facts=%#v", facts)
 	}
 }
 
@@ -174,11 +202,30 @@ func seedDashboardStats(t *testing.T) dashboardSeed {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := db.AutoMigrate(
-		&model.APICall{}, &model.APICallAttempt{}, &model.Channel{}, &model.GwChannel{},
-		&model.Model{}, &model.Endpoint{}, &model.Task{},
-	); err != nil {
-		t.Fatal(err)
+	for _, statement := range []string{
+		`CREATE TABLE gw_api_calls(id INTEGER PRIMARY KEY, public_id TEXT, user_id INTEGER, token_id INTEGER, operation_contract_id INTEGER, catalog_release_id INTEGER, model_operation_id INTEGER, sku_id INTEGER, status TEXT, quoted_amount TEXT, current_attempt_id INTEGER, final_attempt_id INTEGER, created_at DATETIME, updated_at DATETIME)`,
+		`CREATE TABLE gw_operation_contracts(id INTEGER PRIMARY KEY, operation_code TEXT)`,
+		`CREATE TABLE gw_operation_routes(id INTEGER PRIMARY KEY, operation_contract_id INTEGER, route_template TEXT)`,
+		`CREATE TABLE gw_models(id INTEGER PRIMARY KEY, model_code TEXT)`,
+		`CREATE TABLE gw_catalog_models(id INTEGER PRIMARY KEY, release_id INTEGER, model_id INTEGER, display_name TEXT)`,
+		`CREATE TABLE gw_model_operations(id INTEGER PRIMARY KEY, release_id INTEGER, catalog_model_id INTEGER)`,
+		`CREATE TABLE gw_api_resources(id INTEGER PRIMARY KEY, public_id TEXT, resource_kind TEXT, call_id INTEGER, user_id INTEGER, token_id INTEGER, created_at DATETIME)`,
+		`CREATE TABLE gw_capability_tasks(resource_id INTEGER PRIMARY KEY, task_no TEXT, status TEXT, progress INTEGER, created_at DATETIME, updated_at DATETIME)`,
+		`CREATE TABLE gw_video_tasks(resource_id INTEGER PRIMARY KEY, task_no TEXT, status TEXT, progress INTEGER, created_at DATETIME, updated_at DATETIME)`,
+		`CREATE TABLE gw_api_call_attempts(id INTEGER PRIMARY KEY, call_id INTEGER, attempt_no INTEGER, catalog_release_id INTEGER, product_transport_id INTEGER, credential_id INTEGER, state TEXT, created_at DATETIME, updated_at DATETIME)`,
+		`CREATE TABLE gw_product_transports(id INTEGER PRIMARY KEY, release_id INTEGER, product_id INTEGER, channel_transport_id INTEGER)`,
+		`CREATE TABLE gw_products(id INTEGER PRIMARY KEY, release_id INTEGER, channel_id INTEGER, vendor_model TEXT)`,
+		`CREATE TABLE gw_channel_transports(id INTEGER PRIMARY KEY, release_id INTEGER, transport_code TEXT, protocol TEXT, request_path TEXT)`,
+		`CREATE TABLE gateway_channels(id INTEGER PRIMARY KEY, display_name TEXT)`,
+		`CREATE TABLE billing_reservations(id INTEGER PRIMARY KEY, call_id INTEGER, state TEXT)`,
+		`CREATE TABLE billing_settlements(reservation_id INTEGER PRIMARY KEY, actual_amount TEXT)`,
+		`CREATE TABLE billing_events(id INTEGER PRIMARY KEY, call_id INTEGER, event_type TEXT, amount TEXT, created_at DATETIME)`,
+		`CREATE TABLE gw_channel_request_logs(id INTEGER PRIMARY KEY, attempt_id INTEGER, action TEXT, http_status INTEGER, duration_ms INTEGER, error_code TEXT)`,
+		`CREATE TABLE gw_api_call_payloads(id INTEGER PRIMARY KEY, call_id INTEGER, kind TEXT, content_length INTEGER, retention_until DATETIME, purged_at DATETIME, created_at DATETIME)`,
+	} {
+		if err := db.Exec(statement).Error; err != nil {
+			t.Fatal(err)
+		}
 	}
 	model.SetDB(db)
 
@@ -190,67 +237,122 @@ func seedDashboardStats(t *testing.T) dashboardSeed {
 	userTwo := uint(22)
 	tokenOne := uint(101)
 
-	calls := []model.APICall{
-		dashboardCall("call-chat", userOne, tokenOne, "shared-model", model.APICallStatusCompleted, 1, 10, 5, 15, today),
-		dashboardCall("call-response", userOne, tokenOne, "response-model", model.APICallStatusFailed, 0.25, 4, 0, 4, today.Add(time.Minute)),
-		dashboardCall("call-image", userOne, tokenOne, "shared-model", model.APICallStatusCompleted, 2, 0, 0, 0, today.Add(2*time.Minute)),
-		dashboardCall("call-yesterday", userOne, tokenOne, "shared-model", model.APICallStatusCompleted, 4, 7, 0, 7, yesterday),
-		dashboardCall("call-other-user", userTwo, 202, "shared-model", model.APICallStatusCompleted, 9, 100, 0, 100, today.Add(3*time.Minute)),
-		dashboardCall("call-outside-range", userOne, tokenOne, "old-model", model.APICallStatusCompleted, 20, 1000, 0, 1000, today.AddDate(0, 0, -10)),
-	}
-	if err := db.Create(&calls).Error; err != nil {
+	if err := db.Exec(`INSERT INTO gw_operation_contracts(id,operation_code) VALUES (1,'test')`).Error; err != nil {
 		t.Fatal(err)
 	}
-
-	channels := []model.GwChannel{
-		{ID: 10, Name: "gateway-a", Protocol: model.ProtocolOpenAI, BaseURL: "https://a.test", Status: 1},
-		{ID: 20, Name: "gateway-b", Protocol: model.ProtocolAnthropic, BaseURL: "https://b.test", Status: 1},
-	}
-	if err := db.Create(&channels).Error; err != nil {
+	if err := db.Exec(`INSERT INTO gw_operation_routes(id,operation_contract_id,route_template) VALUES (1,1,'/v1/test')`).Error; err != nil {
 		t.Fatal(err)
 	}
-	capabilityChannel := model.Channel{BaseModel: model.BaseModel{ID: 30}, Type: "image", Name: "image", Status: 1}
-	if err := db.Create(&capabilityChannel).Error; err != nil {
+	models := []string{"shared-model", "response-model", "old-model", "image-model", "video-model"}
+	for index, code := range models {
+		id := index + 1
+		if err := db.Exec(`INSERT INTO gw_models(id,model_code) VALUES (?,?)`, id, code).Error; err != nil {
+			t.Fatal(err)
+		}
+		if err := db.Exec(`INSERT INTO gw_catalog_models(id,release_id,model_id,display_name) VALUES (?,1,?,?)`, id, id, code).Error; err != nil {
+			t.Fatal(err)
+		}
+		if err := db.Exec(`INSERT INTO gw_model_operations(id,release_id,catalog_model_id) VALUES (?,1,?)`, id, id).Error; err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := db.Exec(`INSERT INTO gateway_channels(id,display_name) VALUES (10,'gateway-a'),(20,'gateway-b'),(30,'image')`).Error; err != nil {
 		t.Fatal(err)
 	}
-	capabilityEndpoint := model.Endpoint{
-		BaseModel: model.BaseModel{ID: 300}, ModelCode: "image-model", ChannelID: capabilityChannel.ID,
-		Protocol: model.ProtocolOpenAI, RequestPath: "/images", RequestMethod: "POST",
-		VendorModel: "image-vendor", InteractionMode: model.ModeSync, Status: 1,
-	}
-	if err := db.Create(&capabilityEndpoint).Error; err != nil {
+	if err := db.Exec(`INSERT INTO gw_products(id,release_id,channel_id,vendor_model) VALUES (10,1,10,'shared'),(20,1,20,'response'),(30,1,30,'image')`).Error; err != nil {
 		t.Fatal(err)
 	}
-
-	capabilityAttempt := dashboardAttempt("call-image", 1, model.APICallRouteCapability, 0, model.APICallAttemptStatusCompleted, today.Add(2*time.Minute))
-	capabilityAttempt.EndpointID = capabilityEndpoint.ID
-	attempts := []model.APICallAttempt{
-		dashboardAttempt("call-chat", 1, model.APICallRouteGatewayV2, 10, model.APICallAttemptStatusFailed, today),
-		dashboardAttempt("call-chat", 2, model.APICallRouteGatewayV2, 10, model.APICallAttemptStatusCompleted, today.Add(time.Second)),
-		dashboardAttempt("call-chat", 3, model.APICallRouteGatewayV2, 10, model.APICallAttemptStatusStarted, today.Add(2*time.Second)),
-		dashboardAttempt("call-response", 1, model.APICallRouteGatewayV2, 20, model.APICallAttemptStatusFailed, today.Add(time.Minute)),
-		capabilityAttempt,
-		dashboardAttempt("call-other-user", 1, model.APICallRouteGatewayV2, 10, model.APICallAttemptStatusCompleted, today.Add(3*time.Minute)),
-		dashboardAttempt("call-outside-range", 1, model.APICallRouteGatewayV2, 10, model.APICallAttemptStatusCompleted, today.AddDate(0, 0, -10)),
-	}
-	if err := db.Create(&attempts).Error; err != nil {
+	if err := db.Exec(`INSERT INTO gw_channel_transports(id,release_id,transport_code,protocol,request_path) VALUES (10,1,'openai','openai','/v1/test'),(20,1,'anthropic','anthropic','/v1/test'),(30,1,'image','openai','/images')`).Error; err != nil {
 		t.Fatal(err)
 	}
-	if err := db.Model(&model.APICallAttempt{}).
-		Where("call_id = ?", "call-response").
-		UpdateColumn("route_kind", "").Error; err != nil {
+	if err := db.Exec(`INSERT INTO gw_product_transports(id,release_id,product_id,channel_transport_id) VALUES (10,1,10,10),(20,1,20,20),(30,1,30,30)`).Error; err != nil {
 		t.Fatal(err)
 	}
-
-	tasks := []model.Task{
-		{BaseModel: model.BaseModel{CreatedAt: today}, TaskNo: "task-user-image", UserID: userOne, TokenID: tokenOne, ModelCode: "image-model", ChannelID: 30, Status: model.TaskStatusSuccess},
-		{BaseModel: model.BaseModel{CreatedAt: today.Add(time.Minute)}, TaskNo: "task-user-video", UserID: userOne, TokenID: tokenOne, ModelCode: "video-model", Status: model.TaskStatusFailed},
-		{BaseModel: model.BaseModel{CreatedAt: today.Add(2 * time.Minute)}, TaskNo: "task-admin-image", UserID: userTwo, TokenID: 202, ModelCode: "image-model", ChannelID: 30, Status: model.TaskStatusSuccess},
+	type callSeed struct {
+		id             int
+		user, token    uint
+		model, final   int
+		public, status string
+		cost           float64
+		created        time.Time
 	}
-	if err := db.Create(&tasks).Error; err != nil {
-		t.Fatal(err)
+	calls := []callSeed{
+		{1, userOne, tokenOne, 1, 2, "call-chat", "completed", 1, today},
+		{2, userOne, tokenOne, 2, 4, "call-response", "failed", .25, today.Add(time.Minute)},
+		{3, userOne, tokenOne, 4, 5, "call-image", "completed", 2, today.Add(2 * time.Minute)},
+		{4, userOne, tokenOne, 1, 0, "call-yesterday", "completed", 4, yesterday},
+		{5, userTwo, 202, 1, 6, "call-other-user", "completed", 9, today.Add(3 * time.Minute)},
+		{6, userOne, tokenOne, 3, 7, "call-outside-range", "completed", 20, today.AddDate(0, 0, -10)},
+		{7, userOne, tokenOne, 5, 8, "call-video-task", "failed", 0, today.Add(4 * time.Minute)},
+		{8, userTwo, 202, 4, 9, "call-admin-image-task", "completed", 0, today.Add(5 * time.Minute)},
+	}
+	for _, call := range calls {
+		updated := call.created.Add(time.Second)
+		if err := db.Exec(`INSERT INTO gw_api_calls(id,public_id,user_id,token_id,operation_contract_id,catalog_release_id,model_operation_id,sku_id,status,quoted_amount,final_attempt_id,created_at,updated_at) VALUES (?,?,?,?,1,1,?,1,?,'0',?,?,?)`, call.id, call.public, call.user, call.token, call.model, call.status, call.final, call.created, updated).Error; err != nil {
+			t.Fatal(err)
+		}
+		if call.cost > 0 {
+			if err := db.Exec(`INSERT INTO billing_reservations(id,call_id,state) VALUES (?,?,'settled')`, call.id, call.id).Error; err != nil {
+				t.Fatal(err)
+			}
+			if err := db.Exec(`INSERT INTO billing_settlements(reservation_id,actual_amount) VALUES (?,?)`, call.id, call.cost).Error; err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	attempts := []struct {
+		id, call, no, transport int
+		state                   string
+		created                 time.Time
+	}{
+		{1, 1, 1, 10, "failed", today}, {2, 1, 2, 10, "completed", today.Add(time.Second)}, {3, 1, 3, 10, "started", today.Add(2 * time.Second)},
+		{4, 2, 1, 20, "failed", today.Add(time.Minute)}, {5, 3, 1, 30, "completed", today.Add(2 * time.Minute)},
+		{6, 5, 1, 10, "completed", today.Add(3 * time.Minute)}, {7, 6, 1, 10, "completed", today.AddDate(0, 0, -10)},
+		{8, 7, 1, 20, "failed", today.Add(4 * time.Minute)}, {9, 8, 1, 30, "completed", today.Add(5 * time.Minute)},
+	}
+	for _, attempt := range attempts {
+		if err := db.Exec(`INSERT INTO gw_api_call_attempts(id,call_id,attempt_no,catalog_release_id,product_transport_id,credential_id,state,created_at,updated_at) VALUES (?,?,?,1,?,1,?,?,?)`, attempt.id, attempt.call, attempt.no, attempt.transport, attempt.state, attempt.created, attempt.created.Add(time.Second)).Error; err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, task := range []struct {
+		id, call             int
+		user, token          uint
+		public, kind, status string
+		progress             int
+		created              time.Time
+	}{
+		{1, 3, userOne, tokenOne, "task-user-image", "capability_task", "succeeded", 100, today.Add(2 * time.Minute)},
+		{2, 7, userOne, tokenOne, "task-user-video", "video_task", "failed", 100, today.Add(4 * time.Minute)},
+		{3, 8, userTwo, 202, "task-admin-image", "capability_task", "succeeded", 100, today.Add(5 * time.Minute)},
+	} {
+		if err := db.Exec(`INSERT INTO gw_api_resources(id,public_id,resource_kind,call_id,user_id,token_id,created_at) VALUES (?,?,?,?,?,?,?)`, task.id, task.public, task.kind, task.call, task.user, task.token, task.created).Error; err != nil {
+			t.Fatal(err)
+		}
+		table := "gw_capability_tasks"
+		if task.kind == "video_task" {
+			table = "gw_video_tasks"
+		}
+		if err := db.Exec(`INSERT INTO `+table+`(resource_id,task_no,status,progress,created_at,updated_at) VALUES (?,?,?,?,?,?)`, task.id, task.public, task.status, task.progress, task.created, task.created).Error; err != nil {
+			t.Fatal(err)
+		}
 	}
 	return dashboardSeed{userOne: userOne, tokenOne: tokenOne, today: today}
+}
+
+func createUnifiedDashboardTask(db *gorm.DB, id int, taskNo string, userID, tokenID uint, modelCode, status string, createdAt time.Time) error {
+	var operationID int
+	if err := db.Table("gw_model_operations AS operation").Select("operation.id").Joins("JOIN gw_catalog_models catalog ON catalog.id=operation.catalog_model_id AND catalog.release_id=operation.release_id").Joins("JOIN gw_models model ON model.id=catalog.model_id").Where("model.model_code=?", modelCode).Take(&operationID).Error; err != nil {
+		return err
+	}
+	callID := id + 1000
+	if err := db.Exec(`INSERT INTO gw_api_calls(id,public_id,user_id,token_id,operation_contract_id,catalog_release_id,model_operation_id,sku_id,status,quoted_amount,created_at,updated_at) VALUES (?,?,?,?,1,1,?,1,?,'0',?,?)`, callID, "call-"+taskNo, userID, tokenID, operationID, status, createdAt, createdAt).Error; err != nil {
+		return err
+	}
+	if err := db.Exec(`INSERT INTO gw_api_resources(id,public_id,resource_kind,call_id,user_id,token_id,created_at) VALUES (?,?, 'capability_task',?,?,?,?)`, id, taskNo, callID, userID, tokenID, createdAt).Error; err != nil {
+		return err
+	}
+	return db.Exec(`INSERT INTO gw_capability_tasks(resource_id,task_no,status,progress,created_at,updated_at) VALUES (?,?,?,100,?,?)`, id, taskNo, status, createdAt, createdAt).Error
 }
 
 func dashboardCall(id string, userID, tokenID uint, modelCode string, status model.APICallStatus, cost float64, input, output, total int, createdAt time.Time) model.APICall {
@@ -260,14 +362,6 @@ func dashboardCall(id string, userID, tokenID uint, modelCode string, status mod
 		Endpoint: "/v1/test", Operation: "test", Model: modelCode, Status: status,
 		InputTokens: input, OutputTokens: output, TotalTokens: total,
 		FinalCost: decimal.NewFromFloat(cost), StartedAt: createdAt, CompletedAt: &completedAt, CreatedAt: createdAt,
-	}
-}
-
-func dashboardAttempt(callID string, attemptNo int, routeKind string, channelID uint, status model.APICallAttemptStatus, startedAt time.Time) model.APICallAttempt {
-	completedAt := startedAt.Add(time.Second)
-	return model.APICallAttempt{
-		CallID: callID, AttemptNo: attemptNo, RouteKind: routeKind, ChannelID: channelID,
-		Status: status, StartedAt: startedAt, CompletedAt: &completedAt, CreatedAt: startedAt,
 	}
 }
 

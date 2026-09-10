@@ -1,12 +1,40 @@
 import { request } from './request';
 
 export interface DocsModel {
+  id: string;
   code: string;
+  model_code: string;
+  object: string;
   name: string;
   type: string;
+  types: string[];
   description: string;
-  param_schema: Record<string, any> | null;
-  channels: { channel_type: string; channel_name: string; model: string; price: number; interaction_mode?: string; param_schema?: Record<string, any> }[];
+  visibility: string;
+  features: string[];
+  operations: {
+    id: string;
+    method: string;
+    path: string;
+    supports_stream: boolean;
+    skus: {
+      id: number;
+      code: string;
+      delivery_mode: string;
+      max_results: number;
+      idempotency_mode: string;
+      service_tiers: string[];
+    }[];
+  }[];
+  channels: {
+    channel_id: number;
+    channel_type: string;
+    channel_name: string;
+    model: string;
+    protocol: string;
+    interaction_mode: string;
+    route_operation: string;
+  }[];
+  transports: string[];
 }
 
 export const fetchDocsModels = async (): Promise<DocsModel[]> => {
@@ -52,21 +80,11 @@ export interface DocsVideoModelOptions {
   max_video_duration_total?: number;
   max_audio_duration_total?: number;
   parameters?: DocsVideoParameter[];
-  allow_local_cancel?: boolean;
-  cancel_statuses?: string[];
-}
-
-export interface DocsVideoChannel {
-  id: number;
-  name: string;
-  models: string[];
-  model_options: Record<string, DocsVideoModelOptions>;
 }
 
 export interface DocsVideosResponse {
   models: string[];
   model_options: Record<string, DocsVideoModelOptions>;
-  channels: DocsVideoChannel[];
 }
 
 export const fetchDocsVideos = async (): Promise<DocsVideosResponse> => {

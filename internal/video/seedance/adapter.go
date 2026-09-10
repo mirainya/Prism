@@ -203,6 +203,9 @@ func buildOfficialBody(req *video.GenerateRequest) (map[string]any, error) {
 	if req.Duration > 0 {
 		body["duration"] = req.Duration
 	}
+	if tier := strings.TrimSpace(req.ServiceTier); tier != "" {
+		body["service_tier"] = tier
+	}
 	return body, nil
 }
 
@@ -303,6 +306,20 @@ func (Codec) DecodePoll(body []byte) (*video.Progress, error) {
 		}
 	}
 	return progress, nil
+}
+
+func (Codec) DecodeTaskIdentity(body []byte) (string, error) {
+	data, err := unwrapProviderData(body)
+	if err != nil {
+		return "", err
+	}
+	var response struct {
+		ID json.RawMessage `json:"id"`
+	}
+	if err := json.Unmarshal(data, &response); err != nil {
+		return "", err
+	}
+	return parseProviderTaskID(response.ID)
 }
 
 func validateAdapterConfig(baseURL string, config adapterConfig) error {

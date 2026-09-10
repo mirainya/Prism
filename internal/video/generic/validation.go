@@ -15,6 +15,10 @@ func (a *Adapter) ValidateRequest(_ context.Context, request *video.GenerateRequ
 	if err := a.ready(); err != nil {
 		return err
 	}
+	return a.validateRequest(request)
+}
+
+func (a *Adapter) validateRequest(request *video.GenerateRequest) error {
 	if request == nil {
 		return errors.New("generic video request is required")
 	}

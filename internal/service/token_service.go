@@ -1,16 +1,20 @@
 package service
 
 import (
-	"crypto/rand"
-	"encoding/hex"
-	"fmt"
+	"context"
+	"database/sql"
+	"errors"
+	"math"
+	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
-	"github.com/mirainya/Prism/internal/api/middleware"
+	"github.com/mirainya/Prism/internal/gateway/repository"
 	"github.com/mirainya/Prism/internal/model"
+	"github.com/mirainya/Prism/internal/tokenauth"
 	"github.com/shopspring/decimal"
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 )
 
 type TokenService struct{}
@@ -19,21 +23,13 @@ func NewTokenService() *TokenService {
 	return &TokenService{}
 }
 
-type ChannelPriorityInput struct {
-	CapabilityCode string `json:"capability_code"`
-	ChannelID      uint   `json:"channel_id"`
-	Priority       int    `json:"priority"`
-}
-
 type CreateTokenReq struct {
-	Name              string                 `json:"name" binding:"required,max=50"`
-	Balance           decimal.Decimal        `json:"balance"`
-	ChannelPriorities []ChannelPriorityInput `json:"channel_priorities"`
+	Name    string          `json:"name" binding:"required,max=50"`
+	Balance decimal.Decimal `json:"balance"`
 }
 
 type UpdateTokenReq struct {
-	Name              string                 `json:"name" binding:"max=50"`
-	ChannelPriorities []ChannelPriorityInput `json:"channel_priorities"`
+	Name string `json:"name" binding:"max=50"`
 }
 
 func (s *TokenService) ListTokens(userID uint) ([]gin.H, error) {
@@ -46,35 +42,25 @@ func (s *TokenService) ListTokens(userID uint) ([]gin.H, error) {
 	for i, t := range tokens {
 		tokenIDs[i] = t.ID
 	}
-
-	var priorities []model.TokenChannelPriority
-	if len(tokenIDs) > 0 {
-		model.DB().Where("token_id IN ?", tokenIDs).Order("priority ASC").Find(&priorities)
-	}
-
-	priorityMap := make(map[uint][]gin.H)
-	for _, p := range priorities {
-		priorityMap[p.TokenID] = append(priorityMap[p.TokenID], gin.H{
-			"capability_code": p.CapabilityCode,
-			"channel_id":      p.ChannelID,
-			"priority":        p.Priority,
-		})
+	funds, err := loadTokenFunds(context.Background(), tokenIDs)
+	if err != nil {
+		return nil, err
 	}
 
 	result := make([]gin.H, len(tokens))
 	for i, t := range tokens {
 		keyHint := tokenKeyHint(&t)
+		snapshot := funds[t.ID]
 		result[i] = gin.H{
-			"id":                 t.ID,
-			"name":               t.Name,
-			"key":                keyHint,
-			"key_hint":           keyHint,
-			"balance":            t.Balance,
-			"total_used":         t.TotalUsed,
-			"rate_limit":         t.RateLimit,
-			"status":             t.Status,
-			"created_at":         t.CreatedAt,
-			"channel_priorities": priorityMap[t.ID],
+			"id":         t.ID,
+			"name":       t.Name,
+			"key":        keyHint,
+			"key_hint":   keyHint,
+			"balance":    snapshot.Available,
+			"total_used": snapshot.Used,
+			"rate_limit": t.RateLimit,
+			"status":     t.Status,
+			"created_at": t.CreatedAt,
 		}
 	}
 
@@ -85,41 +71,49 @@ func (s *TokenService) CreateToken(userID uint, req *CreateTokenReq) (gin.H, err
 	if req.Balance.IsNegative() {
 		return nil, ErrInvalidBalanceAmount
 	}
-	plainKey, err := generateAPIKey()
+	plainKey, selector, secretDigest, err := tokenauth.Generate()
 	if err != nil {
-		return nil, fmt.Errorf("generate API token: %w", err)
+		return nil, err
 	}
-	keyHash := middleware.HashTokenKey(plainKey)
-	keyHint := middleware.KeyHint(plainKey)
+	keyHint := tokenauth.KeyHint(plainKey)
 
-	token := &model.Token{
-		UserID:    userID,
-		Name:      req.Name,
-		Key:       keyHash,
-		KeyHint:   keyHint,
-		Balance:   req.Balance,
-		RateLimit: 60,
-		Status:    1,
+	store, err := unifiedFundsStore()
+	if err != nil {
+		return nil, err
 	}
-
-	err = model.DB().Transaction(func(tx *gorm.DB) error {
-		if err := tx.Create(token).Error; err != nil {
+	ctx := context.Background()
+	createdAt := time.Now().UTC().Truncate(time.Millisecond)
+	var tokenID uint64
+	err = store.WithTx(ctx, func(tx *sql.Tx) error {
+		if _, err := store.OpenBillingAccount(ctx, tx, uint64(userID)); err != nil {
 			return err
 		}
-		if token.Balance.IsPositive() {
-			if err := recordBalanceEntryTx(tx, balanceEntryRequest{
-				AccountType: model.BalanceAccountToken, AccountID: token.ID,
-				UserID: userID, TokenID: token.ID, Direction: model.BalanceDirectionCredit,
-				Category: BalanceCategoryInitialCredit, Amount: token.Balance,
-				SourceKey: "token_create:" + fmt.Sprint(token.ID), ActorUserID: userID,
-			}); err != nil {
-				return err
-			}
+		inserted, err := tx.ExecContext(ctx, `INSERT INTO tokens(user_id,selector,secret_digest,secret_digest_version,auth_version,key_hint,name,rate_limit,status,created_at,updated_at) VALUES (?,?,?,?,1,?,?,60,1,?,?)`,
+			userID, selector, secretDigest, tokenauth.DigestVersion, keyHint, req.Name, createdAt, createdAt)
+		if err != nil {
+			return err
 		}
-		if len(req.ChannelPriorities) > 0 {
-			return saveChannelPriorities(tx, token.ID, req.ChannelPriorities)
+		id, err := inserted.LastInsertId()
+		if err != nil || id <= 0 {
+			return repository.ErrConflict
 		}
-		return nil
+		tokenID = uint64(id)
+		limit := req.Balance.String()
+		policyID, err := store.CreateBudgetPolicy(ctx, tx, repository.BudgetPolicyInput{
+			TokenID: tokenID, PolicyCode: "default-lifetime", WindowKind: "lifetime",
+			TimezoneName: "UTC", LimitAmount: &limit, AlgorithmVersion: 1,
+		})
+		if err != nil {
+			return err
+		}
+		activationID, err := store.ActivateBudgetPolicy(ctx, tx, tokenID, policyID, createdAt)
+		if err != nil {
+			return err
+		}
+		_, err = store.CreateBudgetWindow(ctx, tx, repository.BudgetWindowInput{
+			TokenID: tokenID, PolicyID: policyID, ActivationID: activationID, StartAt: createdAt,
+		})
+		return err
 	})
 
 	if err != nil {
@@ -127,10 +121,10 @@ func (s *TokenService) CreateToken(userID uint, req *CreateTokenReq) (gin.H, err
 	}
 
 	return gin.H{
-		"id":      token.ID,
-		"name":    token.Name,
+		"id":      uint(tokenID),
+		"name":    req.Name,
 		"key":     plainKey,
-		"balance": token.Balance,
+		"balance": req.Balance,
 	}, nil
 }
 
@@ -140,30 +134,23 @@ func (s *TokenService) GetToken(userID uint, id uint) (gin.H, error) {
 		return nil, err
 	}
 
-	var priorities []model.TokenChannelPriority
-	model.DB().Where("token_id = ?", id).Order("capability_code ASC, priority ASC").Find(&priorities)
-
-	priorityList := make([]gin.H, len(priorities))
-	for i, p := range priorities {
-		priorityList[i] = gin.H{
-			"capability_code": p.CapabilityCode,
-			"channel_id":      p.ChannelID,
-			"priority":        p.Priority,
-		}
+	funds, err := loadTokenFunds(context.Background(), []uint{id})
+	if err != nil {
+		return nil, err
 	}
 
 	keyHint := tokenKeyHint(&token)
+	snapshot := funds[id]
 	return gin.H{
-		"id":                 token.ID,
-		"name":               token.Name,
-		"key":                keyHint,
-		"key_hint":           keyHint,
-		"balance":            token.Balance,
-		"total_used":         token.TotalUsed,
-		"rate_limit":         token.RateLimit,
-		"status":             token.Status,
-		"created_at":         token.CreatedAt,
-		"channel_priorities": priorityList,
+		"id":         token.ID,
+		"name":       token.Name,
+		"key":        keyHint,
+		"key_hint":   keyHint,
+		"balance":    snapshot.Available,
+		"total_used": snapshot.Used,
+		"rate_limit": token.RateLimit,
+		"status":     token.Status,
+		"created_at": token.CreatedAt,
 	}, nil
 }
 
@@ -173,74 +160,78 @@ func (s *TokenService) UpdateToken(userID uint, id uint, req *UpdateTokenReq) er
 		return err
 	}
 
-	return model.DB().Transaction(func(tx *gorm.DB) error {
-		if req.Name != "" {
-			if err := tx.Model(&token).Update("name", req.Name).Error; err != nil {
-				return err
-			}
-		}
-		if req.ChannelPriorities != nil {
-			if err := tx.Where("token_id = ?", id).Delete(&model.TokenChannelPriority{}).Error; err != nil {
-				return err
-			}
-			if len(req.ChannelPriorities) > 0 {
-				return saveChannelPriorities(tx, id, req.ChannelPriorities)
-			}
-		}
+	if req.Name == "" {
 		return nil
-	})
+	}
+	return model.DB().Model(&token).Update("name", req.Name).Error
 }
 
 func (s *TokenService) DeleteToken(userID uint, id uint) error {
 	return model.DB().Transaction(func(tx *gorm.DB) error {
-		result := tx.Model(&model.Token{}).Where("id = ? AND user_id = ?", id, userID).Delete(&model.Token{})
+		var token model.Token
+		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).
+			Where("id=? AND user_id=?", id, userID).First(&token).Error; err != nil {
+			return err
+		}
+		if token.Status == 0 && token.RevokedAt != nil {
+			return nil
+		}
+		if token.AuthVersion == math.MaxUint64 {
+			return repository.ErrConflict
+		}
+		now := time.Now().UTC()
+		newVersion := token.AuthVersion + 1
+		result := tx.Model(&model.Token{}).Where("id=? AND auth_version=?", id, token.AuthVersion).
+			Updates(map[string]any{"status": 0, "revoked_at": now, "auth_version": newVersion})
 		if result.Error != nil {
 			return result.Error
 		}
-		if result.RowsAffected == 0 {
-			return gorm.ErrRecordNotFound
+		if result.RowsAffected != 1 {
+			return repository.ErrConflict
 		}
-		return tx.Where("token_id = ?", id).Delete(&model.TokenChannelPriority{}).Error
+		return tx.Exec(`INSERT INTO token_auth_state_events(token_id,auth_version,old_status,new_status,reason_code,actor_user_id,created_at) VALUES (?,?,?,?,?,?,?)`,
+			id, newVersion, token.Status, 0, "owner_revoked", userID, now).Error
 	})
 }
 
-func (s *TokenService) RechargeToken(userID uint, id uint, amount decimal.Decimal) (*model.Token, error) {
-	var token model.Token
+type TokenFunds struct {
+	ID        uint
+	Balance   decimal.Decimal
+	TotalUsed decimal.Decimal
+}
+
+func (s *TokenService) RechargeToken(userID uint, id uint, amount decimal.Decimal) (*TokenFunds, error) {
 	if !amount.IsPositive() {
 		return nil, ErrInvalidBalanceAmount
 	}
-	err := model.DB().Transaction(func(tx *gorm.DB) error {
-		result := tx.Model(&model.Token{}).
-			Where("id = ? AND user_id = ?", id, userID).
-			UpdateColumn("balance", gorm.Expr("balance + ?", amount))
-		if result.Error != nil {
-			return result.Error
-		}
-		if result.RowsAffected == 0 {
-			return gorm.ErrRecordNotFound
-		}
-		if err := recordBalanceEntryTx(tx, balanceEntryRequest{
-			AccountType: model.BalanceAccountToken, AccountID: id,
-			UserID: userID, TokenID: id, Direction: model.BalanceDirectionCredit,
-			Category: BalanceCategoryRecharge, Amount: amount,
-			SourceKey: "token_recharge:" + uuid.NewString(), ActorUserID: userID,
-		}); err != nil {
-			return err
-		}
-		return tx.First(&token, id).Error
-	})
+	store, err := unifiedFundsStore()
 	if err != nil {
 		return nil, err
 	}
-	return &token, nil
-}
-
-func generateAPIKey() (string, error) {
-	bytes := make([]byte, 24)
-	if _, err := rand.Read(bytes); err != nil {
-		return "", err
+	ctx := context.Background()
+	var snapshot fundsSnapshot
+	err = store.WithTx(ctx, func(tx *sql.Tx) error {
+		windowID, err := currentTokenBudgetWindow(ctx, tx, uint64(userID), uint64(id))
+		if err != nil {
+			return err
+		}
+		_, _, err = store.ApplyBudgetAdjustment(ctx, tx, repository.BudgetAdjustmentInput{
+			WindowID: windowID, AmountDelta: amount.String(), SourceType: "recharge",
+			SourceKey: "token_recharge:" + uuid.NewString(),
+		})
+		if err != nil {
+			return err
+		}
+		snapshot, err = readBudgetWindowFunds(ctx, tx, windowID)
+		return err
+	})
+	if err != nil {
+		if errors.Is(err, repository.ErrNotFound) || errors.Is(err, sql.ErrNoRows) {
+			return nil, gorm.ErrRecordNotFound
+		}
+		return nil, err
 	}
-	return "sk-prism-" + hex.EncodeToString(bytes), nil
+	return &TokenFunds{ID: id, Balance: snapshot.Available, TotalUsed: snapshot.Used}, nil
 }
 
 func tokenKeyHint(token *model.Token) string {
@@ -248,17 +239,4 @@ func tokenKeyHint(token *model.Token) string {
 		return token.KeyHint
 	}
 	return "****"
-}
-
-func saveChannelPriorities(tx *gorm.DB, tokenID uint, items []ChannelPriorityInput) error {
-	priorities := make([]model.TokenChannelPriority, len(items))
-	for i, item := range items {
-		priorities[i] = model.TokenChannelPriority{
-			TokenID:        tokenID,
-			CapabilityCode: item.CapabilityCode,
-			ChannelID:      item.ChannelID,
-			Priority:       item.Priority,
-		}
-	}
-	return tx.Create(&priorities).Error
 }

@@ -11,19 +11,16 @@ import (
 	"sort"
 	"strings"
 	"sync"
-	"time"
 
 	"github.com/mirainya/Prism/internal/domain"
 	"github.com/mirainya/Prism/internal/gateway/canonical"
 	"github.com/mirainya/Prism/internal/gateway/execution"
+	"github.com/mirainya/Prism/internal/gateway/repository"
 	"github.com/mirainya/Prism/internal/gateway/routing"
 	"github.com/mirainya/Prism/internal/gateway/transport"
-	"github.com/mirainya/Prism/internal/model"
 	"github.com/mirainya/Prism/internal/service"
 	"github.com/mirainya/Prism/pkg/logger"
 	"go.uber.org/zap"
-	"gorm.io/datatypes"
-	"gorm.io/gorm"
 )
 
 var (
@@ -33,7 +30,7 @@ var (
 )
 
 type Selector interface {
-	SelectTransport(string, routing.RouteRequirements, routing.RouteOptions) (*routing.RouteResult, error)
+	SelectTransport(context.Context, string, routing.RouteRequirements, routing.RouteOptions) (*routing.RouteResult, error)
 	Release(uint)
 }
 
@@ -42,28 +39,14 @@ type Selector interface {
 type Engine struct {
 	selector   Selector
 	transports *transport.Registry
-	billing    *service.BillingService
-	apiCalls   *service.APICallService
 	circuit    *routing.Circuit
 }
 
-func New(
-	selector Selector,
-	transports *transport.Registry,
-	billing *service.BillingService,
-	apiCalls ...*service.APICallService,
-) (*Engine, error) {
-	if selector == nil || transports == nil || billing == nil {
-		return nil, errors.New("selector, transport registry, and billing service are required")
+func New(selector Selector, transports *transport.Registry) (*Engine, error) {
+	if selector == nil || transports == nil {
+		return nil, errors.New("selector and transport registry are required")
 	}
-	var callService *service.APICallService
-	if len(apiCalls) > 0 {
-		callService = apiCalls[0]
-	}
-	return &Engine{
-		selector: selector, transports: transports, billing: billing,
-		apiCalls: callService, circuit: routing.NewCircuit(),
-	}, nil
+	return &Engine{selector: selector, transports: transports, circuit: routing.NewCircuit()}, nil
 }
 
 type RoutePreparer func(context.Context, canonical.Request, *routing.RouteResult) (canonical.Request, error)
@@ -73,22 +56,38 @@ type TransportPreparer func(context.Context, canonical.Request, transport.ID) (c
 // KeepCallOpenOnError 用于由外层工作流决定终态的后台调用；
 // DeferCallCompletion 用于等响应确实写给下游后再完成调用台账。
 type ExecuteOptions struct {
-	UserID              uint
-	TokenID             uint
-	CallID              string
-	RequestID           string
-	DownstreamEndpoint  string
-	DownstreamRequest   []byte
-	ResourceType        string
-	ResourceID          string
-	ConversationID      uint
-	ProjectConversation bool
-	KeepCallOpenOnError bool
-	DeferCallCompletion bool
-	BillingKey          string
-	MaxAttempts         int
-	PrepareRoute        RoutePreparer
-	PrepareTransport    TransportPreparer
+	UserID                   uint
+	TokenID                  uint
+	CallID                   string
+	RequestID                string
+	DownstreamEndpoint       string
+	DownstreamRequest        []byte
+	ResourceType             string
+	ResourceID               string
+	ResourceSummary          any
+	PreviousResourceID       *uint64
+	Idempotency              *repository.IdempotencyInput
+	EnforceIdempotencyPolicy bool
+	ConversationID           uint
+	ProjectConversation      bool
+	ConversationInput        *service.ConversationProjectionInputRequest
+	KeepCallOpenOnError      bool
+	DeferCallCompletion      bool
+	BillingKey               string
+	MaxAttempts              int
+	PrepareRoute             RoutePreparer
+	PrepareTransport         TransportPreparer
+}
+
+// IdempotentReplayError stops execution after the existing Call has been
+// resolved. The protocol layer reads the immutable result from unified storage.
+type IdempotentReplayError struct {
+	CallID, ResourceID             uint64
+	CallPublicID, ResourcePublicID string
+}
+
+func (e *IdempotentReplayError) Error() string {
+	return "gateway engine: idempotent replay resolved to an existing call"
 }
 
 type Result struct {
@@ -135,51 +134,36 @@ type StreamResult struct {
 	ledgerOutcome          *streamLedgerOutcome
 	conversationProjection *service.ConversationProjectionOutputRequest
 
-	finishOnce    sync.Once
-	firstByteOnce sync.Once
-	closeOnce     sync.Once
-	closeErr      error
+	finishOnce sync.Once
+	closeOnce  sync.Once
+	closeErr   error
 }
 
 type callLifecycle struct {
-	service         *service.APICallService
 	unified         *unifiedLifecycle
 	callID          string
-	leaseOwner      string
-	leaseStop       chan struct{}
-	leaseDone       chan struct{}
-	leaseOnce       sync.Once
 	executionCtx    context.Context
 	cancelExecution context.CancelCauseFunc
-	leaseDuration   time.Duration
-	leaseHeartbeat  time.Duration
 
 	mu                     sync.Mutex
 	finalAttemptID         uint
 	providerResponseID     string
 	conversationProjection *service.ConversationProjectionOutputRequest
-	leaseErr               error
 	finished               bool
-	pendingUnifiedPayloads map[string][]byte
 }
 
-func (l *callLifecycle) startUnified(ctx context.Context, route *routing.RouteResult, request canonical.Request, userID, tokenID uint, store bool) error {
+func (l *callLifecycle) startUnified(ctx context.Context, route *routing.RouteResult, request canonical.Request, options ExecuteOptions) error {
 	if l == nil || !unifiedRoute(route) || l.unified != nil {
 		return nil
 	}
-	u, err := newUnifiedLifecycle(route, request, l.callID, userID, tokenID, store)
+	u, err := newUnifiedLifecycle(ctx, route, request, l.callID, options)
 	if err != nil {
 		logLedgerError("create unified gateway call", l.callID, 0, err)
 		return err
 	}
 	l.mu.Lock()
 	l.unified = u
-	pending := l.pendingUnifiedPayloads
-	l.pendingUnifiedPayloads = nil
 	l.mu.Unlock()
-	for kind, data := range pending {
-		u.recordPayload(ctx, kind, data)
-	}
 	return nil
 }
 
@@ -195,24 +179,38 @@ func (l *callLifecycle) startUnifiedAttempt(ctx context.Context, route *routing.
 	}
 	if err := u.startAttempt(ctx, route, asynchronous, scopeKey); err != nil {
 		logLedgerError("start unified gateway attempt", l.callID, 0, err)
-		return err
+		return unifiedAdmissionError(err)
 	}
 	return nil
 }
 
-func (l *callLifecycle) finishUnified(ctx context.Context, attemptState execution.AttemptState, callState execution.CallState, reason string) {
+func (l *callLifecycle) currentAttemptID() uint {
 	if l == nil {
-		return
+		return 0
+	}
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if l.unified != nil {
+		return uint(l.unified.attemptID)
+	}
+	return l.finalAttemptID
+}
+
+func (l *callLifecycle) finishUnified(ctx context.Context, attemptState execution.AttemptState, callState execution.CallState, reason string) error {
+	if l == nil {
+		return nil
 	}
 	l.mu.Lock()
 	u := l.unified
 	l.mu.Unlock()
 	if u == nil {
-		return
+		return nil
 	}
 	if err := u.finish(ctx, attemptState, callState, reason); err != nil {
 		logLedgerError("finish unified gateway lifecycle", l.callID, 0, err)
+		return err
 	}
+	return nil
 }
 
 func (l *callLifecycle) reserveUnified(ctx context.Context, userID, tokenID uint, route *routing.RouteResult, request canonical.Request) (reservationLifecycle, error) {
@@ -228,11 +226,6 @@ func (l *callLifecycle) reserveUnified(ctx context.Context, userID, tokenID uint
 	return u.reserve(ctx, userID, tokenID, route, request)
 }
 
-const (
-	callLeaseDuration  = 5 * time.Minute
-	callLeaseHeartbeat = time.Minute
-)
-
 type streamLedgerOutcome struct {
 	usage                  *canonical.Usage
 	requestErr             error
@@ -242,40 +235,18 @@ type streamLedgerOutcome struct {
 	conversationProjection *service.ConversationProjectionOutputRequest
 }
 
-func newCallLifecycle(ctx context.Context, callService *service.APICallService, callID string) (*callLifecycle, error) {
-	return newCallLifecycleWithOptions(ctx, callService, callID, callLeaseDuration, callLeaseHeartbeat)
-}
-
-func newCallLifecycleWithOptions(
-	ctx context.Context,
-	callService *service.APICallService,
-	callID string,
-	duration time.Duration,
-	heartbeat time.Duration,
-) (*callLifecycle, error) {
-	if callService == nil || strings.TrimSpace(callID) == "" {
-		return nil, nil
+// newUnifiedCallLifecycle creates the in-process execution owner before the
+// selected unified route is activated. It deliberately has no legacy lease;
+// the gw_* attempt and credential slot are the only ownership records.
+func newUnifiedCallLifecycle(ctx context.Context, callID string) *callLifecycle {
+	if strings.TrimSpace(callID) == "" {
+		return nil
 	}
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	if duration <= 0 || heartbeat <= 0 || heartbeat >= duration {
-		return nil, errors.New("invalid API call lease options")
-	}
 	executionCtx, cancelExecution := context.WithCancelCause(ctx)
-	lifecycle := &callLifecycle{
-		service: callService, callID: callID,
-		leaseOwner: service.GenerateRequestID(),
-		leaseStop:  make(chan struct{}), leaseDone: make(chan struct{}),
-		executionCtx: executionCtx, cancelExecution: cancelExecution,
-		leaseDuration: duration, leaseHeartbeat: heartbeat,
-	}
-	if err := callService.AcquireCallLease(callID, lifecycle.leaseOwner, time.Now().Add(duration)); err != nil {
-		cancelExecution(err)
-		return nil, err
-	}
-	go lifecycle.heartbeatLease()
-	return lifecycle, nil
+	return &callLifecycle{callID: callID, executionCtx: executionCtx, cancelExecution: cancelExecution}
 }
 
 func (l *callLifecycle) Context() context.Context {
@@ -285,223 +256,65 @@ func (l *callLifecycle) Context() context.Context {
 	return l.executionCtx
 }
 
-func (l *callLifecycle) leaseFailure() error {
-	if l == nil {
-		return nil
-	}
-	l.mu.Lock()
-	defer l.mu.Unlock()
-	return l.leaseErr
-}
-
-func (l *callLifecycle) heartbeatLease() {
-	if l == nil || l.service == nil || l.leaseStop == nil || l.leaseDone == nil {
-		return
-	}
-	defer close(l.leaseDone)
-	ticker := time.NewTicker(l.leaseHeartbeat)
-	defer ticker.Stop()
-	for {
-		select {
-		case <-ticker.C:
-			// 续租失败表示该执行已失去台账所有权，继续请求上游可能造成重复扣费或重复写入。
-			if err := l.service.RenewCallLease(l.callID, l.leaseOwner, time.Now().Add(l.leaseDuration)); err != nil {
-				logLedgerError("renew API call execution lease", l.callID, 0, err)
-				l.mu.Lock()
-				if l.leaseErr == nil {
-					l.leaseErr = err
-				}
-				l.mu.Unlock()
-				l.cancelExecution(err)
-				return
-			}
-		case <-l.leaseStop:
-			return
-		case <-l.executionCtx.Done():
-			return
-		}
-	}
-}
-
 func (l *callLifecycle) releaseLease() {
-	if l == nil || l.service == nil {
+	if l == nil {
 		return
 	}
-	l.leaseOnce.Do(func() {
-		if l.leaseStop != nil {
-			close(l.leaseStop)
-		}
-		if l.leaseDone != nil {
-			<-l.leaseDone
-		}
-		if err := l.service.ReleaseCallLease(l.callID, l.leaseOwner); err != nil {
-			logLedgerError("release API call execution lease", l.callID, 0, err)
-		}
-		if l.cancelExecution != nil {
-			l.cancelExecution(context.Canceled)
-		}
-	})
+	if l.cancelExecution != nil {
+		l.cancelExecution(context.Canceled)
+	}
 }
 
-func (e *Engine) beginCall(
+func (e *Engine) beginSelectedCall(
 	ctx context.Context,
+	route *routing.RouteResult,
 	request canonical.Request,
 	operation transport.Operation,
 	options ExecuteOptions,
 ) (*callLifecycle, error) {
-	if e.apiCalls == nil {
-		return nil, nil
+	if !unifiedRoute(route) {
+		return nil, fmt.Errorf("%w: selected route is not part of the active unified catalog", repository.ErrInvalidInput)
 	}
-
-	callID := strings.TrimSpace(options.CallID)
-	// 会话投影的输入与调用记录必须原子创建；执行阶段不能凭空补建，否则重试可能丢失输入。
-	if options.ProjectConversation && callID == "" {
-		return nil, fmt.Errorf("%w: projected API calls must be created with their conversation input before execution", service.ErrAPICallInvalidInput)
+	lifecycle := newUnifiedCallLifecycle(ctx, options.CallID)
+	if lifecycle == nil {
+		return nil, repository.ErrInvalidInput
 	}
-	if callID != "" {
-		var existing model.APICall
-		projectionErr := model.DB().Select("id", "project_conversation").First(&existing, "id = ?", callID).Error
-		if projectionErr == nil && existing.ProjectConversation != options.ProjectConversation {
-			return nil, fmt.Errorf(
-				"%w: call %s conversation projection setting does not match execution options",
-				service.ErrAPICallInvalidInput,
-				callID,
-			)
+	if err := lifecycle.startUnified(ctx, route, request, options); err != nil {
+		lifecycle.releaseLease()
+		return nil, err
+	}
+	if options.ProjectConversation {
+		if options.ConversationInput == nil {
+			_ = lifecycle.finishUnified(ctx, execution.AttemptNotCreated, execution.CallFailed, "conversation_input_missing")
+			lifecycle.releaseLease()
+			return nil, fmt.Errorf("%w: projected API call input is required", service.ErrAPICallInvalidInput)
 		}
-		if options.ProjectConversation {
-			if errors.Is(projectionErr, gorm.ErrRecordNotFound) {
-				return nil, fmt.Errorf("%w: projected call %s must be created with its conversation input before execution", service.ErrAPICallNotFound, callID)
-			}
-		}
-		if projectionErr != nil && !errors.Is(projectionErr, gorm.ErrRecordNotFound) {
-			return nil, projectionErr
-		}
-		err := e.apiCalls.MarkCallRunning(callID)
-		if err == nil {
-			return newCallLifecycle(ctx, e.apiCalls, callID)
-		}
-		if !errors.Is(err, service.ErrAPICallNotFound) {
+		input := cloneConversationProjectionInputRequest(options.ConversationInput)
+		input.CallID = lifecycle.callID
+		if err := service.StageAPIConversationProjectionInput(input); err != nil {
+			_ = lifecycle.finishUnified(ctx, execution.AttemptNotCreated, execution.CallFailed, "conversation_input_failed")
+			lifecycle.releaseLease()
 			return nil, err
 		}
-		if options.ProjectConversation {
-			return nil, fmt.Errorf("%w: projected call %s disappeared before execution", service.ErrAPICallNotFound, callID)
-		}
 	}
-
-	store := request.Store != nil && *request.Store
-	call, err := e.apiCalls.StartCall(&service.StartCallRequest{
-		ID:                  callID,
-		RequestID:           options.RequestID,
-		UserID:              options.UserID,
-		TokenID:             options.TokenID,
-		Endpoint:            downstreamEndpoint(options.DownstreamEndpoint, request.Endpoint),
-		Operation:           string(operation),
-		Model:               request.Model,
-		IsStream:            request.Stream,
-		Background:          request.Background,
-		Store:               store,
-		ResourceType:        options.ResourceType,
-		ResourceID:          options.ResourceID,
-		ConversationID:      options.ConversationID,
-		ProjectConversation: options.ProjectConversation,
-	})
-	if err != nil {
-		return nil, err
-	}
-	if err := e.apiCalls.MarkCallRunning(call.ID); err != nil {
-		return nil, err
-	}
-	return newCallLifecycle(ctx, e.apiCalls, call.ID)
+	return lifecycle, nil
 }
 
-func downstreamEndpoint(explicit string, endpoint canonical.Endpoint) string {
-	if value := strings.TrimSpace(explicit); value != "" {
-		return value
-	}
-	switch endpoint {
-	case canonical.EndpointOpenAIChat:
-		return "/v1/chat/completions"
-	case canonical.EndpointAnthropic:
-		return "/v1/messages"
-	case canonical.EndpointOpenAIResponses:
-		return "/v1/responses"
-	default:
-		return string(endpoint)
-	}
-}
-
-func (l *callLifecycle) startAttempt(
-	route *routing.RouteResult,
-	prepared transport.PreparedRequest,
-) (*model.APICallAttempt, error) {
-	if l == nil || l.service == nil {
-		return nil, nil
-	}
-	path, _ := logURL(prepared.URL)
-	attempt, err := l.service.StartAttempt(&service.StartAttemptRequest{
-		CallID:      l.callID,
-		AbilityID:   route.AbilityID,
-		ChannelID:   route.ChannelID,
-		KeyID:       route.KeyID,
-		Protocol:    route.Protocol,
-		VendorModel: route.VendorModel,
-		Transport:   route.Transport,
-		RequestPath: path,
-	})
-	if err != nil {
-		return nil, err
-	}
-	l.mu.Lock()
-	l.finalAttemptID = attempt.ID
-	l.mu.Unlock()
-	return attempt, nil
-}
-
-func (l *callLifecycle) markFirstByte(attemptID uint) {
-	if l == nil || l.service == nil || attemptID == 0 {
-		return
-	}
-	if err := l.service.MarkAttemptFirstByte(attemptID); err != nil {
-		logLedgerError("mark API call attempt first byte", l.callID, attemptID, err)
-	}
-}
-
-func (l *callLifecycle) recordPayload(attemptID uint, kind string, data []byte) {
+func (l *callLifecycle) recordResult(data []byte) error {
 	if l == nil || len(data) == 0 {
-		return
+		return nil
 	}
 	l.mu.Lock()
 	u := l.unified
+	l.mu.Unlock()
 	if u == nil {
-		if l.pendingUnifiedPayloads == nil {
-			l.pendingUnifiedPayloads = make(map[string][]byte)
-		}
-		if kind == model.APICallPayloadRequest {
-			l.pendingUnifiedPayloads["request"] = append([]byte(nil), data...)
-		}
-		l.mu.Unlock()
-	} else {
-		l.mu.Unlock()
-		unifiedKind := "request"
-		if kind == model.APICallPayloadResponse {
-			unifiedKind = "result"
-		}
-		u.recordPayload(context.Background(), unifiedKind, data)
+		return repository.ErrConflict
 	}
-	if l.service == nil {
-		return
-	}
-	err := l.service.RecordPayload(&model.APICallPayload{
-		CallID: l.callID, AttemptID: attemptID, Kind: kind,
-		ContentType: "application/json", Data: append([]byte(nil), data...),
-	})
-	if err != nil {
-		logLedgerError("record API call payload", l.callID, attemptID, err)
-	}
+	return u.recordPayload(context.Background(), "result", data)
 }
 
 func (l *callLifecycle) completeAttempt(attemptID uint, usage *canonical.Usage, providerResponseID string) {
-	if l == nil || l.service == nil || attemptID == 0 {
+	if l == nil || attemptID == 0 {
 		return
 	}
 	l.mu.Lock()
@@ -509,65 +322,24 @@ func (l *callLifecycle) completeAttempt(attemptID uint, usage *canonical.Usage, 
 		l.providerResponseID = providerResponseID
 	}
 	l.mu.Unlock()
-	values := usageValues(usage)
-	err := l.service.CompleteAttempt(attemptID, &service.CompleteAttemptRequest{
-		HTTPStatus:            http.StatusOK,
-		InputTokens:           values.input,
-		OutputTokens:          values.output,
-		TotalTokens:           values.total,
-		CachedInputTokens:     values.cached,
-		ReasoningOutputTokens: values.reasoning,
-		UsageJSON:             values.raw,
-		ProviderResponseID:    providerResponseID,
-	})
-	if err != nil {
-		logLedgerError("complete API call attempt", l.callID, attemptID, err)
-	}
-	l.finishUnified(context.Background(), execution.AttemptCompleted, execution.CallInProgress, "upstream_completed")
+	_ = usage
+	_ = l.finishUnified(context.Background(), execution.AttemptCompleted, execution.CallInProgress, "upstream_completed")
 }
 
 func (l *callLifecycle) failAttempt(attemptID uint, requestErr error, usage *canonical.Usage, providerResponseID string) {
-	if l == nil || l.service == nil || attemptID == 0 {
+	if l == nil || attemptID == 0 {
 		return
 	}
-	detail := ledgerErrorDetail(requestErr)
-	values := usageValues(usage)
-	err := l.service.FailAttempt(attemptID, &service.FailAttemptRequest{
-		HTTPStatus:            detail.status,
-		ErrorType:             detail.errorType,
-		ErrorCode:             detail.code,
-		ErrorMessage:          detail.message,
-		ErrorRetryable:        detail.retryable,
-		InputTokens:           values.input,
-		OutputTokens:          values.output,
-		TotalTokens:           values.total,
-		CachedInputTokens:     values.cached,
-		ReasoningOutputTokens: values.reasoning,
-		UsageJSON:             values.raw,
-		ProviderResponseID:    providerResponseID,
-	})
-	if err != nil {
-		logLedgerError("fail API call attempt", l.callID, attemptID, err)
-	}
-	l.finishUnified(context.Background(), execution.AttemptFailed, execution.CallInProgress, "upstream_failed")
+	_, _, _ = requestErr, usage, providerResponseID
+	_ = l.finishUnified(context.Background(), execution.AttemptFailed, execution.CallInProgress, "upstream_failed")
 }
 
 func (l *callLifecycle) cancelAttempt(attemptID uint, requestErr error) {
-	if l == nil || l.service == nil || attemptID == 0 {
+	if l == nil || attemptID == 0 {
 		return
 	}
-	detail := ledgerErrorDetail(requestErr)
-	err := l.service.CancelAttempt(attemptID, &service.CancelAttemptRequest{
-		HTTPStatus:     detail.status,
-		ErrorType:      detail.errorType,
-		ErrorCode:      detail.code,
-		ErrorMessage:   detail.message,
-		ErrorRetryable: false,
-	})
-	if err != nil {
-		logLedgerError("cancel API call attempt", l.callID, attemptID, err)
-	}
-	l.finishUnified(context.Background(), execution.AttemptCancelled, execution.CallCancelled, "attempt_cancelled")
+	_ = requestErr
+	_ = l.finishUnified(context.Background(), execution.AttemptCancelled, execution.CallCancelled, "attempt_cancelled")
 }
 
 func (l *callLifecycle) completeCall(
@@ -575,32 +347,15 @@ func (l *callLifecycle) completeCall(
 	usage *canonical.Usage,
 	projection *service.ConversationProjectionOutputRequest,
 ) error {
+	if l == nil {
+		return nil
+	}
 	_, ok := l.beginFinish(attemptID)
 	if !ok {
 		return nil
 	}
-	l.mu.Lock()
-	providerResponseID := l.providerResponseID
-	l.mu.Unlock()
-	values := usageValues(usage)
-	err := l.service.CompleteCall(l.callID, &service.CompleteCallRequest{
-		LeaseOwner:             l.leaseOwner,
-		FinalAttemptID:         attemptID,
-		InputTokens:            values.input,
-		OutputTokens:           values.output,
-		TotalTokens:            values.total,
-		CachedInputTokens:      values.cached,
-		ReasoningOutputTokens:  values.reasoning,
-		UsageJSON:              values.raw,
-		ProviderResponseID:     providerResponseID,
-		HTTPStatus:             http.StatusOK,
-		CompleteStartedAttempt: true,
-		ConversationProjection: projection,
-	})
-	if err != nil {
-		logLedgerError("complete API call", l.callID, attemptID, err)
-	}
-	l.finishUnified(context.Background(), execution.AttemptCompleted, execution.CallCompleted, "call_completed")
+	_, _ = usage, projection
+	err := l.finishUnified(context.Background(), "", execution.CallCompleted, "call_completed")
 	l.releaseLease()
 	return err
 }
@@ -611,34 +366,15 @@ func (l *callLifecycle) failCall(
 	clientDisconnected bool,
 	projection *service.ConversationProjectionOutputRequest,
 ) error {
-	attemptID, ok := l.beginFinish(0)
+	if l == nil {
+		return nil
+	}
+	_, ok := l.beginFinish(0)
 	if !ok {
 		return nil
 	}
-	detail := ledgerErrorDetail(requestErr)
-	values := usageValues(usage)
-	err := l.service.FailCall(l.callID, &service.FailCallRequest{
-		LeaseOwner:             l.leaseOwner,
-		FinalAttemptID:         attemptID,
-		HTTPStatus:             detail.status,
-		ErrorType:              detail.errorType,
-		ErrorCode:              detail.code,
-		ErrorMessage:           detail.message,
-		ErrorRetryable:         detail.retryable,
-		InputTokens:            values.input,
-		OutputTokens:           values.output,
-		TotalTokens:            values.total,
-		CachedInputTokens:      values.cached,
-		ReasoningOutputTokens:  values.reasoning,
-		UsageJSON:              values.raw,
-		ClientDisconnected:     clientDisconnected,
-		FailStartedAttempt:     true,
-		ConversationProjection: projection,
-	})
-	if err != nil {
-		logLedgerError("fail API call", l.callID, attemptID, err)
-	}
-	l.finishUnified(context.Background(), execution.AttemptFailed, execution.CallFailed, "call_failed")
+	_, _, _, _ = requestErr, usage, clientDisconnected, projection
+	err := l.finishUnified(context.Background(), "", execution.CallFailed, "call_failed")
 	l.releaseLease()
 	return err
 }
@@ -648,25 +384,15 @@ func (l *callLifecycle) cancelCall(
 	clientDisconnected bool,
 	projection *service.ConversationProjectionOutputRequest,
 ) error {
-	attemptID, ok := l.beginFinish(0)
+	if l == nil {
+		return nil
+	}
+	_, ok := l.beginFinish(0)
 	if !ok {
 		return nil
 	}
-	detail := ledgerErrorDetail(requestErr)
-	err := l.service.CancelCall(l.callID, &service.CancelCallRequest{
-		LeaseOwner:             l.leaseOwner,
-		FinalAttemptID:         attemptID,
-		HTTPStatus:             detail.status,
-		ErrorType:              detail.errorType,
-		ErrorCode:              detail.code,
-		ErrorMessage:           detail.message,
-		ClientDisconnected:     clientDisconnected,
-		ConversationProjection: projection,
-	})
-	if err != nil {
-		logLedgerError("cancel API call", l.callID, 0, err)
-	}
-	l.finishUnified(context.Background(), execution.AttemptCancelled, execution.CallCancelled, "call_cancelled")
+	_, _, _ = requestErr, clientDisconnected, projection
+	err := l.finishUnified(context.Background(), "", execution.CallCancelled, "call_cancelled")
 	l.releaseLease()
 	return err
 }
@@ -708,7 +434,7 @@ func (r *Result) CancelDelivery(err error, clientDisconnected bool) error {
 }
 
 func (l *callLifecycle) beginFinish(preferredAttemptID uint) (uint, bool) {
-	if l == nil || l.service == nil {
+	if l == nil || l.unified == nil {
 		return 0, false
 	}
 	l.mu.Lock()
@@ -752,90 +478,6 @@ func (l *callLifecycle) currentConversationProjection() *service.ConversationPro
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	return cloneConversationProjectionOutputRequest(l.conversationProjection)
-}
-
-type canonicalUsageValues struct {
-	input, output, total, cached, reasoning int
-	raw                                     datatypes.JSON
-}
-
-func usageValues(usage *canonical.Usage) canonicalUsageValues {
-	if usage == nil {
-		return canonicalUsageValues{}
-	}
-	raw, _ := json.Marshal(usage)
-	return canonicalUsageValues{
-		input: usage.InputTokens, output: usage.OutputTokens, total: usage.TotalTokens,
-		cached: usage.CachedInputTokens, reasoning: usage.ReasoningOutputTokens,
-		raw: datatypes.JSON(raw),
-	}
-}
-
-type ledgerError struct {
-	status    int
-	errorType string
-	code      string
-	message   string
-	retryable bool
-}
-
-func ledgerErrorDetail(err error) ledgerError {
-	if err == nil {
-		return ledgerError{}
-	}
-	result := ledgerError{message: err.Error(), errorType: "execution_error", code: "execution_failed"}
-	if errors.Is(err, context.Canceled) {
-		result.errorType = "cancelled"
-		result.code = "client_cancelled"
-		return result
-	}
-	if errors.Is(err, context.DeadlineExceeded) {
-		result.status = http.StatusGatewayTimeout
-		result.errorType = "timeout_error"
-		result.code = "deadline_exceeded"
-		result.retryable = true
-		return result
-	}
-	switch {
-	case errors.Is(err, routing.ErrModelNotFound):
-		result.status = http.StatusNotFound
-		result.errorType = "invalid_request_error"
-		result.code = "model_not_found"
-		return result
-	case errors.Is(err, routing.ErrCapabilityUnavailable),
-		errors.Is(err, routing.ErrNoCompatibleTransport),
-		errors.Is(err, ErrNoTransportPlan):
-		result.status = http.StatusBadRequest
-		result.errorType = "invalid_request_error"
-		result.code = "unsupported_model_capability"
-		return result
-	case errors.Is(err, routing.ErrNoRoute):
-		result.status = http.StatusServiceUnavailable
-		result.errorType = "server_error"
-		result.code = "model_unavailable"
-		result.retryable = true
-		return result
-	case errors.Is(err, service.ErrInsufficientTokenBalance),
-		errors.Is(err, service.ErrInsufficientUserBalance):
-		result.status = http.StatusTooManyRequests
-		result.errorType = "insufficient_quota"
-		result.code = "insufficient_quota"
-		return result
-	}
-	if appErr, ok := domain.IsAppError(err); ok {
-		result.status = appErr.HTTPStatus
-		result.code = appErr.Code
-		result.errorType = "api_error"
-		return result
-	}
-	result.status = domain.UpstreamStatusCode(err)
-	if result.status > 0 {
-		result.errorType = "upstream_error"
-		result.code = "upstream_http_error"
-		result.retryable = result.status == http.StatusRequestTimeout ||
-			result.status == http.StatusConflict || result.status == http.StatusTooManyRequests || result.status >= 500
-	}
-	return result
 }
 
 func logLedgerError(action, callID string, attemptID uint, err error) {
@@ -884,6 +526,17 @@ func cloneConversationProjectionOutputRequest(
 	return &clone
 }
 
+func cloneConversationProjectionInputRequest(
+	request *service.ConversationProjectionInputRequest,
+) service.ConversationProjectionInputRequest {
+	if request == nil {
+		return service.ConversationProjectionInputRequest{}
+	}
+	clone := *request
+	clone.InputItems = canonical.CloneItems(request.InputItems)
+	return clone
+}
+
 func (e *Engine) Execute(
 	ctx context.Context,
 	request canonical.Request,
@@ -893,16 +546,11 @@ func (e *Engine) Execute(
 	if err != nil {
 		return nil, err
 	}
+	if strings.TrimSpace(options.CallID) == "" {
+		options.CallID = service.GenerateUnifiedCallID()
+	}
 	requestCtx := ctx
-	ledger, err := e.beginCall(ctx, request, operation, options)
-	if err != nil {
-		return nil, err
-	}
-	if ledger != nil {
-		ctx = ledger.Context()
-		options.CallID = ledger.callID
-		ledger.recordPayload(0, model.APICallPayloadRequest, options.DownstreamRequest)
-	}
+	var ledger *callLifecycle
 	streamHandedOff := false
 	defer func() {
 		// 统一处理所有提前返回，防止已开始的调用永久停留在 running。
@@ -923,10 +571,6 @@ func (e *Engine) Execute(
 		projection := ledger.currentConversationProjection()
 		if options.ProjectConversation && projection == nil {
 			projection = conversationProjectionOutputRequest(options.CallID, 0, canonical.Response{})
-		}
-		if leaseErr := ledger.leaseFailure(); leaseErr != nil {
-			ledger.failCall(errors.Join(failure, leaseErr), nil, false, projection)
-			return
 		}
 		if errors.Is(failure, context.Canceled) || errors.Is(requestCtx.Err(), context.Canceled) {
 			ledger.cancelCall(failure, true, projection)
@@ -961,7 +605,9 @@ func (e *Engine) Execute(
 			return nil, ErrNoTransportPlan
 		}
 		selectionRequirements := requirementsForPlans(requirements, attemptPlans)
-		route, selectErr := e.selector.SelectTransport(request.Model, routingRequirements(selectionRequirements), routing.RouteOptions{
+		route, selectErr := e.selector.SelectTransport(ctx, request.Model, routingRequirements(selectionRequirements), routing.RouteOptions{
+			SelectionKey:    options.CallID,
+			OperationMethod: "POST", OperationPath: canonicalOperationPath(request.Endpoint),
 			AllowedTransports: planIDs(attemptPlans), PreferredTransports: preferredPlanIDs(attemptPlans),
 			ExcludeAttempts: attempts, ResponsesRequest: operation == transport.OperationResponses,
 		})
@@ -1006,13 +652,24 @@ func (e *Engine) Execute(
 			}
 			continue
 		}
+		if ledger == nil {
+			ledger, err = e.beginSelectedCall(ctx, route, attemptRequest, operation, options)
+			if err != nil {
+				e.selector.Release(route.KeyID)
+				return nil, err
+			}
+			if ledger != nil {
+				ctx = ledger.Context()
+				options.CallID = ledger.callID
+			}
+		}
 		selectedResult, upstreamErr, err := e.executeSelected(
 			ctx,
 			attemptRequest,
 			operation,
 			attemptRequirements,
 			route,
-			attemptBillingOptions(options, attempt),
+			options,
 			ledger,
 		)
 		if err == nil && selectedResult != nil && selectedResult.Stream != nil && maxAttempts > 1 {
@@ -1123,45 +780,34 @@ func (e *Engine) executeSelected(
 		e.selector.Release(route.KeyID)
 		return nil, false, err
 	}
-	if ledger != nil {
-		if err := ledger.startUnified(ctx, route, request, options.UserID, options.TokenID, request.Store != nil && *request.Store); err != nil {
-			e.selector.Release(route.KeyID)
-			return nil, false, err
-		}
-		if err := ledger.startUnifiedAttempt(ctx, route, request.Background, fmt.Sprintf("credential:%d", route.CredentialID)); err != nil {
-			ledger.finishUnified(ctx, execution.AttemptNotCreated, execution.CallFailed, "attempt_not_created")
-			e.selector.Release(route.KeyID)
-			return nil, false, err
-		}
+	if ledger == nil {
+		e.selector.Release(route.KeyID)
+		return nil, false, repository.ErrConflict
 	}
-	attempt, err := ledger.startAttempt(route, prepared)
-	if err != nil {
+	if err := ledger.startUnifiedAttempt(ctx, route, request.Background, fmt.Sprintf("credential:%d", route.CredentialID)); err != nil {
+		_ = ledger.finishUnified(ctx, execution.AttemptNotCreated, execution.CallFailed, "attempt_not_created")
 		e.selector.Release(route.KeyID)
 		return nil, false, err
 	}
-	attemptID := uint(0)
-	if attempt != nil {
-		attemptID = attempt.ID
-	}
-	ledger.recordPayload(attemptID, model.APICallPayloadUpstreamRequest, prepared.Body)
-	billingContext := callBillingContext(options.CallID, attemptID, route)
-	var reservation reservationLifecycle
-	if unifiedReservation, unifiedErr := ledger.reserveUnified(ctx, options.UserID, options.TokenID, route, request); unifiedErr != nil {
-		ledger.failAttempt(attemptID, unifiedErr, nil, "")
+	attemptID := ledger.currentAttemptID()
+	if attemptID == 0 {
 		e.selector.Release(route.KeyID)
-		return nil, false, unifiedErr
-	} else if unifiedReservation != nil {
-		reservation = unifiedReservation
-	} else {
-		reservation, err = reserveWithBillingContext(e.billing, options.TokenID, options.UserID, route, request, options.BillingKey, billingContext)
+		return nil, false, repository.ErrConflict
 	}
+	reservation, err := ledger.reserveUnified(ctx, options.UserID, options.TokenID, route, request)
 	if err != nil {
 		ledger.failAttempt(attemptID, err, nil, "")
 		e.selector.Release(route.KeyID)
 		return nil, false, err
 	}
+	if reservation == nil {
+		err = fmt.Errorf("%w: unified billing reservation was not created", repository.ErrConflict)
+		ledger.failAttempt(attemptID, err, nil, "")
+		e.selector.Release(route.KeyID)
+		return nil, false, err
+	}
 	requestLog, err := StartRequestLog(route, prepared, operation, RequestLogLink{
-		CallID: options.CallID, AttemptID: attemptID,
+		CallID: options.CallID, AttemptID: attemptID, unified: ledger.unifiedRequestOwner(),
 	})
 	if err != nil {
 		cancelErr := reservation.Cancel()
@@ -1205,32 +851,22 @@ func (e *Engine) executeSelected(
 	response, executeErr := selected.ExecutePrepared(ctx, invocation, prepared)
 	e.selector.Release(route.KeyID)
 	if executeErr != nil {
-		leaseErr := ledger.leaseFailure()
-		if leaseErr != nil {
-			executeErr = errors.Join(leaseErr, executeErr)
-		}
 		cancelErr := reservation.Cancel()
 		combinedErr := errors.Join(executeErr, cancelErr)
 		logErr := requestLog.CompleteResponse(nil, 0, combinedErr)
-		if leaseErr != nil {
-			ledger.failAttempt(attemptID, combinedErr, nil, "")
-		} else if errors.Is(executeErr, context.Canceled) || errors.Is(ctx.Err(), context.Canceled) {
+		if errors.Is(executeErr, context.Canceled) || errors.Is(ctx.Err(), context.Canceled) {
 			ledger.cancelAttempt(attemptID, executeErr)
 		} else {
 			ledger.failAttempt(attemptID, combinedErr, nil, "")
 		}
 		return nil, true, errors.Join(executeErr, cancelErr, logErr)
 	}
-	if leaseErr := ledger.leaseFailure(); leaseErr != nil {
-		cancelErr := reservation.Cancel()
-		combinedErr := errors.Join(leaseErr, cancelErr)
-		logErr := requestLog.CompleteResponse(nil, 0, combinedErr)
-		ledger.failAttempt(attemptID, combinedErr, nil, "")
-		return nil, false, errors.Join(combinedErr, logErr)
+	responseBody, payloadErr := json.Marshal(response)
+	if payloadErr == nil {
+		payloadErr = ledger.recordResult(responseBody)
 	}
-	ledger.markFirstByte(attemptID)
-	if responseBody, marshalErr := json.Marshal(response); marshalErr == nil {
-		ledger.recordPayload(attemptID, model.APICallPayloadUpstreamResponse, responseBody)
+	if payloadErr != nil {
+		return nil, false, errors.Join(payloadErr, reservation.Retain(), requestLog.CompleteResponse(&response, http.StatusOK, payloadErr))
 	}
 	providerResponseID := response.ProviderResponseID
 	if providerResponseID == "" {
@@ -1248,7 +884,7 @@ func (e *Engine) executeSelected(
 		return nil, false, errors.Join(settleErr, logErr)
 	}
 	if !options.DeferCallCompletion {
-		if completeErr := ledger.completeCall(attemptID, response.Usage, terminalProjection); errors.Is(completeErr, service.ErrAPICallLeaseUnavailable) {
+		if completeErr := ledger.completeCall(attemptID, response.Usage, terminalProjection); completeErr != nil {
 			return nil, false, completeErr
 		}
 	}
@@ -1257,31 +893,6 @@ func (e *Engine) executeSelected(
 		CallID: options.CallID, AttemptID: attemptID, ledger: ledger, usage: cloneUsage(response.Usage),
 		conversationProjection: cloneConversationProjectionOutputRequest(terminalProjection),
 	}, false, nil
-}
-
-func callBillingContext(callID string, attemptID uint, route *routing.RouteResult) service.BillingContext {
-	if callID == "" || route == nil {
-		return service.BillingContext{}
-	}
-	snapshot, _ := json.Marshal(map[string]any{
-		"price_mode":   route.PriceMode,
-		"input_price":  route.InputPrice,
-		"output_price": route.OutputPrice,
-		"public_model": route.ModelName,
-		"vendor_model": route.VendorModel,
-		"transport":    route.Transport,
-	})
-	return service.BillingContext{
-		CallID: callID, AttemptID: attemptID,
-		PricingSnapshot: datatypes.JSON(snapshot),
-	}
-}
-
-func attemptBillingOptions(options ExecuteOptions, attempt int) ExecuteOptions {
-	if attempt > 0 && options.BillingKey != "" {
-		options.BillingKey = fmt.Sprintf("%s:attempt:%d", options.BillingKey, attempt+1)
-	}
-	return options
 }
 
 func retryableUpstreamError(ctx context.Context, err error) bool {
@@ -1340,33 +951,19 @@ func (s *StreamResult) nextLocked(ctx context.Context) (canonical.Event, error) 
 	event, err := s.stream.Next(ctx)
 	if err != nil {
 		cause := err
-		leaseErr := s.ledger.leaseFailure()
-		if leaseErr != nil {
-			cause = errors.Join(leaseErr, err)
-		}
 		if errors.Is(err, io.EOF) {
 			cause = ErrStreamEndedWithoutTerminal
-			if leaseErr != nil {
-				cause = errors.Join(leaseErr, cause)
-			}
 		}
 		// 尚未产出内容时可全额取消预授权；已有部分输出但缺少最终 usage 时按预授权金额结算。
 		disposition := streamCancel
 		if s.hasProduced() {
 			disposition = streamRetain
 		}
-		cancelled := leaseErr == nil && (errors.Is(err, context.Canceled) || errors.Is(ctx.Err(), context.Canceled))
+		cancelled := errors.Is(err, context.Canceled) || errors.Is(ctx.Err(), context.Canceled)
 		return canonical.Event{}, s.finish(disposition, nil, cause, true, cancelled, cancelled)
 	}
 
 	s.observe(event)
-	if leaseErr := s.ledger.leaseFailure(); leaseErr != nil {
-		disposition := streamCancel
-		if s.hasProduced() {
-			disposition = streamRetain
-		}
-		return canonical.Event{}, s.finish(disposition, nil, leaseErr, true, false, false)
-	}
 	if isTerminalEvent(event.Type) {
 		s.markTerminal()
 		return event, s.finish(streamSettle, s.currentUsage(), terminalEventError(event), false, false, false)
@@ -1442,9 +1039,6 @@ func (s *StreamResult) FailDelivery(err error, clientDisconnected bool) error {
 
 func (s *StreamResult) observe(event canonical.Event) {
 	s.requestLog.Observe(event)
-	s.firstByteOnce.Do(func() {
-		s.ledger.markFirstByte(s.AttemptID)
-	})
 	s.stateMu.Lock()
 	s.produced = true
 	if s.transcript == nil {
@@ -1494,16 +1088,27 @@ func (s *StreamResult) finish(
 		// finishOnce 把主动关闭、读取错误、终止事件和下游写入失败归并为一次资源结算。
 		closeErr := s.closeUnderlying()
 		var billingErr error
-		switch disposition {
-		case streamSettle:
-			billingErr = s.reservation.Settle(usage)
-		case streamCancel:
-			billingErr = s.reservation.Cancel()
-		case streamRetain:
-			billingErr = s.reservation.Retain()
+		var payloadErr error
+		if disposition == streamSettle {
+			var body []byte
+			body, payloadErr = json.Marshal(s.CanonicalResponse())
+			if payloadErr == nil {
+				payloadErr = s.ledger.recordResult(body)
+			}
+		}
+		if payloadErr != nil {
+			billingErr = errors.Join(payloadErr, s.reservation.Retain())
+		} else {
+			switch disposition {
+			case streamSettle:
+				billingErr = s.reservation.Settle(usage)
+			case streamCancel:
+				billingErr = s.reservation.Cancel()
+			case streamRetain:
+				billingErr = s.reservation.Retain()
+			}
 		}
 		recordedErr := errors.Join(requestErr, billingErr, closeErr)
-		s.ledger.recordPayload(s.AttemptID, model.APICallPayloadUpstreamResponse, s.requestLog.StreamPayload())
 		logErr := s.requestLog.CompleteStream(0, recordedErr)
 		var projection *service.ConversationProjectionOutputRequest
 		if s.projectConversation {

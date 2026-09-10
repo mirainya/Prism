@@ -52,6 +52,7 @@ export const ConfirmDialog: React.FC<ConfirmDialogProps> = ({
       ariaDescribedby={descriptionId}
       dismissible={!busy}
       initialFocusRef={showCancel ? cancelRef : confirmRef}
+      zIndex={70}
       panelClassName="modal-panel w-full max-w-md"
     >
       <div>

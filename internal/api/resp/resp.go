@@ -1,8 +1,9 @@
 package resp
 
 import (
-	"fmt"
 	"net/http"
+	"strconv"
+	"strings"
 
 	"github.com/gin-gonic/gin"
 	"github.com/mirainya/Prism/pkg/errors"
@@ -63,24 +64,30 @@ func ErrorMsg(c *gin.Context, httpCode int, code int, message string) {
 
 // ParseUintParam 从路由参数解析 uint 值
 func ParseUintParam(c *gin.Context, name string) (uint, error) {
-	param := c.Param(name)
-	var id uint
-	if _, err := fmt.Sscanf(param, "%d", &id); err != nil {
+	param := strings.TrimSpace(c.Param(name))
+	id, err := strconv.ParseUint(param, 10, strconv.IntSize)
+	if err != nil || id == 0 {
 		BadRequest(c, errors.WithMessage(errors.ErrInvalidParams, "invalid "+name))
+		if err == nil {
+			err = strconv.ErrSyntax
+		}
 		return 0, err
 	}
-	return id, nil
+	return uint(id), nil
 }
 
 // ParseOptionalUintQuery 从查询参数解析可选的 uint 值
 func ParseOptionalUintQuery(c *gin.Context, name string) (uint, error) {
-	param := c.Query(name)
+	param := strings.TrimSpace(c.Query(name))
 	if param == "" {
 		return 0, nil
 	}
-	var id uint
-	if _, err := fmt.Sscanf(param, "%d", &id); err != nil {
+	id, err := strconv.ParseUint(param, 10, strconv.IntSize)
+	if err != nil || id == 0 {
+		if err == nil {
+			err = strconv.ErrSyntax
+		}
 		return 0, err
 	}
-	return id, nil
+	return uint(id), nil
 }

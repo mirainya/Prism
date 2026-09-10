@@ -1,4 +1,4 @@
-import { ApiToken, ChannelPriorityItem } from '../types';
+import { ApiToken } from '../types';
 import { request } from './request';
 
 export const fetchTokens = async (): Promise<ApiToken[]> => {
@@ -8,13 +8,8 @@ export const fetchTokens = async (): Promise<ApiToken[]> => {
     name: t.name,
     key: t.key,
       balance: Number(t.balance) || 0,
-      totalUsed: Number(t.total_used) || 0,
+    totalUsed: Number(t.total_used) || 0,
     status: t.status === 1 ? 'active' as const : 'expired' as const,
-      channelPriorities: (t.channel_priorities || []).map((p: any) => ({
-          capabilityCode: p.capability_code,
-          channelId: p.channel_id,
-          priority: p.priority,
-      })),
   }));
 };
 
@@ -27,30 +22,16 @@ export const getToken = async (id: string): Promise<ApiToken> => {
         balance: Number(t.balance) || 0,
         totalUsed: Number(t.total_used) || 0,
         status: t.status === 1 ? 'active' as const : 'expired' as const,
-        channelPriorities: (t.channel_priorities || []).map((p: any) => ({
-            capabilityCode: p.capability_code,
-            channelId: p.channel_id,
-            priority: p.priority,
-        })),
     };
 };
 
 export const createToken = async (
     name: string,
-    balance: number,
-    channelPriorities?: ChannelPriorityItem[]
+    balance: number
 ): Promise<{ id: string; key: string; balance: number }> => {
-    const body: any = {name, balance};
-    if (channelPriorities && channelPriorities.length > 0) {
-        body.channel_priorities = channelPriorities.map(p => ({
-            capability_code: p.capabilityCode,
-            channel_id: p.channelId,
-            priority: p.priority,
-        }));
-    }
     const data = await request<{ id: number; name: string; key: string; balance: number }>('/tokens', {
     method: 'POST',
-        body: JSON.stringify(body),
+        body: JSON.stringify({name, balance}),
   });
   return {
     id: String(data.id),
@@ -61,22 +42,11 @@ export const createToken = async (
 
 export const updateToken = async (
     id: string,
-    data: { name?: string; channelPriorities?: ChannelPriorityItem[] }
+    data: { name?: string }
 ): Promise<void> => {
-    const body: any = {};
-    if (data.name) {
-        body.name = data.name;
-    }
-    if (data.channelPriorities !== undefined) {
-        body.channel_priorities = data.channelPriorities.map(p => ({
-            capability_code: p.capabilityCode,
-            channel_id: p.channelId,
-            priority: p.priority,
-        }));
-    }
     await request(`/tokens/${id}`, {
         method: 'PUT',
-        body: JSON.stringify(body),
+        body: JSON.stringify(data),
     });
 };
 
@@ -84,13 +54,14 @@ export const deleteToken = async (id: string): Promise<void> => {
   await request(`/tokens/${id}`, { method: 'DELETE' });
 };
 
-export const rechargeToken = async (id: string, amount: number): Promise<{ id: string; balance: number }> => {
-  const data = await request<{ id: number; balance: number }>(`/tokens/${id}/recharge`, {
+export const rechargeToken = async (id: string, amount: number): Promise<{ id: string; balance: number; totalUsed: number }> => {
+  const data = await request<{ id: number; balance: number; total_used: number }>(`/tokens/${id}/recharge`, {
     method: 'POST',
     body: JSON.stringify({amount}),
   });
   return {
     id: String(data.id),
     balance: Number(data.balance) || 0,
+    totalUsed: Number(data.total_used) || 0,
   };
 };

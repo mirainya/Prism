@@ -11,12 +11,16 @@ import (
 type VideoTaskStatus string
 
 const (
-	VideoTaskStatusQueued    VideoTaskStatus = "queued"
-	VideoTaskStatusSubmitted VideoTaskStatus = "submitted"
-	VideoTaskStatusTracking  VideoTaskStatus = "tracking"
-	VideoTaskStatusCompleted VideoTaskStatus = "completed"
-	VideoTaskStatusFailed    VideoTaskStatus = "failed"
-	VideoTaskStatusCancelled VideoTaskStatus = "cancelled"
+	VideoTaskStatusQueued VideoTaskStatus = "queued"
+	// submission_unknown means the provider may have accepted the request but
+	// Prism could not verify the submit response. It is intentionally excluded
+	// from automatic retries so a recovery worker cannot create a duplicate job.
+	VideoTaskStatusSubmissionUnknown VideoTaskStatus = "submission_unknown"
+	VideoTaskStatusSubmitted         VideoTaskStatus = "submitted"
+	VideoTaskStatusTracking          VideoTaskStatus = "tracking"
+	VideoTaskStatusCompleted         VideoTaskStatus = "completed"
+	VideoTaskStatusFailed            VideoTaskStatus = "failed"
+	VideoTaskStatusCancelled         VideoTaskStatus = "cancelled"
 )
 
 func (s VideoTaskStatus) IsTerminal() bool {

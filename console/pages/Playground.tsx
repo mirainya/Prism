@@ -1,13 +1,12 @@
 import React, { useState, useEffect } from 'react';
-import { Play, Bot, Loader2, Zap, Video } from 'lucide-react';
+import { Play, Bot, Loader2, Video } from 'lucide-react';
 import { fetchTokens } from '../services/api';
 import { ApiToken } from '../types';
 import { Select } from '../components/ui';
 import ChatTab from './playground/ChatTab';
-import CapabilityTab from './playground/CapabilityTab';
 import VideoTab from './playground/VideoTab';
 
-type TabType = 'chat' | 'capability' | 'video';
+type TabType = 'chat' | 'video';
 
 const Playground: React.FC = () => {
   const [activeTab, setActiveTab] = useState<TabType>('chat');
@@ -31,7 +30,6 @@ const Playground: React.FC = () => {
 
   const tabs = [
     { key: 'chat' as TabType, label: 'Chat 调试', icon: <Bot size={16} /> },
-    { key: 'capability' as TabType, label: '能力调用', icon: <Zap size={16} /> },
     { key: 'video' as TabType, label: '视频生成', icon: <Video size={16} /> },
   ];
 
@@ -75,8 +73,6 @@ const Playground: React.FC = () => {
           </div>
         ) : activeTab === 'chat' ? (
           <ChatTab tokenId={selectedTokenId} />
-        ) : activeTab === 'capability' ? (
-          <CapabilityTab tokenId={selectedTokenId} />
         ) : (
           <VideoTab tokenId={selectedTokenId} />
         )}

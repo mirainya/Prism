@@ -8,12 +8,12 @@ import (
 	"github.com/mirainya/Prism/internal/service"
 )
 
-// DocsListModels 文档页 - 获取所有模型（含 param_schema）
+// DocsListModels returns models backed by executable routes in the active catalog.
 func DocsListModels(c *gin.Context) {
 	svc := service.NewQueryService()
-	result, err := svc.ListAvailableCapabilities("", "")
+	result, err := svc.ListAvailableCapabilities(c.Request.Context(), "", "")
 	if err != nil {
-		resp.ErrorMsg(c, http.StatusInternalServerError, 500, err.Error())
+		resp.ErrorMsg(c, http.StatusServiceUnavailable, 503, "model catalog is unavailable")
 		return
 	}
 	resp.Success(c, result)
@@ -24,7 +24,7 @@ func DocsListModels(c *gin.Context) {
 func DocsListVideos(c *gin.Context) {
 	result, err := listVideoModels(c.Request.Context())
 	if err != nil {
-		resp.ErrorMsg(c, http.StatusInternalServerError, 500, err.Error())
+		resp.ErrorMsg(c, http.StatusServiceUnavailable, 503, "video catalog is unavailable")
 		return
 	}
 	resp.Success(c, result)

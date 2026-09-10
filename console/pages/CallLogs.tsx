@@ -29,17 +29,14 @@ import {
   APICallRouteKind,
   APICallStatus,
   CallListParams,
-  fetchChannelAccounts,
-  fetchChannelCapabilities,
   fetchCallDetail,
   fetchCalls,
   fetchUsers,
 } from '../services';
-import { fetchGwChannels, GW_TRANSPORTS, GwChannel } from '../services/gatewayApi';
-import { fetchVideoChannels, type VideoChannel } from '../services/videoApi';
+import { fetchUnifiedChannels, type UnifiedChannel } from '../services/unifiedChannelApi';
 import { Drawer, Pagination, Select } from '../components/ui';
 import { PageHeader } from '../components/shell';
-import { ChannelAccount, ChannelCapability, User, UserRole } from '../types';
+import { User, UserRole } from '../types';
 
 const DEFAULT_PAGE_SIZE = 20;
 const INPUT_CLASS = 'w-full min-w-0 rounded-lg border border-[var(--border-soft)] bg-[var(--surface-card)] px-3 py-2 text-sm text-[var(--text-primary)] outline-none transition placeholder:text-[var(--text-tertiary)] focus:border-[var(--primary)] focus:ring-2 focus:ring-[var(--focus-ring)]';
@@ -59,7 +56,7 @@ const TRANSPORT_LABELS: Record<string, string> = {
   video_generation: '视频生成',
 };
 
-const CALL_TRANSPORTS = [...GW_TRANSPORTS, 'video_generation'];
+const CALL_TRANSPORTS = ['openai_chat', 'openai_responses', 'anthropic_messages', 'google_generate_content', 'volcengine_responses_v3', 'video_generation'];
 
 const ROUTE_KIND_LABELS: Record<string, string> = {
   gateway_v2: 'Gateway',
@@ -124,10 +121,6 @@ const formatDate = (value?: string | null) => {
 const endpointLabel = (endpoint: string) => {
   const knownLabel = ENDPOINT_LABELS[endpoint];
   if (knownLabel) return knownLabel;
-  const capabilityPrefix = '/v1/capabilities/';
-  if (endpoint.startsWith(capabilityPrefix)) {
-    return `动态能力：${endpoint.slice(capabilityPrefix.length) || '-'}`;
-  }
   return endpoint || '-';
 };
 const parsePositive = (value: string) => {
@@ -216,10 +209,7 @@ const CallLogs: React.FC = () => {
   const [detailError, setDetailError] = useState('');
   const [activeTab, setActiveTab] = useState<'overview' | 'attempts' | 'billing' | 'payloads'>('overview');
   const [copied, setCopied] = useState(false);
-  const [channels, setChannels] = useState<GwChannel[]>([]);
-  const [videoChannels, setVideoChannels] = useState<VideoChannel[]>([]);
-  const [capabilityEndpoints, setCapabilityEndpoints] = useState<ChannelCapability[]>([]);
-  const [accounts, setAccounts] = useState<ChannelAccount[]>([]);
+  const [channels, setChannels] = useState<UnifiedChannel[]>([]);
   const [users, setUsers] = useState<User[]>([]);
   const detailRequest = useRef(0);
   const snapshotAt = useRef('');
@@ -227,35 +217,12 @@ const CallLogs: React.FC = () => {
   const isAdmin = useMemo(() => {
     try { return JSON.parse(localStorage.getItem('prism_user') || '{}').role === UserRole.ADMIN; } catch { return false; }
   }, []);
-  const channelNames = useMemo(() => new Map(channels.map(channel => [channel.id, channel.name])), [channels]);
-  const videoChannelNames = useMemo(() => new Map(videoChannels.map(channel => [channel.id, channel.name])), [videoChannels]);
-  const endpointMap = useMemo(
-    () => new Map(capabilityEndpoints.map(endpoint => [Number(endpoint.id), endpoint])),
-    [capabilityEndpoints],
-  );
-  const accountNames = useMemo(
-    () => new Map(accounts.map(account => [Number(account.id), account.name])),
-    [accounts],
-  );
-  const capabilityChannels = useMemo(() => {
-    const items = new Map<number, string>();
-    capabilityEndpoints.forEach(endpoint => {
-      const channelID = Number(endpoint.channelId);
-      if (channelID > 0 && !items.has(channelID)) {
-        items.set(channelID, endpoint.channel?.name || `能力渠道 ${channelID}`);
-      }
-    });
-    return Array.from(items, ([id, name]) => ({ id, name })).sort((a, b) => a.name.localeCompare(b.name, 'zh-CN'));
-  }, [capabilityEndpoints]);
-  const filterChannels = draft.route_kind === 'gateway_v2' ? channels : draft.route_kind === 'capability' ? capabilityChannels : draft.route_kind === 'video' ? videoChannels : [];
+  const channelNames = useMemo(() => new Map(channels.map(channel => [channel.id, channel.display_name])), [channels]);
 
   useEffect(() => {
     if (!isAdmin) return;
     Promise.all([
-      fetchGwChannels().then(setChannels).catch(() => setChannels([])),
-      fetchVideoChannels().then(setVideoChannels).catch(() => setVideoChannels([])),
-      fetchChannelCapabilities().then(setCapabilityEndpoints).catch(() => setCapabilityEndpoints([])),
-      fetchChannelAccounts().then(setAccounts).catch(() => setAccounts([])),
+      fetchUnifiedChannels(1, 100, '', '').then(result => setChannels(result.items || [])).catch(() => setChannels([])),
       fetchUsers().then(setUsers).catch(() => setUsers([])),
     ]);
   }, [isAdmin]);
@@ -290,11 +257,6 @@ const CallLogs: React.FC = () => {
   }, [filters, isAdmin, page, pageSize, refreshKey]);
 
   const updateDraft = (key: keyof FilterDraft, value: string) => setDraft(current => ({ ...current, [key]: value }));
-  const updateRouteKind = (value: APICallRouteKind | '') => setDraft(current => ({
-    ...current,
-    route_kind: value,
-    channel_id: '',
-  }));
   const search = () => { snapshotAt.current = ''; setPage(1); setFilters({ ...draft }); };
   const reset = () => { snapshotAt.current = ''; setPage(1); setDraft({ ...EMPTY_FILTERS }); setFilters({ ...EMPTY_FILTERS }); };
   const refresh = () => { snapshotAt.current = ''; setPage(1); setRefreshKey(value => value + 1); };
@@ -365,7 +327,7 @@ const CallLogs: React.FC = () => {
               options={[{ label: '全部状态', value: '' }, { label: '已接收', value: 'received' }, { label: '处理中', value: 'in_progress' }, { label: '成功', value: 'completed' }, { label: '失败', value: 'failed' }, { label: '已取消', value: 'cancelled' }]} />
           </div>
           <label className="text-xs font-semibold text-[var(--text-secondary)]">端点
-            <input value={draft.endpoint} onChange={e => updateDraft('endpoint', e.target.value)} placeholder="/v1/capabilities/image-generation" className={`${INPUT_CLASS} mt-1 font-mono`} />
+            <input value={draft.endpoint} onChange={e => updateDraft('endpoint', e.target.value)} placeholder="/v1/chat/completions" className={`${INPUT_CLASS} mt-1 font-mono`} />
           </label>
           <label className="text-xs font-semibold text-[var(--text-secondary)]">开始日期
             <input type="date" value={draft.start_date} onChange={e => updateDraft('start_date', e.target.value)} className={`${INPUT_CLASS} mt-1`} />
@@ -382,12 +344,12 @@ const CallLogs: React.FC = () => {
               <input type="number" min="1" value={draft.token_id} onChange={e => updateDraft('token_id', e.target.value)} placeholder="Token ID" className={`${INPUT_CLASS} mt-1`} />
             </label>
             <div className="text-xs font-semibold text-[var(--text-secondary)]">路由类型
-              <Select value={draft.route_kind} onChange={v => updateRouteKind(v as APICallRouteKind | '')} className="mt-1"
+              <Select value={draft.route_kind} onChange={v => updateDraft('route_kind', v)} className="mt-1"
                 options={[{ label: '全部路由', value: '' }, { label: 'Gateway', value: 'gateway_v2' }, { label: '能力任务', value: 'capability' }, { label: '视频任务', value: 'video' }]} />
             </div>
             <div className="text-xs font-semibold text-[var(--text-secondary)]">渠道
-              <Select value={draft.channel_id} onChange={v => updateDraft('channel_id', v)} disabled={!draft.route_kind} className="mt-1"
-                options={[{ label: draft.route_kind ? '全部渠道' : '先选择路由类型', value: '' }, ...filterChannels.map(channel => ({ label: `${channel.name} (#${channel.id})`, value: String(channel.id) }))]} />
+              <Select value={draft.channel_id} onChange={v => updateDraft('channel_id', v)} className="mt-1"
+                options={[{ label: '全部渠道', value: '' }, ...channels.map(channel => ({ label: `${channel.display_name} (#${channel.id})`, value: String(channel.id) }))]} />
             </div>
             <div className="text-xs font-semibold text-[var(--text-secondary)]">Transport
               <Select value={draft.transport} onChange={v => updateDraft('transport', v)} className="mt-1"
@@ -449,7 +411,7 @@ const CallLogs: React.FC = () => {
             {detailLoading ? <CallDetailSkeleton /> :
               detailError ? <div className="flex items-center gap-2 rounded-lg border border-red-200 bg-red-50 p-4 text-sm text-red-700"><AlertTriangle size={17} />{detailError}</div> :
               detail && activeTab === 'overview' ? <Overview call={detail.call} isAdmin={isAdmin} copied={copied} onCopy={copyRequestID} /> :
-              detail && activeTab === 'attempts' ? <Attempts attempts={detail.attempts || []} isAdmin={isAdmin} channelNames={channelNames} videoChannelNames={videoChannelNames} endpointMap={endpointMap} accountNames={accountNames} /> :
+              detail && activeTab === 'attempts' ? <Attempts attempts={detail.attempts || []} isAdmin={isAdmin} channelNames={channelNames} /> :
               detail && activeTab === 'billing' ? <Billing call={detail.call} logs={detail.billing_logs || []} /> :
               detail && <Payloads payloads={detail.payloads || []} />}
           </div>
@@ -481,26 +443,19 @@ type AttemptsProps = {
   attempts: APICallAttempt[];
   isAdmin: boolean;
   channelNames: Map<number, string>;
-  videoChannelNames: Map<number, string>;
-  endpointMap: Map<number, ChannelCapability>;
-  accountNames: Map<number, string>;
 };
 
-const Attempts: React.FC<AttemptsProps> = ({ attempts, isAdmin, channelNames, videoChannelNames, endpointMap, accountNames }) => {
+const Attempts: React.FC<AttemptsProps> = ({ attempts, isAdmin, channelNames }) => {
   if (attempts.length === 0) {
     return <div className="py-16 text-center text-sm text-[var(--text-secondary)]">暂无上游尝试</div>;
   }
   return <div className="divide-y divide-[var(--border-soft)] border-y border-[var(--border-soft)]">{attempts.map(attempt => {
     const routeKind = attempt.route_kind || 'gateway_v2';
-    const endpoint = endpointMap.get(attempt.endpoint_id);
-    const capabilityChannelID = Number(endpoint?.channelId || 0);
-    const channelID = routeKind === 'capability' ? capabilityChannelID || attempt.channel_id : attempt.channel_id;
-    const channelName = routeKind === 'capability' ? endpoint?.channel?.name : routeKind === 'video' ? videoChannelNames.get(channelID) : channelNames.get(channelID);
-    const endpointName = endpoint?.name || endpoint?.capabilityCode || endpoint?.model;
-    const accountID = attempt.account_id || Number(endpoint?.accountId || 0);
+    const channelID = attempt.channel_id;
+    const accountID = attempt.account_id;
     return <section key={attempt.id} className="py-4 first:pt-3">
       <div className="flex flex-wrap items-center justify-between gap-2"><h3 className="text-sm font-bold text-[var(--text-primary)]">第 {attempt.attempt_no} 次尝试</h3><StatusBadge status={attempt.status} /></div>
-      <div className="mt-2 grid gap-x-6 md:grid-cols-2 xl:grid-cols-4"><Info label="Transport">{TRANSPORT_LABELS[attempt.transport] || attempt.transport}</Info><Info label="上游模型">{attempt.vendor_model}</Info><Info label="协议">{attempt.protocol}</Info><Info label="HTTP 状态">{attempt.http_status || '-'}</Info>{isAdmin && <><Info label="路由">{ROUTE_KIND_LABELS[routeKind] || routeKind}</Info><Info label="阶段">{STAGE_LABELS[attempt.stage] || attempt.stage || '-'}</Info><Info label="渠道">{formatInternalEntity(channelID, channelName)}</Info><Info label="端点">{formatInternalEntity(attempt.endpoint_id, endpointName)}</Info><Info label="账号">{formatInternalEntity(accountID, accountNames.get(accountID))}</Info><Info label="Key ID">{attempt.key_id || '-'}</Info><Info label="能力 ID">{attempt.ability_id || '-'}</Info><Info label="尝试 ID">{attempt.id}</Info></>}<Info label="请求路径" mono>{attempt.request_path}</Info><Info label="Provider Response ID" mono>{attempt.provider_response_id || '-'}</Info><Info label="输入 / 输出">{attempt.input_tokens} / {attempt.output_tokens}</Info><Info label="总 Token">{attempt.total_tokens}</Info><Info label="耗时">{formatDuration(attempt.duration_ms)}</Info><Info label="TTFT">{formatDuration(attempt.ttft_ms)}</Info><Info label="开始时间">{formatDate(attempt.started_at)}</Info><Info label="完成时间">{formatDate(attempt.completed_at)}</Info></div>
+      <div className="mt-2 grid gap-x-6 md:grid-cols-2 xl:grid-cols-4"><Info label="Transport">{TRANSPORT_LABELS[attempt.transport] || attempt.transport}</Info><Info label="上游模型">{attempt.vendor_model}</Info><Info label="协议">{attempt.protocol}</Info><Info label="HTTP 状态">{attempt.http_status || '-'}</Info>{isAdmin && <><Info label="路由">{ROUTE_KIND_LABELS[routeKind] || routeKind}</Info><Info label="阶段">{STAGE_LABELS[attempt.stage] || attempt.stage || '-'}</Info><Info label="渠道">{formatInternalEntity(channelID, channelNames.get(channelID))}</Info><Info label="端点">{formatInternalEntity(attempt.endpoint_id)}</Info><Info label="账号">{formatInternalEntity(accountID)}</Info><Info label="Key ID">{attempt.key_id || '-'}</Info><Info label="能力 ID">{attempt.ability_id || '-'}</Info><Info label="尝试 ID">{attempt.id}</Info></>}<Info label="请求路径" mono>{attempt.request_path}</Info><Info label="Provider Response ID" mono>{attempt.provider_response_id || '-'}</Info><Info label="输入 / 输出">{attempt.input_tokens} / {attempt.output_tokens}</Info><Info label="总 Token">{attempt.total_tokens}</Info><Info label="耗时">{formatDuration(attempt.duration_ms)}</Info><Info label="TTFT">{formatDuration(attempt.ttft_ms)}</Info><Info label="开始时间">{formatDate(attempt.started_at)}</Info><Info label="完成时间">{formatDate(attempt.completed_at)}</Info></div>
       {attempt.error_message && <div className="mt-2 rounded-lg border border-red-200 bg-red-50 p-3 text-sm text-red-700"><div className="font-semibold">{attempt.error_code || attempt.error_type || '上游错误'} · {attempt.error_retryable ? '可重试' : '不可重试'}</div><div className="mt-1 whitespace-pre-wrap break-words">{attempt.error_message}</div></div>}
     </section>;
   })}</div>;

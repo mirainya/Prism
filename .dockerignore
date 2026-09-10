@@ -21,5 +21,9 @@ logs
 prism
 prism-linux
 prism-windows.exe
+prism.deploy
+prism.new
+prism.linux*
+server.exe
 *.test
 *.out

@@ -22,6 +22,7 @@ export const Modal: React.FC<ModalProps> = ({ open, onClose, title, children, wi
       motion={motion}
       ariaLabel={title ? undefined : '弹窗'}
       ariaLabelledby={title ? titleId : undefined}
+      zIndex={60}
       panelClassName={`modal-panel w-full ${width} ${panelClassName}`}
     >
         {title && (

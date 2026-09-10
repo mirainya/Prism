@@ -159,7 +159,8 @@ func isAIRequestPath(path string) bool {
 	path = strings.TrimRight(path, "/")
 	return path == "/v1" || strings.HasPrefix(path, "/v1/") ||
 		path == "/api/playground" || strings.HasPrefix(path, "/api/playground/") ||
-		path == "/internal/callback" || strings.HasPrefix(path, "/internal/callback/")
+		path == "/internal/callback" || strings.HasPrefix(path, "/internal/callback/") ||
+		path == "/internal/gateway/callback" || strings.HasPrefix(path, "/internal/gateway/callback/")
 }
 
 func isJSONContentType(contentType string) bool {
