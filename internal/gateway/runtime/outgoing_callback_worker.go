@@ -66,9 +66,6 @@ func (w *CallbackDeliveryWorker) ProcessOne(ctx context.Context, owner string) (
 	}
 	var claim repository.ClaimedCallbackDelivery
 	err := w.service.Store.WithTx(ctx, func(tx *sql.Tx) error {
-		if err := w.service.lockClaimDeployment(ctx, tx); err != nil {
-			return err
-		}
 		var err error
 		claim, err = w.service.Store.ClaimCallbackDelivery(ctx, tx, owner, callbackLeaseDuration)
 		return err

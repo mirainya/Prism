@@ -15,8 +15,8 @@ import (
 )
 
 // UnifiedGatewayOverview exposes the migration/runtime boundary to operators.
-// It is intentionally read-only: activating a catalog release remains a
-// separate audited control-plane operation.
+// It is intentionally read-only; configuration writes use the direct edit
+// endpoints and take effect on the next request.
 func UnifiedGatewayOverview(c *gin.Context) {
 	orm := model.DB()
 	db, err := orm.DB()
@@ -41,16 +41,21 @@ func UnifiedGatewayOverview(c *gin.Context) {
 		return count(table)
 	}
 
-	var activeRelease, activeDeployment sql.NullInt64
+	var activeRelease sql.NullInt64
 	var releaseVersion int64
-	if err := db.QueryRowContext(ctx, "SELECT active_release_id,active_deployment_generation_id,state_version FROM gw_catalog_runtime_state WHERE id=1").Scan(&activeRelease, &activeDeployment, &releaseVersion); err != nil {
+	if err := db.QueryRowContext(ctx, "SELECT active_release_id,state_version FROM gw_catalog_runtime_state WHERE id=1").Scan(&activeRelease, &releaseVersion); err != nil {
 		queryErr = err
 	}
 	var activeReleaseValue any
 	if activeRelease.Valid {
 		activeReleaseValue = activeRelease.Int64
 	}
-
+	// Deployment generations remain visible for older API consumers, but no
+	// longer participate in runtime readiness.
+	var activeDeployment sql.NullInt64
+	if err := db.QueryRowContext(ctx, "SELECT active_deployment_generation_id FROM gw_catalog_runtime_state WHERE id=1").Scan(&activeDeployment); err != nil {
+		queryErr = err
+	}
 	var deploymentStatus string
 	var deploymentID int64
 	if activeDeployment.Valid {
@@ -94,17 +99,15 @@ func UnifiedGatewayOverview(c *gin.Context) {
 		{costRates == 0, "cost_rates_missing"},
 		{currencies == 0, "currency_missing"},
 		{!activeRelease.Valid, "catalog_inactive"},
-		{deploymentID == 0, "deployment_inactive"},
 		{legacyChannels > 0 || legacyAbilities > 0, "legacy_data_present"},
 	} {
 		if check.blocked {
 			blockers = append(blockers, check.code)
 		}
 	}
-	identity, identityErr := gatewayruntime.CurrentProcessIdentity()
 	runtimeReady := false
-	if activeRelease.Valid && activeRelease.Int64 > 0 && deploymentID > 0 {
-		runtimeReady = identityErr == nil && gatewayruntime.CheckReadiness(ctx, db, uint64(deploymentID), uint64(activeRelease.Int64)) == nil
+	if activeRelease.Valid && activeRelease.Int64 > 0 {
+		runtimeReady = gatewayruntime.CheckReadiness(ctx, db, uint64(activeRelease.Int64)) == nil
 		if !runtimeReady {
 			blockers = append(blockers, "runtime_not_ready")
 		}
@@ -131,8 +134,7 @@ func UnifiedGatewayOverview(c *gin.Context) {
 			"latest_generation_no":  latestGenerationNo,
 		},
 		"process": gin.H{
-			"instance_id": identity.InstanceID, "role": identity.Role,
-			"adapter_digest": identity.AdapterDigest, "semantic_digest": adapter.SemanticDigest(),
+			"semantic_digest": adapter.SemanticDigest(),
 		},
 		"target": gin.H{
 			"channels":         targetChannels,
@@ -381,7 +383,22 @@ func UnifiedGatewayCallDetail(c *gin.Context) {
 		resp.InternalError(c, pkgErrors.ErrInternalError)
 		return
 	}
-	rows, err := db.QueryContext(ctx, `SELECT id,attempt_no,state,catalog_release_id,sku_id,route_id,offering_id,credential_id,credential_version_id,purpose_grant_id,created_at,updated_at FROM gw_api_call_attempts WHERE call_id=? ORDER BY attempt_no DESC LIMIT ? OFFSET ?`, id, size, (page-1)*size)
+	// 抽屉里原来只有 #route_id #offering_id #credential_id 三个裸 id，看不出这次尝试
+	// 走的是哪条 transport、哪个渠道、哪把 Key，更看不出它为什么失败。
+	// 注意这里全部用 LEFT JOIN：COUNT(*) 不带 join，任何一个 INNER JOIN 掉行都会让
+	// total 与本页条数对不上。错误信息只有 error_code——v2 没有存上游错误正文的列，
+	// 正文在开启 retain_payload 时才落到加密 blob 里，走「上游请求」页签取。
+	rows, err := db.QueryContext(ctx, `SELECT a.id,a.attempt_no,a.state,a.catalog_release_id,a.sku_id,a.route_id,a.offering_id,a.credential_id,a.credential_version_id,a.purpose_grant_id,a.created_at,a.updated_at,
+       COALESCE(ct.transport_code,''),COALESCE(ch.display_name,''),COALESCE(c.credential_code,''),
+       COALESCE((SELECT l.error_code FROM gw_channel_request_logs l WHERE l.attempt_id=a.id AND l.error_code<>'' ORDER BY l.request_seq DESC LIMIT 1),''),
+       (SELECT l.http_status FROM gw_channel_request_logs l WHERE l.attempt_id=a.id ORDER BY l.request_seq DESC LIMIT 1)
+FROM gw_api_call_attempts a
+LEFT JOIN gw_product_transports pt ON pt.release_id=a.catalog_release_id AND pt.id=a.product_transport_id
+LEFT JOIN gw_channel_transports ct ON ct.release_id=pt.release_id AND ct.id=pt.channel_transport_id
+LEFT JOIN gw_products p ON p.release_id=pt.release_id AND p.id=pt.product_id
+LEFT JOIN gateway_channels ch ON ch.id=p.channel_id
+LEFT JOIN gw_credentials c ON c.id=a.credential_id
+WHERE a.call_id=? ORDER BY a.attempt_no DESC LIMIT ? OFFSET ?`, id, size, (page-1)*size)
 	if err != nil {
 		resp.InternalError(c, pkgErrors.ErrInternalError)
 		return
@@ -392,11 +409,19 @@ func UnifiedGatewayCallDetail(c *gin.Context) {
 		var aid, no, ar, as, routeID, offering, credential, version, grant int64
 		var ast string
 		var ca, ua sql.NullTime
-		if err := rows.Scan(&aid, &no, &ast, &ar, &as, &routeID, &offering, &credential, &version, &grant, &ca, &ua); err != nil {
+		var transport, channelName, credentialCode, errorCode string
+		var httpStatus sql.NullInt64
+		if err := rows.Scan(&aid, &no, &ast, &ar, &as, &routeID, &offering, &credential, &version, &grant, &ca, &ua,
+			&transport, &channelName, &credentialCode, &errorCode, &httpStatus); err != nil {
 			resp.InternalError(c, pkgErrors.ErrInternalError)
 			return
 		}
-		attempts = append(attempts, gin.H{"id": aid, "attempt_no": no, "state": ast, "catalog_release_id": ar, "sku_id": as, "route_id": routeID, "offering_id": offering, "credential_id": credential, "credential_version_id": version, "purpose_grant_id": grant, "created_at": nullableTime(ca), "updated_at": nullableTime(ua)})
+		attempt := gin.H{"id": aid, "attempt_no": no, "state": ast, "catalog_release_id": ar, "sku_id": as, "route_id": routeID, "offering_id": offering, "credential_id": credential, "credential_version_id": version, "purpose_grant_id": grant, "created_at": nullableTime(ca), "updated_at": nullableTime(ua),
+			"transport_code": transport, "channel_name": channelName, "credential_code": credentialCode, "error_code": errorCode, "http_status": nil}
+		if httpStatus.Valid {
+			attempt["http_status"] = httpStatus.Int64
+		}
+		attempts = append(attempts, attempt)
 	}
 	if err := rows.Err(); err != nil {
 		resp.InternalError(c, pkgErrors.ErrInternalError)

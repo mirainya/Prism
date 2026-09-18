@@ -15,8 +15,8 @@ import (
 )
 
 // ReconcileDelivery performs an authoritative provider query for one failed
-// or expired reference. It never changes the generation, billing or task
-// state and never sends a submit request.
+// or expired delivery. It never changes the generation, billing or task state
+// and never sends a submit request.
 func (d *AsyncDispatcher) ReconcileDelivery(ctx context.Context, item repository.OutboxItem) error {
 	if d == nil || d.service == nil || item.ResultDeliveryID == 0 || item.Action != "reconcile_delivery" || item.CallID != 0 || item.AttemptID != 0 || item.AsyncExecutionID != 0 || item.CallbackReceiptID != 0 {
 		return &PermanentDispatchError{Code: "invalid_delivery_reconciliation"}
@@ -34,6 +34,9 @@ func (d *AsyncDispatcher) ReconcileDelivery(ctx context.Context, item repository
 	}
 	if target.StateVersion != item.StateVersion || target.ActionSeq != item.ActionSeq {
 		return repository.ErrConflict
+	}
+	if target.Mode == "managed_copy" {
+		return d.recoverManagedCopy(ctx, item, target)
 	}
 	fixed, err := d.service.Store.ReadAsyncDispatch(ctx, target.AsyncExecutionID)
 	if err != nil {
@@ -61,7 +64,7 @@ func (d *AsyncDispatcher) ReconcileDelivery(ctx context.Context, item repository
 		return &PermanentDispatchError{Code: "invalid_async_request"}
 	}
 	defer clear(prepared.Body)
-	secret, err := d.openBlob(ctx, fixed.CredentialBlobID, fmt.Sprintf("credential:%d", fixed.CredentialID), "credential", true)
+	secret, err := d.openCredential(ctx, fixed.CredentialID, fixed.CredentialSecret, fixed.CredentialBlobID)
 	if err != nil {
 		return err
 	}
@@ -123,14 +126,28 @@ func (d *AsyncDispatcher) ReconcileDelivery(ctx context.Context, item repository
 		}
 		return errors.New(response.ErrorCode)
 	}
-	if err := delivery.ValidateVideoSources(observation.Sources); err != nil || uint64(target.Ordinal) >= uint64(len(observation.Sources)) {
+	if err := delivery.ValidateSourcesForResource(target.ResourceKind, observation.Sources); err != nil || uint64(target.Ordinal) >= uint64(len(observation.Sources)) {
 		response.ErrorCode = "invalid_provider_result_sources"
 		if finishErr := d.service.FinishDeliveryReconcileRequest(markCtx, item, requestID, "response_recorded", response); finishErr != nil {
 			return finishErr
 		}
 		return errors.New(response.ErrorCode)
 	}
+	if err := d.validateResultSources(markCtx, fixed, observation.Sources); err != nil {
+		response.ErrorCode = "provider_result_host_not_allowed"
+		if finishErr := d.service.FinishDeliveryReconcileRequest(markCtx, item, requestID, "response_recorded", response); finishErr != nil {
+			return finishErr
+		}
+		return err
+	}
 	source := observation.Sources[target.Ordinal]
+	if delivery.SourceKind(source) != target.SourceKind {
+		response.ErrorCode = "provider_result_source_changed"
+		if finishErr := d.service.FinishDeliveryReconcileRequest(markCtx, item, requestID, "response_recorded", response); finishErr != nil {
+			return finishErr
+		}
+		return &PermanentDispatchError{Code: response.ErrorCode}
+	}
 	if source.ExpiresAt == nil {
 		if err := d.service.FinishDeliveryReconcileRequest(markCtx, item, requestID, "response_recorded", response); err != nil {
 			return err

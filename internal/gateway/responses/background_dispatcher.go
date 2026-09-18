@@ -44,10 +44,11 @@ func NewBackgroundDispatcher(service *gatewayruntime.Service, executionEngine *e
 	if service == nil || executionEngine == nil {
 		return nil, repository.ErrInvalidInput
 	}
-	for _, key := range [][]byte{keys.CredentialKEK, keys.CredentialHMAC, keys.PayloadKEK, keys.PayloadHMAC} {
-		if len(key) != security.KeySize {
-			return nil, repository.ErrInvalidInput
-		}
+	if len(keys.PayloadKEK) != security.KeySize || len(keys.PayloadHMAC) != security.KeySize {
+		return nil, repository.ErrInvalidInput
+	}
+	if (len(keys.CredentialKEK) == 0) != (len(keys.CredentialHMAC) == 0) || len(keys.CredentialKEK) != 0 && (len(keys.CredentialKEK) != security.KeySize || len(keys.CredentialHMAC) != security.KeySize) {
+		return nil, repository.ErrInvalidInput
 	}
 	ownedKeys := gatewayruntime.AsyncKeys{
 		CredentialKEK:  append([]byte(nil), keys.CredentialKEK...),
@@ -97,7 +98,7 @@ func (d *BackgroundDispatcher) DispatchAttempt(ctx context.Context, item reposit
 	if fixed.PublicModel == "" {
 		return d.service.FailBackgroundResponse(ctx, item, 0, "background_request_invalid", repository.RequestLogResult{})
 	}
-	secret, err := d.openBlob(ctx, fixed.CredentialBlobID, fmt.Sprintf("credential:%d", fixed.CredentialID), "credential", d.keys.CredentialKEK, d.keys.CredentialHMAC)
+	secret, err := d.openCredential(ctx, fixed.CredentialID, fixed.CredentialSecret, fixed.CredentialBlobID)
 	if err != nil {
 		return d.service.FailBackgroundResponse(ctx, item, 0, "background_credential_unreadable", repository.RequestLogResult{})
 	}
@@ -255,6 +256,18 @@ func (d *BackgroundDispatcher) openBlob(ctx context.Context, id uint64, owner, p
 	return repository.OpenBlob(envelope, id, []byte(owner), kek, hmacKey)
 }
 
+// openCredential prefers the direct secret on the credential row and falls
+// back to the encrypted blob retained by older credentials.
+func (d *BackgroundDispatcher) openCredential(ctx context.Context, credentialID uint64, direct []byte, blobID uint64) ([]byte, error) {
+	if len(direct) != 0 {
+		return append([]byte(nil), direct...), nil
+	}
+	if blobID == 0 {
+		return nil, repository.ErrNotFound
+	}
+	return d.openBlob(ctx, blobID, fmt.Sprintf("credential:%d", credentialID), "credential", d.keys.CredentialKEK, d.keys.CredentialHMAC)
+}
+
 func (d *BackgroundDispatcher) payloadBlob(ctx context.Context, body []byte) (repository.BlobInput, error) {
 	retention := time.Now().UTC().Add(configuredResponseRetention())
 	input := repository.BlobInput{Plaintext: body, KEK: d.keys.PayloadKEK, HMACKey: d.keys.PayloadHMAC, RetentionUntil: &retention}
@@ -309,18 +322,7 @@ func deferredRoute(fixed repository.DeferredDispatch, apiKey string) (*routing.R
 }
 
 func backgroundBillingFacts(usage *canonical.Usage) (billing.Facts, error) {
-	facts := billing.Facts{Events: map[billing.ChargeEvent]bool{billing.ChargeSucceeded: true}, Quantities: map[billing.QuantitySource]string{}}
-	if usage == nil {
-		return facts, nil
-	}
-	if usage.InputTokens < 0 || usage.OutputTokens < 0 || usage.CachedInputTokens < 0 || usage.CachedInputTokens > usage.InputTokens {
-		return billing.Facts{}, billing.ErrInvalidAmount
-	}
-	facts.Quantities[billing.QuantityInputTokens] = fmt.Sprint(usage.InputTokens)
-	facts.Quantities[billing.QuantityOutputTokens] = fmt.Sprint(usage.OutputTokens)
-	facts.Quantities[billing.QuantityCachedTokens] = fmt.Sprint(usage.CachedInputTokens)
-	facts.Quantities[billing.QuantityUncachedTokens] = fmt.Sprint(usage.InputTokens - usage.CachedInputTokens)
-	return facts, nil
+	return engine.CanonicalBillingFacts(usage)
 }
 
 func digestHex(key, body []byte) string {
@@ -330,14 +332,12 @@ func digestHex(key, body []byte) string {
 
 func configuredResponseRetention() time.Duration { return config.ResourceHistoryRetentionDuration() }
 
-func loadBackgroundKeys() (gatewayruntime.AsyncKeys, error) {
+func loadPayloadKeys() (gatewayruntime.AsyncKeys, error) {
 	var keys gatewayruntime.AsyncKeys
 	for _, item := range []struct {
 		name string
 		out  *[]byte
 	}{
-		{"PRISM_GATEWAY_KEK_B64", &keys.CredentialKEK},
-		{"PRISM_GATEWAY_HMAC_B64", &keys.CredentialHMAC},
 		{"PRISM_GATEWAY_PAYLOAD_KEK_B64", &keys.PayloadKEK},
 		{"PRISM_GATEWAY_PAYLOAD_HMAC_B64", &keys.PayloadHMAC},
 	} {

@@ -34,7 +34,7 @@ func TestScheduleCallbackQueryLocksExecutionOutboxReceiptInOrder(t *testing.T) {
 	mock.ExpectQuery(regexp.QuoteMeta("SELECT state,state_version,action_seq FROM gw_async_executions WHERE id=? FOR UPDATE")).
 		WithArgs(uint64(9)).
 		WillReturnRows(sqlmock.NewRows([]string{"state", "state_version", "action_seq"}).AddRow("accepted", uint64(4), uint64(7)))
-	mock.ExpectQuery(regexp.QuoteMeta("SELECT 1 FROM gw_async_outbox WHERE id=? AND callback_receipt_id=? AND status='dispatching' AND lease_owner=? AND attempt_count=? AND action_seq=? AND state_version=? AND action='callback' AND lease_expires_at>UTC_TIMESTAMP(3) FOR UPDATE")).
+	mock.ExpectQuery(regexp.QuoteMeta("SELECT 1 FROM gw_async_outbox WHERE id=? AND callback_receipt_id=? AND status='dispatching' AND lease_owner=? AND attempt_count=? AND action_seq=? AND state_version=? AND action='callback' AND lease_expires_at>CURRENT_TIMESTAMP(3) FOR UPDATE")).
 		WithArgs(uint64(11), uint64(22), "callback-worker", uint64(2), uint64(1), uint64(3)).
 		WillReturnRows(sqlmock.NewRows([]string{"valid"}).AddRow(1))
 	mock.ExpectQuery(regexp.QuoteMeta("SELECT status,state_version,encrypted_payload_blob_id FROM gw_upstream_callback_receipts WHERE id=? AND async_execution_id=? FOR UPDATE")).

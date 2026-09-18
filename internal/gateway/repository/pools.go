@@ -29,7 +29,10 @@ func (s *Store) CreateCredentialPool(ctx context.Context, tx *sql.Tx, in PoolInp
 type CredentialInput struct {
 	ChannelID, PoolID, SecretIdentityID uint64
 	Code                                string
-	RequestLimit, TaskLimit, Weight     *uint64
+	// Secret is the operator-managed upstream API key. New writes keep it
+	// directly on the credential so a replacement is one normal update.
+	Secret                          []byte
+	RequestLimit, TaskLimit, Weight *uint64
 }
 
 func (s *Store) CreateCredential(ctx context.Context, tx *sql.Tx, in CredentialInput) (uint64, error) {
@@ -52,11 +55,18 @@ func (s *Store) CreateCredential(ctx context.Context, tx *sql.Tx, in CredentialI
 		return 0, ErrInvalidInput
 	}
 	now := nowUTC()
-	result, err := tx.ExecContext(ctx, `INSERT INTO gw_credentials(channel_id,credential_pool_id,secret_identity_id,credential_code,status,config_version,request_limit,task_limit,weight,created_at,updated_at) VALUES (?,?,?,?, 'active',1,?,?,?,?,?)`, in.ChannelID, in.PoolID, in.SecretIdentityID, in.Code, nullableUint64(in.RequestLimit), nullableUint64(in.TaskLimit), weight, now, now)
+	result, err := tx.ExecContext(ctx, `INSERT INTO gw_credentials(channel_id,credential_pool_id,secret_identity_id,credential_code,secret,status,config_version,request_limit,task_limit,weight,created_at,updated_at) VALUES (?,?,?,?,?,'active',1,?,?,?,?,?)`, in.ChannelID, in.PoolID, in.SecretIdentityID, in.Code, nullableSecret(in.Secret), nullableUint64(in.RequestLimit), nullableUint64(in.TaskLimit), weight, now, now)
 	if err != nil {
 		return 0, fmt.Errorf("create credential: %w", err)
 	}
 	return lastID(result)
+}
+
+func nullableSecret(secret []byte) any {
+	if len(secret) == 0 {
+		return nil
+	}
+	return string(secret)
 }
 
 func (s *Store) GrantCredentialPurpose(ctx context.Context, tx *sql.Tx, credentialID uint64, purpose credentials.Purpose, seq uint64) (uint64, error) {

@@ -6,6 +6,7 @@ import (
 	"database/sql"
 	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"net"
 	"net/url"
 	"strconv"
@@ -74,6 +75,9 @@ type CatalogProductInput struct {
 
 func (in *CatalogProductInput) Normalize() error {
 	in.ProductCode = strings.ToLower(strings.TrimSpace(in.ProductCode))
+	if !validUpstreamVendorModel(in.VendorModel) {
+		return ErrInvalidInput
+	}
 	in.VendorModel = strings.TrimSpace(in.VendorModel)
 	in.AdapterCode = strings.ToLower(strings.TrimSpace(in.AdapterCode))
 	in.TransportCode = strings.ToLower(strings.TrimSpace(in.TransportCode))
@@ -108,7 +112,7 @@ func (in *CatalogProductInput) Normalize() error {
 
 func (in CatalogProductInput) Validate() error {
 	if in.ExpectedVersion == 0 || in.ChannelID == 0 || in.CredentialPoolID == 0 ||
-		!catalogIdentityPattern.MatchString(in.ProductCode) || !catalogIdentityPattern.MatchString(in.VendorModel) ||
+		!catalogIdentityPattern.MatchString(in.ProductCode) || !validUpstreamVendorModel(in.VendorModel) ||
 		in.ConstraintsSchemaVersion == 0 || in.ConstraintsSchemaVersion > 100 || len(in.CapabilityConstraints) > 16384 ||
 		!catalogIdentityPattern.MatchString(in.AdapterCode) || in.AdapterVersion == 0 || in.Adapter.Code != in.AdapterCode || in.Adapter.Version != in.AdapterVersion ||
 		in.Adapter.Protocol != in.Protocol || !validHexDigest(in.Adapter.ImplementationDigest, 32) || !semanticVersionPattern.MatchString(in.Adapter.MinimumSemanticVersion) ||
@@ -168,6 +172,17 @@ func (in CatalogProductInput) Validate() error {
 		}
 	}
 	return nil
+}
+
+// validUpstreamVendorModel accepts the provider's opaque model identifier
+// without weakening Prism-owned codes. The database column is varchar(255),
+// and control characters have no valid role in an upstream request value.
+func validUpstreamVendorModel(value string) bool {
+	if !utf8.ValidString(value) || strings.ContainsAny(value, "\x00\r\n\t") {
+		return false
+	}
+	value = strings.TrimSpace(value)
+	return value != "" && len(value) <= 255
 }
 
 func validCatalogRequestMethod(adapterCode, method string) bool {
@@ -289,12 +304,58 @@ func (s *Store) CreateCatalogProduct(ctx context.Context, tx *sql.Tx, releaseID 
 	if err != nil {
 		return 0, err
 	}
-	if err := validateCatalogProductReferences(ctx, tx, releaseID, in); err != nil {
+	productID, offeringID, err := createCatalogProductRows(ctx, tx, releaseID, in)
+	if err != nil {
 		return 0, err
+	}
+	return productID, advanceCatalogDraft(ctx, tx, releaseID, lock, "unified.catalog.product.create", productID, actorID, ginSafeMetadata{"product_code": in.ProductCode, "transport_code": in.TransportCode, "offering_id": offeringID})
+}
+
+// CreateActiveCatalogProduct adds a complete upstream product graph directly to
+// the active release. The active pointer and config version are both checked
+// before any content row is written; no draft or release snapshot is created.
+func (s *Store) CreateActiveCatalogProduct(ctx context.Context, tx *sql.Tx, expectedActiveReleaseID, expectedConfigVersion uint64, in CatalogProductInput, actorID uint64) (CatalogChangeResult, error) {
+	if tx == nil || expectedActiveReleaseID == 0 || expectedConfigVersion == 0 || actorID == 0 {
+		return CatalogChangeResult{}, ErrInvalidInput
+	}
+	if in.ExpectedVersion != 0 && in.ExpectedVersion != expectedConfigVersion {
+		return CatalogChangeResult{}, ErrInvalidInput
+	}
+	in.ExpectedVersion = expectedConfigVersion
+	if err := in.Normalize(); err != nil {
+		return CatalogChangeResult{}, err
+	}
+	if err := in.Validate(); err != nil {
+		return CatalogChangeResult{}, err
+	}
+	active, err := lockActiveCatalogRelease(ctx, tx, expectedActiveReleaseID, expectedConfigVersion)
+	if err != nil {
+		return CatalogChangeResult{}, err
+	}
+	productID, offeringID, err := createCatalogProductRows(ctx, tx, active.ID, in)
+	if err != nil {
+		return CatalogChangeResult{}, err
+	}
+	version, err := advanceActiveCatalog(ctx, tx, active, "catalog_change.product_create", actorID, ginSafeMetadata{
+		"source_release_id": active.ID,
+		"product_id":        productID,
+		"product_code":      in.ProductCode,
+		"transport_code":    in.TransportCode,
+		"offering_id":       offeringID,
+	})
+	if err != nil {
+		return CatalogChangeResult{}, err
+	}
+	return CatalogChangeResult{ReleaseID: active.ID, ConfigVersion: version, Activated: true, SourceReleaseID: active.ID}, nil
+}
+
+func createCatalogProductRows(ctx context.Context, tx *sql.Tx, releaseID uint64, in CatalogProductInput) (uint64, uint64, error) {
+	if err := validateCatalogProductReferences(ctx, tx, releaseID, in); err != nil {
+		return 0, 0, fmt.Errorf("validate product references: %w", err)
 	}
 	adapterID, err := ensureCatalogAdapter(ctx, tx, in.Adapter)
 	if err != nil {
-		return 0, err
+		return 0, 0, fmt.Errorf("ensure adapter implementation: %w", err)
 	}
 	executionDigest := catalogProductExecutionDigest(in)
 	compatibility := in.StateCompatibilityFingerprint
@@ -305,71 +366,71 @@ func (s *Store) CreateCatalogProduct(ctx context.Context, tx *sql.Tx, releaseID 
 	now := nowUTC()
 	result, err := tx.ExecContext(ctx, `INSERT INTO gw_channel_transports(release_id,channel_id,adapter_implementation_id,transport_code,base_url,protocol,request_method,request_path,auth_scheme,execution_fingerprint,state_compatibility_fingerprint,timeout_ms,created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`, releaseID, in.ChannelID, adapterID, in.TransportCode, in.BaseURL, in.Protocol, in.RequestMethod, in.RequestPath, in.AuthScheme, executionDigest, compatibility, in.TransportTimeoutMS, now)
 	if err != nil {
-		return 0, err
+		return 0, 0, err
 	}
 	channelTransportID, err := lastID(result)
 	if err != nil {
-		return 0, err
+		return 0, 0, err
 	}
 	hosts, err := catalogAllowedHosts(in)
 	if err != nil {
-		return 0, err
+		return 0, 0, err
 	}
 	for _, host := range hosts {
 		if _, err = tx.ExecContext(ctx, `INSERT INTO gw_transport_allowed_hosts(release_id,channel_transport_id,protocol,host_pattern,port,created_at) VALUES (?,?,?,?,?,?)`, releaseID, channelTransportID, host.Protocol, host.Host, host.Port, now); err != nil {
-			return 0, err
+			return 0, 0, err
 		}
 	}
 	result, err = tx.ExecContext(ctx, `INSERT INTO gw_products(release_id,channel_id,product_code,vendor_model,capability_constraints,constraints_schema_version,created_at) VALUES (?,?,?,?,?,?,?)`, releaseID, in.ChannelID, in.ProductCode, in.VendorModel, in.CapabilityConstraints, in.ConstraintsSchemaVersion, now)
 	if err != nil {
-		return 0, err
+		return 0, 0, err
 	}
 	productID, err := lastID(result)
 	if err != nil {
-		return 0, err
+		return 0, 0, err
 	}
 	result, err = tx.ExecContext(ctx, `INSERT INTO gw_product_transports(release_id,product_id,channel_transport_id,task_scope,cancel_mode,source_url_policy,upstream_scope_kind,upstream_scope_key,execution_fingerprint,state_compatibility_fingerprint,timeout_ms,created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`, releaseID, productID, channelTransportID, in.TaskScope, in.CancelMode, in.SourceURLPolicy, in.UpstreamScopeKind, in.UpstreamScopeKey, executionDigest, compatibility, in.TaskTimeoutMS, now)
 	if err != nil {
-		return 0, err
+		return 0, 0, err
 	}
 	productTransportID, err := lastID(result)
 	if err != nil {
-		return 0, err
+		return 0, 0, err
 	}
 	for _, action := range in.Actions {
 		if _, err = tx.ExecContext(ctx, `INSERT INTO gw_product_transport_actions(release_id,product_transport_id,action_code,allowed_source_state,idempotency_mode,request_schema_version,response_schema_version,created_at) VALUES (?,?,?,?,?,?,?,?)`, releaseID, productTransportID, action.ActionCode, action.AllowedSourceState, action.IdempotencyMode, action.RequestSchemaVersion, action.ResponseSchemaVersion, now); err != nil {
-			return 0, err
+			return 0, 0, err
 		}
 	}
 	commercial := sha256.Sum256([]byte(strings.Join([]string{in.ProductCode, strconv.FormatUint(in.CredentialPoolID, 10), in.CostPlanCode, executionDigest}, "\x00")))
 	entitlement := sha256.Sum256([]byte(strings.Join([]string{strconv.FormatUint(in.ChannelID, 10), in.VendorModel, in.Protocol, in.UpstreamScopeKind, in.UpstreamScopeKey}, "\x00")))
 	result, err = tx.ExecContext(ctx, `INSERT INTO gw_offerings(release_id,product_transport_id,credential_pool_id,entitlement_fingerprint,commercial_fingerprint,cost_plan_code,created_at) VALUES (?,?,?,?,?,?,?)`, releaseID, productTransportID, in.CredentialPoolID, hex.EncodeToString(entitlement[:]), hex.EncodeToString(commercial[:]), in.CostPlanCode, now)
 	if err != nil {
-		return 0, err
+		return 0, 0, err
 	}
 	offeringID, err := lastID(result)
 	if err != nil {
-		return 0, err
+		return 0, 0, err
 	}
 	if _, err = tx.ExecContext(ctx, `INSERT INTO gw_offering_runtime_state(release_id,offering_id,state,state_version,reason_code,updated_at) VALUES (?,?,'active',1,'admin_create',?)`, releaseID, offeringID, now); err != nil {
-		return 0, err
+		return 0, 0, err
 	}
 	if _, err = tx.ExecContext(ctx, `INSERT INTO gw_offering_state_events(release_id,offering_id,state_version,old_state,new_state,reason_code,created_at) VALUES (?,?,1,NULL,'active','admin_create',?)`, releaseID, offeringID, now); err != nil {
-		return 0, err
+		return 0, 0, err
 	}
 	result, err = tx.ExecContext(ctx, `INSERT INTO gw_cost_plans(release_id,offering_id,plan_code,created_at) VALUES (?,?,?,?)`, releaseID, offeringID, in.CostPlanCode, now)
 	if err != nil {
-		return 0, err
+		return 0, 0, err
 	}
 	if _, err = lastID(result); err != nil {
-		return 0, err
+		return 0, 0, err
 	}
 	for _, route := range in.Routes {
 		if _, err = tx.ExecContext(ctx, `INSERT INTO gw_routes(release_id,sku_id,offering_id,priority,weight,created_at) VALUES (?,?,?,?,?,?)`, releaseID, route.SKUID, offeringID, route.Priority, route.Weight, now); err != nil {
-			return 0, err
+			return 0, 0, err
 		}
 	}
-	return productID, advanceCatalogDraft(ctx, tx, releaseID, lock, "unified.catalog.product.create", productID, actorID, ginSafeMetadata{"product_code": in.ProductCode, "transport_code": in.TransportCode, "offering_id": offeringID})
+	return productID, offeringID, nil
 }
 
 func validateCatalogProductReferences(ctx context.Context, tx *sql.Tx, releaseID uint64, in CatalogProductInput) error {
@@ -415,7 +476,8 @@ func ensureCatalogAdapter(ctx context.Context, tx *sql.Tx, in CatalogAdapterInpu
 		return 0, err
 	}
 	if digest != in.ImplementationDigest || minimum != in.MinimumSemanticVersion {
-		return 0, ErrConflict
+		return 0, fmt.Errorf("%w: %s@%d database identity (%s, %s) differs from runtime identity (%s, %s)", ErrConflict,
+			in.Code, in.Version, digest, minimum, in.ImplementationDigest, in.MinimumSemanticVersion)
 	}
 	return id, nil
 }

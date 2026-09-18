@@ -25,7 +25,7 @@ WHERE user_id=? AND currency_code=? AND currency_version=? AND status='open'
 FROM token_budget_policy_activations a
 JOIN tokens t ON t.id=a.token_id
 WHERE a.token_id=? AND t.user_id=? AND t.status=1 AND t.deleted_at IS NULL
-  AND a.effective_at<=UTC_TIMESTAMP(3)
+  AND a.effective_at<=CURRENT_TIMESTAMP(3)
 ORDER BY a.activation_seq DESC
 LIMIT 1`), tokenID, userID).Scan(&activationID); err == sql.ErrNoRows {
 		return 0, 0, ErrNotFound
@@ -35,8 +35,8 @@ LIMIT 1`), tokenID, userID).Scan(&activationID); err == sql.ErrNoRows {
 
 	rows, err := tx.QueryContext(ctx, s.forUpdate(`SELECT id FROM token_budget_windows
 WHERE token_id=? AND activation_id=?
-  AND window_start<=UTC_TIMESTAMP(3)
-  AND (window_end IS NULL OR window_end>UTC_TIMESTAMP(3))
+  AND window_start<=CURRENT_TIMESTAMP(3)
+  AND (window_end IS NULL OR window_end>CURRENT_TIMESTAMP(3))
 ORDER BY window_start DESC
 LIMIT 2`), tokenID, activationID)
 	if err != nil {

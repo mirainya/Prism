@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"strings"
 	"time"
+	"unicode"
 	"unicode/utf8"
 
 	"github.com/mirainya/Prism/internal/gateway/billing"
@@ -15,6 +16,7 @@ import (
 type CatalogDiscoveryRun struct {
 	ID, ReleaseID, ReleaseSourceID, SourceID         uint64
 	StateVersion, CredentialID, CredentialBlobID     uint64
+	CredentialSecret                                 []byte
 	ContractCode, BaseURL, ExternalGroup, LeaseOwner string
 	RequestTimeoutMS                                 uint32
 	LeaseExpiresAt                                   time.Time
@@ -28,17 +30,18 @@ func (s *Store) ClaimCatalogDiscoveryRun(ctx context.Context, owner string, leas
 	err := s.WithTx(ctx, func(tx *sql.Tx) error {
 		now := nowUTC()
 		var state string
-		err := tx.QueryRowContext(ctx, `SELECT r.id,rs.release_id,rs.id,rs.catalog_source_id,r.state,r.state_version,r.credential_id,cv.encrypted_blob_id,p.contract_code,p.base_url,p.external_group,p.request_timeout_ms
+		err := tx.QueryRowContext(ctx, `SELECT r.id,rs.release_id,rs.id,rs.catalog_source_id,r.state,r.state_version,r.credential_id,c.secret,COALESCE(cv.encrypted_blob_id,0),p.contract_code,p.base_url,p.external_group,p.request_timeout_ms
 FROM gw_control_plane_runs r
 JOIN gw_catalog_release_sources rs ON rs.id=r.catalog_release_source_id
 JOIN gw_catalog_sources src ON src.id=rs.catalog_source_id
 JOIN gw_catalog_source_profiles p ON p.catalog_source_id=src.id
-JOIN gw_credential_versions cv ON cv.id=r.auth_credential_version_id AND cv.credential_id=r.credential_id AND cv.encrypted_blob_id IS NOT NULL
+JOIN gw_credentials c ON c.id=r.credential_id
+JOIN gw_credential_versions cv ON cv.id=r.auth_credential_version_id AND cv.credential_id=r.credential_id
 WHERE r.action='catalog_discovery' AND src.status='active' AND
       (r.state='scheduled' OR (r.state='running' AND r.lease_expires_at<?))
 ORDER BY CASE WHEN r.state='running' THEN 0 ELSE 1 END,r.id
 LIMIT 1 FOR UPDATE`, now).Scan(&out.ID, &out.ReleaseID, &out.ReleaseSourceID, &out.SourceID, &state, &out.StateVersion,
-			&out.CredentialID, &out.CredentialBlobID, &out.ContractCode, &out.BaseURL, &out.ExternalGroup, &out.RequestTimeoutMS)
+			&out.CredentialID, &out.CredentialSecret, &out.CredentialBlobID, &out.ContractCode, &out.BaseURL, &out.ExternalGroup, &out.RequestTimeoutMS)
 		if err == sql.ErrNoRows {
 			return nil
 		}
@@ -366,7 +369,7 @@ func nullablePositiveID(value uint64) any {
 }
 
 func validateCatalogDiscoveryItem(run CatalogDiscoveryRun, item CatalogDiscoveryItem) error {
-	if !catalogIdentityPattern.MatchString(item.Code) || !validOptionalCatalogSourceText(item.Description, 1000) ||
+	if !validCatalogDiscoveryModelCode(item.Code) || !validOptionalCatalogSourceText(item.Description, 1000) ||
 		!validOptionalCatalogSourceText(item.Tags, 512) || !validOptionalCatalogSourceText(item.OwnerBy, 128) ||
 		!validOptionalCatalogSourceText(item.PricingVersion, 128) || len(item.Groups) == 0 || len(item.Groups) > 256 || len(item.EndpointTypes) > 256 {
 		return ErrInvalidInput
@@ -415,4 +418,21 @@ func validateCatalogDiscoveryItem(run CatalogDiscoveryRun, item CatalogDiscovery
 
 func validOptionalCatalogSourceText(value string, maxRunes int) bool {
 	return utf8.ValidString(value) && utf8.RuneCountInString(value) <= maxRunes && !strings.ContainsAny(value, "\x00\r\n\t")
+}
+
+func validCatalogDiscoveryModelCode(value string) bool {
+	if !utf8.ValidString(value) {
+		return false
+	}
+	runes := []rune(value)
+	if len(runes) == 0 || len(runes) > 128 || !unicode.IsLetter(runes[0]) && !unicode.IsDigit(runes[0]) {
+		return false
+	}
+	for _, current := range runes[1:] {
+		if unicode.IsLetter(current) || unicode.IsDigit(current) || strings.ContainsRune("._:/-%", current) {
+			continue
+		}
+		return false
+	}
+	return true
 }

@@ -22,9 +22,6 @@ func (s *Service) ProcessDeliveryOne(ctx context.Context, owner string, lease, r
 	}
 	var item repository.OutboxItem
 	err := s.Store.WithTx(ctx, func(tx *sql.Tx) error {
-		if err := s.lockClaimDeployment(ctx, tx); err != nil {
-			return err
-		}
 		var err error
 		item, err = s.Store.ClaimDeliveryOutbox(ctx, tx, owner, lease)
 		return err

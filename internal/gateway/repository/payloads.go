@@ -37,7 +37,7 @@ func (s *Store) PurgeCallPayload(ctx context.Context, tx *sql.Tx, payloadID uint
 	if tx == nil || payloadID == 0 {
 		return ErrInvalidInput
 	}
-	res, err := tx.ExecContext(ctx, `UPDATE gw_api_call_payloads SET encrypted_blob_id=NULL,purged_at=? WHERE id=? AND encrypted_blob_id IS NOT NULL AND retention_until IS NOT NULL AND retention_until<=UTC_TIMESTAMP(3)`, nowUTC(), payloadID)
+	res, err := tx.ExecContext(ctx, `UPDATE gw_api_call_payloads SET encrypted_blob_id=NULL,purged_at=? WHERE id=? AND encrypted_blob_id IS NOT NULL AND retention_until IS NOT NULL AND retention_until<=CURRENT_TIMESTAMP(3)`, nowUTC(), payloadID)
 	if err != nil {
 		return err
 	}
@@ -75,7 +75,7 @@ func (s *Store) FindCallbackReceiptAlias(ctx context.Context, tx *sql.Tx, keyVer
 		return 0, ErrInvalidInput
 	}
 	var receiptID uint64
-	err := tx.QueryRowContext(ctx, s.forUpdate(`SELECT a.receipt_id FROM gw_upstream_callback_receipt_aliases a JOIN gw_upstream_callback_receipts r ON r.id=a.receipt_id WHERE a.hmac_key_version=? AND a.event_hmac=? AND r.expires_at>UTC_TIMESTAMP(3) AND r.status IN ('received','processed')`), keyVersion, eventHMAC).Scan(&receiptID)
+	err := tx.QueryRowContext(ctx, s.forUpdate(`SELECT a.receipt_id FROM gw_upstream_callback_receipt_aliases a JOIN gw_upstream_callback_receipts r ON r.id=a.receipt_id WHERE a.hmac_key_version=? AND a.event_hmac=? AND r.expires_at>CURRENT_TIMESTAMP(3) AND r.status IN ('received','processed')`), keyVersion, eventHMAC).Scan(&receiptID)
 	if err == sql.ErrNoRows {
 		return 0, ErrNotFound
 	}

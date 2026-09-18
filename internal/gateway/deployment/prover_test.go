@@ -68,7 +68,8 @@ func TestProveDerivesCurrentMemberCatalogAndCryptoProofs(t *testing.T) {
 	mock.ExpectQuery(`SELECT id FROM gw_catalog_releases`).WithArgs(semantic).WillReturnRows(sqlmock.NewRows([]string{"id"}).AddRow(13))
 	mock.ExpectQuery(`SELECT status,content_hash,semantic_digest FROM gw_catalog_releases`).WithArgs(uint64(13)).WillReturnRows(sqlmock.NewRows([]string{"status", "content_hash", "semantic_digest"}).AddRow("published", content, semantic))
 	mock.ExpectQuery(`SELECT DISTINCT a.adapter_code`).WithArgs(uint64(13)).WillReturnRows(sqlmock.NewRows([]string{"adapter_code", "contract_version", "implementation_digest", "minimum_semantic_version"}).AddRow(descriptor.Code, descriptor.Version, descriptor.ImplementationDigest, descriptor.MinimumSemanticVersion))
-	mock.ExpectQuery(`SELECT k.id,k.purpose,v.key_version`).WillReturnRows(sqlmock.NewRows([]string{"id", "purpose", "key_version", "status", "provider_key_ref"}).
+	mock.ExpectQuery(`SELECT EXISTS \(`).WillReturnRows(sqlmock.NewRows([]string{"required"}).AddRow(true))
+	mock.ExpectQuery(`SELECT k.id,k.purpose,v.key_version`).WithArgs(true).WillReturnRows(sqlmock.NewRows([]string{"id", "purpose", "key_version", "status", "provider_key_ref"}).
 		AddRow(1, "gateway-credential", 1, "current", "env:PRISM_GATEWAY_KEK_B64").
 		AddRow(2, "gateway-payload", 1, "current", "env:PRISM_GATEWAY_PAYLOAD_KEK_B64"))
 	mock.ExpectQuery(`SELECT g.status FROM gw_deployment_generations`).WithArgs(uint64(7), uint64(11)).WillReturnRows(sqlmock.NewRows([]string{"status"}).AddRow("preparing"))
@@ -87,6 +88,22 @@ func TestProveDerivesCurrentMemberCatalogAndCryptoProofs(t *testing.T) {
 		t.Fatalf("proof = %+v", proof)
 	}
 	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestProbeKeyVersionsAllowsPayloadOnlyConfiguration(t *testing.T) {
+	t.Setenv("PRISM_GATEWAY_KEK_B64", "")
+	t.Setenv("PRISM_GATEWAY_HMAC_B64", "")
+	key := base64.StdEncoding.EncodeToString(bytes.Repeat([]byte{0x41}, security.KeySize))
+	t.Setenv("PRISM_GATEWAY_PAYLOAD_KEK_B64", key)
+	t.Setenv("PRISM_GATEWAY_PAYLOAD_HMAC_B64", key)
+
+	err := probeKeyVersions([]keyVersion{{
+		keyringID: 2, purpose: "gateway-payload", version: 1,
+		state: "current", providerRef: "env:PRISM_GATEWAY_PAYLOAD_KEK_B64",
+	}})
+	if err != nil {
 		t.Fatal(err)
 	}
 }

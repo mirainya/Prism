@@ -56,7 +56,7 @@ func (s *Store) ReserveBilling(ctx context.Context, tx *sql.Tx, in ReservationIn
 	if account.status != "open" {
 		return 0, ErrConflict
 	}
-	if amount.Cmp(account.posted.Sub(account.held)) > 0 {
+	if amount.Cmp(account.available()) > 0 {
 		return 0, ErrInsufficient
 	}
 	now := nowUTC()

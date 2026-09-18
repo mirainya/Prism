@@ -409,7 +409,7 @@ func respondResponsesError(c *gin.Context, err error) {
 		return
 	}
 	if errors.Is(err, routing.ErrNoRoute) {
-		openaierror.Write(c, http.StatusServiceUnavailable, "The requested model is temporarily unavailable", "server_error", nil, "model_unavailable")
+		openaierror.Write(c, http.StatusServiceUnavailable, describeModelUnavailable(c, err, "The requested model is temporarily unavailable"), "server_error", nil, "model_unavailable")
 		return
 	}
 	openaierror.Write(c, http.StatusBadGateway, "Responses request failed", "server_error", nil, "upstream_error")

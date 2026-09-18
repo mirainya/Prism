@@ -28,9 +28,6 @@ func (s *Service) ProcessCallbackOne(ctx context.Context, owner string, lease ti
 	}
 	var item repository.OutboxItem
 	err := s.Store.WithTx(ctx, func(tx *sql.Tx) error {
-		if err := s.lockClaimDeployment(ctx, tx); err != nil {
-			return err
-		}
 		var err error
 		item, err = s.Store.ClaimCallbackOutbox(ctx, tx, owner, lease)
 		return err
@@ -110,9 +107,6 @@ func (s *Service) RunCallbackOutboxWithHandler(ctx context.Context, owner string
 		}
 		var item repository.OutboxItem
 		err := s.Store.WithTx(ctx, func(tx *sql.Tx) error {
-			if err := s.lockClaimDeployment(ctx, tx); err != nil {
-				return err
-			}
 			var err error
 			item, err = s.Store.ClaimCallbackOutbox(ctx, tx, owner, 2*time.Minute)
 			return err

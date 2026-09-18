@@ -26,10 +26,10 @@ func TestSelectTransportNeverFallsBackToLegacyRoutes(t *testing.T) {
 	if err := db.AutoMigrate(&model.GwChannel{}, &model.GwChannelKey{}, &model.GwAbility{}); err != nil {
 		t.Fatal(err)
 	}
-	if err := db.Exec(`CREATE TABLE gw_catalog_runtime_state (id INTEGER PRIMARY KEY, active_release_id INTEGER NULL, active_deployment_generation_id INTEGER NULL)`).Error; err != nil {
+	if err := db.Exec(`CREATE TABLE gw_catalog_runtime_state (id INTEGER PRIMARY KEY, active_release_id INTEGER NULL)`).Error; err != nil {
 		t.Fatal(err)
 	}
-	if err := db.Exec(`INSERT INTO gw_catalog_runtime_state(id,active_release_id,active_deployment_generation_id) VALUES (1,NULL,NULL)`).Error; err != nil {
+	if err := db.Exec(`INSERT INTO gw_catalog_runtime_state(id,active_release_id) VALUES (1,NULL)`).Error; err != nil {
 		t.Fatal(err)
 	}
 	channel := &model.GwChannel{Name: "legacy", Protocol: model.ProtocolOpenAI, BaseURL: "https://legacy.example", Status: 1}

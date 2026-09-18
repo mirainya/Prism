@@ -28,7 +28,7 @@ FROM gw_file_resources f
 JOIN gw_media_asset_refs ref ON ref.ai_file_id=f.id AND ref.user_id=f.user_id AND ref.token_id=f.token_id AND ref.role='file' AND ref.ordinal=0
 JOIN gw_media_assets a ON a.id=ref.media_asset_id AND a.user_id=ref.user_id AND a.token_id=ref.token_id
 WHERE f.id=? AND f.user_id=? AND f.token_id=? AND f.status='processed' AND a.state='active'
-  AND (a.retention_until IS NULL OR a.retention_until>UTC_TIMESTAMP(3))`, fileID, userID, tokenID).Scan(&assetID)
+  AND (a.retention_until IS NULL OR a.retention_until>CURRENT_TIMESTAMP(3))`, fileID, userID, tokenID).Scan(&assetID)
 	if err == sql.ErrNoRows {
 		return 0, ErrNotFound
 	}

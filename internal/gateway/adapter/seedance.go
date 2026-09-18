@@ -86,7 +86,18 @@ func (Seedance) Decode(action string, request, response []byte) (runtime.AsyncOb
 		if err != nil {
 			return runtime.AsyncObservation{}, err
 		}
-		return runtime.AsyncObservation{TaskID: accepted.ProviderTaskID, State: execution.AsyncAccepted}, nil
+		var input VideoRequest
+		if len(request) != 0 {
+			if err := json.Unmarshal(request, &input); err != nil {
+				return runtime.AsyncObservation{}, err
+			}
+		}
+		env, err := videoBillingFacts(input, "", false)
+		if err != nil {
+			return runtime.AsyncObservation{}, err
+		}
+		return runtime.AsyncObservation{TaskID: accepted.ProviderTaskID, State: execution.AsyncAccepted,
+			Facts: billing.Facts{Events: map[billing.ChargeEvent]bool{billing.ChargeAccepted: true}, Expr: env}}, nil
 	}
 	if action != "query" {
 		return runtime.AsyncObservation{}, repository.ErrInvalidInput
@@ -132,11 +143,12 @@ func (Seedance) Decode(action string, request, response []byte) (runtime.AsyncOb
 	if err := json.Unmarshal(request, &input); err != nil {
 		return runtime.AsyncObservation{}, err
 	}
+	var generatedSeconds string
 	if input.Duration > 0 {
 		out.Facts.Quantities[billing.QuantityRequestedSeconds] = strconv.Itoa(input.Duration)
 	}
 	if out.State == execution.AsyncSucceeded {
-		result := delivery.VideoResult{SchemaVersion: 1}
+		result := delivery.VideoResult{SchemaVersion: delivery.ResultSchemaVersion}
 		// Billing parses the original JSON number, never the compatibility
 		// projection's float64 duration.
 		var data struct {
@@ -164,9 +176,15 @@ func (Seedance) Decode(action string, request, response []byte) (runtime.AsyncOb
 				return runtime.AsyncObservation{}, err
 			}
 			out.Facts.Quantities[billing.QuantityGeneratedSeconds] = value.String()
+			generatedSeconds = value.String()
 			result.Duration = value.String()
 		}
 		out.Result, err = json.Marshal(result)
 	}
+	env, envErr := videoBillingFacts(input, generatedSeconds, out.State == execution.AsyncSucceeded)
+	if envErr != nil {
+		return runtime.AsyncObservation{}, envErr
+	}
+	out.Facts.Expr = env
 	return out, err
 }

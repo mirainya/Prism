@@ -261,12 +261,24 @@ type CatalogRateInput struct {
 	UnitScale       int32                  `json:"unit_scale"`
 	QuantityStep    string                 `json:"quantity_step"`
 	MaxQuantity     string                 `json:"max_quantity"`
+	// PricingMode empty means flat, so every caller written before expression
+	// pricing existed keeps working unchanged. An expression rate prices through
+	// PricingExpr instead of the evidence unit price; the unit price is still
+	// stored, because it is what the evidence attests to, but it is not read
+	// while charging.
+	PricingMode string `json:"pricing_mode"`
+	PricingExpr string `json:"pricing_expr"`
 }
 
 func (in *CatalogRateInput) Normalize() {
 	in.ComponentCode = strings.ToLower(strings.TrimSpace(in.ComponentCode))
 	in.QuantitySource = billing.QuantitySource(strings.ToLower(strings.TrimSpace(string(in.QuantitySource))))
 	in.ChargeEvent = billing.ChargeEvent(strings.ToLower(strings.TrimSpace(string(in.ChargeEvent))))
+	in.PricingMode = strings.ToLower(strings.TrimSpace(in.PricingMode))
+	if in.PricingMode == "" {
+		in.PricingMode = billing.PricingModeFlat
+	}
+	in.PricingExpr = strings.TrimSpace(in.PricingExpr)
 }
 
 func (s *Store) CreateCatalogRate(ctx context.Context, tx *sql.Tx, kind string, releaseID, parentID uint64, in CatalogRateInput, actorID uint64) (uint64, error) {
@@ -281,23 +293,47 @@ func (s *Store) CreateCatalogRate(ctx context.Context, tx *sql.Tx, kind string, 
 	if err != nil {
 		return 0, err
 	}
+	rateID, err := createCatalogRateRow(ctx, tx, kind, releaseID, parentID, in)
+	if err != nil {
+		return 0, err
+	}
+	return rateID, advanceCatalogDraft(ctx, tx, releaseID, lock, "unified.catalog."+kind+"_rate.create", rateID, actorID, ginSafeMetadata{"parent_id": parentID, "evidence_id": in.EvidenceID, "component_code": in.ComponentCode})
+}
+
+func createCatalogRateRow(ctx context.Context, tx *sql.Tx, kind string, releaseID, parentID uint64, in CatalogRateInput) (uint64, error) {
+	if tx == nil || releaseID == 0 || parentID == 0 || in.EvidenceID == 0 || (kind != "sell" && kind != "cost") {
+		return 0, ErrInvalidInput
+	}
 	evidence, eventID, err := acceptedRateEvidence(ctx, tx, in.EvidenceID)
 	if err != nil {
 		return 0, err
 	}
-	component := billing.RateComponent{Code: in.ComponentCode, Unit: evidence.UnitCode, Source: in.QuantitySource, Event: in.ChargeEvent, UnitPrice: evidence.UnitPrice, UnitScale: in.UnitScale, QuantityStep: in.QuantityStep, MaxQuantity: in.MaxQuantity}
-	if err := component.Validate(); err != nil {
-		return 0, ErrInvalidInput
-	}
 	if err := validateRateParent(ctx, tx, kind, releaseID, parentID); err != nil {
 		return 0, err
+	}
+	component := billing.RateComponent{Code: in.ComponentCode, Unit: evidence.UnitCode, Source: in.QuantitySource, Event: in.ChargeEvent, UnitPrice: evidence.UnitPrice, UnitScale: in.UnitScale, QuantityStep: in.QuantityStep, MaxQuantity: in.MaxQuantity, PricingMode: in.PricingMode}
+	var expression, bound any
+	if in.PricingMode == billing.PricingModeExpression {
+		parsed, proven, err := proveNewExpressionRate(ctx, tx, kind, releaseID, parentID, in.PricingExpr)
+		if err != nil {
+			return 0, err
+		}
+		// The bound is stored now rather than left NULL: the pairing CHECK refuses a
+		// NULL, and storing the proven value keeps the row reservable the moment it
+		// is published. Publication re-proves it, so a manifest that widens a
+		// parameter domain later still cannot leave an under-reserving row behind.
+		component.Expr, component.MaxPrice = parsed, proven.Fixed(18)
+		expression, bound = in.PricingExpr, component.MaxPrice
+	}
+	if err := component.Validate(); err != nil {
+		return 0, ErrInvalidInput
 	}
 	table, parent := "gw_sell_rates", "sku_id"
 	if kind == "cost" {
 		table, parent = "gw_cost_rates", "cost_plan_id"
 	}
-	query := `INSERT INTO ` + table + `(release_id,` + parent + `,rate_evidence_review_event_id,unit_code,unit_price,currency_code,currency_version,component_code,quantity_source,charge_event,unit_scale,quantity_step,max_quantity,created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)`
-	result, err := tx.ExecContext(ctx, query, releaseID, parentID, eventID, evidence.UnitCode, evidence.UnitPrice, evidence.CurrencyCode, evidence.CurrencyVersion, component.Code, component.Source, component.Event, component.UnitScale, component.QuantityStep, component.MaxQuantity, nowUTC())
+	query := `INSERT INTO ` + table + `(release_id,` + parent + `,rate_evidence_review_event_id,unit_code,unit_price,currency_code,currency_version,component_code,quantity_source,charge_event,unit_scale,quantity_step,max_quantity,pricing_mode,pricing_expr,max_price,created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`
+	result, err := tx.ExecContext(ctx, query, releaseID, parentID, eventID, evidence.UnitCode, evidence.UnitPrice, evidence.CurrencyCode, evidence.CurrencyVersion, component.Code, component.Source, component.Event, component.UnitScale, component.QuantityStep, component.MaxQuantity, in.PricingMode, expression, bound, nowUTC())
 	if err != nil {
 		return 0, err
 	}
@@ -305,7 +341,7 @@ func (s *Store) CreateCatalogRate(ctx context.Context, tx *sql.Tx, kind string, 
 	if err != nil {
 		return 0, err
 	}
-	return rateID, advanceCatalogDraft(ctx, tx, releaseID, lock, "unified.catalog."+kind+"_rate.create", rateID, actorID, ginSafeMetadata{"parent_id": parentID, "evidence_id": in.EvidenceID, "component_code": in.ComponentCode})
+	return rateID, nil
 }
 
 type acceptedEvidence struct {

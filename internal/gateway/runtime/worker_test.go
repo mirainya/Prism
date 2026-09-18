@@ -2,8 +2,8 @@ package runtime
 
 import (
 	"context"
+	"database/sql"
 	"errors"
-	"strings"
 	"testing"
 	"time"
 
@@ -73,7 +73,7 @@ func TestDisabledReadinessPreventsEveryOutboxClaim(t *testing.T) {
 	}
 }
 
-func TestDeploymentPointerFencePreventsWorkerClaim(t *testing.T) {
+func TestReadyWorkerClaimDoesNotReadDeploymentPointer(t *testing.T) {
 	db, mock, err := sqlmock.New()
 	if err != nil {
 		t.Fatal(err)
@@ -83,18 +83,16 @@ func TestDeploymentPointerFencePreventsWorkerClaim(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	identity := repository.DeploymentIdentity{InstanceID: "test-instance", Role: "api-worker", AdapterDigest: strings.Repeat("a", 64)}
-	service, err := NewWithDeploymentIdentity(store, func(context.Context) error { return nil }, identity)
+	service, err := NewWithReadiness(store, func(context.Context) error { return nil })
 	if err != nil {
 		t.Fatal(err)
 	}
 	mock.ExpectBegin()
-	mock.ExpectQuery("SELECT active_release_id,active_deployment_generation_id FROM gw_catalog_runtime_state WHERE id=1 FOR UPDATE").
-		WillReturnRows(sqlmock.NewRows([]string{"active_release_id", "active_deployment_generation_id"}).AddRow(int64(7), nil))
+	mock.ExpectQuery("SELECT id,call_id,attempt_id,async_execution_id").WillReturnError(sql.ErrNoRows)
 	mock.ExpectRollback()
 	worked, err := service.ProcessOne(context.Background(), "worker", time.Minute, time.Second, outboxDispatcherFunc{})
-	if worked || !errors.Is(err, repository.ErrConflict) {
-		t.Fatalf("worked=%v err=%v, want false/ErrConflict", worked, err)
+	if err != nil || worked {
+		t.Fatalf("worked=%v err=%v", worked, err)
 	}
 	if err := mock.ExpectationsWereMet(); err != nil {
 		t.Fatal(err)

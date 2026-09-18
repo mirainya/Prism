@@ -23,18 +23,23 @@ var ErrAssetInUse = errors.New("video asset is referenced by a task")
 const maxUnifiedAssetCleanupBatchSize = 5000
 
 type UnifiedAssetService struct {
-	db       *gorm.DB
-	upload   func(context.Context, io.Reader, string, string) (filestorage.UploadResult, error)
-	download func(context.Context, string, int64) (*safeurl.Result, error)
-	verify   func(context.Context, string, int64, string) error
-	remove   func(context.Context, string) error
-	now      func() time.Time
+	db               *gorm.DB
+	upload           func(context.Context, io.Reader, string, string) (filestorage.UploadResult, error)
+	download         func(context.Context, string, int64) (*safeurl.Result, error)
+	verify           func(context.Context, string, int64, string) error
+	remove           func(context.Context, string) error
+	removeWithAPIKey func(context.Context, string, string) error
+	now              func() time.Time
 }
 
 func NewUnifiedAssetService(db *gorm.DB) *UnifiedAssetService {
 	return &UnifiedAssetService{
 		db: db, upload: filestorage.UploadReaderAtPath, download: safeurl.Download,
-		verify: filestorage.VerifyURL, remove: filestorage.DeleteURL, now: time.Now,
+		verify: filestorage.VerifyURL, remove: filestorage.DeleteURL,
+		removeWithAPIKey: func(ctx context.Context, apiKey, locator string) error {
+			return filestorage.WithAPIKey(apiKey).DeleteURL(ctx, locator)
+		},
+		now: time.Now,
 	}
 }
 
@@ -232,6 +237,7 @@ func (s *UnifiedAssetService) purgeExpiredAsset(ctx context.Context, assetID uin
 	}
 	var locator string
 	var tokenID uint
+	var resultAPIKey string
 	err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		var asset model.MediaAsset
 		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Where("id=?", assetID).First(&asset).Error; err != nil {
@@ -259,6 +265,13 @@ func (s *UnifiedAssetService) purgeExpiredAsset(ctx context.Context, assetID uin
 		var references []model.MediaAssetRef
 		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Where("media_asset_id=?", assetID).Order("id ASC").Find(&references).Error; err != nil {
 			return err
+		}
+		if asset.Purpose == "result" && locator != "" {
+			var lookupErr error
+			resultAPIKey, lookupErr = managedResultStorageAPIKey(tx, &asset)
+			if lookupErr != nil {
+				return lookupErr
+			}
 		}
 		if len(references) != 0 {
 			switch asset.Purpose {
@@ -293,11 +306,43 @@ func (s *UnifiedAssetService) purgeExpiredAsset(ctx context.Context, assetID uin
 		return err
 	}
 	if locator != "" {
-		if err := s.remove(ctx, locator); err != nil {
+		remove := s.remove
+		if resultAPIKey != "" {
+			remove = func(ctx context.Context, locator string) error {
+				return s.removeWithAPIKey(ctx, resultAPIKey, locator)
+			}
+		}
+		if err := remove(ctx, locator); err != nil {
 			return err
 		}
 	}
 	return s.finishAssetDeletion(ctx, assetID, tokenID, "media_asset_retention_deleted")
+}
+
+func managedResultStorageAPIKey(tx *gorm.DB, asset *model.MediaAsset) (string, error) {
+	if tx == nil || asset == nil || asset.Purpose != "result" {
+		return "", ErrInvalidAsset
+	}
+	if asset.AttemptID == nil || *asset.AttemptID == 0 {
+		return "", fmt.Errorf("%w: result asset has no execution attempt", ErrInvalidAsset)
+	}
+	attemptID := *asset.AttemptID
+	var snapshot struct {
+		APIKey string
+	}
+	result := tx.Table("gw_api_call_attempts AS attempt").
+		Select("api_call.xfs_api_key AS api_key").
+		Joins("JOIN gw_api_calls AS api_call ON api_call.id=attempt.call_id").
+		Where("attempt.id=? AND api_call.user_id=? AND api_call.token_id=?", attemptID, asset.UserID, asset.TokenID).
+		Take(&snapshot)
+	if result.Error != nil {
+		return "", fmt.Errorf("read managed result storage key: %w", result.Error)
+	}
+	snapshot.APIKey = strings.TrimSpace(snapshot.APIKey)
+	if snapshot.APIKey == "" {
+		return "", fmt.Errorf("%w: managed result storage key is empty", ErrInvalidAsset)
+	}
+	return snapshot.APIKey, nil
 }
 
 type resultDeliveryLifecycle struct {

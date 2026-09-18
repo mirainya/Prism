@@ -619,7 +619,7 @@ func respondChatPipelineError(c *gin.Context, err error) {
 		return
 	}
 	if errors.Is(err, routing.ErrNoRoute) {
-		openaierror.Write(c, http.StatusServiceUnavailable, "The requested model is temporarily unavailable", "server_error", nil, "model_unavailable")
+		openaierror.Write(c, http.StatusServiceUnavailable, describeModelUnavailable(c, err, "The requested model is temporarily unavailable"), "server_error", nil, "model_unavailable")
 		return
 	}
 	if errors.Is(err, service.ErrInsufficientTokenBalance) ||

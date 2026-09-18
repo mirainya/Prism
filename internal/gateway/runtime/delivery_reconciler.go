@@ -170,4 +170,30 @@ func (s *Service) ApplyDeliveryRefresh(ctx context.Context, item repository.Outb
 	})
 }
 
+// ApplyManagedCopyRecovery publishes the object prepared by the recovery
+// worker and acknowledges the exact leased action in one transaction.
+func (s *Service) ApplyManagedCopyRecovery(ctx context.Context, item repository.OutboxItem, copy ManagedCopy) error {
+	if copy.MediaAssetID == 0 || copy.ContentType == "" || copy.ContentLength == 0 || copy.SHA256 == "" {
+		return repository.ErrInvalidInput
+	}
+	return s.Store.WithTx(ctx, func(tx *sql.Tx) error {
+		action, err := s.lockDeliveryAction(ctx, tx, item, true)
+		if err != nil {
+			return err
+		}
+		if action.completed {
+			return nil
+		}
+		if action.version != item.StateVersion || action.sequence != item.ActionSeq || action.state != "delivery_failed" {
+			return repository.ErrConflict
+		}
+		if err := s.Store.RecoverManagedCopyDelivery(ctx, tx, item.ResultDeliveryID, repository.ManagedCopyRecoveryInput{
+			MediaAssetID: copy.MediaAssetID, ContentType: copy.ContentType, ContentLength: copy.ContentLength, SHA256: copy.SHA256,
+		}); err != nil {
+			return err
+		}
+		return s.Store.CompleteDeliveryOutbox(ctx, tx, item, true, "")
+	})
+}
+
 var errDeliveryRefreshPending = errors.New("provider result URL is not refreshable yet")

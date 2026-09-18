@@ -26,6 +26,24 @@ type VideoResult struct {
 
 var ErrInvalidResult = errors.New("delivery: invalid video result")
 
+const (
+	ManagedCopyDownloadFailed     = "managed_copy_download_failed"
+	ManagedCopyUploadFailed       = "managed_copy_upload_failed"
+	ManagedCopyVerificationFailed = "managed_copy_verification_failed"
+	ManagedCopySizeExceeded       = "managed_copy_size_exceeded"
+	ManagedCopyEmpty              = "managed_copy_empty"
+	ManagedCopyContentTypeInvalid = "managed_copy_content_type_invalid"
+)
+
+func RetryableManagedCopyFailure(reason string) bool {
+	switch reason {
+	case ManagedCopyDownloadFailed, ManagedCopyUploadFailed, ManagedCopyVerificationFailed:
+		return true
+	default:
+		return false
+	}
+}
+
 func ValidateVideoSources(sources []RemoteResult) error {
 	if len(sources) < 1 || len(sources) > 2 || sources[0].Role != "video" {
 		return ErrInvalidResult

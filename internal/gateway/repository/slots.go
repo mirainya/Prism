@@ -182,7 +182,7 @@ func slotAttemptAllows(state, action string) bool {
 func (o slotOwner) validateAuthorization(ctx context.Context, tx *sql.Tx, in SlotInput) error {
 	var versionState, secretState, grantState, purpose string
 	var validUntil sql.NullTime
-	if err := tx.QueryRowContext(ctx, `SELECT v.status,v.valid_until,i.status FROM gw_credential_versions v JOIN gw_credential_secret_identities i ON i.id=v.secret_identity_id WHERE v.id=? AND v.credential_id=? AND v.encrypted_blob_id IS NOT NULL FOR SHARE`, o.versionID, in.CredentialID).Scan(&versionState, &validUntil, &secretState); err != nil {
+	if err := tx.QueryRowContext(ctx, `SELECT v.status,v.valid_until,i.status FROM gw_credential_versions v JOIN gw_credential_secret_identities i ON i.id=v.secret_identity_id WHERE v.id=? AND v.credential_id=? FOR SHARE`, o.versionID, in.CredentialID).Scan(&versionState, &validUntil, &secretState); err != nil {
 		return err
 	}
 	if err := tx.QueryRowContext(ctx, `SELECT status,purpose FROM gw_credential_purpose_grants WHERE id=? AND credential_id=? FOR SHARE`, o.grantID, in.CredentialID).Scan(&grantState, &purpose); err != nil {

@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/mirainya/Prism/internal/gateway/billing"
 	"github.com/mirainya/Prism/internal/gateway/repository"
@@ -83,6 +84,7 @@ type AvailableModelCapability struct {
 	MaxTokens              int                       `json:"max_tokens,omitempty"`
 	Group                  string                    `json:"group,omitempty"`
 	Thinking               *ThinkingInfo             `json:"thinking,omitempty"`
+	Availability           *PricingAvailability      `json:"availability,omitempty"`
 	Sort                   int                       `json:"-"`
 	operationKeys          map[string]int
 	channelKeys            map[string]struct{}
@@ -138,9 +140,21 @@ func (s *QueryService) ListAvailableChannels(ctx context.Context) ([]string, err
 }
 
 func (s *QueryService) ListAvailableCapabilities(ctx context.Context, channelCode, modelType string) ([]AvailableModelCapability, error) {
-	rows, _, err := s.activeRoutes(ctx)
+	rows, store, err := s.activeRoutes(ctx)
 	if err != nil {
 		return nil, err
+	}
+	var availability map[uint64]repository.SKUAvailability
+	var providerMetadata map[repository.ProviderModelMetadataKey]repository.ProviderModelMetadata
+	if len(rows) != 0 {
+		availability, err = store.LoadSKUAvailability(ctx, rows[0].ReleaseID)
+		if err != nil {
+			availability = nil
+		}
+		providerMetadata, err = store.LoadProviderModelMetadata(ctx)
+		if err != nil {
+			providerMetadata = nil
+		}
 	}
 	channelCode = strings.TrimSpace(channelCode)
 	modelType = strings.ToLower(strings.TrimSpace(modelType))
@@ -149,7 +163,7 @@ func (s *QueryService) ListAvailableCapabilities(ctx context.Context, channelCod
 		if channelCode != "" && row.ChannelCode != channelCode {
 			continue
 		}
-		operationType := publicOperationModelType(row.OperationCode, row.RouteTemplate)
+		operationType := publicOperationModelType(row.DownstreamOperation, row.DownstreamPath)
 		if modelType != "" && operationType != modelType {
 			continue
 		}
@@ -178,6 +192,13 @@ func (s *QueryService) ListAvailableCapabilities(ctx context.Context, channelCod
 		item.addType(operationType)
 		item.applyFeatures(features)
 		item.addRoute(row, tiers)
+		item.applyAvailability(availability[row.SKUID])
+		if item.Description == "" {
+			metadata := providerMetadata[repository.NewProviderModelMetadataKey(row.ChannelID, row.VendorModel)]
+			if metadata.Description != "" {
+				item.Description = metadata.Description
+			}
+		}
 	}
 
 	result := make([]AvailableModelCapability, 0, len(items))
@@ -214,6 +235,28 @@ func (s *QueryService) ListAvailableCapabilities(ctx context.Context, channelCod
 	return result, nil
 }
 
+func (item *AvailableModelCapability) applyAvailability(value repository.SKUAvailability) {
+	if value.SKUID == 0 {
+		return
+	}
+	candidate := &PricingAvailability{
+		SuccessRate: value.SuccessRate, Source: value.Source, Samples: value.Samples,
+		WindowMinutes: value.WindowMinutes, ObservedAt: value.ObservedAt,
+	}
+	if item.Availability == nil || availabilityWorse(candidate, item.Availability) {
+		item.Availability = candidate
+	}
+}
+
+func availabilityWorse(left, right *PricingAvailability) bool {
+	leftRate, leftErr := billing.ParseAmount(left.SuccessRate, 18, true)
+	rightRate, rightErr := billing.ParseAmount(right.SuccessRate, 18, true)
+	if leftErr == nil && rightErr == nil && leftRate.Cmp(rightRate) != 0 {
+		return leftRate.Cmp(rightRate) < 0
+	}
+	return left.ObservedAt.Before(right.ObservedAt)
+}
+
 func (item *AvailableModelCapability) addType(value string) {
 	if value == "" {
 		return
@@ -242,13 +285,13 @@ func (item *AvailableModelCapability) applyFeatures(features map[string]bool) {
 }
 
 func (item *AvailableModelCapability) addRoute(row repository.PublicCatalogRoute, tiers []string) {
-	operationKey := row.OperationCode + "\x00" + row.HTTPMethod + "\x00" + row.RouteTemplate
+	operationKey := row.DownstreamOperation + "\x00" + row.DownstreamHTTPMethod + "\x00" + row.DownstreamPath
 	operationIndex, exists := item.operationKeys[operationKey]
 	if !exists {
 		operationIndex = len(item.Operations)
 		item.operationKeys[operationKey] = operationIndex
 		item.Operations = append(item.Operations, AvailableModelOperation{
-			ID: row.OperationCode, Method: row.HTTPMethod, Path: row.RouteTemplate,
+			ID: row.DownstreamOperation, Method: row.DownstreamHTTPMethod, Path: row.DownstreamPath,
 			SupportsStream: item.SupportsStream, SKUs: []AvailableModelSKU{},
 		})
 	}
@@ -266,13 +309,13 @@ func (item *AvailableModelCapability) addRoute(row repository.PublicCatalogRoute
 	if row.TaskScope == "task" {
 		interactionMode = "poll"
 	}
-	channelKey := fmt.Sprintf("%d\x00%s\x00%s\x00%s", row.ChannelID, row.VendorModel, row.OperationCode, row.RouteTemplate)
+	channelKey := fmt.Sprintf("%d\x00%s\x00%s\x00%s", row.ChannelID, row.VendorModel, row.DownstreamOperation, row.DownstreamPath)
 	if _, exists := item.channelKeys[channelKey]; !exists {
 		item.channelKeys[channelKey] = struct{}{}
 		item.Channels = append(item.Channels, AvailableModelChannel{
 			ChannelID: row.ChannelID, ChannelType: row.ChannelCode,
 			ChannelName: row.ChannelName, Model: row.VendorModel, Protocol: row.Protocol,
-			InteractionMode: interactionMode, RouteOperation: row.OperationCode,
+			InteractionMode: interactionMode, RouteOperation: row.DownstreamOperation,
 		})
 	}
 	if _, exists := item.transportSet[row.Protocol]; !exists {
@@ -430,6 +473,22 @@ type PricingSKU struct {
 	ServiceTiers    []string                `json:"service_tiers"`
 	Currency        PricingCurrency         `json:"currency"`
 	Components      []billing.RateComponent `json:"components"`
+	Availability    *PricingAvailability    `json:"availability,omitempty"`
+}
+
+// PricingAvailability is the recently observed success rate for a SKU. It is
+// absent rather than zero when nothing has been observed, because "no data" and
+// "never succeeds" must not look the same to someone choosing a model.
+//
+// It sits beside the price but is not part of it: the price is fixed by the
+// active release and may be proven against it, while this is a measurement that
+// moves on its own and carries the timestamp needed to judge how stale it is.
+type PricingAvailability struct {
+	SuccessRate   string    `json:"success_rate"`
+	Source        string    `json:"source"`
+	Samples       uint32    `json:"samples,omitempty"`
+	WindowMinutes uint32    `json:"window_minutes"`
+	ObservedAt    time.Time `json:"observed_at"`
 }
 
 type PricingRoute struct {
@@ -456,6 +515,17 @@ func (s *PricingService) GetPricing(ctx context.Context) ([]PricingCapability, e
 	if err != nil {
 		return nil, err
 	}
+	// Availability is advisory. If it cannot be read the catalog is still served
+	// without it, because a price list that fails to load is a worse outcome
+	// than one missing a success-rate column.
+	availability, err := store.LoadSKUAvailability(ctx, releaseID)
+	if err != nil {
+		availability = nil
+	}
+	providerMetadata, err := store.LoadProviderModelMetadata(ctx)
+	if err != nil {
+		providerMetadata = nil
+	}
 	items := make(map[string]*PricingCapability)
 	for _, row := range rows {
 		if row.ReleaseID != releaseID {
@@ -476,12 +546,18 @@ func (s *PricingService) GetPricing(ctx context.Context) ([]PricingCapability, e
 				name = row.APIName
 			}
 			item = &PricingCapability{
-				Code: row.APIName, ModelCode: row.ModelCode, Name: name,
+				Code: row.APIName, ModelCode: row.APIName, Name: name,
 				Type:        publicOperationModelType(row.OperationCode, row.RouteTemplate),
 				Description: row.Description, Visibility: row.Visibility, Sort: row.SortOrder,
 				SKUs: []PricingSKU{}, skuIndexes: make(map[uint64]int),
 			}
 			items[row.APIName] = item
+		}
+		if item.Description == "" {
+			metadata := providerMetadata[repository.NewProviderModelMetadataKey(row.ChannelID, row.VendorModel)]
+			if metadata.Description != "" {
+				item.Description = metadata.Description
+			}
 		}
 		index, exists := item.skuIndexes[row.SKUID]
 		if !exists {
@@ -494,10 +570,11 @@ func (s *PricingService) GetPricing(ctx context.Context) ([]PricingCapability, e
 				ServiceTiers: tiers,
 				Currency:     PricingCurrency{Code: schedule.Currency.Code, Version: schedule.Currency.Version, FractionDigits: schedule.Currency.FractionDigits},
 				Components:   append([]billing.RateComponent(nil), schedule.Components...),
+				Availability: pricingAvailability(availability, row.SKUID),
 			})
 		}
 		sku := &item.SKUs[index]
-		route := PricingRoute{Method: row.HTTPMethod, Path: row.RouteTemplate}
+		route := PricingRoute{Method: row.DownstreamHTTPMethod, Path: row.DownstreamPath}
 		if !containsPricingRoute(sku.Routes, route) {
 			sku.Routes = append(sku.Routes, route)
 		}
@@ -525,4 +602,15 @@ func containsPricingRoute(values []PricingRoute, target PricingRoute) bool {
 		}
 	}
 	return false
+}
+
+func pricingAvailability(items map[uint64]repository.SKUAvailability, skuID uint64) *PricingAvailability {
+	item, ok := items[skuID]
+	if !ok {
+		return nil
+	}
+	return &PricingAvailability{
+		SuccessRate: item.SuccessRate, Source: item.Source, Samples: item.Samples,
+		WindowMinutes: item.WindowMinutes, ObservedAt: item.ObservedAt,
+	}
 }

@@ -11,6 +11,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/mirainya/Prism/internal/api/resp"
+	"github.com/mirainya/Prism/internal/gateway/payloadview"
 	"github.com/mirainya/Prism/internal/gateway/repository"
 	"github.com/mirainya/Prism/internal/model"
 	pkgErrors "github.com/mirainya/Prism/pkg/errors"
@@ -111,6 +112,15 @@ func GetUnifiedVideoTask(c *gin.Context) {
 	if err != nil {
 		resp.InternalError(c, pkgErrors.ErrInternalError)
 		return
+	}
+	if status, _ := item["status"].(string); status == "failed" || status == "submission_unknown" {
+		failure, readErr := payloadview.ReadLatestRequestFailure(c.Request.Context(), store, row.CallID)
+		if readErr != nil {
+			resp.InternalError(c, pkgErrors.ErrInternalError)
+			return
+		}
+		item["error_code"] = failure.Code
+		item["error_message"] = failure.Message
 	}
 	payloads := make([]gin.H, 0, 1)
 	if row.RequestPayloadID != 0 {

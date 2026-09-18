@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/mirainya/Prism/internal/gateway/billing"
@@ -31,7 +32,7 @@ func (s *Store) claimCallLeaseUntil(ctx context.Context, tx *sql.Tx, callID, att
 	result, err := tx.ExecContext(ctx, `UPDATE gw_api_calls
 SET lease_owner=?,lease_expires_at=?,next_action_at=NULL,updated_at=?
 WHERE id=? AND current_attempt_id=? AND status='in_progress'
-  AND (lease_owner='' OR lease_expires_at IS NULL OR lease_expires_at<=UTC_TIMESTAMP(3))`,
+  AND (lease_owner='' OR lease_expires_at IS NULL OR lease_expires_at<=CURRENT_TIMESTAMP(3))`,
 		owner, expiresAt.UTC(), nowUTC(), callID, attemptID)
 	if err != nil {
 		return CallLease{}, fmt.Errorf("claim call lease: %w", err)
@@ -55,7 +56,7 @@ func (s *Store) AssertCallLease(ctx context.Context, tx *sql.Tx, lease CallLease
 	var id uint64
 	err := tx.QueryRowContext(ctx, `SELECT id FROM gw_api_calls
 WHERE id=? AND current_attempt_id=? AND status='in_progress'
-  AND lease_owner=? AND lease_expires_at=? AND lease_expires_at>UTC_TIMESTAMP(3)
+  AND lease_owner=? AND lease_expires_at=? AND lease_expires_at>CURRENT_TIMESTAMP(3)
 FOR UPDATE`, lease.CallID, lease.AttemptID, lease.Owner, lease.ExpiresAt.UTC()).Scan(&id)
 	if err == sql.ErrNoRows {
 		return ErrConflict
@@ -128,6 +129,7 @@ type CreateCallInput struct {
 	Currency                                                       string
 	CurrencyVersion                                                uint32
 	DeliveryMode                                                   string
+	XFSAPIKey                                                      string
 }
 
 // CreateCall inserts a call and its immutable identity. Quoted amount is a
@@ -150,10 +152,14 @@ func (s *Store) CreateCall(ctx context.Context, db DB, in CreateCallInput) (uint
 	if in.DeliveryMode != "reference" && in.DeliveryMode != "managed_copy" {
 		return 0, ErrInvalidInput
 	}
+	in.XFSAPIKey = strings.TrimSpace(in.XFSAPIKey)
+	if len(in.XFSAPIKey) > 512 || in.XFSAPIKey != "" && in.DeliveryMode != "managed_copy" {
+		return 0, ErrInvalidInput
+	}
 	now := nowUTC()
 	result, err := db.ExecContext(ctx, `INSERT INTO gw_api_calls
- (public_id,user_id,token_id,operation_contract_id,catalog_release_id,model_operation_id,sku_id,request_payload_id,result_payload_id,status,state_version,quoted_amount,price_currency,price_currency_version,delivery_mode,created_at,updated_at)
- VALUES (?,?,?,?,?,?,?,?,?,'received',1,?,?,?,?,?,?)`, in.PublicID, in.UserID, in.TokenID, in.OperationContractID, in.CatalogReleaseID, in.ModelOperationID, in.SKUID, nullableID(in.RequestPayloadID), nullableID(in.ResultPayloadID), quoted.String(), in.Currency, in.CurrencyVersion, in.DeliveryMode, now, now)
+	 (public_id,user_id,token_id,operation_contract_id,catalog_release_id,model_operation_id,sku_id,request_payload_id,result_payload_id,status,state_version,quoted_amount,price_currency,price_currency_version,delivery_mode,xfs_api_key,created_at,updated_at)
+	 VALUES (?,?,?,?,?,?,?,?,?,'received',1,?,?,?,?,?,?,?)`, in.PublicID, in.UserID, in.TokenID, in.OperationContractID, in.CatalogReleaseID, in.ModelOperationID, in.SKUID, nullableID(in.RequestPayloadID), nullableID(in.ResultPayloadID), quoted.String(), in.Currency, in.CurrencyVersion, in.DeliveryMode, in.XFSAPIKey, now, now)
 	if err != nil {
 		return 0, fmt.Errorf("insert call: %w", err)
 	}
@@ -213,7 +219,7 @@ func (s *Store) BeginAttempt(ctx context.Context, tx *sql.Tx, in BeginAttemptInp
 	}
 	var versionStatus, secretStatus string
 	var validUntil sql.NullTime
-	if err := tx.QueryRowContext(ctx, `SELECT v.status,v.valid_until,i.status FROM gw_credential_versions v JOIN gw_credential_secret_identities i ON i.id=v.secret_identity_id WHERE v.id=? AND v.credential_id=? AND v.encrypted_blob_id IS NOT NULL FOR SHARE`, in.CredentialVersionID, in.CredentialID).Scan(&versionStatus, &validUntil, &secretStatus); err == sql.ErrNoRows {
+	if err := tx.QueryRowContext(ctx, `SELECT v.status,v.valid_until,i.status FROM gw_credential_versions v JOIN gw_credential_secret_identities i ON i.id=v.secret_identity_id WHERE v.id=? AND v.credential_id=? FOR SHARE`, in.CredentialVersionID, in.CredentialID).Scan(&versionStatus, &validUntil, &secretStatus); err == sql.ErrNoRows {
 		return 0, ErrNotFound
 	} else if err != nil {
 		return 0, err

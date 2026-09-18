@@ -33,6 +33,7 @@ type UploadResult struct {
 	RawURL       string `json:"rawUrl"`
 	Size         int64  `json:"size"`
 	Filename     string `json:"filename"`
+	OriginalName string `json:"originalFilename"`
 	Path         string `json:"path"`
 	ContentType  string `json:"contentType"`
 	Platform     string `json:"platform"`
@@ -41,6 +42,42 @@ type UploadResult struct {
 	HashInfo     string `json:"hashInfo"`
 	UploadID     string `json:"uploadId"`
 	UploadStatus int    `json:"uploadStatus"`
+}
+
+// StorageLocator returns the durable XFS object locator. URL remains the
+// browser-readable upload response for callers that immediately consume it.
+func (r UploadResult) StorageLocator() string {
+	if locator := normalizeStorageLocator(r.RawURL); locator != "" {
+		return locator
+	}
+	return strings.TrimSpace(r.URL)
+}
+
+// WithAPIKey returns a storage client view that keeps the global endpoint and
+// path policy while using the credential bound to one Prism API token.
+type Client struct {
+	config config.FileStorageConfig
+}
+
+func WithAPIKey(apiKey string) Client {
+	cfg := config.FileStorageConfig{}
+	if config.C != nil {
+		cfg = config.C.FileStorage
+	}
+	cfg.APIKey = strings.TrimSpace(apiKey)
+	return Client{config: cfg}
+}
+
+func DefaultClient() Client {
+	cfg := config.FileStorageConfig{}
+	if config.C != nil {
+		cfg = config.C.FileStorage
+	}
+	return Client{config: cfg}
+}
+
+func (c Client) Configured() bool {
+	return strings.TrimSpace(c.config.BaseURL) != "" && strings.TrimSpace(c.config.APIKey) != ""
 }
 
 func (r UploadResult) StorageKey() string {
@@ -53,7 +90,7 @@ func (r UploadResult) StorageKey() string {
 			return candidate
 		}
 	}
-	digest := sha256.Sum256([]byte(r.URL))
+	digest := sha256.Sum256([]byte(r.StorageLocator()))
 	return "xfs:sha256:" + hex.EncodeToString(digest[:])
 }
 
@@ -169,22 +206,30 @@ func UploadReader(ctx context.Context, data io.Reader, contentType, capabilityCo
 // UploadReaderAtPath is used when the caller has already allocated a globally
 // unique logical object path before starting the external write.
 func UploadReaderAtPath(ctx context.Context, data io.Reader, contentType, storagePath string) (UploadResult, error) {
-	return uploadReaderAtPath(ctx, data, contentType, storagePath, uuid.New().String()+extensionForContentType(contentType))
+	return DefaultClient().UploadReaderAtPath(ctx, data, contentType, storagePath)
+}
+
+func (c Client) UploadReaderAtPath(ctx context.Context, data io.Reader, contentType, storagePath string) (UploadResult, error) {
+	return c.uploadReaderAtPath(ctx, data, contentType, storagePath, uuid.New().String()+extensionForContentType(contentType))
 }
 
 // UploadReaderAtPathWithFilename writes to a caller-allocated object name.
 // Retrying the same path and filename lets recovery reconcile an upload whose
 // database acknowledgement failed.
 func UploadReaderAtPathWithFilename(ctx context.Context, data io.Reader, contentType, storagePath, filename string) (UploadResult, error) {
+	return DefaultClient().UploadReaderAtPathWithFilename(ctx, data, contentType, storagePath, filename)
+}
+
+func (c Client) UploadReaderAtPathWithFilename(ctx context.Context, data io.Reader, contentType, storagePath, filename string) (UploadResult, error) {
 	filename = strings.TrimSpace(filename)
 	if filename == "" || len(filename) > 255 || filename == "." || filename == ".." || strings.ContainsAny(filename, `/\\`) || strings.ContainsAny(filename, "\r\n\x00") {
 		return UploadResult{}, fmt.Errorf("invalid storage filename")
 	}
-	return uploadReaderAtPath(ctx, data, contentType, storagePath, filename)
+	return c.uploadReaderAtPath(ctx, data, contentType, storagePath, filename)
 }
 
-func uploadReaderAtPath(ctx context.Context, data io.Reader, contentType, storagePath, filename string) (UploadResult, error) {
-	cfg := config.C.FileStorage
+func (c Client) uploadReaderAtPath(ctx context.Context, data io.Reader, contentType, storagePath, filename string) (UploadResult, error) {
+	cfg := c.config
 	if cfg.BaseURL == "" || cfg.APIKey == "" {
 		return UploadResult{}, fmt.Errorf("file storage not configured")
 	}
@@ -198,7 +243,7 @@ func uploadReaderAtPath(ctx context.Context, data io.Reader, contentType, storag
 	if !strings.HasSuffix(storagePath, "/") {
 		storagePath += "/"
 	}
-	return uploadResult(ctx, data, contentType, storagePath, filename)
+	return uploadResultWithConfig(ctx, cfg, data, contentType, storagePath, filename)
 }
 
 func upload(ctx context.Context, data io.Reader, contentType string, capabilityCode string) (string, error) {
@@ -234,6 +279,10 @@ func extensionForContentType(contentType string) string {
 
 func uploadResult(ctx context.Context, data io.Reader, contentType, storagePath, filename string) (UploadResult, error) {
 	cfg := config.C.FileStorage
+	return uploadResultWithConfig(ctx, cfg, data, contentType, storagePath, filename)
+}
+
+func uploadResultWithConfig(ctx context.Context, cfg config.FileStorageConfig, data io.Reader, contentType, storagePath, filename string) (UploadResult, error) {
 	pipeReader, pipeWriter := io.Pipe()
 	writer := multipart.NewWriter(pipeWriter)
 	endpoint := strings.TrimRight(cfg.BaseURL, "/") + "/api/v1/upload"
@@ -272,8 +321,12 @@ func uploadResult(ctx context.Context, data io.Reader, contentType, storagePath,
 	}
 
 	result.URL = normalizePublicURL(result.URL)
+	result.RawURL = normalizeStorageLocator(result.RawURL)
+	if result.RawURL == "" {
+		result.RawURL = result.URL
+	}
 	if result.URL == "" {
-		return UploadResult{}, fmt.Errorf("xfilestorage returned an empty URL")
+		return UploadResult{}, fmt.Errorf("xfilestorage returned an empty durable locator")
 	}
 	return result, nil
 }
@@ -304,7 +357,11 @@ func writeMultipartUpload(pipeWriter *io.PipeWriter, writer *multipart.Writer, d
 // DeleteURL removes a file previously uploaded with the configured API key.
 // A missing file is treated as success so cleanup can be retried safely.
 func DeleteURL(ctx context.Context, rawURL string) error {
-	cfg := config.C.FileStorage
+	return DefaultClient().DeleteURL(ctx, rawURL)
+}
+
+func (c Client) DeleteURL(ctx context.Context, rawURL string) error {
+	cfg := c.config
 	if cfg.BaseURL == "" || cfg.APIKey == "" {
 		return fmt.Errorf("file storage not configured")
 	}
@@ -340,11 +397,99 @@ func DeleteURL(ctx context.Context, rawURL string) error {
 	return nil
 }
 
+// PresignedURL returns a browser-readable URL without exposing the XFS API
+// key. Private platforms may store only a relative object locator, so callers
+// must resolve it through XFS before returning it to clients.
+func (c Client) PresignedURL(ctx context.Context, rawURL string, expiration time.Duration) (string, error) {
+	if !c.Configured() {
+		return "", fmt.Errorf("file storage not configured")
+	}
+	rawURL = strings.TrimSpace(rawURL)
+	if rawURL == "" {
+		return "", fmt.Errorf("file storage locator is empty")
+	}
+	seconds := int64(expiration / time.Second)
+	if seconds <= 0 || seconds > int64(7*24*time.Hour/time.Second) {
+		return "", fmt.Errorf("presigned URL expiration is invalid")
+	}
+	endpoint := strings.TrimRight(c.config.BaseURL, "/") + "/api/v1/file/presigned-url?url=" +
+		url.QueryEscape(rawURL) + "&expiration=" + fmt.Sprintf("%d", seconds)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
+	if err != nil {
+		return "", fmt.Errorf("create presigned URL request: %w", err)
+	}
+	req.Header.Set("X-Api-Key", c.config.APIKey)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return "", fmt.Errorf("presigned URL request: %w", err)
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
+		return "", fmt.Errorf("xfilestorage presigned URL returned HTTP %d", resp.StatusCode)
+	}
+	var xfsResp xfsResponse
+	if err := json.Unmarshal(body, &xfsResp); err != nil {
+		return "", fmt.Errorf("parse presigned URL response: %w", err)
+	}
+	if xfsResp.Code != http.StatusOK {
+		return "", fmt.Errorf("xfilestorage error: %s", xfsResp.Message)
+	}
+	var result string
+	if err := json.Unmarshal(xfsResp.Data, &result); err != nil {
+		return "", fmt.Errorf("parse presigned URL: %w", err)
+	}
+	parsed, err := url.Parse(strings.TrimSpace(result))
+	if err != nil || parsed.User != nil || parsed.Fragment != "" ||
+		(parsed.Scheme != "http" && parsed.Scheme != "https") || parsed.Hostname() == "" {
+		return "", fmt.Errorf("xfilestorage returned an invalid presigned URL")
+	}
+	return result, nil
+}
+
+// Probe validates the permissions Prism needs before a token binding is made
+// active. The temporary object is removed even when download or signing fails.
+func (c Client) Probe(ctx context.Context) error {
+	if !c.Configured() {
+		return fmt.Errorf("file storage not configured")
+	}
+	payload := []byte("prism-xfs-binding-probe")
+	digest := sha256.Sum256(payload)
+	path := strings.Trim(strings.TrimSpace(c.config.UploadPath), "/")
+	if path != "" {
+		path += "/"
+	}
+	path += "system-check/" + time.Now().UTC().Format("2006-01-02") + "/"
+	result, err := c.UploadReaderAtPath(ctx, bytes.NewReader(payload), "text/plain", path)
+	if err != nil {
+		return err
+	}
+	locator := result.StorageLocator()
+	operationErr := c.VerifyURL(ctx, locator, int64(len(payload)), hex.EncodeToString(digest[:]))
+	if operationErr == nil {
+		_, operationErr = c.PresignedURL(ctx, locator, time.Minute)
+	}
+	cleanupCtx, cleanupCancel := context.WithTimeout(context.WithoutCancel(ctx), 15*time.Second)
+	defer cleanupCancel()
+	deleteErr := c.DeleteURL(cleanupCtx, locator)
+	if operationErr != nil {
+		return operationErr
+	}
+	if deleteErr != nil {
+		return fmt.Errorf("delete storage probe: %w", deleteErr)
+	}
+	return nil
+}
+
 // OpenDownload opens a private, authenticated stream through x-file-storage.
 // The supplied locator is only sent as a query value to the configured storage
 // service, so callers never connect directly to a database-controlled host.
 func OpenDownload(ctx context.Context, rawURL string) (*http.Response, error) {
-	cfg := config.C.FileStorage
+	return DefaultClient().OpenDownload(ctx, rawURL)
+}
+
+func (c Client) OpenDownload(ctx context.Context, rawURL string) (*http.Response, error) {
+	cfg := c.config
 	if cfg.BaseURL == "" || cfg.APIKey == "" {
 		return nil, fmt.Errorf("file storage not configured")
 	}
@@ -370,10 +515,14 @@ func OpenDownload(ctx context.Context, rawURL string) (*http.Response, error) {
 }
 
 func ReadURL(ctx context.Context, rawURL string, maxBytes int64) ([]byte, error) {
+	return DefaultClient().ReadURL(ctx, rawURL, maxBytes)
+}
+
+func (c Client) ReadURL(ctx context.Context, rawURL string, maxBytes int64) ([]byte, error) {
 	if maxBytes <= 0 {
 		return nil, fmt.Errorf("download size limit must be positive")
 	}
-	resp, err := OpenDownload(ctx, rawURL)
+	resp, err := c.OpenDownload(ctx, rawURL)
 	if err != nil {
 		return nil, err
 	}
@@ -391,6 +540,10 @@ func ReadURL(ctx context.Context, rawURL string, maxBytes int64) ([]byte, error)
 // VerifyURL reads the stored object through the authenticated storage proxy
 // and verifies the immutable length and SHA-256 before callers publish it.
 func VerifyURL(ctx context.Context, rawURL string, expectedBytes int64, expectedSHA256 string) error {
+	return DefaultClient().VerifyURL(ctx, rawURL, expectedBytes, expectedSHA256)
+}
+
+func (c Client) VerifyURL(ctx context.Context, rawURL string, expectedBytes int64, expectedSHA256 string) error {
 	if expectedBytes <= 0 {
 		return fmt.Errorf("expected object size must be positive")
 	}
@@ -401,7 +554,7 @@ func VerifyURL(ctx context.Context, rawURL string, expectedBytes int64, expected
 	if _, err := hex.DecodeString(expectedSHA256); err != nil {
 		return fmt.Errorf("expected object SHA-256 is invalid")
 	}
-	response, err := OpenDownload(ctx, rawURL)
+	response, err := c.OpenDownload(ctx, rawURL)
 	if err != nil {
 		return err
 	}
@@ -424,6 +577,13 @@ func VerifyURL(ctx context.Context, rawURL string, expectedBytes int64, expected
 	return nil
 }
 
+func normalizeStorageLocator(rawURL string) string {
+	return strings.TrimSpace(rawURL)
+}
+
+// normalizePublicURL remains for callers and tests that need a browser URL.
+// XFS upload locators use normalizeStorageLocator because private platforms
+// legitimately return an object path rather than an absolute URL.
 func normalizePublicURL(rawURL string) string {
 	rawURL = strings.TrimSpace(rawURL)
 	if strings.HasPrefix(rawURL, "http://") {

@@ -9,6 +9,8 @@ import (
 	"strconv"
 	"strings"
 	"unicode/utf8"
+
+	"github.com/mirainya/Prism/internal/gateway/billing"
 )
 
 var channelCodePattern = regexp.MustCompile(`^[a-z][a-z0-9_.-]{0,127}$`)
@@ -101,14 +103,35 @@ func recordCatalogAdminChange(ctx context.Context, tx *sql.Tx, actorID uint64, a
 }
 
 type PoolUpdate struct {
-	Name            string  `json:"display_name"`
-	RequestLimit    *uint64 `json:"request_limit"`
-	TaskLimit       *uint64 `json:"task_limit"`
+	Name         string  `json:"display_name"`
+	RequestLimit *uint64 `json:"request_limit"`
+	TaskLimit    *uint64 `json:"task_limit"`
+	// CostGroupRatio scales what this pool is assumed to cost upstream. Nil
+	// leaves it untouched, so a caller that predates the column keeps working.
+	// It never reaches a user-facing price: a pool is chosen during routing, and
+	// a price that moved with the pool would make the same call cost different
+	// amounts and would defeat the pre-request upper-bound proof.
+	CostGroupRatio  *string `json:"cost_group_ratio"`
 	ExpectedVersion uint64  `json:"expected_version"`
 }
 
 func (in PoolUpdate) Validate() error {
 	if !validDisplayName(in.Name) || in.ExpectedVersion == 0 || !validPoolLimit(in.RequestLimit) || !validPoolLimit(in.TaskLimit) {
+		return ErrInvalidInput
+	}
+	return validCostGroupRatio(in.CostGroupRatio)
+}
+
+// validCostGroupRatio mirrors ck_gw_credential_pools_cost_group_ratio. The ratio
+// is fixed-point like every other money-adjacent value (SPEC invariant 10 names
+// multipliers), and zero is rejected as well as negative: a zero ratio would
+// silently report every upstream call as free.
+func validCostGroupRatio(value *string) error {
+	if value == nil {
+		return nil
+	}
+	ratio, err := billing.ParseAmount(*value, 8, true)
+	if err != nil || ratio.Cmp(billing.Zero()) == 0 {
 		return ErrInvalidInput
 	}
 	return nil
@@ -133,7 +156,9 @@ func (s *Store) UpdateCredentialPool(ctx context.Context, tx *sql.Tx, id uint64,
 	if status != "active" || version != in.ExpectedVersion {
 		return ErrConflict
 	}
-	if _, err := tx.ExecContext(ctx, `UPDATE gw_credential_pools SET display_name=?,request_limit=?,task_limit=?,config_version=config_version+1,updated_at=? WHERE id=?`, in.Name, nullableUint64(in.RequestLimit), nullableUint64(in.TaskLimit), nowUTC(), id); err != nil {
+	// COALESCE keeps the stored ratio when the caller omitted the field, so the
+	// column does not need a separate statement or a read-modify-write.
+	if _, err := tx.ExecContext(ctx, `UPDATE gw_credential_pools SET display_name=?,request_limit=?,task_limit=?,cost_group_ratio=COALESCE(?,cost_group_ratio),config_version=config_version+1,updated_at=? WHERE id=?`, in.Name, nullableUint64(in.RequestLimit), nullableUint64(in.TaskLimit), in.CostGroupRatio, nowUTC(), id); err != nil {
 		return err
 	}
 	return recordCatalogAdminChange(ctx, tx, actorID, "unified.pool.update", "credential_pool", id, in)

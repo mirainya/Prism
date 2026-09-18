@@ -1,8 +1,11 @@
 package engine
 
 import (
+	"encoding/json"
 	"fmt"
+	"io"
 	"strconv"
+	"strings"
 
 	"github.com/mirainya/Prism/internal/gateway/billing"
 	"github.com/mirainya/Prism/internal/gateway/canonical"
@@ -50,10 +53,32 @@ func canonicalSellSchedule(route *routing.RouteResult) (billing.RateSchedule, er
 	return schedule, nil
 }
 
-func canonicalBillingFacts(usage *canonical.Usage) (billing.Facts, error) {
+// CanonicalBillingFacts converts normalized chat/Responses usage into the
+// billing facts consumed by both the synchronous engine and background
+// Responses worker.
+func CanonicalBillingFacts(usage *canonical.Usage) (billing.Facts, error) {
+	declared := map[string]bool{
+		"success":            true,
+		"input_tokens":       true,
+		"output_tokens":      true,
+		"cache_read_tokens":  true,
+		"cache_write_tokens": true,
+		"reasoning_tokens":   true,
+	}
 	facts := billing.Facts{Events: map[billing.ChargeEvent]bool{
 		billing.ChargeSucceeded: true, billing.ChargeFailed: false, billing.ChargeCancelled: false,
-	}, Quantities: make(map[billing.QuantitySource]string)}
+	}, Quantities: make(map[billing.QuantitySource]string), Expr: billing.ExprEnv{Declared: declared, Vars: make(map[string]billing.ExprValue, len(declared))}}
+	putExprNumber := func(name, value string) error {
+		amount, err := billing.ParseAmount(value, 18, true)
+		if err != nil {
+			return err
+		}
+		facts.Expr.Vars[name] = billing.ExprNumber(amount)
+		return nil
+	}
+	if err := putExprNumber("success", "1"); err != nil {
+		return billing.Facts{}, err
+	}
 	if usage == nil {
 		return facts, nil
 	}
@@ -64,5 +89,63 @@ func canonicalBillingFacts(usage *canonical.Usage) (billing.Facts, error) {
 	facts.Quantities[billing.QuantityOutputTokens] = strconv.Itoa(usage.OutputTokens)
 	facts.Quantities[billing.QuantityCachedTokens] = strconv.Itoa(usage.CachedInputTokens)
 	facts.Quantities[billing.QuantityUncachedTokens] = strconv.Itoa(usage.InputTokens - usage.CachedInputTokens)
+	for name, value := range map[string]int{
+		"input_tokens":      usage.InputTokens,
+		"output_tokens":     usage.OutputTokens,
+		"cache_read_tokens": usage.CachedInputTokens,
+		"reasoning_tokens":  usage.ReasoningOutputTokens,
+	} {
+		if err := putExprNumber(name, strconv.Itoa(value)); err != nil {
+			return billing.Facts{}, err
+		}
+	}
+	if value, ok, err := canonicalExtraQuantity(usage.Extra, "cache_write_tokens", "cache_creation_input_tokens", "cache_write_input_tokens"); err != nil {
+		return billing.Facts{}, err
+	} else if ok {
+		if err := putExprNumber("cache_write_tokens", value); err != nil {
+			return billing.Facts{}, err
+		}
+	}
 	return facts, nil
+}
+
+// Keep the package-local name for the existing engine tests and callers while
+// the background worker uses the shared exported conversion above.
+func canonicalBillingFacts(usage *canonical.Usage) (billing.Facts, error) {
+	return CanonicalBillingFacts(usage)
+}
+
+func canonicalExtraQuantity(extra map[string]json.RawMessage, keys ...string) (string, bool, error) {
+	for _, key := range keys {
+		raw, ok := extra[key]
+		if !ok || strings.TrimSpace(string(raw)) == "" || strings.TrimSpace(string(raw)) == "null" {
+			continue
+		}
+		decoder := json.NewDecoder(strings.NewReader(string(raw)))
+		decoder.UseNumber()
+		var number json.Number
+		if err := decoder.Decode(&number); err == nil {
+			var extra any
+			if err := decoder.Decode(&extra); err != nil {
+				if err != io.EOF {
+					return "", false, err
+				}
+				if _, err := billing.ParseAmount(number.String(), 18, true); err != nil {
+					return "", false, billing.ErrInvalidAmount
+				}
+				return number.String(), true, nil
+			}
+			return "", false, billing.ErrInvalidAmount
+		}
+		var text string
+		decoder = json.NewDecoder(strings.NewReader(string(raw)))
+		if err := decoder.Decode(&text); err != nil || strings.TrimSpace(text) == "" {
+			return "", false, billing.ErrInvalidAmount
+		}
+		if _, err := billing.ParseAmount(text, 18, true); err != nil {
+			return "", false, billing.ErrInvalidAmount
+		}
+		return strings.TrimSpace(text), true, nil
+	}
+	return "", false, nil
 }

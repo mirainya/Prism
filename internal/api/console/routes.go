@@ -25,6 +25,8 @@ func RegisterRoutes(group *gin.RouterGroup) {
 	group.POST("/tokens", CreateToken)
 	group.GET("/tokens/:id", GetToken)
 	group.PUT("/tokens/:id", UpdateToken)
+	group.PUT("/tokens/:id/file-storage", BindTokenFileStorage)
+	group.DELETE("/tokens/:id/file-storage", UnbindTokenFileStorage)
 	group.POST("/tokens/:id/recharge", RechargeToken)
 	group.DELETE("/tokens/:id", DeleteToken)
 

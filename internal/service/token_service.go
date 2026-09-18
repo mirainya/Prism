@@ -17,10 +17,12 @@ import (
 	"gorm.io/gorm/clause"
 )
 
-type TokenService struct{}
+type TokenService struct {
+	probeFileStorage func(context.Context, string) error
+}
 
 func NewTokenService() *TokenService {
-	return &TokenService{}
+	return &TokenService{probeFileStorage: probeTokenFileStorage}
 }
 
 type CreateTokenReq struct {
@@ -34,7 +36,9 @@ type UpdateTokenReq struct {
 
 func (s *TokenService) ListTokens(userID uint) ([]gin.H, error) {
 	var tokens []model.Token
-	if err := model.DB().Model(&model.Token{}).Where("user_id = ?", userID).Find(&tokens).Error; err != nil {
+	if err := model.DB().Model(&model.Token{}).
+		Where("user_id = ? AND status = 1 AND revoked_at IS NULL", userID).
+		Find(&tokens).Error; err != nil {
 		return nil, err
 	}
 
@@ -52,15 +56,16 @@ func (s *TokenService) ListTokens(userID uint) ([]gin.H, error) {
 		keyHint := tokenKeyHint(&t)
 		snapshot := funds[t.ID]
 		result[i] = gin.H{
-			"id":         t.ID,
-			"name":       t.Name,
-			"key":        keyHint,
-			"key_hint":   keyHint,
-			"balance":    snapshot.Available,
-			"total_used": snapshot.Used,
-			"rate_limit": t.RateLimit,
-			"status":     t.Status,
-			"created_at": t.CreatedAt,
+			"id":          t.ID,
+			"name":        t.Name,
+			"key":         keyHint,
+			"key_hint":    keyHint,
+			"balance":     snapshot.Available,
+			"total_used":  snapshot.Used,
+			"rate_limit":  t.RateLimit,
+			"status":      t.Status,
+			"created_at":  t.CreatedAt,
+			"xfs_storage": newTokenFileStorageStatus(t.XFSAPIKey),
 		}
 	}
 
@@ -130,7 +135,7 @@ func (s *TokenService) CreateToken(userID uint, req *CreateTokenReq) (gin.H, err
 
 func (s *TokenService) GetToken(userID uint, id uint) (gin.H, error) {
 	var token model.Token
-	if err := model.DB().Where("id = ? AND user_id = ?", id, userID).First(&token).Error; err != nil {
+	if err := model.DB().Where("id = ? AND user_id = ? AND status = 1 AND revoked_at IS NULL", id, userID).First(&token).Error; err != nil {
 		return nil, err
 	}
 
@@ -138,25 +143,25 @@ func (s *TokenService) GetToken(userID uint, id uint) (gin.H, error) {
 	if err != nil {
 		return nil, err
 	}
-
 	keyHint := tokenKeyHint(&token)
 	snapshot := funds[id]
 	return gin.H{
-		"id":         token.ID,
-		"name":       token.Name,
-		"key":        keyHint,
-		"key_hint":   keyHint,
-		"balance":    snapshot.Available,
-		"total_used": snapshot.Used,
-		"rate_limit": token.RateLimit,
-		"status":     token.Status,
-		"created_at": token.CreatedAt,
+		"id":          token.ID,
+		"name":        token.Name,
+		"key":         keyHint,
+		"key_hint":    keyHint,
+		"balance":     snapshot.Available,
+		"total_used":  snapshot.Used,
+		"rate_limit":  token.RateLimit,
+		"status":      token.Status,
+		"created_at":  token.CreatedAt,
+		"xfs_storage": newTokenFileStorageStatus(token.XFSAPIKey),
 	}, nil
 }
 
 func (s *TokenService) UpdateToken(userID uint, id uint, req *UpdateTokenReq) error {
 	var token model.Token
-	if err := model.DB().Where("id = ? AND user_id = ?", id, userID).First(&token).Error; err != nil {
+	if err := model.DB().Where("id = ? AND user_id = ? AND status = 1 AND revoked_at IS NULL", id, userID).First(&token).Error; err != nil {
 		return err
 	}
 

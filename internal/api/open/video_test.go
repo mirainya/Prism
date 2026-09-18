@@ -16,12 +16,14 @@ import (
 	"github.com/DATA-DOG/go-sqlmock"
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
+	"github.com/mirainya/Prism/internal/api/resp"
 	"github.com/mirainya/Prism/internal/gateway/delivery"
 	"github.com/mirainya/Prism/internal/gateway/repository"
 	"github.com/mirainya/Prism/internal/gateway/routing"
 	gatewayruntime "github.com/mirainya/Prism/internal/gateway/runtime"
 	"github.com/mirainya/Prism/internal/gateway/security"
 	"github.com/mirainya/Prism/internal/video"
+	perrors "github.com/mirainya/Prism/pkg/errors"
 )
 
 func TestVideoGenerationEndpointsRejectLegacyInput(t *testing.T) {
@@ -95,8 +97,8 @@ func TestUnifiedVideoCreationRequiresActiveCatalog(t *testing.T) {
 	previousStore, previousRouter := unifiedVideoStore, unifiedVideoRouter
 	unifiedVideoStore, unifiedVideoRouter = store, routing.NewRouter()
 	t.Cleanup(func() { unifiedVideoStore, unifiedVideoRouter = previousStore, previousRouter })
-	mock.ExpectQuery("SELECT active_release_id,active_deployment_generation_id FROM gw_catalog_runtime_state").
-		WillReturnRows(sqlmock.NewRows([]string{"active_release_id", "active_deployment_generation_id"}).AddRow(nil, nil))
+	mock.ExpectQuery("SELECT active_release_id FROM gw_catalog_runtime_state").
+		WillReturnRows(sqlmock.NewRows([]string{"active_release_id"}).AddRow(nil))
 
 	_, handled, err := planUnifiedVideoGeneration(context.Background(), &video.CreateTaskRequest{Model: "seedance-2.0"})
 	if !handled || !errors.Is(err, gatewayruntime.ErrNotReady) {
@@ -107,7 +109,7 @@ func TestUnifiedVideoCreationRequiresActiveCatalog(t *testing.T) {
 	}
 }
 
-func TestUnifiedVideoCreationRequiresActiveDeployment(t *testing.T) {
+func TestUnifiedVideoCreationRequiresPublishedActiveCatalog(t *testing.T) {
 	db, mock, err := sqlmock.New()
 	if err != nil {
 		t.Fatal(err)
@@ -120,8 +122,12 @@ func TestUnifiedVideoCreationRequiresActiveDeployment(t *testing.T) {
 	previousStore, previousRouter := unifiedVideoStore, unifiedVideoRouter
 	unifiedVideoStore, unifiedVideoRouter = store, routing.NewRouter()
 	t.Cleanup(func() { unifiedVideoStore, unifiedVideoRouter = previousStore, previousRouter })
-	mock.ExpectQuery("SELECT active_release_id,active_deployment_generation_id FROM gw_catalog_runtime_state").
-		WillReturnRows(sqlmock.NewRows([]string{"active_release_id", "active_deployment_generation_id"}).AddRow(uint64(7), nil))
+	mock.ExpectQuery("SELECT active_release_id FROM gw_catalog_runtime_state").
+		WillReturnRows(sqlmock.NewRows([]string{"active_release_id"}).AddRow(uint64(7)))
+	mock.ExpectQuery("SELECT active_release_id FROM gw_catalog_runtime_state").
+		WillReturnRows(sqlmock.NewRows([]string{"active_release_id"}).AddRow(uint64(7)))
+	mock.ExpectQuery("SELECT status FROM gw_catalog_releases").WithArgs(uint64(7)).
+		WillReturnRows(sqlmock.NewRows([]string{"status"}).AddRow("draft"))
 
 	_, handled, err := planUnifiedVideoGeneration(context.Background(), &video.CreateTaskRequest{Model: "seedance-2.0"})
 	if !handled || !errors.Is(err, gatewayruntime.ErrNotReady) {
@@ -235,6 +241,42 @@ func TestClassifyVideoCreateErrorTreatsIdempotencyReuseAsConflict(t *testing.T) 
 	}
 }
 
+func TestWriteVideoCreateErrorReportsInsufficientQuota(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	response := httptest.NewRecorder()
+	ctx, _ := gin.CreateTestContext(response)
+
+	writeVideoCreateError(ctx, http.StatusBadRequest, fmt.Errorf("submit gateway call: reserve billing: %w", repository.ErrInsufficient))
+
+	if response.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, body = %s", response.Code, response.Body.String())
+	}
+	var body resp.Response
+	if err := json.Unmarshal(response.Body.Bytes(), &body); err != nil {
+		t.Fatal(err)
+	}
+	if body.Code != perrors.ErrInsufficientQuota.Code || body.Message != perrors.ErrInsufficientQuota.Message {
+		t.Fatalf("response = %#v", body)
+	}
+}
+
+func TestWriteVideoCreateErrorPreservesSafeValidationReason(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	response := httptest.NewRecorder()
+	ctx, _ := gin.CreateTestContext(response)
+	err := fmt.Errorf("%w: duration must be one of 5, 10, 15", repository.ErrInvalidInput)
+
+	writeVideoCreateError(ctx, http.StatusBadRequest, err)
+
+	var body resp.Response
+	if decodeErr := json.Unmarshal(response.Body.Bytes(), &body); decodeErr != nil {
+		t.Fatal(decodeErr)
+	}
+	if body.Code != perrors.ErrInvalidParams.Code || body.Message != err.Error() {
+		t.Fatalf("response = %#v", body)
+	}
+}
+
 func TestUnifiedVideoPublicStatus(t *testing.T) {
 	tests := []struct {
 		name, call, task, want string
@@ -300,10 +342,10 @@ func TestListUnifiedVideoGenerationsFiltersAndPaginatesPublicProjection(t *testi
 		WithArgs(uint(41), uint(7), "submitted", "seedance-2.0").
 		WillReturnRows(sqlmock.NewRows([]string{"total"}).AddRow(3))
 	createdAt := time.Date(2026, 9, 6, 8, 0, 0, 0, time.UTC)
-	mock.ExpectQuery("SELECT r.public_id,c.status,v.status,v.progress,v.specification_summary,c.created_at,c.updated_at.*CASE").
+	mock.ExpectQuery("SELECT c.id,r.public_id,c.status,v.status,v.progress,v.specification_summary,c.created_at,c.updated_at.*CASE").
 		WithArgs(uint(41), uint(7), "submitted", "seedance-2.0", 2, 2).
-		WillReturnRows(sqlmock.NewRows([]string{"public_id", "call_status", "task_status", "progress", "specification", "created_at", "updated_at"}).
-			AddRow("video-1", "in_progress", "submitted", 0, []byte(`{"model":"seedance-2.0","service_tier":"standard","task_mode":"references"}`), createdAt, createdAt.Add(time.Second)))
+		WillReturnRows(sqlmock.NewRows([]string{"call_id", "public_id", "call_status", "task_status", "progress", "specification", "created_at", "updated_at"}).
+			AddRow(uint64(10), "video-1", "in_progress", "submitted", 0, []byte(`{"model":"seedance-2.0","service_tier":"standard","task_mode":"references"}`), createdAt, createdAt.Add(time.Second)))
 
 	response := httptest.NewRecorder()
 	ctx, _ := gin.CreateTestContext(response)
@@ -409,6 +451,18 @@ func TestReadUnifiedVideoResultReturnsOwnedManagedCopy(t *testing.T) {
 		WithArgs(uint64(17), uint64(10), uint64(41), uint64(7)).
 		WillReturnRows(sqlmock.NewRows([]string{"id", "call_id", "attempt_id", "user_id", "token_id", "delivery_mode", "source_kind", "state", "content_type", "reason_code", "expires_at", "source_url_policy", "source_seq", "encrypted_url_blob_id", "media_asset_ref_id", "media_asset_id", "object_key"}).
 			AddRow(uint64(17), uint64(10), uint64(11), uint64(41), uint64(7), "managed_copy", "remote_url", "ready", "video/mp4", "managed_copy_available", nil, "fixed", nil, nil, uint64(20), uint64(21), "https://storage.example/video.mp4"))
+	mock.ExpectQuery("SELECT c.user_id,c.token_id,COALESCE\\(c.xfs_api_key,''\\)").
+		WithArgs(uint64(11)).
+		WillReturnRows(sqlmock.NewRows([]string{"user_id", "token_id", "xfs_api_key"}).
+			AddRow(uint64(41), uint64(7), testManagedResultAPIKey))
+	previousPresign := presignManagedResult
+	presignManagedResult = func(_ context.Context, apiKey, locator string) (string, error) {
+		if apiKey != testManagedResultAPIKey || locator != "https://storage.example/video.mp4" {
+			t.Fatalf("presign key=%q locator=%q", apiKey, locator)
+		}
+		return locator, nil
+	}
+	t.Cleanup(func() { presignManagedResult = previousPresign })
 
 	result, err := readUnifiedVideoResult(context.Background(), 22, 10, 41, 7)
 	if err != nil {
@@ -421,6 +475,8 @@ func TestReadUnifiedVideoResultReturnsOwnedManagedCopy(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+const testManagedResultAPIKey = "xfs_0123456789abcdef0123456789abcdef"
 
 func configureUnifiedPayloadKeys(t *testing.T) ([]byte, []byte) {
 	t.Helper()

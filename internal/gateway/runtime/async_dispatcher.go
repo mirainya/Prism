@@ -74,6 +74,22 @@ type AsyncKeys struct {
 	PayloadKEK, PayloadHMAC       []byte
 }
 
+// validateAsyncKeys keeps payload protection mandatory while allowing a
+// deployment that has no legacy encrypted credentials to omit the old
+// credential key pair. Legacy rows still fail closed when their Blob is read.
+func validateAsyncKeys(keys AsyncKeys) error {
+	if len(keys.PayloadKEK) != security.KeySize || len(keys.PayloadHMAC) != security.KeySize {
+		return repository.ErrInvalidInput
+	}
+	if len(keys.CredentialKEK) == 0 && len(keys.CredentialHMAC) == 0 {
+		return nil
+	}
+	if len(keys.CredentialKEK) != security.KeySize || len(keys.CredentialHMAC) != security.KeySize {
+		return repository.ErrInvalidInput
+	}
+	return nil
+}
+
 type AsyncDispatcher struct {
 	service *Service
 	client  *http.Client
@@ -156,10 +172,8 @@ func NewAsyncDispatcher(service *Service, client *http.Client, keys AsyncKeys, c
 	if service == nil || service.Store == nil || len(codecs) == 0 {
 		return nil, repository.ErrInvalidInput
 	}
-	for _, key := range [][]byte{keys.CredentialKEK, keys.CredentialHMAC, keys.PayloadKEK, keys.PayloadHMAC} {
-		if len(key) != security.KeySize {
-			return nil, repository.ErrInvalidInput
-		}
+	if err := validateAsyncKeys(keys); err != nil {
+		return nil, err
 	}
 	registered := make(map[string]AsyncCodec, len(codecs))
 	for name, codec := range codecs {
@@ -255,7 +269,7 @@ func (d *AsyncDispatcher) Dispatch(ctx context.Context, item repository.OutboxIt
 	if len(prepared.Body) > maxCapturedExchangeBody {
 		return &PermanentDispatchError{Code: "provider_request_body_too_large"}
 	}
-	secret, err := d.openBlob(ctx, fixed.CredentialBlobID, fmt.Sprintf("credential:%d", fixed.CredentialID), "credential", true)
+	secret, err := d.openCredential(ctx, fixed.CredentialID, fixed.CredentialSecret, fixed.CredentialBlobID)
 	if err != nil {
 		return err
 	}
@@ -312,6 +326,9 @@ func (d *AsyncDispatcher) Dispatch(ctx context.Context, item repository.OutboxIt
 		response.ErrorCode = "invalid_provider_response"
 		return d.exchangeFailure(markCtx, item, requestID, response)
 	}
+	// The codec can only map request/result facts. Exchange metadata is known
+	// here, after the provider response has been fully read.
+	observation.Facts = enrichExpressionFacts(observation.Facts, response.DurationMS)
 	if err := d.validateResultSources(markCtx, fixed, observation.Sources); err != nil {
 		response.ErrorCode = "provider_result_host_not_allowed"
 		if finishErr := d.service.FinishRequest(markCtx, requestID, "response_recorded", response); finishErr != nil {
@@ -413,6 +430,19 @@ func (d *AsyncDispatcher) openBlob(ctx context.Context, id uint64, owner, purpos
 		kek, hmac = d.keys.CredentialKEK, d.keys.CredentialHMAC
 	}
 	return repository.OpenBlob(envelope, id, []byte(owner), kek, hmac)
+}
+
+// openCredential prefers the direct operator-managed secret. Legacy
+// credentials have no direct value and continue through the encrypted blob
+// reader, so existing rows remain executable during migration.
+func (d *AsyncDispatcher) openCredential(ctx context.Context, credentialID uint64, direct []byte, blobID uint64) ([]byte, error) {
+	if len(direct) != 0 {
+		return append([]byte(nil), direct...), nil
+	}
+	if blobID == 0 {
+		return nil, repository.ErrNotFound
+	}
+	return d.openBlob(ctx, blobID, fmt.Sprintf("credential:%d", credentialID), "credential", true)
 }
 
 func (d *AsyncDispatcher) payloadBlob(ctx context.Context, body []byte) (repository.BlobInput, error) {

@@ -36,6 +36,16 @@ new_state text NOT NULL, state_version integer NOT NULL, reason_code text NOT NU
 )`).Error; err != nil {
 		t.Fatal(err)
 	}
+	if err := db.Exec(`CREATE TABLE gw_api_calls (
+id integer PRIMARY KEY, user_id integer NOT NULL, token_id integer NOT NULL, xfs_api_key text NOT NULL
+)`).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Exec(`CREATE TABLE gw_api_call_attempts (
+id integer PRIMARY KEY, call_id integer NOT NULL
+)`).Error; err != nil {
+		t.Fatal(err)
+	}
 	uploads := 0
 	service := NewUnifiedAssetService(db)
 	service.now = func() time.Time { return time.Date(2026, 9, 7, 7, 0, 0, 0, time.UTC) }
@@ -230,14 +240,31 @@ func TestUnifiedAssetServicePurgesUnreferencedAssetsForEveryPurpose(t *testing.T
 		removed[value] = true
 		return nil
 	}
+	const storageAPIKey = "xfs_0123456789abcdef0123456789abcdef"
+	if err := db.Exec("INSERT INTO gw_api_calls(id,user_id,token_id,xfs_api_key) VALUES (51,20,21,?)", storageAPIKey).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Exec("INSERT INTO gw_api_call_attempts(id,call_id) VALUES (41,51)").Error; err != nil {
+		t.Fatal(err)
+	}
+	service.removeWithAPIKey = func(_ context.Context, apiKey, value string) error {
+		if apiKey != storageAPIKey {
+			t.Fatalf("storage key=%q want=%q", apiKey, storageAPIKey)
+		}
+		removed[value] = true
+		return nil
+	}
 	expiredAt := service.now().Add(-time.Minute)
 	for index, purpose := range []string{"input", "result", "file"} {
 		state := "active"
+		var attemptID *uint64
 		if purpose == "result" {
 			state = "staging"
+			value := uint64(41)
+			attemptID = &value
 		}
 		asset := model.MediaAsset{
-			UserID: 20, TokenID: 21, Purpose: purpose, ObjectKey: "expired-" + purpose,
+			UserID: 20, TokenID: 21, AttemptID: attemptID, Purpose: purpose, ObjectKey: "expired-" + purpose,
 			StorageLocator: "https://cdn.example.test/expired-" + purpose, ContentType: "image/png",
 			ContentLength: 16, SHA256: "c2c657685f810899d4c3d826d8aba2123121062ebb0ffff937bbb76aaa8a93e8",
 			State: state, StateVersion: uint64(index + 1), RetentionUntil: &expiredAt, CreatedAt: service.now(), UpdatedAt: service.now(),
@@ -257,11 +284,19 @@ func TestUnifiedAssetServicePurgesUnreferencedAssetsForEveryPurpose(t *testing.T
 	}
 }
 
-func TestUnifiedAssetServiceExpiresManagedResultBeforeDeletingObject(t *testing.T) {
+func TestUnifiedAssetServiceExpiresManagedResultAndRetriesWithCallStorageKey(t *testing.T) {
 	service, db, _ := newUnifiedAssetTestService(t)
 	expiredAt := service.now().Add(-time.Minute)
+	const storageAPIKey = "xfs_0123456789abcdef0123456789abcdef"
+	if err := db.Exec("INSERT INTO gw_api_calls(id,user_id,token_id,xfs_api_key) VALUES (51,30,31,?)", storageAPIKey).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Exec("INSERT INTO gw_api_call_attempts(id,call_id) VALUES (41,51)").Error; err != nil {
+		t.Fatal(err)
+	}
+	attemptID := uint64(41)
 	asset := model.MediaAsset{
-		UserID: 30, TokenID: 31, Purpose: "result", ObjectKey: "gateway-result:41:0",
+		UserID: 30, TokenID: 31, AttemptID: &attemptID, Purpose: "result", ObjectKey: "gateway-result:41:0",
 		StorageLocator: "https://cdn.example.test/result.mp4", ContentType: "video/mp4", ContentLength: 16,
 		SHA256: "c2c657685f810899d4c3d826d8aba2123121062ebb0ffff937bbb76aaa8a93e8",
 		State:  "active", StateVersion: 2, RetentionUntil: &expiredAt, CreatedAt: service.now(), UpdatedAt: service.now(),
@@ -281,11 +316,42 @@ func TestUnifiedAssetServiceExpiresManagedResultBeforeDeletingObject(t *testing.
 		t.Fatal(err)
 	}
 	removed := ""
-	service.remove = func(_ context.Context, value string) error { removed = value; return nil }
+	removeAttempts := 0
+	service.remove = func(context.Context, string) error {
+		t.Fatal("managed result cleanup used the global storage key")
+		return nil
+	}
+	service.removeWithAPIKey = func(_ context.Context, apiKey, value string) error {
+		removeAttempts++
+		if apiKey != storageAPIKey {
+			t.Fatalf("storage key=%q want=%q", apiKey, storageAPIKey)
+		}
+		removed = value
+		if removeAttempts == 1 {
+			return errors.New("storage unavailable")
+		}
+		return nil
+	}
 
 	count, err := service.PurgeExpired(context.Background(), 10)
+	if err == nil || count != 0 {
+		t.Fatalf("first cleanup count=%d err=%v", count, err)
+	}
+	var pending model.MediaAsset
+	if err := db.First(&pending, "id=?", asset.ID).Error; err != nil {
+		t.Fatal(err)
+	}
+	var pendingRefs int64
+	if err := db.Model(&model.MediaAssetRef{}).Where("media_asset_id=?", asset.ID).Count(&pendingRefs).Error; err != nil {
+		t.Fatal(err)
+	}
+	if pending.State != "deleting" || pendingRefs != 0 {
+		t.Fatalf("pending=%+v refs=%d", pending, pendingRefs)
+	}
+
+	count, err = service.PurgeExpired(context.Background(), 10)
 	if err != nil || count != 1 {
-		t.Fatalf("count=%d err=%v", count, err)
+		t.Fatalf("retry cleanup count=%d err=%v", count, err)
 	}
 	var delivery resultDeliveryLifecycle
 	if err := db.Table("gw_result_deliveries").Where("id=?", deliveryID).Take(&delivery).Error; err != nil {
@@ -293,8 +359,8 @@ func TestUnifiedAssetServiceExpiresManagedResultBeforeDeletingObject(t *testing.
 	}
 	var refs int64
 	_ = db.Model(&model.MediaAssetRef{}).Where("media_asset_id=?", asset.ID).Count(&refs).Error
-	if removed != asset.StorageLocator || delivery.State != "expired" || delivery.MediaAssetRefID != 0 || delivery.StateVersion != 3 || delivery.ExpiresAt == nil || !delivery.ExpiresAt.Equal(expiredAt) || refs != 0 {
-		t.Fatalf("removed=%q delivery=%+v refs=%d", removed, delivery, refs)
+	if removed != asset.StorageLocator || removeAttempts != 2 || delivery.State != "expired" || delivery.MediaAssetRefID != 0 || delivery.StateVersion != 3 || delivery.ExpiresAt == nil || !delivery.ExpiresAt.Equal(expiredAt) || refs != 0 {
+		t.Fatalf("removed=%q attempts=%d delivery=%+v refs=%d", removed, removeAttempts, delivery, refs)
 	}
 }
 

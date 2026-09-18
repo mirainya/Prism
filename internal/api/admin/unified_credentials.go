@@ -65,14 +65,7 @@ func CreateUnifiedCredential(c *gin.Context) {
 		return
 	}
 	unifiedChannelWrite(c, func(store *repository.Store, tx *sql.Tx, actor uint64) (uint64, error) {
-		kek, e1 := adminGatewayKey("PRISM_GATEWAY_KEK_B64")
-		hmacKey, e2 := adminGatewayKey("PRISM_GATEWAY_HMAC_B64")
-		defer clear(kek)
-		defer clear(hmacKey)
-		if e1 != nil || e2 != nil {
-			return 0, repository.ErrCredentialEncryptionUnavailable
-		}
-		return store.CreateManagedCredential(c.Request.Context(), tx, uint64(id), fields, kek, hmacKey, actor)
+		return store.CreateManagedCredentialPlaintext(c.Request.Context(), tx, uint64(id), fields, actor)
 	})
 }
 

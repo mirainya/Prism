@@ -28,6 +28,7 @@ import (
 	"github.com/mirainya/Prism/internal/video/canonical"
 	"github.com/mirainya/Prism/internal/video/codec/prismv1"
 	perrors "github.com/mirainya/Prism/pkg/errors"
+	"github.com/mirainya/Prism/pkg/logger"
 	"github.com/mirainya/Prism/pkg/safeurl"
 )
 
@@ -145,12 +146,17 @@ func CreateVideoGeneration(c *gin.Context) {
 	}
 
 	status, _, _ := classifyVideoCreateError(err)
+	logger.Error("create video generation: " + err.Error())
+	writeVideoCreateError(c, status, err)
+}
+
+func writeVideoCreateError(c *gin.Context, status int, err error) {
 	switch status {
 	case http.StatusBadRequest:
-		if errors.Is(err, service.ErrInsufficientTokenBalance) || errors.Is(err, service.ErrInsufficientUserBalance) {
+		if errors.Is(err, service.ErrInsufficientTokenBalance) || errors.Is(err, service.ErrInsufficientUserBalance) || errors.Is(err, repository.ErrInsufficient) {
 			resp.BadRequest(c, perrors.ErrInsufficientQuota)
 		} else {
-			resp.BadRequest(c, perrors.WithMessage(perrors.ErrInvalidParams, "invalid video request"))
+			resp.BadRequest(c, perrors.WithMessage(perrors.ErrInvalidParams, err.Error()))
 		}
 	case http.StatusNotFound:
 		resp.ErrorMsg(c, status, 404, "video asset not found")

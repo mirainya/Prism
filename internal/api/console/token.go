@@ -1,7 +1,10 @@
 package console
 
 import (
+	"encoding/json"
 	stdErrors "errors"
+	"io"
+	"net/http"
 
 	"github.com/gin-gonic/gin"
 	"github.com/mirainya/Prism/internal/api/middleware"
@@ -13,6 +16,10 @@ import (
 )
 
 var tokenService = service.NewTokenService()
+
+type tokenFileStorageRequest struct {
+	APIKey string `json:"api_key"`
+}
 
 func ListMyTokens(c *gin.Context) {
 	userID := middleware.GetUserID(c)
@@ -75,6 +82,10 @@ func UpdateToken(c *gin.Context) {
 	}
 
 	if err := tokenService.UpdateToken(userID, id, &req); err != nil {
+		if stdErrors.Is(err, gorm.ErrRecordNotFound) {
+			resp.NotFound(c, errors.WithMessage(errors.ErrTaskNotFound, "token not found"))
+			return
+		}
 		resp.InternalError(c, errors.ErrInternalError)
 		return
 	}
@@ -99,6 +110,69 @@ func DeleteToken(c *gin.Context) {
 	}
 
 	resp.Success(c, gin.H{"deleted": true})
+}
+
+func BindTokenFileStorage(c *gin.Context) {
+	userID := middleware.GetUserID(c)
+	id, err := resp.ParseUintParam(c, "id")
+	if err != nil {
+		return
+	}
+
+	req, ok := decodeTokenFileStorageBody(c)
+	if !ok {
+		return
+	}
+	result, err := tokenService.BindFileStorage(c.Request.Context(), userID, id, req.APIKey)
+	if err != nil {
+		switch {
+		case stdErrors.Is(err, service.ErrInvalidFileStorageAPIKey):
+			resp.BadRequest(c, errors.WithMessage(errors.ErrInvalidParams, err.Error()))
+		case stdErrors.Is(err, service.ErrFileStorageProbeFailed):
+			resp.ErrorMsg(c, http.StatusBadGateway, errors.ErrUploadFailed.Code, "file storage verification failed")
+		case stdErrors.Is(err, gorm.ErrRecordNotFound):
+			resp.NotFound(c, errors.WithMessage(errors.ErrTaskNotFound, "token not found"))
+		default:
+			resp.InternalError(c, errors.ErrInternalError)
+		}
+		return
+	}
+	resp.Success(c, result)
+}
+
+func UnbindTokenFileStorage(c *gin.Context) {
+	userID := middleware.GetUserID(c)
+	id, err := resp.ParseUintParam(c, "id")
+	if err != nil {
+		return
+	}
+
+	result, err := tokenService.UnbindFileStorage(c.Request.Context(), userID, id)
+	if err != nil {
+		if stdErrors.Is(err, gorm.ErrRecordNotFound) {
+			resp.NotFound(c, errors.WithMessage(errors.ErrTaskNotFound, "token not found"))
+			return
+		}
+		resp.InternalError(c, errors.ErrInternalError)
+		return
+	}
+	resp.Success(c, result)
+}
+
+func decodeTokenFileStorageBody(c *gin.Context) (*tokenFileStorageRequest, bool) {
+	c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, 1024)
+	decoder := json.NewDecoder(c.Request.Body)
+	decoder.DisallowUnknownFields()
+	var req *tokenFileStorageRequest
+	if err := decoder.Decode(&req); err != nil || req == nil {
+		resp.BadRequest(c, errors.WithMessage(errors.ErrInvalidParams, "invalid request body"))
+		return nil, false
+	}
+	if err := decoder.Decode(new(any)); err != io.EOF {
+		resp.BadRequest(c, errors.WithMessage(errors.ErrInvalidParams, "invalid request body"))
+		return nil, false
+	}
+	return req, true
 }
 
 type RechargeTokenRequest struct {

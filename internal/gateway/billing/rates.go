@@ -37,17 +37,35 @@ const (
 
 // A component prices 10^UnitScale units. QuantityStep zero preserves the exact
 // measured quantity; a positive step rounds the quantity up before pricing.
+//
+// PricingMode "expression" replaces the unit_price × quantity multiplication
+// with Expr. Everything else about the component is unchanged: charge_event
+// still decides when the charge fires, quantity_source still decides what is
+// measured, and max_quantity is still the contractual reservation bound.
 type RateComponent struct {
-	ID           uint64         `json:"id"`
-	Code         string         `json:"component_code"`
-	Unit         string         `json:"unit_code"`
-	Source       QuantitySource `json:"quantity_source"`
-	Event        ChargeEvent    `json:"charge_event"`
-	UnitPrice    string         `json:"unit_price"`
-	UnitScale    int32          `json:"unit_scale"`
-	QuantityStep string         `json:"quantity_step"`
-	MaxQuantity  string         `json:"max_quantity"`
+	ID           uint64                `json:"id"`
+	Code         string                `json:"component_code"`
+	Unit         string                `json:"unit_code"`
+	Source       QuantitySource        `json:"quantity_source"`
+	Event        ChargeEvent           `json:"charge_event"`
+	UnitPrice    string                `json:"unit_price"`
+	PricingMode  string                `json:"pricing_mode"`
+	Expr         *Expression           `json:"-"`
+	ExprTiers    map[string][]ExprTier `json:"-"`
+	MaxPrice     string                `json:"max_price"`
+	UnitScale    int32                 `json:"unit_scale"`
+	QuantityStep string                `json:"quantity_step"`
+	MaxQuantity  string                `json:"max_quantity"`
 }
+
+const (
+	PricingModeFlat       = "flat"
+	PricingModeExpression = "expression"
+)
+
+// expression reports whether the component prices through an expression. An
+// empty mode is flat so existing rows and existing callers keep working.
+func (r RateComponent) expression() bool { return r.PricingMode == PricingModeExpression }
 
 type Currency struct {
 	Code           string `json:"code"`
@@ -64,9 +82,13 @@ type RateSchedule struct {
 
 // Missing events are unknown, not false. This distinction prevents a missing
 // provider response or delivery event from silently turning into a free call.
+//
+// Expr carries the adapter-supplied variables for expression components. It is
+// unused by flat components, so an existing caller needs no change.
 type Facts struct {
 	Events     map[ChargeEvent]bool
 	Quantities map[QuantitySource]string
+	Expr       ExprEnv
 }
 
 type ChargeLine struct {
@@ -98,6 +120,26 @@ func (c Currency) Validate() error {
 
 func (r RateComponent) Validate() error {
 	if !componentCode.MatchString(r.Code) || r.UnitScale < 0 || r.UnitScale > 12 {
+		return ErrInvalidRate
+	}
+	// The database pairs pricing_mode with pricing_expr; re-check it here so a
+	// component assembled in Go cannot bypass that pairing.
+	switch r.PricingMode {
+	case "", PricingModeFlat:
+		if r.Expr != nil {
+			return ErrInvalidRate
+		}
+	case PricingModeExpression:
+		// A provable upper bound is mandatory: Reserve() must produce a
+		// pre-authorization amount before the call runs.
+		if r.Expr == nil {
+			return ErrInvalidRate
+		}
+		bound, err := ParseAmount(r.MaxPrice, 18, true)
+		if err != nil || bound.value.GreaterThan(maxSQLDecimal) {
+			return ErrInvalidRate
+		}
+	default:
 		return ErrInvalidRate
 	}
 	if err := validateUnitSource(r.Unit, r.Source); err != nil {
@@ -234,6 +276,33 @@ func (s RateSchedule) calculate(f Facts, reserve bool) (Charge, error) {
 			q = Amount{value: whole.Mul(step.value)}
 		}
 		line := Amount{value: q.value.Mul(price.value).Shift(-r.UnitScale)}
+		if r.expression() {
+			// Reservation uses the bound proven at publication; a live charge
+			// evaluates the expression. Quantity rounding, the bound check and
+			// the quantization below stay exactly as they are for flat rates.
+			if reserve {
+				line, _ = ParseAmount(r.MaxPrice, 18, true)
+			} else {
+				env := f.Expr
+				if len(r.ExprTiers) > 0 {
+					env.Tiers = r.ExprTiers
+				}
+				line, err = r.Expr.Evaluate(env)
+				if err != nil {
+					return Charge{}, err
+				}
+				priceBound, boundErr := ParseAmount(r.MaxPrice, 18, true)
+				if boundErr != nil {
+					return Charge{}, boundErr
+				}
+				// A live amount above the proven bound means the proof and the
+				// expression disagree; charging it would break the
+				// pre-authorization guarantee.
+				if line.Cmp(priceBound) > 0 {
+					return Charge{}, ErrAmountOverflow
+				}
+			}
+		}
 		charge.Amount = charge.Amount.Add(line)
 		charge.Lines = append(charge.Lines, ChargeLine{RateID: r.ID, ComponentCode: r.Code,
 			Quantity: q.String(), Amount: line.String(), ExceededBound: measured.Cmp(bound) > 0})

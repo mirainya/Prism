@@ -252,7 +252,10 @@ func (s *Store) RecordEstimatedUpstreamCostEvents(ctx context.Context, tx *sql.T
 	}
 	var releaseID, costPlanID uint64
 	var state execution.AttemptState
-	if err := tx.QueryRowContext(ctx, s.forUpdate(`SELECT catalog_release_id,cost_plan_id,state FROM gw_api_call_attempts WHERE id=?`), attemptID).Scan(&releaseID, &costPlanID, &state); err == sql.ErrNoRows {
+	var hasRates bool
+	if err := tx.QueryRowContext(ctx, s.forUpdate(`SELECT a.catalog_release_id,a.cost_plan_id,a.state,EXISTS(
+SELECT 1 FROM gw_cost_rates r WHERE r.release_id=a.catalog_release_id AND r.cost_plan_id=a.cost_plan_id
+) FROM gw_api_call_attempts a WHERE a.id=?`), attemptID).Scan(&releaseID, &costPlanID, &state, &hasRates); err == sql.ErrNoRows {
 		return ErrNotFound
 	} else if err != nil {
 		return err
@@ -276,6 +279,13 @@ func (s *Store) RecordEstimatedUpstreamCostEvents(ctx context.Context, tx *sql.T
 		return ErrConflict
 	}
 	if !anyKnownCostEvent(events) {
+		return nil
+	}
+	// A cost plan is always fixed on the Attempt, but its rates are optional.
+	// Absence means the upstream cost is unknown, so no zero-valued evidence or
+	// event is manufactured. Configured schedules still take the strict path
+	// below and fail when any rate is invalid.
+	if !hasRates {
 		return nil
 	}
 	facts.Events = events

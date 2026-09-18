@@ -45,7 +45,7 @@ func prepareResponseIdempotency(ctx context.Context, tokenID uint, key string, i
 	if err := db.QueryRowContext(ctx, `SELECT k.current_version FROM crypto_keyring_state k JOIN crypto_key_versions v ON v.keyring_id=k.id AND v.key_version=k.current_version AND v.status='current' WHERE k.purpose='gateway-payload'`).Scan(&keyVersion); err != nil {
 		return nil, err
 	}
-	keys, err := loadBackgroundKeys()
+	keys, err := loadPayloadKeys()
 	if err != nil {
 		return nil, err
 	}

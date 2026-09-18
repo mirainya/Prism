@@ -37,9 +37,9 @@ d.encrypted_payload_blob_id,d.payload_hmac,d.attempt_count,d.max_attempts,d.repl
 FROM gw_callback_deliveries d
 JOIN gw_callback_targets t ON t.id=d.callback_target_id AND t.call_id=d.call_id
 JOIN gw_api_calls c ON c.id=d.call_id
-WHERE d.replay_expires_at>UTC_TIMESTAMP(3) AND d.attempt_count<d.max_attempts AND
- ((d.state IN ('pending','failed') AND d.available_at<=UTC_TIMESTAMP(3)) OR
-  (d.state='sending' AND d.lease_expires_at<=UTC_TIMESTAMP(3)))
+WHERE d.replay_expires_at>CURRENT_TIMESTAMP(3) AND d.attempt_count<d.max_attempts AND
+ ((d.state IN ('pending','failed') AND d.available_at<=CURRENT_TIMESTAMP(3)) OR
+  (d.state='sending' AND d.lease_expires_at<=CURRENT_TIMESTAMP(3)))
 ORDER BY d.available_at,d.id LIMIT 1 FOR UPDATE SKIP LOCKED`).Scan(
 		&out.ID, &out.CallID, &out.TargetID, &out.EventSeq,
 		&out.TargetBlobID, &out.TargetHMAC, &out.Algorithm, &out.PolicyVersion,
@@ -132,7 +132,7 @@ func (s *Store) CompleteCallbackDelivery(ctx context.Context, tx *sql.Tx, claim 
 	return requireOneRow(tx.ExecContext(ctx, `UPDATE gw_callback_deliveries
 SET state=?,state_version=state_version+1,available_at=?,lease_owner='',lease_expires_at=NULL,
  last_error_code=?,completed_at=?,updated_at=?
-WHERE id=? AND state='sending' AND lease_owner=? AND attempt_count=? AND lease_expires_at>UTC_TIMESTAMP(3)`,
+WHERE id=? AND state='sending' AND lease_owner=? AND attempt_count=? AND lease_expires_at>CURRENT_TIMESTAMP(3)`,
 		state, availableAt, in.ErrorCode, completedAt, now, claim.ID, claim.LeaseOwner, claim.AttemptNo))
 }
 

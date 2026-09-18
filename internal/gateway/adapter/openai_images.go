@@ -137,6 +137,11 @@ func (OpenAIImages) DecodeObservation(body []byte, streaming bool, outputFormat 
 	if observation.Usage.OutputTokens != nil {
 		facts.Quantities[billing.QuantityOutputTokens] = strconv.FormatInt(*observation.Usage.OutputTokens, 10)
 	}
+	expr, err := imageBillingFacts(observation)
+	if err != nil {
+		return runtime.AsyncObservation{}, err
+	}
+	facts.Expr = expr
 	return runtime.AsyncObservation{State: execution.AsyncSucceeded, Result: result, Sources: sources, Facts: facts}, nil
 }
 

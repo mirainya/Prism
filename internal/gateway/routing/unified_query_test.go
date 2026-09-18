@@ -7,7 +7,11 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/DATA-DOG/go-sqlmock"
 	_ "github.com/glebarez/go-sqlite"
+	"github.com/mirainya/Prism/internal/model"
+	"gorm.io/driver/mysql"
+	"gorm.io/gorm"
 )
 
 func TestUnifiedCandidateQueryUsesNormalizedSchema(t *testing.T) {
@@ -23,9 +27,10 @@ func TestUnifiedCandidateQueryUsesNormalizedSchema(t *testing.T) {
 		`gw_catalog_model_names(release_id INTEGER, catalog_model_id INTEGER, model_name_id INTEGER)`,
 		`gw_model_names(id INTEGER, model_id INTEGER, api_name TEXT)`,
 		`gw_model_operations(id INTEGER, release_id INTEGER, catalog_model_id INTEGER, operation_contract_id INTEGER)`,
-		`gw_operation_contracts(id INTEGER, status TEXT)`,
+		`gw_operation_contracts(id INTEGER, operation_code TEXT, status TEXT)`,
 		`gw_operation_routes(operation_contract_id INTEGER, http_method TEXT, route_template TEXT)`,
 		`gw_skus(id INTEGER, release_id INTEGER, model_operation_id INTEGER, delivery_mode TEXT)`,
+		`gw_sku_downstream_paths(release_id INTEGER, sku_id INTEGER, path TEXT)`,
 		`gw_routes(id INTEGER, release_id INTEGER, sku_id INTEGER, offering_id INTEGER, priority INTEGER, weight INTEGER)`,
 		`gw_offerings(id INTEGER, release_id INTEGER, product_transport_id INTEGER, credential_pool_id INTEGER, cost_plan_code TEXT, entitlement_fingerprint TEXT, commercial_fingerprint TEXT)`,
 		`gw_cost_plans(id INTEGER, release_id INTEGER, offering_id INTEGER, plan_code TEXT)`,
@@ -35,7 +40,7 @@ func TestUnifiedCandidateQueryUsesNormalizedSchema(t *testing.T) {
 		`gateway_channels(id INTEGER, status TEXT)`,
 		`gw_offering_runtime_state(release_id INTEGER, offering_id INTEGER, state TEXT)`,
 		`gw_credential_pools(id INTEGER, channel_id INTEGER, status TEXT)`,
-		`gw_credentials(id INTEGER, channel_id INTEGER, credential_pool_id INTEGER, status TEXT, secret_identity_id INTEGER, current_version_id INTEGER, weight INTEGER)`,
+		`gw_credentials(id INTEGER, channel_id INTEGER, credential_pool_id INTEGER, status TEXT, secret_identity_id INTEGER, current_version_id INTEGER, weight INTEGER, secret TEXT)`,
 		`gw_credential_secret_identities(id INTEGER, channel_id INTEGER, status TEXT)`,
 		`gw_credential_purpose_grants(id INTEGER, credential_id INTEGER, purpose TEXT, status TEXT)`,
 		`gw_credential_versions(id INTEGER, credential_id INTEGER, status TEXT, valid_until TEXT, encrypted_blob_id INTEGER)`,
@@ -60,9 +65,12 @@ func TestUnifiedCandidateQueryUsesNormalizedSchema(t *testing.T) {
 		`gw_catalog_model_names VALUES (1,1,1)`,
 		`gw_model_names VALUES (1,1,'fixture-model')`,
 		`gw_model_operations VALUES (1,1,1,1)`,
-		`gw_operation_contracts VALUES (1,'active')`,
+		`gw_operation_contracts VALUES (1,'chat.completions','active')`,
+		`gw_operation_contracts VALUES (2,'responses.create','active')`,
 		`gw_operation_routes VALUES (1,'POST','/v1/chat/completions')`,
+		`gw_operation_routes VALUES (2,'POST','/v1/responses')`,
 		`gw_skus VALUES (1,1,1,'reference')`,
+		`gw_sku_downstream_paths VALUES (1,1,'/v1/chat/completions')`,
 		`gw_routes VALUES (1,1,1,1,1,1)`,
 		`gw_offerings VALUES (1,1,1,1,'provider-default','entitlement','commercial')`,
 		`gw_cost_plans VALUES (1,1,1,'provider-default')`,
@@ -72,7 +80,7 @@ func TestUnifiedCandidateQueryUsesNormalizedSchema(t *testing.T) {
 		`gateway_channels VALUES (1,'active')`,
 		`gw_offering_runtime_state VALUES (1,1,'active')`,
 		`gw_credential_pools VALUES (1,1,'active')`,
-		`gw_credentials VALUES (1,1,1,'active',1,1,1)`,
+		`gw_credentials VALUES (1,1,1,'active',1,1,1,NULL)`,
 		`gw_credential_secret_identities VALUES (1,1,'active')`,
 		`gw_credential_purpose_grants VALUES (1,1,'execution','active')`,
 		`gw_credential_versions VALUES (1,1,'active',NULL,1)`,
@@ -101,33 +109,62 @@ func TestUnifiedCandidateQueryUsesNormalizedSchema(t *testing.T) {
 		if _, err := resolveUnifiedSKU(context.Background(), db, 1, "fixture-model", options); !errors.Is(err, ErrNoRoute) {
 			t.Fatalf("another API operation must not reuse chat pricing: %v", err)
 		}
+		if _, err := db.Exec(`INSERT INTO gw_sku_downstream_paths VALUES (1,1,'/v1/responses')`); err != nil {
+			t.Fatal(err)
+		}
+		if id, err := resolveUnifiedSKU(context.Background(), db, 1, "fixture-model", options); err != nil || id != 1 {
+			t.Fatalf("declared downstream alias SKU=%d error=%v", id, err)
+		}
+		if id, contractID, err := resolveUnifiedOperation(context.Background(), db, 1, "fixture-model", options); err != nil || id != 1 || contractID != 2 {
+			t.Fatalf("declared downstream operation SKU=%d contract=%d error=%v", id, contractID, err)
+		}
+		if _, err := db.Exec(`INSERT INTO gw_model_operations VALUES (2,1,1,2)`); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := db.Exec(`INSERT INTO gw_skus VALUES (2,1,2,'reference')`); err != nil {
+			t.Fatal(err)
+		}
+		for _, statement := range []string{
+			`INSERT INTO gw_sku_downstream_paths VALUES (1,1,'/v1/chat/completions')`,
+			`INSERT INTO gw_sku_downstream_paths VALUES (1,2,'/v1/chat/completions')`,
+			`INSERT INTO gw_sku_downstream_paths VALUES (1,2,'/v1/responses')`,
+		} {
+			if _, err := db.Exec(statement); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if id, err := resolveUnifiedSKU(context.Background(), db, 1, "fixture-model", options); err != nil || id != 2 {
+			t.Fatalf("native responses SKU=%d error=%v", id, err)
+		}
 		options.OperationPath = "/v1/chat/completions"
-		if _, err := db.Exec(`INSERT INTO gw_skus VALUES (2,1,1,'reference')`); err != nil {
+		if id, err := resolveUnifiedSKU(context.Background(), db, 1, "fixture-model", options); err != nil || id != 1 {
+			t.Fatalf("native chat SKU=%d error=%v", id, err)
+		}
+		if _, err := db.Exec(`INSERT INTO gw_skus VALUES (3,1,1,'reference')`); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := db.Exec(`INSERT INTO gw_sku_downstream_paths VALUES (1,3,'/v1/chat/completions')`); err != nil {
 			t.Fatal(err)
 		}
 		if _, err := resolveUnifiedSKU(context.Background(), db, 1, "fixture-model", options); !errors.Is(err, ErrAmbiguousSKU) {
-			t.Fatalf("routing must not randomly choose the user's price: %v", err)
+			t.Fatalf("routing must not choose between duplicate native SKUs: %v", err)
 		}
 	})
-	query := strings.ReplaceAll(unifiedCandidatesSQL, "UTC_TIMESTAMP(3)", "'2099-01-01 00:00:00'")
+	query := strings.ReplaceAll(unifiedCandidatesSQL, "CURRENT_TIMESTAMP(3)", "'2099-01-01 00:00:00'")
+	query = strings.ReplaceAll(query, " COLLATE utf8mb4_unicode_ci", "")
 	for _, test := range []struct {
 		name, change string
 		found        bool
 	}{
 		{"active", "", true},
-		{"entitlement_drift", `UPDATE gw_credential_entitlement_state SET state='drift'`, false},
-		{"entitlement_valid", `UPDATE gw_credential_entitlement_state SET state='valid'`, true},
-		{"entitlement_expired", `UPDATE gw_credential_validation_events SET valid_until='2098-01-01 00:00:00'`, false},
-		{"entitlement_unexpired", `UPDATE gw_credential_validation_events SET valid_until='2100-01-01 00:00:00'`, true},
-		{"commercial_drift", `UPDATE gw_commercial_state SET state='drift'`, false},
-		{"commercial_valid", `UPDATE gw_commercial_state SET state='valid'`, true},
-		{"commercial_expired", `UPDATE gw_commercial_validation_events SET valid_until='2098-01-01 00:00:00'`, false},
-		{"commercial_unexpired", `UPDATE gw_commercial_validation_events SET valid_until='2100-01-01 00:00:00'`, true},
+		{"legacy_validations_absent", `DELETE FROM gw_credential_validation_events; DELETE FROM gw_credential_entitlement_state; DELETE FROM gw_commercial_validation_events; DELETE FROM gw_commercial_state`, true},
 		{"draining_pool", `UPDATE gw_credential_pools SET status='draining'`, false},
 		{"active_pool", `UPDATE gw_credential_pools SET status='active'`, true},
 		{"expired_credential", `UPDATE gw_credential_versions SET valid_until='2098-01-01 00:00:00'`, false},
 		{"unexpired_credential", `UPDATE gw_credential_versions SET valid_until='2100-01-01 00:00:00'`, true},
 		{"revoked_key", `UPDATE crypto_key_versions SET status='security_revoked'`, false},
+		{"plaintext_key_bypasses_legacy_keyring", `UPDATE gw_credentials SET secret='replacement-key'`, true},
+		{"legacy_key_still_requires_keyring", `UPDATE gw_credentials SET secret=NULL`, false},
 		// Cross-request circuit breaker (gw_route_states):
 		// key_id = unifiedKeyStateMask | credential.id, so credential 1 becomes 2^31 | 1.
 		{"revive_after_circuit_breaker_reset", `UPDATE crypto_key_versions SET status='current'`, true},
@@ -171,5 +208,68 @@ func TestUnifiedCandidateQueryUsesNormalizedSchema(t *testing.T) {
 				t.Fatal(err)
 			}
 		})
+	}
+}
+
+func TestUnifiedCandidateSQLNormalizesRouteStateCollations(t *testing.T) {
+	for _, comparison := range []string{
+		"rs.model_name COLLATE utf8mb4_unicode_ci=mn.api_name COLLATE utf8mb4_unicode_ci",
+		"rs.transport COLLATE utf8mb4_unicode_ci=ct.transport_code COLLATE utf8mb4_unicode_ci",
+	} {
+		if !strings.Contains(unifiedCandidatesSQL, comparison) {
+			t.Fatalf("candidate SQL is missing collation-safe comparison %q", comparison)
+		}
+	}
+}
+
+func TestResolveUnifiedCredentialSecretPrefersPlaintext(t *testing.T) {
+	db, err := sql.Open("sqlite", ":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	if _, err := db.Exec(`CREATE TABLE gw_credentials(id INTEGER PRIMARY KEY, secret TEXT)`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`INSERT INTO gw_credentials VALUES (7,'replacement-key')`); err != nil {
+		t.Fatal(err)
+	}
+	secret, err := resolveUnifiedCredentialSecret(context.Background(), db, unifiedCandidate{CredentialID: 7, BlobID: 99})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if secret != "replacement-key" {
+		t.Fatalf("secret=%q", secret)
+	}
+}
+
+func TestUnifiedSelectTransportDoesNotRequireDeploymentGeneration(t *testing.T) {
+	sqlDB, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer sqlDB.Close()
+	db, err := gorm.Open(mysql.New(mysql.Config{Conn: sqlDB, SkipInitializeWithVersion: true}), &gorm.Config{DisableAutomaticPing: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var previous *gorm.DB
+	if model.HasDB() {
+		previous = model.DB()
+	}
+	model.SetDB(db)
+	t.Cleanup(func() { model.SetDB(previous) })
+
+	mock.ExpectQuery("SELECT active_release_id FROM gw_catalog_runtime_state").
+		WillReturnRows(sqlmock.NewRows([]string{"active_release_id"}).AddRow(int64(7)))
+	mock.ExpectQuery("(?s)SELECT COUNT\\(\\*\\).*gw_catalog_releases").
+		WithArgs(int64(7), "missing-model").
+		WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(0))
+	_, err = (&unifiedSelector{}).selectTransport(context.Background(), "missing-model", nil, RouteOptions{})
+	if !errors.Is(err, ErrModelNotFound) {
+		t.Fatalf("error=%v, want ErrModelNotFound", err)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatal(err)
 	}
 }

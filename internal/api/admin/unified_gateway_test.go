@@ -59,6 +59,9 @@ func TestUnifiedGatewayOverviewReportsLegacyAndTargetCounts(t *testing.T) {
 	if got := w.Body.String(); !strings.Contains(got, `"state":"migration_pending"`) || !strings.Contains(got, `"ready_for_cutover":false`) || !strings.Contains(got, `"channels":2`) || !strings.Contains(got, `"abilities":1`) || !strings.Contains(got, `"sell_rates_missing"`) {
 		t.Fatalf("unexpected response=%s", got)
 	}
+	if strings.Contains(w.Body.String(), `deployment_inactive`) {
+		t.Fatalf("deployment generation must not block runtime: %s", w.Body.String())
+	}
 	if err := db.Exec("INSERT INTO gw_deployment_generations VALUES (3,'active',1),(8,'preparing',2)").Error; err != nil {
 		t.Fatal(err)
 	}

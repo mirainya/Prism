@@ -12,8 +12,8 @@ func TestLoadIncludesImmutableBaseline(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(migrations) != 91 {
-		t.Fatalf("managed migrations=%d, want 91", len(migrations))
+	if len(migrations) != 101 {
+		t.Fatalf("managed migrations=%d, want 101", len(migrations))
 	}
 	baseline := migrations[0]
 	if baseline.Filename != "20260718_150000_schema_baseline.sql" {
@@ -480,6 +480,13 @@ func TestLoadIncludesImmutableBaseline(t *testing.T) {
 		{87, "20260908_160000_gateway_active_deployment_pointer.sql", "1e4439b8caf97efedf3de3b54b0beceb0b90934affa5f3475ceb17760c367f5e"},
 		{88, "20260909_090000_gateway_callback_lifecycle.sql", "37e75752858666ed4f6d1b4d65d81620be1db9c3a669ecae2ea446632fdbd66b"},
 		{89, "20260909_100000_repair_legacy_cost_plans.sql", "9acf66dacd11c4fb5f576e113ebc4654700729173d3268eae179499de95152a0"},
+		{91, "20260910_120000_gateway_pricing_expressions.sql", "1c9d380f575972028dd7c9a66b27a38a1e3b16ec4ddec041ca43d8e915d8b403"},
+		{92, "20260910_130000_gateway_model_meta_config_version.sql", "71e2d17a81e20aca74e75f89a5ce69136a732066e044d3dbdf837dbc9598f471"},
+		{93, "20260912_090000_backfill_gateway_sku_downstream_paths.sql", "f81f661bad44fa16b9a17ca4e59c584fdd1850e65b46abe81e62fbbab74d5fcb"},
+		{94, "20260914_100000_gateway_upstream_availability.sql", "82a8381544e66f2028cc4492b915d89ff6e26bc652f9eac8f4ae91d59895b6bf"},
+		{95, "20260915_100000_gateway_plaintext_credentials.sql", "ffc8c53f11958eb271e15c78d4aab10b1098a0e44bb2766fd75030c8f4e355fd"},
+		{99, "20260917_143154_backfill_llm_downstream_protocols.sql", "3c9b5f704e92ff3f16aa8e6ea2ae816754fa339bee9ad58a748e9396b55df405"},
+		{100, "20260917_160000_token_xfs_api_key.sql", "e3ea20b7a8462a2a0a9336b90aafb5c99fe7b266a2f5a70af459948165c03acb"},
 	}
 	for _, migration := range newMigrations {
 		if migrations[migration.index].Filename != migration.filename || migrations[migration.index].Checksum != migration.checksum {
@@ -682,7 +689,40 @@ func TestUnifiedGatewayMigrationsContainOnlyTypedTargetFacts(t *testing.T) {
 			t.Errorf("unified migrations are missing target table %s", table)
 		}
 	}
-	for _, forbidden := range []string{"`api_key`", "`request_body`", "`response_body`", "`provider_response`", "`callback_url`"} {
+	// The token keeps the current setting, while each call fixes the key used by
+	// that task. Keep both plaintext exceptions exact so no unrelated plaintext
+	// credential field can enter the unified schema.
+	const tokenStoragePlaintextKey = "`xfs_api_key` varchar(512) NOT NULL DEFAULT ''"
+	if count := strings.Count(sql, tokenStoragePlaintextKey); count != 2 {
+		t.Fatalf("token and call storage plaintext key declarations=%d, want 2", count)
+	}
+	var xfsMigrationSQL string
+	for _, migration := range migrations {
+		if migration.Version == "20260917_160000" {
+			xfsMigrationSQL = migration.SQL
+			break
+		}
+	}
+	if xfsMigrationSQL == "" {
+		t.Fatal("token XFileStorage key migration is missing")
+	}
+	for _, table := range []string{"tokens", "gw_api_calls"} {
+		prefix := "ALTER TABLE `" + table + "`"
+		start := strings.Index(xfsMigrationSQL, prefix)
+		if start < 0 {
+			t.Errorf("XFileStorage key migration does not alter %s", table)
+			continue
+		}
+		statement := xfsMigrationSQL[start:]
+		if end := strings.Index(statement, ";"); end >= 0 {
+			statement = statement[:end]
+		}
+		if !strings.Contains(statement, tokenStoragePlaintextKey) {
+			t.Errorf("XFileStorage key migration does not add the typed key to %s", table)
+		}
+	}
+	sql = strings.ReplaceAll(sql, tokenStoragePlaintextKey, "`storage_credential` varchar(512) NOT NULL")
+	for _, forbidden := range []string{"`xfs_api_key`", "`api_key`", "`request_body`", "`response_body`", "`provider_response`", "`callback_url`"} {
 		if strings.Contains(sql, forbidden) {
 			t.Errorf("unified migration contains forbidden plaintext field %s", forbidden)
 		}

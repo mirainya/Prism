@@ -442,7 +442,7 @@ func ReviewUnifiedCatalogPriceCandidate(c *gin.Context) {
 		return
 	}
 	if strings.EqualFold(strings.TrimSpace(in.Decision), "confirmed") {
-		in.HMACKey, err = adminGatewayKey("PRISM_GATEWAY_HMAC_B64")
+		in.HMACKey, err = adminGatewayKey("PRISM_GATEWAY_PAYLOAD_HMAC_B64")
 		if err != nil {
 			unifiedChannelError(c, repository.ErrCredentialEncryptionUnavailable)
 			return

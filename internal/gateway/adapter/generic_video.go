@@ -21,6 +21,24 @@ func ValidateGenericVideoCatalog(baseURL, method, path, vendorModel string, conf
 	return generic.ValidateRuntimeCatalog(baseURL, method, path, vendorModel, config)
 }
 
+// ValidateCatalogProduct applies the same adapter-specific checks to edits as
+// product creation. Generic mappings are executable configuration, so merely
+// accepting syntactically valid JSON would defer a broken mapping to runtime.
+func ValidateCatalogProduct(code string, version uint32, baseURL, method, path, vendorModel string, config []byte) error {
+	descriptor, ok := DescriptorFor(strings.ToLower(strings.TrimSpace(code)), version)
+	if !ok {
+		return repository.ErrInvalidInput
+	}
+	switch descriptor.Code {
+	case "generic":
+		return ValidateGenericVideoCatalog(baseURL, method, path, vendorModel, config)
+	case "seedance":
+		return ValidateSeedanceVideoCatalog(method, path)
+	default:
+		return nil
+	}
+}
+
 // GenericVideo executes the signed json_task_v1 declaration stored with a
 // catalog product. It is a codec only; AsyncDispatcher remains the sole HTTP
 // sender and credential injector.
@@ -126,6 +144,7 @@ func (GenericVideo) DecodeWithDispatch(action string, fixed repository.AsyncDisp
 	if err := json.Unmarshal(request, &input); err != nil {
 		return runtime.AsyncObservation{}, err
 	}
+	var generatedSeconds string
 	if input.Duration > 0 {
 		out.Facts.Quantities[billing.QuantityRequestedSeconds] = strconv.Itoa(input.Duration)
 	}
@@ -137,10 +156,16 @@ func (GenericVideo) DecodeWithDispatch(action string, fixed repository.AsyncDisp
 				return runtime.AsyncObservation{}, err
 			}
 			result.Duration = amount.String()
+			generatedSeconds = result.Duration
 			out.Facts.Quantities[billing.QuantityGeneratedSeconds] = result.Duration
 		}
 		out.Result, err = json.Marshal(result)
 	}
+	env, envErr := videoBillingFacts(input, generatedSeconds, out.State == execution.AsyncSucceeded)
+	if envErr != nil {
+		return runtime.AsyncObservation{}, envErr
+	}
+	out.Facts.Expr = env
 	return out, err
 }
 

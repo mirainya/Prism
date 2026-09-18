@@ -54,10 +54,8 @@ func NewCapabilityDispatcher(service *Service, client *http.Client, keys AsyncKe
 	if service == nil || service.Store == nil {
 		return nil, repository.ErrInvalidInput
 	}
-	for _, key := range [][]byte{keys.CredentialKEK, keys.CredentialHMAC, keys.PayloadKEK, keys.PayloadHMAC} {
-		if len(key) != security.KeySize {
-			return nil, repository.ErrInvalidInput
-		}
+	if err := validateAsyncKeys(keys); err != nil {
+		return nil, err
 	}
 	var configured http.Client
 	if client != nil {
@@ -105,14 +103,14 @@ func (d *CapabilityDispatcher) Dispatch(ctx context.Context, in CapabilityDispat
 	asyncFixed := repository.AsyncDispatch{
 		AdapterCode: fixed.AdapterCode, AdapterVersion: fixed.AdapterVersion,
 		CallID: fixed.CallID, AttemptID: fixed.AttemptID, CredentialID: fixed.CredentialID,
-		CredentialBlobID: fixed.CredentialBlobID, RequestBlobID: fixed.RequestBlobID,
+		CredentialBlobID: fixed.CredentialBlobID, CredentialSecret: append([]byte(nil), fixed.CredentialSecret...), RequestBlobID: fixed.RequestBlobID,
 		ChannelTransportID: fixed.ChannelTransportID, ReleaseID: fixed.ReleaseID,
 		PublicID: fixed.PublicID, Protocol: fixed.Protocol, BaseURL: fixed.BaseURL,
 		Method: fixed.Method, Path: fixed.Path, AuthScheme: fixed.AuthScheme,
 		VendorModel: fixed.VendorModel, DeliveryMode: fixed.DeliveryMode,
 		SourceURLPolicy: fixed.SourceURLPolicy, TimeoutMS: uint64(fixed.TimeoutMS),
 	}
-	secret, err := d.network.openBlob(ctx, fixed.CredentialBlobID, fmt.Sprintf("credential:%d", fixed.CredentialID), "credential", true)
+	secret, err := d.network.openCredential(ctx, fixed.CredentialID, fixed.CredentialSecret, fixed.CredentialBlobID)
 	if err != nil {
 		return d.rejectBeforeDispatch(ctx, in.AttemptID, "credential_unavailable", err)
 	}
@@ -166,6 +164,9 @@ func (d *CapabilityDispatcher) Dispatch(ctx context.Context, in CapabilityDispat
 		return d.failAfterAuthorization(ctx, in.AttemptID, requestID, exchange, false,
 			&ProviderCapabilityError{HTTPStatus: http.StatusBadGateway, Code: "invalid_provider_response"})
 	}
+	// Adapter decoders do not know the exchange duration. Add it only for a
+	// variable already declared by the published adapter manifest.
+	observation.Facts = enrichExpressionFacts(observation.Facts, exchange.DurationMS)
 	if err := d.network.validateResultSources(ctx, asyncFixed, observation.Sources); err != nil {
 		return d.failAfterAuthorization(ctx, in.AttemptID, requestID, exchange, false, err)
 	}

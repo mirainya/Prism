@@ -13,6 +13,7 @@ import (
 	"github.com/mirainya/Prism/internal/model"
 	"github.com/mirainya/Prism/internal/service"
 	"github.com/mirainya/Prism/pkg/errors"
+	"github.com/mirainya/Prism/pkg/logger"
 )
 
 var queryService = service.NewQueryService()
@@ -97,6 +98,7 @@ func PlaygroundListModels(c *gin.Context) {
 
 	models, err := queryService.ListAvailableCapabilities(c.Request.Context(), "", "chat")
 	if err != nil {
+		logger.Error("list playground LLM models: " + err.Error())
 		resp.InternalError(c, errors.ErrInternalError)
 		return
 	}

@@ -70,3 +70,25 @@ func containsResultSource(value []byte) bool {
 	}
 	return false
 }
+
+func TestRetryableManagedCopyFailure(t *testing.T) {
+	for _, reason := range []string{
+		ManagedCopyDownloadFailed,
+		ManagedCopyUploadFailed,
+		ManagedCopyVerificationFailed,
+	} {
+		if !RetryableManagedCopyFailure(reason) {
+			t.Errorf("%q should be retryable", reason)
+		}
+	}
+	for _, reason := range []string{
+		ManagedCopySizeExceeded,
+		ManagedCopyEmpty,
+		ManagedCopyContentTypeInvalid,
+		"",
+	} {
+		if RetryableManagedCopyFailure(reason) {
+			t.Errorf("%q should be permanent", reason)
+		}
+	}
+}

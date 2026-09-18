@@ -23,6 +23,12 @@ func (s *Store) PublishRelease(ctx context.Context, tx *sql.Tx, releaseID, revie
 	if err := CheckCatalogStructure(ctx, tx, releaseID); err != nil {
 		return err
 	}
+	// The bound is proven and stored before the pricing check verifies it and
+	// before the digest is finalized, so the published content_hash covers the
+	// exact reservation amount this release will pre-authorize.
+	if err := proveCatalogExpressionBounds(ctx, tx, releaseID); err != nil {
+		return err
+	}
 	if err := CheckCatalogPricing(ctx, tx, releaseID); err != nil {
 		return err
 	}
@@ -86,14 +92,40 @@ func (s *Store) ActivateRelease(ctx context.Context, tx *sql.Tx, releaseID, expe
 // production activation. Every registered member must report a non-expired
 // ready record for the exact release before the singleton pointer moves.
 func (s *Store) ActivateReleaseWhenReady(ctx context.Context, tx *sql.Tx, releaseID, expectedVersion, generationID uint64, identity DeploymentIdentity) error {
+	return s.activateReleaseWhenReady(ctx, tx, releaseID, 0, expectedVersion, generationID, identity)
+}
+
+// ActivateReleaseWhenReadyFrom is the guarded variant used by a B-class
+// change.  The source release is the active release observed while the fork
+// was created; checking it while the runtime singleton is locked prevents a
+// second published fork from overwriting a newer activation that won the race
+// during the readiness proof.
+func (s *Store) ActivateReleaseWhenReadyFrom(ctx context.Context, tx *sql.Tx, releaseID, expectedActiveReleaseID, expectedVersion, generationID uint64, identity DeploymentIdentity) error {
+	if expectedActiveReleaseID == 0 {
+		return ErrInvalidInput
+	}
+	return s.activateReleaseWhenReady(ctx, tx, releaseID, expectedActiveReleaseID, expectedVersion, generationID, identity)
+}
+
+func (s *Store) activateReleaseWhenReady(ctx context.Context, tx *sql.Tx, releaseID, expectedActiveReleaseID, expectedVersion, generationID uint64, identity DeploymentIdentity) error {
 	if tx == nil || releaseID == 0 || generationID == 0 || identity.Validate() != nil {
 		return ErrInvalidInput
 	}
 	var stateVersion uint64
-	if err := tx.QueryRowContext(ctx, `SELECT state_version FROM gw_catalog_runtime_state WHERE id=1 FOR UPDATE`).Scan(&stateVersion); err != nil {
+	var activeReleaseID sql.NullInt64
+	var err error
+	if expectedActiveReleaseID != 0 {
+		err = tx.QueryRowContext(ctx, `SELECT active_release_id,state_version FROM gw_catalog_runtime_state WHERE id=1 FOR UPDATE`).Scan(&activeReleaseID, &stateVersion)
+	} else {
+		err = tx.QueryRowContext(ctx, `SELECT state_version FROM gw_catalog_runtime_state WHERE id=1 FOR UPDATE`).Scan(&stateVersion)
+	}
+	if err != nil {
 		return err
 	}
 	if stateVersion != expectedVersion {
+		return ErrConflict
+	}
+	if expectedActiveReleaseID != 0 && (!activeReleaseID.Valid || activeReleaseID.Int64 <= 0 || uint64(activeReleaseID.Int64) != expectedActiveReleaseID) {
 		return ErrConflict
 	}
 	var generationStatus string

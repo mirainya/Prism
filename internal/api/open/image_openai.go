@@ -527,19 +527,13 @@ func invokeOpenAIImage(
 	c.Header(prismCallIDHeader, publicID)
 	var streamSession *imageSSESession
 	if !submission.Reused {
-		credentialKEK, keyErr := gatewayKey("PRISM_GATEWAY_KEK_B64")
+		credentialKEK, credentialHMAC, keyErr := legacyImageCredentialKeys(c.Request.Context())
 		if keyErr != nil {
 			_ = runtimeService.RejectCapability(imageExecutionContext(c.Request.Context()), submission.AttemptID, "credential_key_unavailable")
 			writeOpenAIImageExecutionError(c, keyErr)
 			return
 		}
 		defer clear(credentialKEK)
-		credentialHMAC, keyErr := gatewayKey("PRISM_GATEWAY_HMAC_B64")
-		if keyErr != nil {
-			_ = runtimeService.RejectCapability(imageExecutionContext(c.Request.Context()), submission.AttemptID, "credential_key_unavailable")
-			writeOpenAIImageExecutionError(c, keyErr)
-			return
-		}
 		defer clear(credentialHMAC)
 		dispatcher, dispatchErr := gatewayruntime.NewCapabilityDispatcher(runtimeService, nil, gatewayruntime.AsyncKeys{
 			CredentialKEK: credentialKEK, CredentialHMAC: credentialHMAC,
@@ -597,6 +591,23 @@ func invokeOpenAIImage(
 		return
 	}
 	c.JSON(http.StatusOK, response)
+}
+
+func legacyImageCredentialKeys(ctx context.Context) ([]byte, []byte, error) {
+	required, err := repository.LegacyCredentialCryptoRequired(ctx, unifiedVideoStore.DB())
+	if err != nil || !required {
+		return nil, nil, err
+	}
+	kek, err := gatewayKey("PRISM_GATEWAY_KEK_B64")
+	if err != nil {
+		return nil, nil, err
+	}
+	hmacKey, err := gatewayKey("PRISM_GATEWAY_HMAC_B64")
+	if err != nil {
+		clear(kek)
+		return nil, nil, err
+	}
+	return kek, hmacKey, nil
 }
 
 type unifiedOpenAIImagePlan struct {
@@ -662,10 +673,6 @@ func (storedOpenAIImageLoader) LoadImage(ctx context.Context, location string) (
 		return adapter.ImageAsset{Data: downloaded.Data, ContentType: downloaded.ContentType}, nil
 	}
 	return adapter.ImageAsset{Data: data, ContentType: http.DetectContentType(data)}, nil
-}
-
-func imageIdempotency(raw string, tokenID, operationContractID uint64, keyVersion uint32, hmacKey []byte, mode string) (*repository.IdempotencyInput, error) {
-	return imageIdempotencyWithRequest(raw, tokenID, operationContractID, keyVersion, hmacKey, mode, nil)
 }
 
 func imageIdempotencyWithRequest(raw string, tokenID, operationContractID uint64, keyVersion uint32, hmacKey []byte, mode string, requestBytes []byte) (*repository.IdempotencyInput, error) {
@@ -823,7 +830,11 @@ func readUnifiedImageBytes(ctx context.Context, deliveryID, callID, userID, toke
 		return nil, errors.Join(repository.ErrConflict, err)
 	}
 	if record.Mode == "managed_copy" {
-		data, err := filestorage.ReadURL(ctx, record.MediaLocator, 64<<20)
+		storage, storageErr := unifiedVideoStore.ReadAttemptFileStorage(ctx, record.AttemptID)
+		if storageErr != nil || storage.TokenID != tokenID || storage.APIKey == "" {
+			return nil, errors.Join(repository.ErrConflict, storageErr)
+		}
+		data, err := readManagedResult(ctx, storage.APIKey, record.MediaLocator, 64<<20)
 		return validateUnifiedImageBytes(data, err)
 	}
 	location, err := readUnifiedDeliveryURL(ctx, deliveryID, callID, uint(userID), uint(tokenID))

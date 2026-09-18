@@ -3,7 +3,6 @@ package main
 import (
 	"context"
 	"database/sql"
-	"errors"
 	"fmt"
 	"log"
 	"net/http"
@@ -16,7 +15,6 @@ import (
 
 	"github.com/mirainya/Prism/internal/api"
 	"github.com/mirainya/Prism/internal/gateway"
-	"github.com/mirainya/Prism/internal/gateway/repository"
 	gatewayruntime "github.com/mirainya/Prism/internal/gateway/runtime"
 	"github.com/mirainya/Prism/internal/gateway/security"
 	schemamigrate "github.com/mirainya/Prism/internal/migrate"
@@ -111,15 +109,7 @@ func main() {
 	if err != nil {
 		log.Fatalf("failed to open runtime readiness database: %v", err)
 	}
-	stopDeploymentReadiness, readinessProbeErr := startDeploymentReadinessReporter(sqlDB)
-	if stopDeploymentReadiness == nil {
-		log.Fatalf("failed to initialize deployment readiness reporter: %v", readinessProbeErr)
-	}
-	defer stopDeploymentReadiness()
 	runtimeErr := gatewayruntime.RequireConfiguredReadiness(context.Background(), sqlDB)
-	if readinessProbeErr != nil && !errors.Is(readinessProbeErr, repository.ErrNotFound) {
-		runtimeErr = errors.Join(gatewayruntime.ErrNotReady, readinessProbeErr, runtimeErr)
-	}
 	runtimeReady := runtimeErr == nil
 	dataPlaneGate := gatewayruntime.NewReadinessGate(runtimeReady)
 	if !runtimeReady {
@@ -182,7 +172,6 @@ func main() {
 	// 2. 关闭 Worker（等待正在处理的任务完成）
 	stopUnifiedWorker()
 	stopCatalogWorker()
-	stopDeploymentReadiness()
 	logger.Info("worker stopped")
 
 	// 3. 关闭缓存

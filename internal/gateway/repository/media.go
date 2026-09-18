@@ -9,7 +9,7 @@ import (
 )
 
 type MediaAssetInput struct {
-	UserID, TokenID                                        uint64
+	UserID, TokenID, AttemptID                             uint64
 	Purpose, ObjectKey, ObjectVersion, ContentType, SHA256 string
 	ContentLength                                          uint64
 	RetentionUntil                                         *time.Time
@@ -29,7 +29,11 @@ func (s *Store) CreateMediaAsset(ctx context.Context, tx *sql.Tx, in MediaAssetI
 	if in.RetentionUntil != nil {
 		retention = in.RetentionUntil.UTC()
 	}
-	result, err := tx.ExecContext(ctx, `INSERT INTO gw_media_assets(user_id,token_id,purpose,object_key,object_version,content_type,content_length,sha256,state,retention_until,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?, 'staging',?,?,?)`, in.UserID, in.TokenID, in.Purpose, in.ObjectKey, emptyAsNull(in.ObjectVersion), in.ContentType, in.ContentLength, in.SHA256, retention, nowUTC(), nowUTC())
+	var attemptID any
+	if in.AttemptID != 0 {
+		attemptID = in.AttemptID
+	}
+	result, err := tx.ExecContext(ctx, `INSERT INTO gw_media_assets(user_id,token_id,attempt_id,purpose,object_key,object_version,content_type,content_length,sha256,state,retention_until,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?, 'staging',?,?,?)`, in.UserID, in.TokenID, attemptID, in.Purpose, in.ObjectKey, emptyAsNull(in.ObjectVersion), in.ContentType, in.ContentLength, in.SHA256, retention, nowUTC(), nowUTC())
 	if err != nil {
 		return 0, fmt.Errorf("create media asset: %w", err)
 	}
@@ -90,7 +94,7 @@ func validMediaState(v string) bool {
 }
 
 type ManagedCopyAssetRecord struct {
-	ID, UserID, TokenID, StateVersion                     uint64
+	ID, UserID, TokenID, AttemptID, StateVersion          uint64
 	ObjectKey, StorageLocator, ObjectVersion, ContentType string
 	SHA256, State                                         string
 	ContentLength                                         uint64
@@ -110,16 +114,17 @@ func (s *Store) ReserveManagedCopyAsset(ctx context.Context, tx *sql.Tx, attempt
 	if callID == 0 || in.UserID != userID || in.TokenID != tokenID {
 		return ManagedCopyAssetRecord{}, ErrConflict
 	}
+	in.AttemptID = attemptID
 	var out ManagedCopyAssetRecord
 	var locator, version sql.NullString
-	err := tx.QueryRowContext(ctx, `SELECT id,user_id,token_id,object_key,storage_locator,object_version,content_type,content_length,sha256,state,state_version FROM gw_media_assets WHERE object_key=? FOR UPDATE`, in.ObjectKey).
-		Scan(&out.ID, &out.UserID, &out.TokenID, &out.ObjectKey, &locator, &version, &out.ContentType, &out.ContentLength, &out.SHA256, &out.State, &out.StateVersion)
+	err := tx.QueryRowContext(ctx, `SELECT id,user_id,token_id,COALESCE(attempt_id,0),object_key,storage_locator,object_version,content_type,content_length,sha256,state,state_version FROM gw_media_assets WHERE object_key=? FOR UPDATE`, in.ObjectKey).
+		Scan(&out.ID, &out.UserID, &out.TokenID, &out.AttemptID, &out.ObjectKey, &locator, &version, &out.ContentType, &out.ContentLength, &out.SHA256, &out.State, &out.StateVersion)
 	if err == sql.ErrNoRows {
 		id, createErr := s.CreateMediaAsset(ctx, tx, in)
 		if createErr != nil {
 			return ManagedCopyAssetRecord{}, createErr
 		}
-		return ManagedCopyAssetRecord{ID: id, UserID: userID, TokenID: tokenID, ObjectKey: in.ObjectKey, ContentType: in.ContentType, ContentLength: in.ContentLength, SHA256: in.SHA256, State: "staging", StateVersion: 1}, nil
+		return ManagedCopyAssetRecord{ID: id, UserID: userID, TokenID: tokenID, AttemptID: attemptID, ObjectKey: in.ObjectKey, ContentType: in.ContentType, ContentLength: in.ContentLength, SHA256: in.SHA256, State: "staging", StateVersion: 1}, nil
 	}
 	if err != nil {
 		return ManagedCopyAssetRecord{}, err
@@ -130,7 +135,7 @@ func (s *Store) ReserveManagedCopyAsset(ctx context.Context, tx *sql.Tx, attempt
 	if version.Valid {
 		out.ObjectVersion = version.String
 	}
-	if out.UserID != userID || out.TokenID != tokenID || out.ContentType != in.ContentType || out.ContentLength != in.ContentLength || !strings.EqualFold(out.SHA256, in.SHA256) || out.State != "staging" && out.State != "active" {
+	if out.UserID != userID || out.TokenID != tokenID || out.AttemptID != attemptID || out.ContentType != in.ContentType || out.ContentLength != in.ContentLength || !strings.EqualFold(out.SHA256, in.SHA256) || out.State != "staging" && out.State != "active" {
 		return ManagedCopyAssetRecord{}, ErrConflict
 	}
 	return out, nil

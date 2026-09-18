@@ -242,6 +242,9 @@ func (m *catalogImporter) persistCatalogSKUs(ids *catalogPersistedIDs, releaseID
 		if err != nil {
 			return fmt.Errorf("insert SKU %s: %w", sku.Code, err)
 		}
+		if _, err := m.tx.ExecContext(m.ctx, `INSERT INTO gw_sku_downstream_paths(release_id,sku_id,path,created_at) VALUES (?,?,?,?)`, releaseID, skuID, sku.Route, m.now); err != nil {
+			return fmt.Errorf("insert downstream path for SKU %s: %w", sku.Code, err)
+		}
 		ids.skus[sku.Key] = skuID
 	}
 	return nil

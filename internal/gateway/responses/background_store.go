@@ -138,7 +138,7 @@ func submitUnifiedBackgroundResponse(ctx context.Context, record *model.AIRespon
 	if err != nil {
 		return gatewayruntime.Submission{}, err
 	}
-	keys, err := loadBackgroundKeys()
+	keys, err := loadPayloadKeys()
 	if err != nil {
 		return gatewayruntime.Submission{}, err
 	}
@@ -473,7 +473,7 @@ func readUnifiedCallPayload(ctx context.Context, db *sql.DB, callID, payloadID u
 	if err != nil {
 		return nil, err
 	}
-	keys, err := loadBackgroundKeys()
+	keys, err := loadPayloadKeys()
 	if err != nil {
 		return nil, err
 	}

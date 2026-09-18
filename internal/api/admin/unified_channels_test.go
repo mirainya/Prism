@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"errors"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -43,8 +44,16 @@ func unifiedChannelMock(t *testing.T) sqlmock.Sqlmock {
 func TestUnifiedChannelsPaginationAndBoundSearch(t *testing.T) {
 	mock := unifiedChannelMock(t)
 	search := "q' OR 1=1 --"
-	mock.ExpectQuery("SELECT COUNT\\(\\*\\) FROM gateway_channels c").WithArgs("active", "active", search, search, search).WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(21))
-	mock.ExpectQuery("SELECT c.id,c.channel_code").WithArgs("active", "active", search, search, search, 20, 20).WillReturnRows(sqlmock.NewRows([]string{"id", "code", "name", "status", "created", "pools", "credentials"}).AddRow(1, "channel", "Name", "active", time.Now(), 2, 3))
+	channelRows := sqlmock.NewRows([]string{"id", "code", "name", "status", "created", "pools", "credentials"})
+	for id := 21; id >= 1; id-- {
+		channelRows.AddRow(id, "channel-"+strconv.Itoa(id), "Name", "active", time.Now(), 2, 3)
+	}
+	mock.ExpectQuery("SELECT c.id,c.channel_code").
+		WithArgs("active", "active", search, search, search).
+		WillReturnRows(channelRows)
+	mock.ExpectQuery("SELECT p.channel_id,p.id,p.product_code").
+		WithArgs("active", "active", search, search, search).
+		WillReturnRows(sqlmock.NewRows(unifiedChannelSummaryColumns()))
 	router := gin.New()
 	router.GET("/channels", UnifiedChannels)
 	w := httptest.NewRecorder()
@@ -53,14 +62,62 @@ func TestUnifiedChannelsPaginationAndBoundSearch(t *testing.T) {
 	query.Set("q", search)
 	req.URL.RawQuery = query.Encode()
 	router.ServeHTTP(w, req)
-	if w.Code != 200 || !strings.Contains(w.Body.String(), `"total":21`) || !strings.Contains(w.Body.String(), `"pool_count":2`) {
+	if w.Code != 200 || !strings.Contains(w.Body.String(), `"total":21`) || !strings.Contains(w.Body.String(), `"channel_code":"channel-1"`) || !strings.Contains(w.Body.String(), `"model_types":[]`) {
 		t.Fatalf("status=%d body=%s", w.Code, w.Body)
 	}
 }
 
+func TestUnifiedChannelsFiltersCapabilityBeforePaginationAndDeduplicatesSummary(t *testing.T) {
+	mock := unifiedChannelMock(t)
+	mock.ExpectQuery("SELECT c.id,c.channel_code").
+		WithArgs("", "", "", "", "").
+		WillReturnRows(sqlmock.NewRows([]string{"id", "code", "name", "status", "created", "pools", "credentials"}).
+			AddRow(3, "chat", "Chat", "active", time.Now(), 1, 1).
+			AddRow(2, "canvas", "Canvas", "active", time.Now(), 1, 2).
+			AddRow(1, "video", "Video", "active", time.Now(), 1, 1))
+	mock.ExpectQuery("SELECT p.channel_id,p.id,p.product_code").
+		WithArgs("", "", "", "", "").
+		WillReturnRows(sqlmock.NewRows(unifiedChannelSummaryColumns()).
+			AddRow(3, 301, "chat-product", "gpt-upstream", []byte(`[]`), "responses.create", "generic", "openai").
+			AddRow(2, 201, "image-product", "canvas-upstream", []byte(`[]`), "images.edit", "generic", "custom").
+			AddRow(2, 201, "image-product", "canvas-upstream", []byte(`[]`), "images.edit", "generic", "custom").
+			AddRow(1, 101, "video-product", "seedance-upstream", []byte(`["video"]`), "videos.create", "seedance", "seedance"))
+
+	router := gin.New()
+	router.GET("/channels", UnifiedChannels)
+	response := httptest.NewRecorder()
+	router.ServeHTTP(response, httptest.NewRequest("GET", "/channels?page=1&page_size=1&type=image", nil))
+	if response.Code != 200 {
+		t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
+	}
+	body := response.Body.String()
+	for _, want := range []string{`"total":1`, `"channel_code":"canvas"`, `"model_types":["image"]`, `"product_count":1`, `"vendor_models":["canvas-upstream"]`, `"protocols":["custom"]`, `"adapters":["generic"]`} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("missing %s in %s", want, body)
+		}
+	}
+	if strings.Contains(body, `"channel_code":"chat"`) || strings.Contains(body, `"channel_code":"video"`) {
+		t.Fatalf("capability filter did not precede pagination: %s", body)
+	}
+}
+
+func TestUnifiedChannelsRejectsInvalidCapabilityType(t *testing.T) {
+	router := gin.New()
+	router.GET("/channels", UnifiedChannels)
+	response := httptest.NewRecorder()
+	router.ServeHTTP(response, httptest.NewRequest("GET", "/channels?type=audio", nil))
+	if response.Code != 400 {
+		t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
+	}
+}
+
+func unifiedChannelSummaryColumns() []string {
+	return []string{"channel_id", "product_id", "product_code", "vendor_model", "capability_tags", "operation_code", "adapter_code", "protocol"}
+}
+
 func TestUnifiedChannelListsDoNotHideDatabaseErrors(t *testing.T) {
 	mock := unifiedChannelMock(t)
-	mock.ExpectQuery("SELECT COUNT").WillReturnError(errors.New("db failed"))
+	mock.ExpectQuery("SELECT c.id,c.channel_code").WillReturnError(errors.New("db failed"))
 	router := gin.New()
 	router.GET("/channels", UnifiedChannels)
 	w := httptest.NewRecorder()

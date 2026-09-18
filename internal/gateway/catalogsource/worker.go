@@ -33,6 +33,7 @@ var (
 type WorkerKeys struct {
 	CredentialKEK  []byte
 	CredentialHMAC []byte
+	EvidenceHMAC   []byte
 }
 
 type Worker struct {
@@ -43,7 +44,9 @@ type Worker struct {
 }
 
 func NewWorker(store *repository.Store, client *http.Client, keys WorkerKeys) (*Worker, error) {
-	if store == nil || len(keys.CredentialKEK) != security.KeySize || len(keys.CredentialHMAC) != security.KeySize {
+	if store == nil || len(keys.EvidenceHMAC) != security.KeySize ||
+		(len(keys.CredentialKEK) == 0) != (len(keys.CredentialHMAC) == 0) ||
+		len(keys.CredentialKEK) != 0 && (len(keys.CredentialKEK) != security.KeySize || len(keys.CredentialHMAC) != security.KeySize) {
 		return nil, repository.ErrInvalidInput
 	}
 	service, err := gatewayruntime.New(store)
@@ -59,7 +62,7 @@ func NewWorker(store *repository.Store, client *http.Client, keys WorkerKeys) (*
 	configured.Timeout = 0
 	configured.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
 	return &Worker{store: store, runtime: service, client: &configured, keys: WorkerKeys{
-		CredentialKEK: bytes.Clone(keys.CredentialKEK), CredentialHMAC: bytes.Clone(keys.CredentialHMAC),
+		CredentialKEK: bytes.Clone(keys.CredentialKEK), CredentialHMAC: bytes.Clone(keys.CredentialHMAC), EvidenceHMAC: bytes.Clone(keys.EvidenceHMAC),
 	}}, nil
 }
 
@@ -69,6 +72,7 @@ func (w *Worker) Close() {
 	}
 	clear(w.keys.CredentialKEK)
 	clear(w.keys.CredentialHMAC)
+	clear(w.keys.EvidenceHMAC)
 }
 
 func (w *Worker) Run(ctx context.Context, owner string, report func(error)) error {
@@ -114,14 +118,7 @@ func (w *Worker) ProcessOne(ctx context.Context, owner string) (bool, error) {
 }
 
 func (w *Worker) process(ctx context.Context, run repository.CatalogDiscoveryRun) error {
-	envelope, err := w.store.ReadEncryptedBlob(ctx, w.store.DB(), run.CredentialBlobID)
-	if err != nil {
-		return err
-	}
-	if envelope.Purpose != "credential" {
-		return repository.ErrConflict
-	}
-	secret, err := repository.OpenBlob(envelope, run.CredentialBlobID, []byte(fmt.Sprintf("credential:%d", run.CredentialID)), w.keys.CredentialKEK, w.keys.CredentialHMAC)
+	secret, err := w.credentialSecret(ctx, run.CredentialID, run.CredentialSecret, run.CredentialBlobID)
 	if err != nil {
 		return err
 	}
@@ -188,7 +185,7 @@ func (w *Worker) process(ctx context.Context, run repository.CatalogDiscoveryRun
 	if err != nil {
 		return err
 	}
-	digest := security.HMACSHA256(w.keys.CredentialHMAC, response)
+	digest := security.HMACSHA256(w.keys.EvidenceHMAC, response)
 	items := make([]repository.CatalogDiscoveryItem, 0, len(models))
 	for _, model := range models {
 		selected := run.ContractCode == AICostModelsV1 || contains(model.Groups, run.ExternalGroup)
@@ -204,6 +201,25 @@ func (w *Worker) process(ctx context.Context, run repository.CatalogDiscoveryRun
 		ObservedAt: time.Now().UTC(), Items: items,
 	})
 	return err
+}
+
+// credentialSecret prefers the direct operator-managed value. Older rows keep
+// only an encrypted blob, which remains readable during the migration.
+func (w *Worker) credentialSecret(ctx context.Context, credentialID uint64, direct []byte, blobID uint64) ([]byte, error) {
+	if len(direct) != 0 {
+		return append([]byte(nil), direct...), nil
+	}
+	if blobID == 0 {
+		return nil, repository.ErrNotFound
+	}
+	envelope, err := w.store.ReadEncryptedBlob(ctx, w.store.DB(), blobID)
+	if err != nil {
+		return nil, err
+	}
+	if envelope.Purpose != "credential" {
+		return nil, repository.ErrConflict
+	}
+	return repository.OpenBlob(envelope, blobID, []byte(fmt.Sprintf("credential:%d", credentialID)), w.keys.CredentialKEK, w.keys.CredentialHMAC)
 }
 
 func parseRunResponse(run repository.CatalogDiscoveryRun, response []byte) ([]DiscoveredModel, error) {
@@ -226,8 +242,8 @@ func (w *Worker) nextSequence(ctx context.Context, runID uint64) (uint64, error)
 }
 
 func (w *Worker) exchange(ctx context.Context, client *http.Client, run repository.CatalogDiscoveryRun, sequence uint64, method, target string, body []byte, header http.Header) ([]byte, error) {
-	mapping := security.DomainDigest(w.keys.CredentialHMAC, "catalog-request-mapping-v1", []byte(run.ContractCode), []byte(method), []byte(target))
-	requestDigest := security.HMACSHA256(w.keys.CredentialHMAC, body)
+	mapping := security.DomainDigest(w.keys.EvidenceHMAC, "catalog-request-mapping-v1", []byte(run.ContractCode), []byte(method), []byte(target))
+	requestDigest := security.HMACSHA256(w.keys.EvidenceHMAC, body)
 	requestID, err := w.runtime.BeginRequest(ctx, repository.RequestLogInput{
 		ControlPlaneRunID: &run.ID, RequestSeq: sequence, Action: "catalog_discovery",
 		MappingHMAC: hex.EncodeToString(mapping[:]), RequestBytesHMAC: hex.EncodeToString(requestDigest[:]),
@@ -256,7 +272,7 @@ func (w *Worker) exchange(ctx context.Context, client *http.Client, run reposito
 	data, readErr := io.ReadAll(io.LimitReader(response.Body, maxDiscoveryResponse+1))
 	duration := uint64(time.Since(started).Milliseconds())
 	status := uint16(response.StatusCode)
-	result := catalogResponseLogResult(status, duration, data, readErr, w.keys.CredentialHMAC)
+	result := catalogResponseLogResult(status, duration, data, readErr, w.keys.EvidenceHMAC)
 	if finishErr := w.finishRequest(ctx, requestID, "response_recorded", result); finishErr != nil {
 		clear(data)
 		return nil, finishErr

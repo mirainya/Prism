@@ -2,7 +2,7 @@ package main
 
 import (
 	"context"
-	"errors"
+	"database/sql"
 	"fmt"
 	"os"
 	"sync"
@@ -21,8 +21,9 @@ import (
 )
 
 const (
-	runtimeReadinessInterval = 2 * time.Second
-	runtimeReadinessTimeout  = 3 * time.Second
+	runtimeReadinessInterval = 10 * time.Second
+	runtimeReadinessTimeout  = 10 * time.Second
+	runtimeReadinessAttempts = 3
 )
 
 func startCatalogSourceWorker(orm *gorm.DB) (func(), error) {
@@ -34,15 +35,17 @@ func startCatalogSourceWorker(orm *gorm.DB) (func(), error) {
 	if err := db.QueryRow(`SELECT COUNT(*) FROM gw_catalog_sources WHERE status IN ('active','draining') OR nonterminal_run_count>0`).Scan(&activeSources); err != nil {
 		return nil, err
 	}
-	credentialKEK, kekErr := migrationKey("PRISM_GATEWAY_KEK_B64")
-	credentialHMAC, hmacErr := migrationKey("PRISM_GATEWAY_HMAC_B64")
-	if kekErr != nil || hmacErr != nil {
-		clear(credentialKEK)
-		clear(credentialHMAC)
-		if activeSources == 0 {
-			return func() {}, nil
-		}
-		return nil, fmt.Errorf("catalog discovery keys unavailable: %w", errors.Join(kekErr, hmacErr))
+	if activeSources == 0 {
+		return func() {}, nil
+	}
+	evidenceHMAC, err := migrationKey("PRISM_GATEWAY_PAYLOAD_HMAC_B64")
+	if err != nil {
+		return nil, fmt.Errorf("catalog discovery evidence key unavailable: %w", err)
+	}
+	defer clear(evidenceHMAC)
+	credentialKEK, credentialHMAC, err := legacyCredentialKeys(context.Background(), db)
+	if err != nil {
+		return nil, fmt.Errorf("catalog discovery credential keys unavailable: %w", err)
 	}
 	defer clear(credentialKEK)
 	defer clear(credentialHMAC)
@@ -50,7 +53,9 @@ func startCatalogSourceWorker(orm *gorm.DB) (func(), error) {
 	if err != nil {
 		return nil, err
 	}
-	worker, err := catalogsource.NewWorker(store, nil, catalogsource.WorkerKeys{CredentialKEK: credentialKEK, CredentialHMAC: credentialHMAC})
+	worker, err := catalogsource.NewWorker(store, nil, catalogsource.WorkerKeys{
+		CredentialKEK: credentialKEK, CredentialHMAC: credentialHMAC, EvidenceHMAC: evidenceHMAC,
+	})
 	if err != nil {
 		return nil, err
 	}
@@ -62,6 +67,16 @@ func startCatalogSourceWorker(orm *gorm.DB) (func(), error) {
 		defer workers.Done()
 		_ = worker.Run(ctx, owner, func(err error) {
 			logger.Error("catalog discovery worker: " + err.Error())
+		})
+	}()
+	// Availability polling shares this worker's credentials and lifetime but not
+	// its loop: it refreshes a volatile observation that never enters a catalog
+	// release, so a provider outage there must not stall catalog discovery.
+	workers.Add(1)
+	go func() {
+		defer workers.Done()
+		_ = worker.RunAvailability(ctx, func(err error) {
+			logger.Error("upstream availability worker: " + err.Error())
 		})
 	}()
 	var once sync.Once
@@ -90,33 +105,17 @@ func startUnifiedWorker(orm *gorm.DB, executionEngine *engine.Engine, readiness 
 		readiness.Disable()
 		return nil, gatewayruntime.ErrNotReady
 	}
-	var keys gatewayruntime.AsyncKeys
-	for _, config := range []struct {
-		name string
-		key  *[]byte
-	}{
-		{"PRISM_GATEWAY_KEK_B64", &keys.CredentialKEK},
-		{"PRISM_GATEWAY_HMAC_B64", &keys.CredentialHMAC},
-		{"PRISM_GATEWAY_PAYLOAD_KEK_B64", &keys.PayloadKEK},
-		{"PRISM_GATEWAY_PAYLOAD_HMAC_B64", &keys.PayloadHMAC},
-	} {
-		*config.key, err = migrationKey(config.name)
-		if err != nil {
-			readiness.Disable()
-			return nil, err
-		}
-		defer clear(*config.key)
-	}
-	store, err := repository.New(db)
-	if err != nil {
-		return nil, err
-	}
-	identity, err := gatewayruntime.CurrentProcessIdentity()
+	keys, err := unifiedWorkerKeys(context.Background(), db)
 	if err != nil {
 		readiness.Disable()
 		return nil, err
 	}
-	service, err := gatewayruntime.NewWithDeploymentIdentity(store, readiness.Require, identity)
+	defer clearAsyncKeys(&keys)
+	store, err := repository.New(db)
+	if err != nil {
+		return nil, err
+	}
+	service, err := gatewayruntime.NewWithReadiness(store, readiness.Require)
 	if err != nil {
 		readiness.Disable()
 		return nil, err
@@ -172,9 +171,7 @@ func startUnifiedWorker(orm *gorm.DB, executionEngine *engine.Engine, readiness 
 	}
 	startWorker("unified readiness watchdog", func(ctx context.Context) error {
 		return readiness.Watch(ctx, runtimeReadinessInterval, func(ctx context.Context) error {
-			probeCtx, probeCancel := context.WithTimeout(ctx, runtimeReadinessTimeout)
-			defer probeCancel()
-			return gatewayruntime.RequireConfiguredReadiness(probeCtx, db)
+			return probeUnifiedReadiness(ctx, db)
 		})
 	})
 	for index := range 4 {
@@ -238,4 +235,64 @@ func startUnifiedWorker(orm *gorm.DB, executionEngine *engine.Engine, readiness 
 			service.Close()
 		})
 	}, nil
+}
+
+func probeUnifiedReadiness(ctx context.Context, db *sql.DB) error {
+	var lastErr error
+	for attempt := 0; attempt < runtimeReadinessAttempts; attempt++ {
+		probeCtx, cancel := context.WithTimeout(ctx, runtimeReadinessTimeout)
+		lastErr = gatewayruntime.RequireConfiguredReadiness(probeCtx, db)
+		cancel()
+		if lastErr == nil || ctx.Err() != nil {
+			return lastErr
+		}
+	}
+	return lastErr
+}
+
+func legacyCredentialKeys(ctx context.Context, db repository.ReadinessQuery) ([]byte, []byte, error) {
+	required, err := repository.LegacyCredentialCryptoRequired(ctx, db)
+	if err != nil || !required {
+		return nil, nil, err
+	}
+	kek, err := migrationKey("PRISM_GATEWAY_KEK_B64")
+	if err != nil {
+		return nil, nil, err
+	}
+	hmacKey, err := migrationKey("PRISM_GATEWAY_HMAC_B64")
+	if err != nil {
+		clear(kek)
+		return nil, nil, err
+	}
+	return kek, hmacKey, nil
+}
+
+func unifiedWorkerKeys(ctx context.Context, db repository.ReadinessQuery) (gatewayruntime.AsyncKeys, error) {
+	var keys gatewayruntime.AsyncKeys
+	var err error
+	keys.PayloadKEK, err = migrationKey("PRISM_GATEWAY_PAYLOAD_KEK_B64")
+	if err != nil {
+		return keys, err
+	}
+	keys.PayloadHMAC, err = migrationKey("PRISM_GATEWAY_PAYLOAD_HMAC_B64")
+	if err != nil {
+		clearAsyncKeys(&keys)
+		return keys, err
+	}
+	keys.CredentialKEK, keys.CredentialHMAC, err = legacyCredentialKeys(ctx, db)
+	if err != nil {
+		clearAsyncKeys(&keys)
+		return keys, err
+	}
+	return keys, nil
+}
+
+func clearAsyncKeys(keys *gatewayruntime.AsyncKeys) {
+	if keys == nil {
+		return
+	}
+	clear(keys.CredentialKEK)
+	clear(keys.CredentialHMAC)
+	clear(keys.PayloadKEK)
+	clear(keys.PayloadHMAC)
 }

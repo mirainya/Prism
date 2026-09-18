@@ -26,6 +26,7 @@ type MediaAsset struct {
 	ID             uint64     `gorm:"primaryKey;autoIncrement;uniqueIndex:uq_gw_media_assets_id_owner,priority:1"`
 	UserID         uint       `gorm:"not null;uniqueIndex:uq_gw_media_assets_id_owner,priority:2"`
 	TokenID        uint       `gorm:"not null;uniqueIndex:uq_gw_media_assets_id_owner,priority:3"`
+	AttemptID      *uint64    `gorm:"index" json:"-"`
 	Purpose        string     `gorm:"type:varchar(16);not null"`
 	ObjectKey      string     `gorm:"type:varchar(512);not null;uniqueIndex"`
 	StorageLocator string     `gorm:"type:varchar(2048)"`

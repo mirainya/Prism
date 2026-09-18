@@ -176,8 +176,18 @@ func ListUnifiedCatalogRates(c *gin.Context) {
 		return
 	}
 	table, parent, parentTable, label := "gw_sell_rates", "sku_id", "gw_skus", "sku_code"
+	parentKey := "p.sku_code"
+	parentJoins := ""
 	if kind == "cost" {
 		table, parent, parentTable, label = "gw_cost_rates", "cost_plan_id", "gw_cost_plans", "plan_code"
+		// A plan code is only unique within an offering. Include the stable
+		// product and credential-pool identities so a cloned release can be
+		// addressed without relying on its new surrogate IDs.
+		parentKey = "CONCAT(prod.product_code,'|',pool.pool_code,'|',p.plan_code)"
+		parentJoins = ` JOIN gw_offerings o ON o.release_id=p.release_id AND o.id=p.offering_id
+JOIN gw_product_transports pt ON pt.release_id=o.release_id AND pt.id=o.product_transport_id
+JOIN gw_products prod ON prod.release_id=pt.release_id AND prod.id=pt.product_id
+JOIN gw_credential_pools pool ON pool.id=o.credential_pool_id`
 	}
 	ctx := c.Request.Context()
 	var total int64
@@ -185,7 +195,7 @@ func ListUnifiedCatalogRates(c *gin.Context) {
 		unifiedChannelError(c, err)
 		return
 	}
-	query := `SELECT r.id,r.` + parent + `,p.` + label + `,r.component_code,r.unit_code,r.quantity_source,r.charge_event,r.unit_price,r.unit_scale,r.quantity_step,r.max_quantity,r.currency_code,r.currency_version,e.id,s.rate_evidence_id,s.state FROM ` + table + ` r JOIN ` + parentTable + ` p ON p.id=r.` + parent + ` AND p.release_id=r.release_id JOIN gw_rate_evidence_review_events e ON e.id=r.rate_evidence_review_event_id JOIN gw_rate_evidence_review_state s ON s.rate_evidence_id=e.rate_evidence_id WHERE r.release_id=? ORDER BY r.id DESC LIMIT ? OFFSET ?`
+	query := `SELECT r.id,r.` + parent + `,p.` + label + `,` + parentKey + `,r.component_code,r.unit_code,r.quantity_source,r.charge_event,r.unit_price,r.unit_scale,r.quantity_step,r.max_quantity,r.currency_code,r.currency_version,COALESCE(r.pricing_mode,'flat'),COALESCE(r.pricing_expr,''),COALESCE(r.max_price,''),e.id,s.rate_evidence_id,s.state FROM ` + table + ` r JOIN ` + parentTable + ` p ON p.id=r.` + parent + ` AND p.release_id=r.release_id` + parentJoins + ` JOIN gw_rate_evidence_review_events e ON e.id=r.rate_evidence_review_event_id JOIN gw_rate_evidence_review_state s ON s.rate_evidence_id=e.rate_evidence_id WHERE r.release_id=? ORDER BY r.id DESC LIMIT ? OFFSET ?`
 	rows, err := db.QueryContext(ctx, query, releaseID, size, (page-1)*size)
 	if err != nil {
 		unifiedChannelError(c, err)
@@ -195,12 +205,12 @@ func ListUnifiedCatalogRates(c *gin.Context) {
 	items := make([]gin.H, 0, size)
 	for rows.Next() {
 		var id, parentID, scale, currencyVersion, reviewEventID, evidenceID uint64
-		var parentLabel, component, unit, source, event, price, step, max, currency, state string
-		if err := rows.Scan(&id, &parentID, &parentLabel, &component, &unit, &source, &event, &price, &scale, &step, &max, &currency, &currencyVersion, &reviewEventID, &evidenceID, &state); err != nil {
+		var parentLabel, stableParentKey, component, unit, source, event, price, step, max, currency, pricingMode, pricingExpr, maxPrice, state string
+		if err := rows.Scan(&id, &parentID, &parentLabel, &stableParentKey, &component, &unit, &source, &event, &price, &scale, &step, &max, &currency, &currencyVersion, &pricingMode, &pricingExpr, &maxPrice, &reviewEventID, &evidenceID, &state); err != nil {
 			unifiedChannelError(c, err)
 			return
 		}
-		items = append(items, gin.H{"id": id, "kind": kind, "parent_id": parentID, "parent_label": parentLabel, "component_code": component, "unit_code": unit, "quantity_source": source, "charge_event": event, "unit_price": price, "unit_scale": scale, "quantity_step": step, "max_quantity": max, "currency_code": currency, "currency_version": currencyVersion, "review_event_id": reviewEventID, "evidence_id": evidenceID, "evidence_state": state})
+		items = append(items, gin.H{"id": id, "kind": kind, "parent_id": parentID, "parent_label": parentLabel, "parent_key": stableParentKey, "component_code": component, "unit_code": unit, "quantity_source": source, "charge_event": event, "unit_price": price, "unit_scale": scale, "quantity_step": step, "max_quantity": max, "currency_code": currency, "currency_version": currencyVersion, "pricing_mode": pricingMode, "pricing_expr": pricingExpr, "max_price": maxPrice, "review_event_id": reviewEventID, "evidence_id": evidenceID, "evidence_state": state})
 	}
 	if err := rows.Err(); err != nil {
 		unifiedChannelError(c, err)

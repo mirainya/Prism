@@ -126,7 +126,10 @@ type GwModelMeta struct {
 	GroupName      string         `gorm:"type:varchar(80);default:''" json:"group_name"` // 手动分组名,空=按源渠道分组
 	Status         int8           `gorm:"default:1" json:"status"`
 	Sort           int            `gorm:"default:0;index" json:"sort"`
-	UpdatedAt      time.Time      `json:"updated_at"`
+	// ConfigVersion 是 A 类原地编辑的乐观锁令牌。updated_at 做不了这件事:毫秒
+	// 时间戳在同一毫秒内的两次改动会互相覆盖。
+	ConfigVersion uint64    `gorm:"default:1" json:"config_version"`
+	UpdatedAt     time.Time `json:"updated_at"`
 }
 
 func (GwModelMeta) TableName() string { return "gw_model_meta" }

@@ -15,11 +15,24 @@ import (
 	"github.com/mirainya/Prism/internal/api/middleware"
 	"github.com/mirainya/Prism/internal/api/resp"
 	"github.com/mirainya/Prism/internal/gateway/delivery"
+	"github.com/mirainya/Prism/internal/gateway/payloadview"
 	"github.com/mirainya/Prism/internal/gateway/repository"
 	gatewayruntime "github.com/mirainya/Prism/internal/gateway/runtime"
 	"github.com/mirainya/Prism/internal/video"
 	perrors "github.com/mirainya/Prism/pkg/errors"
+	"github.com/mirainya/Prism/pkg/filestorage"
+	"github.com/mirainya/Prism/pkg/logger"
 )
+
+const managedResultURLTTL = time.Hour
+
+var presignManagedResult = func(ctx context.Context, apiKey, locator string) (string, error) {
+	return filestorage.WithAPIKey(apiKey).PresignedURL(ctx, locator, managedResultURLTTL)
+}
+
+var readManagedResult = func(ctx context.Context, apiKey, locator string, maxBytes int64) ([]byte, error) {
+	return filestorage.WithAPIKey(apiKey).ReadURL(ctx, locator, maxBytes)
+}
 
 func GetVideoGeneration(c *gin.Context) {
 	token := middleware.GetToken(c)
@@ -40,6 +53,7 @@ func writeUnifiedVideoAPIError(c *gin.Context, err error, notFoundMessage string
 	case errors.Is(err, gatewayruntime.ErrNotReady):
 		resp.ErrorMsg(c, http.StatusServiceUnavailable, 503, gatewayruntime.ErrNotReady.Error())
 	default:
+		logger.Error("video API read failed: " + err.Error())
 		resp.InternalError(c, perrors.ErrInternalError)
 	}
 }
@@ -149,7 +163,7 @@ WHERE r.resource_kind='video_task' AND r.user_id=? AND r.token_id=?`
 	if err := unifiedVideoStore.DB().QueryRowContext(ctx, `SELECT COUNT(*)`+where, args...).Scan(&total); err != nil {
 		return true, err
 	}
-	query := `SELECT r.public_id,c.status,v.status,v.progress,v.specification_summary,c.created_at,c.updated_at` + where + ` ORDER BY r.id DESC LIMIT ? OFFSET ?`
+	query := `SELECT c.id,r.public_id,c.status,v.status,v.progress,v.specification_summary,c.created_at,c.updated_at` + where + ` ORDER BY r.id DESC LIMIT ? OFFSET ?`
 	args = append(args, pageSize, (page-1)*pageSize)
 	rows, err := unifiedVideoStore.DB().QueryContext(ctx, query, args...)
 	if err != nil {
@@ -158,14 +172,23 @@ WHERE r.resource_kind='video_task' AND r.user_id=? AND r.token_id=?`
 	defer rows.Close()
 	items := make([]gin.H, 0, pageSize)
 	for rows.Next() {
+		var callID uint64
 		var id, callStatus, taskStatus string
 		var progress uint8
 		var specification []byte
 		var createdAt, updatedAt time.Time
-		if err := rows.Scan(&id, &callStatus, &taskStatus, &progress, &specification, &createdAt, &updatedAt); err != nil {
+		if err := rows.Scan(&callID, &id, &callStatus, &taskStatus, &progress, &specification, &createdAt, &updatedAt); err != nil {
 			return true, err
 		}
-		item := gin.H{"id": id, "status": unifiedVideoPublicStatus(callStatus, taskStatus), "progress": progress, "created_at": createdAt.UTC().Format(time.RFC3339), "updated_at": updatedAt.UTC().Format(time.RFC3339)}
+		publicStatus := unifiedVideoPublicStatus(callStatus, taskStatus)
+		item := gin.H{"id": id, "status": publicStatus, "progress": progress, "created_at": createdAt.UTC().Format(time.RFC3339), "updated_at": updatedAt.UTC().Format(time.RFC3339)}
+		if publicStatus == string(video.VideoTaskStatusFailed) || publicStatus == string(video.VideoTaskStatusSubmissionUnknown) {
+			failure, failureErr := payloadview.ReadLatestRequestFailure(ctx, unifiedVideoStore, callID)
+			if failureErr != nil {
+				return true, failureErr
+			}
+			item["error_message"] = failure.Message
+		}
 		applyUnifiedVideoSummary(item, specification)
 		items = append(items, item)
 	}
@@ -205,6 +228,13 @@ WHERE r.public_id=? AND r.resource_kind='video_task'`, c.Param("id")).
 	}
 	publicStatus := unifiedVideoPublicStatus(status, taskStatus)
 	response := gin.H{"id": c.Param("id"), "status": publicStatus, "progress": progress, "created_at": createdAt.Format(time.RFC3339), "updated_at": updatedAt.Format(time.RFC3339)}
+	if publicStatus == string(video.VideoTaskStatusFailed) || publicStatus == string(video.VideoTaskStatusSubmissionUnknown) {
+		failure, failureErr := payloadview.ReadLatestRequestFailure(ctx, unifiedVideoStore, callID)
+		if failureErr != nil {
+			return true, failureErr
+		}
+		response["error_message"] = failure.Message
+	}
 	applyUnifiedVideoSummary(response, specification)
 	if requestPayload.Valid {
 		plain, err := readUnifiedPayload(ctx, uint64(requestPayload.Int64), callID, "request")
@@ -366,7 +396,11 @@ func readUnifiedDeliveryURL(ctx context.Context, deliveryID, callID uint64, user
 		if record.MediaLocator == "" {
 			return "", repository.ErrConflict
 		}
-		return record.MediaLocator, nil
+		storage, err := unifiedVideoStore.ReadAttemptFileStorage(ctx, record.AttemptID)
+		if err != nil || storage.TokenID != uint64(tokenID) || storage.APIKey == "" {
+			return "", errors.Join(repository.ErrConflict, err)
+		}
+		return presignManagedResult(ctx, storage.APIKey, record.MediaLocator)
 	}
 	if record.SourceBlobID == 0 {
 		return "", repository.ErrConflict

@@ -20,7 +20,7 @@ func TestReadDeliveryRecoveryTargetRequiresLiveTaskIdentity(t *testing.T) {
 	}
 	defer db.Close()
 	store, _ := New(db)
-	mock.ExpectQuery("JOIN gw_upstream_task_identities i ON i.async_execution_id=x.id AND i.status='bound' AND i.expires_at>UTC_TIMESTAMP\\(3\\)").
+	mock.ExpectQuery("JOIN gw_upstream_task_identities i ON i.async_execution_id=x.id AND i.status='bound' AND i.expires_at>CURRENT_TIMESTAMP\\(3\\)").
 		WithArgs(uint64(7)).WillReturnError(sql.ErrNoRows)
 	if _, err := store.ReadDeliveryRecoveryTarget(context.Background(), 7); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("expired or inactive task identity remained refreshable: %v", err)
@@ -40,8 +40,8 @@ func TestScheduleDeliveryReconciliationIsRevisionIdempotent(t *testing.T) {
 	ctx := context.Background()
 	at := time.Now().UTC().Add(time.Minute)
 	mock.ExpectBegin()
-	mock.ExpectQuery(regexp.QuoteMeta("SELECT d.attempt_id,d.state,d.state_version,d.action_seq,d.delivery_mode,pt.source_url_policy FROM gw_result_deliveries")).
-		WithArgs(uint64(7)).WillReturnRows(sqlmock.NewRows([]string{"attempt_id", "state", "state_version", "action_seq", "delivery_mode", "source_url_policy"}).AddRow(3, "expired", 4, 1, "reference", "refreshable"))
+	mock.ExpectQuery(regexp.QuoteMeta("SELECT d.attempt_id,d.state,d.state_version,d.action_seq,d.delivery_mode,d.source_kind,pt.source_url_policy,d.reason_code,(s.id IS NOT NULL) FROM gw_result_deliveries")).
+		WithArgs(uint64(7)).WillReturnRows(sqlmock.NewRows([]string{"attempt_id", "state", "state_version", "action_seq", "delivery_mode", "source_kind", "source_url_policy", "reason_code", "source_available"}).AddRow(3, "expired", 4, 1, "reference", "remote_url", "refreshable", "source_expired", false))
 	mock.ExpectQuery("SELECT id FROM gw_async_outbox WHERE result_delivery_id=\\? AND state_version=\\?").
 		WithArgs(uint64(7), uint64(4)).WillReturnRows(sqlmock.NewRows([]string{"id"}))
 	mock.ExpectExec("UPDATE gw_result_deliveries SET action_seq=action_seq\\+1,retry_at=\\?").
@@ -78,8 +78,8 @@ func TestExpireRefreshableDeliverySchedulesReconciliationAtomically(t *testing.T
 		WithArgs(sqlmock.AnyArg(), uint64(7), uint64(3)).WillReturnResult(sqlmock.NewResult(0, 1))
 	mock.ExpectExec("INSERT INTO gw_state_transition_events.*'ready','expired'").
 		WithArgs(uint64(7), uint64(4), sqlmock.AnyArg()).WillReturnResult(sqlmock.NewResult(0, 1))
-	mock.ExpectQuery("SELECT d.attempt_id,d.state,d.state_version,d.action_seq,d.delivery_mode,pt.source_url_policy FROM gw_result_deliveries").
-		WithArgs(uint64(7)).WillReturnRows(sqlmock.NewRows([]string{"attempt_id", "state", "state_version", "action_seq", "delivery_mode", "source_url_policy"}).AddRow(3, "expired", 4, 0, "reference", "refreshable"))
+	mock.ExpectQuery("SELECT d.attempt_id,d.state,d.state_version,d.action_seq,d.delivery_mode,d.source_kind,pt.source_url_policy,d.reason_code,\\(s.id IS NOT NULL\\) FROM gw_result_deliveries").
+		WithArgs(uint64(7)).WillReturnRows(sqlmock.NewRows([]string{"attempt_id", "state", "state_version", "action_seq", "delivery_mode", "source_kind", "source_url_policy", "reason_code", "source_available"}).AddRow(3, "expired", 4, 0, "reference", "remote_url", "refreshable", "source_expired", false))
 	mock.ExpectQuery("SELECT id FROM gw_async_outbox WHERE result_delivery_id=\\? AND state_version=\\?").
 		WithArgs(uint64(7), uint64(4)).WillReturnRows(sqlmock.NewRows([]string{"id"}))
 	mock.ExpectExec("UPDATE gw_result_deliveries SET action_seq=action_seq\\+1,retry_at=\\?").
@@ -89,6 +89,47 @@ func TestExpireRefreshableDeliverySchedulesReconciliationAtomically(t *testing.T
 	mock.ExpectCommit()
 	if err := store.WithTx(ctx, func(tx *sql.Tx) error { return store.ExpireResultDelivery(ctx, tx, 7) }); err != nil {
 		t.Fatal(err)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestReadDeliveryRecoveryTargetSupportsManagedCopy(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	store, _ := New(db)
+	mock.ExpectQuery("SELECT d.id,d.attempt_id,COALESCE\\(x.id,0\\),d.result_ordinal,d.state,d.state_version,d.action_seq,d.delivery_mode,d.source_kind,r.resource_kind,COALESCE\\(s.encrypted_url_blob_id,0\\),COALESCE\\(s.source_seq,0\\)").
+		WithArgs(uint64(7)).WillReturnRows(sqlmock.NewRows([]string{
+		"delivery_id", "attempt_id", "async_id", "ordinal", "state", "state_version", "action_seq", "delivery_mode", "source_kind", "resource_kind", "source_blob_id", "source_sequence",
+	}).AddRow(7, 3, 0, 1, "delivery_failed", 2, 1, "managed_copy", "remote_url", "video_task", 50, 1))
+	target, err := store.ReadDeliveryRecoveryTarget(context.Background(), 7)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if target.DeliveryID != 7 || target.AttemptID != 3 || target.AsyncExecutionID != 0 || target.Ordinal != 1 || target.Mode != "managed_copy" || target.SourceKind != "remote_url" || target.ResourceKind != "video_task" || target.SourceBlobID != 50 || target.SourceSequence != 1 {
+		t.Fatalf("target=%+v", target)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestScheduleDueDeliveryReconciliationsScansManagedCopyFailures(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	store, _ := New(db)
+	mock.ExpectQuery("d.delivery_mode='managed_copy'.*d.reason_code IN.*managed_copy_download_failed").
+		WithArgs(100).WillReturnRows(sqlmock.NewRows([]string{"id"}))
+	count, err := store.ScheduleDueDeliveryReconciliations(context.Background(), 100)
+	if err != nil || count != 0 {
+		t.Fatalf("count=%d err=%v", count, err)
 	}
 	if err := mock.ExpectationsWereMet(); err != nil {
 		t.Fatal(err)

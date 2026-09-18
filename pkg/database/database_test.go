@@ -1,7 +1,15 @@
 package database
 
 import (
+	"go/ast"
+	"go/parser"
+	"go/token"
+	"io/fs"
+	"path/filepath"
+	"strconv"
+	"strings"
 	"testing"
+	"time"
 
 	mysqldriver "github.com/go-sql-driver/mysql"
 	"github.com/mirainya/Prism/pkg/config"
@@ -31,6 +39,42 @@ func TestBuildDSNRestrictsMultiStatementsToMigrationConnections(t *testing.T) {
 	}
 	if migration.Params["charset"] != "utf8mb4" || !migration.ParseTime {
 		t.Fatalf("migration DSN lost connection options: %#v", migration)
+	}
+	if regular.Loc != time.Local || migration.Loc != time.Local {
+		t.Fatalf("database DSN must serialize DATETIME values in the process location")
+	}
+}
+
+func TestRuntimeSQLUsesSessionClock(t *testing.T) {
+	root := filepath.Clean(filepath.Join("..", ".."))
+	for _, directory := range []string{"cmd", "internal", "pkg"} {
+		err := filepath.WalkDir(filepath.Join(root, directory), func(path string, entry fs.DirEntry, err error) error {
+			if err != nil {
+				return err
+			}
+			if entry.IsDir() || filepath.Ext(path) != ".go" || strings.HasSuffix(path, "_test.go") {
+				return nil
+			}
+			file, err := parser.ParseFile(token.NewFileSet(), path, nil, 0)
+			if err != nil {
+				return err
+			}
+			ast.Inspect(file, func(node ast.Node) bool {
+				literal, ok := node.(*ast.BasicLit)
+				if !ok || literal.Kind != token.STRING {
+					return true
+				}
+				value, err := strconv.Unquote(literal.Value)
+				if err == nil && strings.Contains(value, "UTC_TIMESTAMP(") {
+					t.Errorf("%s contains UTC_TIMESTAMP in a runtime string; DATETIME comparisons must use CURRENT_TIMESTAMP", path)
+				}
+				return true
+			})
+			return nil
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
 	}
 }
 

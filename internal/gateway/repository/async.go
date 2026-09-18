@@ -341,7 +341,7 @@ func (s *Store) ReadCallbackReceipt(ctx context.Context, db DB, receiptID uint64
 	}
 	var out CallbackReceiptRecord
 	var payloadID sql.NullInt64
-	err := db.QueryRowContext(ctx, `SELECT id,async_execution_id,event_scope,event_hmac,payload_hmac,status,state_version,encrypted_payload_blob_id,expires_at FROM gw_upstream_callback_receipts WHERE id=? AND status='received' AND expires_at>UTC_TIMESTAMP(3)`, receiptID).
+	err := db.QueryRowContext(ctx, `SELECT id,async_execution_id,event_scope,event_hmac,payload_hmac,status,state_version,encrypted_payload_blob_id,expires_at FROM gw_upstream_callback_receipts WHERE id=? AND status='received' AND expires_at>CURRENT_TIMESTAMP(3)`, receiptID).
 		Scan(&out.ID, &out.AsyncExecutionID, &out.EventScope, &out.EventHMAC, &out.PayloadHMAC, &out.Status, &out.StateVersion, &payloadID, &out.ExpiresAt)
 	if err == sql.ErrNoRows {
 		return CallbackReceiptRecord{}, ErrNotFound
@@ -421,7 +421,7 @@ JOIN gw_api_call_attempts ca ON ca.id=x.attempt_id
 	JOIN gw_credential_versions cv ON cv.id=ca.credential_version_id AND cv.credential_id=ca.credential_id
 JOIN gw_credential_secret_identities si ON si.id=cv.secret_identity_id AND si.status='active'
 JOIN encrypted_blobs b ON b.id=a.encrypted_blob_id AND b.purpose='gateway-callback-binding-token' AND b.schema_version=1 AND b.purged_at IS NULL
-	WHERE a.hmac_key_version=? AND a.value_hmac=? AND a.status='active' AND a.expires_at>UTC_TIMESTAMP(3)
+	WHERE a.hmac_key_version=? AND a.value_hmac=? AND a.status='active' AND a.expires_at>CURRENT_TIMESTAMP(3)
 	  AND x.state NOT IN ('succeeded','failed','cancelled','not_created','terminated_unknown')`, keyVersion, valueHMAC).
 		Scan(&out.AsyncExecutionID, &out.CredentialVersionID, &out.EncryptedBlobID)
 	if err == sql.ErrNoRows {
@@ -443,10 +443,9 @@ func (s *Store) AddCallbackBindingAlias(ctx context.Context, tx *sql.Tx, in Call
 		return 0, ErrInvalidInput
 	}
 	// Keep the expiry and active state in the database so a token cannot be
-	// revived by an application restart.  UTC_TIMESTAMP is used deliberately;
-	// it keeps all aliases created during one binding within the same server
-	// clock policy and preserves the five argument shape used by import code.
-	result, err := tx.ExecContext(ctx, `INSERT INTO gw_callback_binding_token_aliases(async_execution_id,hmac_key_version,value_hmac,encrypted_blob_id,created_at,status,expires_at) VALUES (?,?,?,?,?,'active',DATE_ADD(UTC_TIMESTAMP(3), INTERVAL 24 HOUR))`, in.AsyncExecutionID, in.HMACKeyVersion, in.ValueHMAC, in.EncryptedBlobID, nowUTC())
+	// revived by an application restart. CURRENT_TIMESTAMP follows the same
+	// session clock used by DATETIME values written through the MySQL driver.
+	result, err := tx.ExecContext(ctx, `INSERT INTO gw_callback_binding_token_aliases(async_execution_id,hmac_key_version,value_hmac,encrypted_blob_id,created_at,status,expires_at) VALUES (?,?,?,?,?,'active',DATE_ADD(CURRENT_TIMESTAMP(3), INTERVAL 24 HOUR))`, in.AsyncExecutionID, in.HMACKeyVersion, in.ValueHMAC, in.EncryptedBlobID, nowUTC())
 	if err != nil {
 		return 0, fmt.Errorf("add callback binding alias: %w", err)
 	}
@@ -559,7 +558,7 @@ func (s *Store) ClaimAttemptOutbox(ctx context.Context, tx *sql.Tx, owner string
 FROM gw_async_outbox o
 JOIN gw_api_call_attempts a ON a.id=o.attempt_id
 WHERE o.attempt_id IS NOT NULL AND o.action IN ('submit','recover')
-  AND ((o.status='pending' AND o.available_at<=UTC_TIMESTAMP(3)) OR (o.status='dispatching' AND o.lease_expires_at<=UTC_TIMESTAMP(3)))
+  AND ((o.status='pending' AND o.available_at<=CURRENT_TIMESTAMP(3)) OR (o.status='dispatching' AND o.lease_expires_at<=CURRENT_TIMESTAMP(3)))
 ORDER BY o.id LIMIT 1 FOR UPDATE SKIP LOCKED`).Scan(&item.ID, &item.AttemptID, &item.ActionSeq, &item.Action, &item.StateVersion, &item.Attempts, &available, &status, &previousExpiry, &callID)
 	if err == sql.ErrNoRows {
 		return OutboxItem{}, ErrNotFound
@@ -584,7 +583,7 @@ ORDER BY o.id LIMIT 1 FOR UPDATE SKIP LOCKED`).Scan(&item.ID, &item.AttemptID, &
 	if lockedCallID != callID || attemptVersion != item.StateVersion || !attemptOutboxActionAllowed(attemptState, item.Action) {
 		return OutboxItem{}, ErrConflict
 	}
-	result, err := tx.ExecContext(ctx, `UPDATE gw_async_outbox SET status='dispatching',lease_owner=?,lease_expires_at=?,attempt_count=attempt_count+1,updated_at=? WHERE id=? AND attempt_id=? AND action_seq=? AND state_version=? AND action=? AND (status='pending' OR (status='dispatching' AND lease_expires_at<=UTC_TIMESTAMP(3)))`, owner, expiresAt, nowUTC(), item.ID, item.AttemptID, item.ActionSeq, item.StateVersion, item.Action)
+	result, err := tx.ExecContext(ctx, `UPDATE gw_async_outbox SET status='dispatching',lease_owner=?,lease_expires_at=?,attempt_count=attempt_count+1,updated_at=? WHERE id=? AND attempt_id=? AND action_seq=? AND state_version=? AND action=? AND (status='pending' OR (status='dispatching' AND lease_expires_at<=CURRENT_TIMESTAMP(3)))`, owner, expiresAt, nowUTC(), item.ID, item.AttemptID, item.ActionSeq, item.StateVersion, item.Action)
 	if err != nil {
 		return OutboxItem{}, fmt.Errorf("lease attempt outbox: %w", err)
 	}
@@ -697,7 +696,7 @@ func (s *Store) ClaimDeliveryOutbox(ctx context.Context, tx *sql.Tx, owner strin
 	var available time.Time
 	var previousExpiry sql.NullTime
 	var status string
-	err := tx.QueryRowContext(ctx, `SELECT id,result_delivery_id,action_seq,action,state_version,attempt_count,available_at,status,lease_expires_at FROM gw_async_outbox WHERE result_delivery_id IS NOT NULL AND action='reconcile_delivery' AND ((status='pending' AND available_at<=UTC_TIMESTAMP(3)) OR (status='dispatching' AND lease_expires_at<=UTC_TIMESTAMP(3))) ORDER BY id LIMIT 1 FOR UPDATE SKIP LOCKED`).Scan(&item.ID, &item.ResultDeliveryID, &item.ActionSeq, &item.Action, &item.StateVersion, &item.Attempts, &available, &status, &previousExpiry)
+	err := tx.QueryRowContext(ctx, `SELECT id,result_delivery_id,action_seq,action,state_version,attempt_count,available_at,status,lease_expires_at FROM gw_async_outbox WHERE result_delivery_id IS NOT NULL AND action='reconcile_delivery' AND ((status='pending' AND available_at<=CURRENT_TIMESTAMP(3)) OR (status='dispatching' AND lease_expires_at<=CURRENT_TIMESTAMP(3))) ORDER BY id LIMIT 1 FOR UPDATE SKIP LOCKED`).Scan(&item.ID, &item.ResultDeliveryID, &item.ActionSeq, &item.Action, &item.StateVersion, &item.Attempts, &available, &status, &previousExpiry)
 	if err == sql.ErrNoRows {
 		return OutboxItem{}, ErrNotFound
 	}
@@ -707,7 +706,7 @@ func (s *Store) ClaimDeliveryOutbox(ctx context.Context, tx *sql.Tx, owner strin
 	item.AvailableAt = available
 	item.MayHaveDispatched = status == "dispatching" || item.Attempts > 0
 	expires := nowUTC().Add(lease)
-	if err := requireOneRow(tx.ExecContext(ctx, `UPDATE gw_async_outbox SET status='dispatching',lease_owner=?,lease_expires_at=?,attempt_count=attempt_count+1,updated_at=? WHERE id=? AND result_delivery_id=? AND action='reconcile_delivery' AND (status='pending' OR (status='dispatching' AND lease_expires_at<=UTC_TIMESTAMP(3)))`, owner, expires, nowUTC(), item.ID, item.ResultDeliveryID)); err != nil {
+	if err := requireOneRow(tx.ExecContext(ctx, `UPDATE gw_async_outbox SET status='dispatching',lease_owner=?,lease_expires_at=?,attempt_count=attempt_count+1,updated_at=? WHERE id=? AND result_delivery_id=? AND action='reconcile_delivery' AND (status='pending' OR (status='dispatching' AND lease_expires_at<=CURRENT_TIMESTAMP(3)))`, owner, expires, nowUTC(), item.ID, item.ResultDeliveryID)); err != nil {
 		return OutboxItem{}, fmt.Errorf("lease delivery outbox: %w", err)
 	}
 	item.Attempts++
@@ -723,7 +722,7 @@ func (s *Store) ClaimCallbackOutbox(ctx context.Context, tx *sql.Tx, owner strin
 	var available time.Time
 	var previousExpiry sql.NullTime
 	var status string
-	err := tx.QueryRowContext(ctx, `SELECT id,callback_receipt_id,action_seq,action,state_version,attempt_count,available_at,status,lease_expires_at FROM gw_async_outbox WHERE callback_receipt_id IS NOT NULL AND ((status='pending' AND available_at<=UTC_TIMESTAMP(3)) OR (status='dispatching' AND lease_expires_at<=UTC_TIMESTAMP(3))) ORDER BY id LIMIT 1 FOR UPDATE SKIP LOCKED`).Scan(&item.ID, &item.CallbackReceiptID, &item.ActionSeq, &item.Action, &item.StateVersion, &item.Attempts, &available, &status, &previousExpiry)
+	err := tx.QueryRowContext(ctx, `SELECT id,callback_receipt_id,action_seq,action,state_version,attempt_count,available_at,status,lease_expires_at FROM gw_async_outbox WHERE callback_receipt_id IS NOT NULL AND ((status='pending' AND available_at<=CURRENT_TIMESTAMP(3)) OR (status='dispatching' AND lease_expires_at<=CURRENT_TIMESTAMP(3))) ORDER BY id LIMIT 1 FOR UPDATE SKIP LOCKED`).Scan(&item.ID, &item.CallbackReceiptID, &item.ActionSeq, &item.Action, &item.StateVersion, &item.Attempts, &available, &status, &previousExpiry)
 	if err == sql.ErrNoRows {
 		return OutboxItem{}, ErrNotFound
 	}
@@ -733,7 +732,7 @@ func (s *Store) ClaimCallbackOutbox(ctx context.Context, tx *sql.Tx, owner strin
 	item.AvailableAt = available
 	item.MayHaveDispatched = status == "dispatching" || item.Attempts > 0
 	expires := nowUTC().Add(lease)
-	if err := requireOneRow(tx.ExecContext(ctx, `UPDATE gw_async_outbox SET status='dispatching',lease_owner=?,lease_expires_at=?,attempt_count=attempt_count+1,updated_at=? WHERE id=? AND callback_receipt_id=? AND (status='pending' OR (status='dispatching' AND lease_expires_at<=UTC_TIMESTAMP(3)))`, owner, expires, nowUTC(), item.ID, item.CallbackReceiptID)); err != nil {
+	if err := requireOneRow(tx.ExecContext(ctx, `UPDATE gw_async_outbox SET status='dispatching',lease_owner=?,lease_expires_at=?,attempt_count=attempt_count+1,updated_at=? WHERE id=? AND callback_receipt_id=? AND (status='pending' OR (status='dispatching' AND lease_expires_at<=CURRENT_TIMESTAMP(3)))`, owner, expires, nowUTC(), item.ID, item.CallbackReceiptID)); err != nil {
 		return OutboxItem{}, fmt.Errorf("lease callback outbox: %w", err)
 	}
 	item.Attempts++
@@ -746,7 +745,7 @@ func (s *Store) AssertCallbackOutboxLease(ctx context.Context, tx *sql.Tx, item 
 		return ErrInvalidInput
 	}
 	var n int
-	err := tx.QueryRowContext(ctx, `SELECT 1 FROM gw_async_outbox WHERE id=? AND callback_receipt_id=? AND status='dispatching' AND lease_owner=? AND attempt_count=? AND action_seq=? AND state_version=? AND action='callback' AND lease_expires_at>UTC_TIMESTAMP(3) FOR UPDATE`, item.ID, item.CallbackReceiptID, item.LeaseOwner, item.Attempts, item.ActionSeq, item.StateVersion).Scan(&n)
+	err := tx.QueryRowContext(ctx, `SELECT 1 FROM gw_async_outbox WHERE id=? AND callback_receipt_id=? AND status='dispatching' AND lease_owner=? AND attempt_count=? AND action_seq=? AND state_version=? AND action='callback' AND lease_expires_at>CURRENT_TIMESTAMP(3) FOR UPDATE`, item.ID, item.CallbackReceiptID, item.LeaseOwner, item.Attempts, item.ActionSeq, item.StateVersion).Scan(&n)
 	if err == sql.ErrNoRows {
 		return ErrConflict
 	}
@@ -773,7 +772,7 @@ func (s *Store) ClaimAsyncOutbox(ctx context.Context, tx *sql.Tx, owner string, 
 	var available time.Time
 	var previousExpiry sql.NullTime
 	var status string
-	err := tx.QueryRowContext(ctx, `SELECT id,call_id,attempt_id,async_execution_id,action_seq,action,state_version,attempt_count,available_at,status,lease_expires_at FROM gw_async_outbox WHERE async_execution_id IS NOT NULL AND ((status='pending' AND available_at<=UTC_TIMESTAMP(3)) OR (status='dispatching' AND lease_expires_at<=UTC_TIMESTAMP(3))) ORDER BY id LIMIT 1 FOR UPDATE SKIP LOCKED`).Scan(&item.ID, &callID, &attemptID, &asyncID, &item.ActionSeq, &item.Action, &item.StateVersion, &item.Attempts, &available, &status, &previousExpiry)
+	err := tx.QueryRowContext(ctx, `SELECT id,call_id,attempt_id,async_execution_id,action_seq,action,state_version,attempt_count,available_at,status,lease_expires_at FROM gw_async_outbox WHERE async_execution_id IS NOT NULL AND ((status='pending' AND available_at<=CURRENT_TIMESTAMP(3)) OR (status='dispatching' AND lease_expires_at<=CURRENT_TIMESTAMP(3))) ORDER BY id LIMIT 1 FOR UPDATE SKIP LOCKED`).Scan(&item.ID, &callID, &attemptID, &asyncID, &item.ActionSeq, &item.Action, &item.StateVersion, &item.Attempts, &available, &status, &previousExpiry)
 	if err == sql.ErrNoRows {
 		return OutboxItem{}, ErrNotFound
 	}
@@ -784,7 +783,7 @@ func (s *Store) ClaimAsyncOutbox(ctx context.Context, tx *sql.Tx, owner string, 
 	item.AvailableAt = available
 	item.MayHaveDispatched = status == "dispatching" || item.Attempts > 0
 	expires := nowUTC().Add(lease)
-	result, err := tx.ExecContext(ctx, `UPDATE gw_async_outbox SET status='dispatching',lease_owner=?,lease_expires_at=?,attempt_count=attempt_count+1,updated_at=? WHERE id=? AND (status='pending' OR (status='dispatching' AND lease_expires_at<=UTC_TIMESTAMP(3)))`, owner, expires, nowUTC(), item.ID)
+	result, err := tx.ExecContext(ctx, `UPDATE gw_async_outbox SET status='dispatching',lease_owner=?,lease_expires_at=?,attempt_count=attempt_count+1,updated_at=? WHERE id=? AND (status='pending' OR (status='dispatching' AND lease_expires_at<=CURRENT_TIMESTAMP(3)))`, owner, expires, nowUTC(), item.ID)
 	if err != nil {
 		return OutboxItem{}, fmt.Errorf("lease outbox: %w", err)
 	}
@@ -817,7 +816,7 @@ WHERE id=? AND status='dispatching' AND lease_owner=? AND attempt_count=?
   AND action_seq=? AND state_version=? AND action=?
   AND (call_id <=> ?) AND (attempt_id <=> ?) AND (async_execution_id <=> ?)
   AND (callback_receipt_id <=> ?) AND (result_delivery_id <=> ?)
-  AND lease_expires_at>UTC_TIMESTAMP(3) FOR UPDATE`,
+  AND lease_expires_at>CURRENT_TIMESTAMP(3) FOR UPDATE`,
 		item.ID, item.LeaseOwner, item.Attempts, item.ActionSeq, item.StateVersion, item.Action,
 		outboxNullableID(item.CallID), outboxNullableID(item.AttemptID), outboxNullableID(item.AsyncExecutionID),
 		outboxNullableID(item.CallbackReceiptID), outboxNullableID(item.ResultDeliveryID)).Scan(&n)
@@ -904,7 +903,7 @@ func (s *Store) CompleteAsyncOutbox(ctx context.Context, tx *sql.Tx, item Outbox
 	if success {
 		status = "succeeded"
 	}
-	result, err := tx.ExecContext(ctx, `UPDATE gw_async_outbox SET status=?,last_error_code=?,lease_owner='',lease_expires_at=NULL,updated_at=? WHERE id=? AND status='dispatching' AND lease_owner=? AND attempt_count=? AND lease_expires_at>UTC_TIMESTAMP(3)`, status, errorCode, nowUTC(), item.ID, item.LeaseOwner, item.Attempts)
+	result, err := tx.ExecContext(ctx, `UPDATE gw_async_outbox SET status=?,last_error_code=?,lease_owner='',lease_expires_at=NULL,updated_at=? WHERE id=? AND status='dispatching' AND lease_owner=? AND attempt_count=? AND lease_expires_at>CURRENT_TIMESTAMP(3)`, status, errorCode, nowUTC(), item.ID, item.LeaseOwner, item.Attempts)
 	if err != nil {
 		return fmt.Errorf("complete outbox: %w", err)
 	}
@@ -925,7 +924,7 @@ func (s *Store) RetryAsyncOutbox(ctx context.Context, tx *sql.Tx, item OutboxIte
 	if err := s.AssertAsyncOutboxLease(ctx, tx, item); err != nil {
 		return err
 	}
-	result, err := tx.ExecContext(ctx, `UPDATE gw_async_outbox SET status='pending',last_error_code=?,available_at=?,lease_owner='',lease_expires_at=NULL,updated_at=? WHERE id=? AND status='dispatching' AND lease_owner=? AND attempt_count=? AND lease_expires_at>UTC_TIMESTAMP(3)`, errorCode, availableAt.UTC(), nowUTC(), item.ID, item.LeaseOwner, item.Attempts)
+	result, err := tx.ExecContext(ctx, `UPDATE gw_async_outbox SET status='pending',last_error_code=?,available_at=?,lease_owner='',lease_expires_at=NULL,updated_at=? WHERE id=? AND status='dispatching' AND lease_owner=? AND attempt_count=? AND lease_expires_at>CURRENT_TIMESTAMP(3)`, errorCode, availableAt.UTC(), nowUTC(), item.ID, item.LeaseOwner, item.Attempts)
 	if err != nil {
 		return fmt.Errorf("retry outbox: %w", err)
 	}
@@ -946,7 +945,7 @@ func (s *Store) DeadLetterAsyncOutbox(ctx context.Context, tx *sql.Tx, item Outb
 	if err := s.AssertAsyncOutboxLease(ctx, tx, item); err != nil {
 		return err
 	}
-	res, err := tx.ExecContext(ctx, `UPDATE gw_async_outbox SET status='dead_letter',last_error_code=?,lease_owner='',lease_expires_at=NULL,updated_at=? WHERE id=? AND status='dispatching' AND lease_owner=? AND attempt_count=? AND lease_expires_at>UTC_TIMESTAMP(3)`, errorCode, nowUTC(), item.ID, item.LeaseOwner, item.Attempts)
+	res, err := tx.ExecContext(ctx, `UPDATE gw_async_outbox SET status='dead_letter',last_error_code=?,lease_owner='',lease_expires_at=NULL,updated_at=? WHERE id=? AND status='dispatching' AND lease_owner=? AND attempt_count=? AND lease_expires_at>CURRENT_TIMESTAMP(3)`, errorCode, nowUTC(), item.ID, item.LeaseOwner, item.Attempts)
 	if err != nil {
 		return err
 	}

@@ -50,7 +50,7 @@ func (s *Store) SettleReservation(ctx context.Context, tx *sql.Tx, id uint64, ac
 		budgetExcess = positivePart(r.window.used.Add(amount).Add(r.window.held).Sub(r.amount).Sub(*r.window.limit))
 	}
 	status := r.account.status
-	if debt.Sign() > 0 || excess.Sign() > 0 || budgetExcess.Sign() > 0 {
+	if r.account.exceedsCredit(posted) || excess.Sign() > 0 || budgetExcess.Sign() > 0 {
 		status = "frozen"
 	}
 	now := nowUTC()

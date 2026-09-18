@@ -305,66 +305,10 @@ func (s *Service) callbackVideoResult(ctx context.Context, tx *sql.Tx, callID, p
 	if result.Duration != "" {
 		out["duration"] = result.Duration
 	}
-	videoURL, available, err := s.callbackDeliveryURL(ctx, tx, callID, result.VideoDeliveryID)
-	if err != nil {
-		return nil, err
-	}
-	if available {
-		out["video_url"] = videoURL
-	} else {
-		out["delivery_status"] = "unavailable"
-	}
 	if result.ThumbnailDeliveryID != 0 {
 		out["thumbnail_delivery_id"] = fmt.Sprintf("%d", result.ThumbnailDeliveryID)
-		thumbnailURL, thumbnailAvailable, err := s.callbackDeliveryURL(ctx, tx, callID, result.ThumbnailDeliveryID)
-		if err != nil {
-			return nil, err
-		}
-		if thumbnailAvailable {
-			out["thumbnail_url"] = thumbnailURL
-		}
 	}
 	return out, nil
-}
-
-func (s *Service) callbackDeliveryURL(ctx context.Context, tx *sql.Tx, callID, deliveryID uint64) (string, bool, error) {
-	var mode, state string
-	var sourceSequence, sourceBlobID sql.NullInt64
-	var mediaLocator sql.NullString
-	err := tx.QueryRowContext(ctx, `SELECT d.delivery_mode,d.state,src.source_seq,src.encrypted_url_blob_id,NULLIF(asset.storage_locator,'')
-FROM gw_result_deliveries d
-LEFT JOIN gw_result_delivery_sources src ON src.id=d.current_source_id AND src.state='active'
-LEFT JOIN gw_media_asset_refs ref ON ref.id=d.media_asset_ref_id
-LEFT JOIN gw_media_assets asset ON asset.id=ref.media_asset_id AND asset.state='active'
-WHERE d.id=? AND d.call_id=?`, deliveryID, callID).Scan(&mode, &state, &sourceSequence, &sourceBlobID, &mediaLocator)
-	if errors.Is(err, sql.ErrNoRows) {
-		return "", false, repository.ErrNotFound
-	}
-	if err != nil {
-		return "", false, err
-	}
-	if state != "ready" {
-		return "", false, nil
-	}
-	if mode == "managed_copy" {
-		if !mediaLocator.Valid || strings.TrimSpace(mediaLocator.String) == "" {
-			return "", false, nil
-		}
-		return mediaLocator.String, true, nil
-	}
-	if mode != "reference" || !sourceSequence.Valid || !sourceBlobID.Valid {
-		return "", false, repository.ErrConflict
-	}
-	if sourceSequence.Int64 <= 0 || sourceBlobID.Int64 <= 0 {
-		return "", false, repository.ErrConflict
-	}
-	sequence, blobID := uint64(sourceSequence.Int64), uint64(sourceBlobID.Int64)
-	plain, err := s.openCallbackBlob(ctx, tx, blobID, []byte(fmt.Sprintf("delivery:%d:source:%d", deliveryID, sequence)), "gateway-result-source", callbackEventSchemaVersion)
-	if err != nil {
-		return "", false, err
-	}
-	defer clear(plain)
-	return string(plain), true, nil
 }
 
 func (s *Service) openCallbackBlob(ctx context.Context, db repository.DB, blobID uint64, owner []byte, purpose string, schemaVersion uint32) ([]byte, error) {

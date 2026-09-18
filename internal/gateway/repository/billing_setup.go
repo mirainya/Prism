@@ -98,13 +98,16 @@ func (s *Store) OpenBillingAccount(ctx context.Context, tx *sql.Tx, userID uint6
 		return 0, err
 	}
 	var id uint64
-	if err := tx.QueryRowContext(ctx, `SELECT id FROM billing_accounts WHERE user_id=?`, userID).Scan(&id); err == nil {
+	var currency string
+	var version uint32
+	if err := tx.QueryRowContext(ctx, `SELECT id,currency_code,currency_version FROM billing_accounts WHERE user_id=?`, userID).Scan(&id, &currency, &version); err == nil {
+		if err := ensureBillingAccountLedger(ctx, tx, id, currency, version); err != nil {
+			return 0, err
+		}
 		return id, nil
 	} else if err != sql.ErrNoRows {
 		return 0, err
 	}
-	var currency string
-	var version uint32
 	if err := tx.QueryRowContext(ctx, `SELECT currency_code,currency_version FROM billing_system_state WHERE id=1`).Scan(&currency, &version); err != nil {
 		return 0, err
 	}
@@ -117,11 +120,30 @@ func (s *Store) OpenBillingAccount(ctx context.Context, tx *sql.Tx, userID uint6
 	if err != nil {
 		return 0, err
 	}
-	if _, err := tx.ExecContext(ctx, `INSERT INTO ledger_accounts(billing_account_id,currency_code,currency_version,balance,created_at) VALUES (?,?,?,0,?)`, id, currency, version, now); err != nil {
+	if err := ensureBillingAccountLedger(ctx, tx, id, currency, version); err != nil {
 		return 0, err
 	}
 	_, err = tx.ExecContext(ctx, `INSERT INTO billing_account_state_events(billing_account_id,state_version,old_state,new_state,reason_code,created_at) VALUES (?,1,NULL,'open','account_opened',?)`, id, now)
 	return id, err
+}
+
+func ensureBillingAccountLedger(ctx context.Context, tx *sql.Tx, accountID uint64, currency string, currencyVersion uint32) error {
+	if tx == nil || accountID == 0 || currency == "" || currencyVersion == 0 {
+		return ErrInvalidInput
+	}
+	_, err := tx.ExecContext(ctx, `INSERT INTO ledger_accounts(billing_account_id,currency_code,currency_version,balance,created_at)
+VALUES (?,?,?,0,?)`, accountID, currency, currencyVersion, nowUTC())
+	if err == nil {
+		return nil
+	}
+	// The account row is locked by OpenBillingAccount, so a duplicate here
+	// means another call already repaired the same ledger row. Verify that
+	// case without relying on a database-specific upsert syntax.
+	var existingID uint64
+	if lookupErr := tx.QueryRowContext(ctx, `SELECT id FROM ledger_accounts WHERE billing_account_id=? AND currency_code=? AND currency_version=?`, accountID, currency, currencyVersion).Scan(&existingID); lookupErr == nil {
+		return nil
+	}
+	return err
 }
 
 // CreditBillingAccount is the verified funding write boundary. The source key

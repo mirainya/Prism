@@ -20,7 +20,6 @@ type Service struct {
 	Store        *repository.Store
 	callbackKeys *CallbackDeliveryKeys
 	readiness    ReadinessCheck
-	identity     *repository.DeploymentIdentity
 }
 
 func New(store *repository.Store) (*Service, error) {
@@ -44,47 +43,11 @@ func NewWithReadiness(store *repository.Store, readiness ReadinessCheck) (*Servi
 	return &Service{Store: store, readiness: readiness}, nil
 }
 
-// NewWithDeploymentIdentity binds worker claim transactions to the exact
-// deployment member and executable that was admitted by the control plane.
-// HTTP/control-plane services may continue to use NewWithReadiness; only
-// data-plane workers need this stronger claim fence.
-func NewWithDeploymentIdentity(store *repository.Store, readiness ReadinessCheck, identity repository.DeploymentIdentity) (*Service, error) {
-	if identity.Validate() != nil {
-		return nil, repository.ErrInvalidInput
-	}
-	service, err := NewWithReadiness(store, readiness)
-	if err != nil {
-		return nil, err
-	}
-	service.identity = &identity
-	return service, nil
-}
-
 func (s *Service) requireReadiness(ctx context.Context) error {
 	if s == nil || s.Store == nil {
 		return repository.ErrInvalidInput
 	}
 	return s.readiness.Require(ctx)
-}
-
-// lockClaimDeployment is called inside every worker claim transaction.  The
-// singleton row lock remains held until the outbox lease is written, so an
-// activation cannot retire the proof between the readiness check and claim.
-func (s *Service) lockClaimDeployment(ctx context.Context, tx *sql.Tx) error {
-	if s == nil || s.Store == nil || tx == nil {
-		return repository.ErrInvalidInput
-	}
-	if s.identity == nil {
-		return nil
-	}
-	_, err := s.Store.LockActiveDeployment(ctx, tx, *s.identity)
-	if err != nil {
-		// A deployment pointer/proof failure is a readiness failure from a
-		// worker's perspective. Preserve the repository cause for diagnostics
-		// while making worker loops stop instead of retrying indefinitely.
-		return errors.Join(ErrNotReady, err)
-	}
-	return nil
 }
 
 type SubmitInput struct {
@@ -134,26 +97,26 @@ type Submission struct {
 // created for asynchronous calls afterwards.
 func (s *Service) Submit(ctx context.Context, in SubmitInput) (Submission, error) {
 	if len(in.RequestPayload.Plaintext) == 0 || len(in.RequestPayload.KEK) != security.KeySize || len(in.RequestPayload.HMACKey) != security.KeySize || in.RequestPayload.KeyringID == 0 || in.RequestPayload.KEKVersion == 0 || in.Call.RequestPayloadID != nil || in.Call.ResultPayloadID != nil {
-		return Submission{}, repository.ErrInvalidInput
+		return Submission{}, fmt.Errorf("validate request payload: %w", repository.ErrInvalidInput)
 	}
 	if in.Asynchronous && (in.AsyncScopeKind == "" || in.AsyncScopeKey == "") {
-		return Submission{}, repository.ErrInvalidInput
+		return Submission{}, fmt.Errorf("validate async scope: %w", repository.ErrInvalidInput)
 	}
 	if in.Background && (in.Asynchronous || in.ResourceKind != "response") || in.ResourceKind == "response" && in.Asynchronous || in.PreviousResponseResourceID != nil && in.ResourceKind != "response" {
-		return Submission{}, repository.ErrInvalidInput
+		return Submission{}, fmt.Errorf("validate execution mode: %w", repository.ErrInvalidInput)
 	}
 	if in.Idempotency != nil && (in.Idempotency.TokenID != in.Call.TokenID || in.Idempotency.OperationContractID != in.Call.OperationContractID) {
-		return Submission{}, repository.ErrInvalidInput
+		return Submission{}, fmt.Errorf("validate idempotency scope: %w", repository.ErrInvalidInput)
 	}
 	if in.Reservation.TokenID != in.Call.TokenID || in.Reservation.Currency != in.Call.Currency || in.Reservation.CurrencyVersion != in.Call.CurrencyVersion {
-		return Submission{}, repository.ErrInvalidInput
+		return Submission{}, fmt.Errorf("validate billing reservation: %w", repository.ErrInvalidInput)
 	}
 	if in.CallbackTarget != nil {
 		callback := in.CallbackTarget
 		if callback.Algorithm != callbackAlgorithmHTTPJSONV1 || callback.PolicyVersion != callbackPolicyVersion ||
 			callback.Config.KeyringID != in.RequestPayload.KeyringID || callback.Config.KEKVersion != in.RequestPayload.KEKVersion ||
 			len(callback.Config.Plaintext) == 0 || len(callback.Config.KEK) != security.KeySize || len(callback.Config.HMACKey) != security.KeySize {
-			return Submission{}, repository.ErrInvalidInput
+			return Submission{}, fmt.Errorf("validate callback target: %w", repository.ErrInvalidInput)
 		}
 	}
 	reservation := in.Reservation
@@ -161,7 +124,7 @@ func (s *Service) Submit(ctx context.Context, in SubmitInput) (Submission, error
 	err := s.Store.WithTx(ctx, func(tx *sql.Tx) error {
 		var keyringID uint64
 		if err := tx.QueryRowContext(ctx, `SELECT k.id FROM crypto_keyring_state k JOIN crypto_key_versions v ON v.keyring_id=k.id AND v.key_version=k.current_version WHERE k.id=? AND k.purpose='gateway-payload' AND k.current_version=? AND v.status='current' FOR SHARE`, in.RequestPayload.KeyringID, in.RequestPayload.KEKVersion).Scan(&keyringID); err != nil {
-			return err
+			return fmt.Errorf("verify payload keyring: %w", err)
 		}
 		var idempotencyID uint64
 		if in.Idempotency != nil {
@@ -180,7 +143,7 @@ func (s *Service) Submit(ctx context.Context, in SubmitInput) (Submission, error
 			}
 			reserved, err := s.Store.ReserveIdempotency(ctx, tx, idempotency)
 			if err != nil {
-				return err
+				return fmt.Errorf("reserve idempotency key: %w", err)
 			}
 			if reserved.Reused {
 				if reserved.CallID == nil {
@@ -211,6 +174,9 @@ WHERE a.call_id=? ORDER BY a.attempt_no DESC LIMIT 1`, out.CallID).Scan(&out.Att
 			}
 			idempotencyID = reserved.ID
 		}
+		if err := s.configureMediaDelivery(ctx, tx, &in); err != nil {
+			return fmt.Errorf("configure media delivery: %w", err)
+		}
 		// Resolve the current billing ancestors only after the idempotency
 		// replay branch. A valid replay must not depend on today's open
 		// account or budget window.
@@ -220,18 +186,18 @@ WHERE a.call_id=? ORDER BY a.attempt_no DESC LIMIT 1`, out.CallID).Scan(&out.Att
 			}
 			accountID, windowID, err := s.Store.ResolveCurrentBillingContext(ctx, tx, in.Call.UserID, in.Call.TokenID, in.Call.Currency, in.Call.CurrencyVersion)
 			if err != nil {
-				return err
+				return fmt.Errorf("resolve billing context: %w", err)
 			}
 			reservation.BillingAccountID, reservation.BudgetWindowID = accountID, windowID
 		}
 		callID, err := s.Store.CreateCall(ctx, tx, in.Call)
 		if err != nil {
-			return err
+			return fmt.Errorf("create call: %w", err)
 		}
 		out.CallID = callID
 		out.PublicID = in.Call.PublicID
 		if _, err := s.Store.PutCallPayload(ctx, tx, callID, "request", in.RequestPayload); err != nil {
-			return err
+			return fmt.Errorf("store request payload: %w", err)
 		}
 		if in.CallbackTarget != nil {
 			configBlob := in.CallbackTarget.Config
@@ -254,12 +220,12 @@ WHERE a.call_id=? ORDER BY a.attempt_no DESC LIMIT 1`, out.CallID).Scan(&out.Att
 		if in.ResourceKind != "" {
 			resourceID, err := s.Store.CreateResource(ctx, tx, repository.ResourceInput{PublicID: in.Call.PublicID, Kind: in.ResourceKind, CallID: callID, UserID: in.Call.UserID, TokenID: in.Call.TokenID})
 			if err != nil {
-				return err
+				return fmt.Errorf("create %s resource: %w", in.ResourceKind, err)
 			}
 			switch in.ResourceKind {
 			case "video_task":
 				if err := s.Store.CreateVideoTask(ctx, tx, repository.VideoTaskInput{ResourceID: resourceID, TaskNo: in.Call.PublicID, Status: "queued", Progress: 0, Specification: in.ResourceSummary}); err != nil {
-					return err
+					return fmt.Errorf("create video task projection: %w", err)
 				}
 			case "capability_task":
 				if err := s.Store.CreateCapabilityTask(ctx, tx, repository.CapabilityTaskInput{ResourceID: resourceID, TaskNo: in.Call.PublicID, Status: "queued", Progress: 0, Parameters: in.ResourceSummary}); err != nil {
@@ -303,21 +269,21 @@ WHERE a.call_id=? ORDER BY a.attempt_no DESC LIMIT 1`, out.CallID).Scan(&out.Att
 		reservation.CallID = callID
 		reservationID, err := s.Store.ReserveBilling(ctx, tx, reservation)
 		if err != nil {
-			return err
+			return fmt.Errorf("reserve billing: %w", err)
 		}
 		out.ReservationID = reservationID
 		in.Attempt.CallID = callID
 		attemptID, err := s.Store.BeginAttempt(ctx, tx, in.Attempt)
 		if err != nil {
-			return err
+			return fmt.Errorf("begin execution attempt: %w", err)
 		}
 		out.AttemptID = attemptID
 		var taskScope string
 		if err := tx.QueryRowContext(ctx, `SELECT task_scope FROM gw_product_transports WHERE id=? AND release_id=?`, in.Attempt.ProductTransportID, in.Attempt.CatalogReleaseID).Scan(&taskScope); err != nil {
-			return err
+			return fmt.Errorf("read task scope: %w", err)
 		}
 		if taskScope != "none" && taskScope != "request" && taskScope != "task" || taskScope == "task" && !in.Asynchronous {
-			return repository.ErrInvalidInput
+			return fmt.Errorf("validate task scope: %w", repository.ErrInvalidInput)
 		}
 		if in.Background {
 			item, err := s.Store.CreateAttemptOutbox(ctx, tx, repository.AttemptOutboxInput{AttemptID: attemptID, Action: "submit", ExpectedStateVersion: 1, AvailableAt: time.Now().UTC()})
@@ -330,7 +296,7 @@ WHERE a.call_id=? ORDER BY a.attempt_no DESC LIMIT 1`, out.CallID).Scan(&out.Att
 		if in.Asynchronous {
 			if taskScope == "task" {
 				if _, err := s.Store.AcquireCredentialSlot(ctx, tx, repository.SlotInput{CredentialID: in.Attempt.CredentialID, CredentialPoolID: in.Attempt.CredentialPoolID, Scope: "task", AttemptID: &attemptID}); err != nil {
-					return err
+					return fmt.Errorf("acquire task credential slot: %w", err)
 				}
 			}
 			asyncID, err := s.Store.CreateAsyncExecution(ctx, tx, repository.CreateAsyncInput{
@@ -338,17 +304,20 @@ WHERE a.call_id=? ORDER BY a.attempt_no DESC LIMIT 1`, out.CallID).Scan(&out.Att
 				CallbackBinding: in.CallbackBinding,
 			})
 			if err != nil {
-				return err
+				return fmt.Errorf("create async execution: %w", err)
 			}
 			out.AsyncExecutionID = asyncID
 			actionSeq, err := s.Store.TransitionAsync(ctx, tx, asyncID, execution.AsyncAllocated, execution.AsyncSubmitting, 1, "submit", "submit")
 			if err != nil {
-				return err
+				return fmt.Errorf("queue async submission: %w", err)
 			}
 			if err := tx.QueryRowContext(ctx, `SELECT id FROM gw_async_outbox WHERE async_execution_id=? AND action_seq=? AND action='submit'`, asyncID, actionSeq).Scan(&out.OutboxID); err != nil {
-				return err
+				return fmt.Errorf("read async submission: %w", err)
 			}
-			return s.updateAsyncResourceProjection(ctx, tx, asyncID, execution.AsyncSubmitting)
+			if err := s.updateAsyncResourceProjection(ctx, tx, asyncID, execution.AsyncSubmitting); err != nil {
+				return fmt.Errorf("update async resource projection: %w", err)
+			}
+			return nil
 		}
 		return nil
 	})

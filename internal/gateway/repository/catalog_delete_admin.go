@@ -22,6 +22,7 @@ func (s *Store) DeleteCatalogSKU(ctx context.Context, tx *sql.Tx, releaseID, sku
 	for _, statement := range []string{
 		`DELETE FROM gw_sell_rates WHERE release_id=? AND sku_id=?`,
 		`DELETE FROM gw_routes WHERE release_id=? AND sku_id=?`,
+		`DELETE FROM gw_sku_downstream_paths WHERE release_id=? AND sku_id=?`,
 		`DELETE FROM gw_skus WHERE release_id=? AND id=?`,
 	} {
 		if _, err := tx.ExecContext(ctx, statement, releaseID, skuID); err != nil {

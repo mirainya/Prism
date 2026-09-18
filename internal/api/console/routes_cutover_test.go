@@ -19,3 +19,24 @@ func TestRegisterRoutesExcludesLegacyPlaygroundCapabilityAndTaskPaths(t *testing
 		}
 	}
 }
+
+func TestRegisterRoutesIncludesTokenFileStorageSettings(t *testing.T) {
+	router := gin.New()
+	RegisterRoutes(router.Group("/api"))
+
+	want := map[string]bool{
+		"PUT /api/tokens/:id/file-storage":    false,
+		"DELETE /api/tokens/:id/file-storage": false,
+	}
+	for _, route := range router.Routes() {
+		key := route.Method + " " + route.Path
+		if _, ok := want[key]; ok {
+			want[key] = true
+		}
+	}
+	for route, found := range want {
+		if !found {
+			t.Fatalf("route is not registered: %s", route)
+		}
+	}
+}

@@ -1,6 +1,8 @@
 package service
 
 import (
+	"context"
+	"errors"
 	"testing"
 
 	"github.com/mirainya/Prism/internal/model"
@@ -54,6 +56,53 @@ func TestDeleteTokenRevokesAndVersionsAuthorization(t *testing.T) {
 	var events int64
 	if err := db.Table("token_auth_state_events").Where("token_id=? AND auth_version=2", tokenID).Count(&events).Error; err != nil || events != 1 {
 		t.Fatalf("auth events=%d err=%v", events, err)
+	}
+}
+
+func TestRevokedTokenIsNoLongerManageable(t *testing.T) {
+	db := setupTestDB(t)
+	setupUnifiedFundsSchema(t, db)
+	user := &model.User{Username: "revoked-token-owner", Status: 1}
+	if err := db.Create(user).Error; err != nil {
+		t.Fatal(err)
+	}
+	token := &model.Token{
+		UserID: user.ID, Selector: "revoked-token-selector", SecretDigest: make([]byte, 32),
+		SecretDigestVersion: 1, AuthVersion: 1, KeyHint: "****test", Name: "remove-me", Status: 1,
+	}
+	if err := db.Create(token).Error; err != nil {
+		t.Fatal(err)
+	}
+
+	tokenService := NewTokenService()
+	if err := tokenService.DeleteToken(user.ID, token.ID); err != nil {
+		t.Fatal(err)
+	}
+	listed, err := tokenService.ListTokens(user.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(listed) != 0 {
+		t.Fatalf("revoked token remained in list: %#v", listed)
+	}
+	if _, err := tokenService.GetToken(user.ID, token.ID); !errors.Is(err, gorm.ErrRecordNotFound) {
+		t.Fatalf("get revoked token error=%v", err)
+	}
+	if err := tokenService.UpdateToken(user.ID, token.ID, &UpdateTokenReq{Name: "renamed"}); !errors.Is(err, gorm.ErrRecordNotFound) {
+		t.Fatalf("update revoked token error=%v", err)
+	}
+	tokenService.probeFileStorage = func(context.Context, string) error {
+		t.Fatal("revoked token reached file storage probe")
+		return nil
+	}
+	if _, err := tokenService.BindFileStorage(context.Background(), user.ID, token.ID, testXFSKeyOne); !errors.Is(err, gorm.ErrRecordNotFound) {
+		t.Fatalf("bind revoked token error=%v", err)
+	}
+	if _, err := tokenService.UnbindFileStorage(context.Background(), user.ID, token.ID); !errors.Is(err, gorm.ErrRecordNotFound) {
+		t.Fatalf("unbind revoked token error=%v", err)
+	}
+	if _, err := tokenService.RechargeToken(user.ID, token.ID, decimal.NewFromInt(1)); !errors.Is(err, gorm.ErrRecordNotFound) {
+		t.Fatalf("recharge revoked token error=%v", err)
 	}
 }
 

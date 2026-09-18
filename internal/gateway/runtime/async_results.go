@@ -28,12 +28,23 @@ type ManagedCopy struct {
 	ContentLength                            uint64
 }
 
-var downloadManagedResult = safeurl.Download
-var uploadManagedResult = func(ctx context.Context, data []byte, contentType, storagePath, filename string) (filestorage.UploadResult, error) {
-	return filestorage.UploadReaderAtPathWithFilename(ctx, bytes.NewReader(data), contentType, storagePath, filename)
+type managedCopyPreparation struct {
+	ManagedCopy
+	FailureReason string
 }
-var verifyManagedResult = filestorage.VerifyURL
-var deleteManagedResult = filestorage.DeleteURL
+
+const managedResultCleanupTimeout = 15 * time.Second
+
+var downloadManagedResult = safeurl.Download
+var uploadManagedResult = func(ctx context.Context, apiKey string, data []byte, contentType, storagePath, filename string) (filestorage.UploadResult, error) {
+	return filestorage.WithAPIKey(apiKey).UploadReaderAtPathWithFilename(ctx, bytes.NewReader(data), contentType, storagePath, filename)
+}
+var verifyManagedResult = func(ctx context.Context, apiKey, locator string, expectedBytes int64, expectedSHA256 string) error {
+	return filestorage.WithAPIKey(apiKey).VerifyURL(ctx, locator, expectedBytes, expectedSHA256)
+}
+var deleteManagedResult = func(ctx context.Context, apiKey, locator string) error {
+	return filestorage.WithAPIKey(apiKey).DeleteURL(ctx, locator)
+}
 
 type AsyncResultInput struct {
 	Item            repository.OutboxItem
@@ -103,7 +114,7 @@ func (s *Service) RecordAsyncResult(ctx context.Context, in AsyncResultInput) er
 	}
 }
 
-func (s *Service) persistAsyncResult(ctx context.Context, tx *sql.Tx, attemptID, requestID uint64, result repository.BlobInput, sources []delivery.RemoteResult, sourceURLPolicy string, managedCopies []ManagedCopy) error {
+func (s *Service) persistAsyncResult(ctx context.Context, tx *sql.Tx, attemptID, requestID uint64, result repository.BlobInput, sources []delivery.RemoteResult, sourceURLPolicy string, managedCopies []managedCopyPreparation) error {
 	if sourceURLPolicy != "fixed" && sourceURLPolicy != "refreshable" {
 		return repository.ErrInvalidInput
 	}
@@ -112,6 +123,9 @@ func (s *Service) persistAsyncResult(ctx context.Context, tx *sql.Tx, attemptID,
 	var deliveryMode string
 	if err := tx.QueryRowContext(ctx, `SELECT c.id,c.user_id,c.token_id,c.delivery_mode,r.resource_kind FROM gw_api_call_attempts a JOIN gw_api_calls c ON c.id=a.call_id JOIN gw_api_resources r ON r.call_id=c.id AND r.user_id=c.user_id AND r.token_id=c.token_id WHERE a.id=? FOR UPDATE`, attemptID).Scan(&callID, &userID, &tokenID, &deliveryMode, &resourceKind); err != nil {
 		return err
+	}
+	if deliveryMode != "managed_copy" && deliveryMode != "reference" {
+		return repository.ErrConflict
 	}
 	if err := delivery.ValidateResult(resourceKind, result.Plaintext, sources); err != nil {
 		return err
@@ -145,12 +159,36 @@ func (s *Service) persistAsyncResult(ctx context.Context, tx *sql.Tx, attemptID,
 			return delivery.ErrInvalidResult
 		}
 		for ordinal, source := range sources {
-			copy := managedCopies[ordinal]
+			prepared := managedCopies[ordinal]
 			sourceKind := delivery.SourceKind(source)
 			if sourceKind == "" {
 				return delivery.ErrInvalidResult
 			}
-			deliveryID, err := s.Store.CreateManagedCopyDelivery(ctx, tx, repository.ManagedCopyDeliveryInput{ResultDeliveryInput: repository.ResultDeliveryInput{CallID: callID, AttemptID: attemptID, Ordinal: uint32(ordinal), UserID: userID, TokenID: tokenID, Mode: "managed_copy", SourceKind: sourceKind}, MediaAssetID: copy.MediaAssetID, ContentType: copy.ContentType, ContentLength: copy.ContentLength, SHA256: copy.SHA256})
+			deliveryInput := repository.ResultDeliveryInput{CallID: callID, AttemptID: attemptID, Ordinal: uint32(ordinal), UserID: userID, TokenID: tokenID, Mode: "managed_copy", SourceKind: sourceKind}
+			if prepared.FailureReason != "" {
+				var deliveryID uint64
+				var err error
+				if sourceKind == "remote_url" && delivery.RetryableManagedCopyFailure(prepared.FailureReason) {
+					// Keep the observed provider URL encrypted so a transient transfer
+					// failure can be repaired without submitting generation again.
+					deliveryID, err = s.Store.CreateFailedManagedCopyDelivery(ctx, tx, deliveryInput, resultForURL(result, source.URL), requestID, source.ExpiresAt, prepared.FailureReason)
+				} else {
+					deliveryID, err = s.Store.CreateResultDelivery(ctx, tx, deliveryInput)
+					if err == nil {
+						err = s.Store.FailResultDelivery(ctx, tx, deliveryID, prepared.FailureReason)
+					}
+				}
+				if err != nil {
+					return err
+				}
+				deliveryIDs = append(deliveryIDs, deliveryID)
+				continue
+			}
+			copy := prepared.ManagedCopy
+			if copy.MediaAssetID == 0 {
+				return delivery.ErrInvalidResult
+			}
+			deliveryID, err := s.Store.CreateManagedCopyDelivery(ctx, tx, repository.ManagedCopyDeliveryInput{ResultDeliveryInput: deliveryInput, MediaAssetID: copy.MediaAssetID, ContentType: copy.ContentType, ContentLength: copy.ContentLength, SHA256: copy.SHA256})
 			if err != nil {
 				return err
 			}
@@ -170,7 +208,7 @@ func (s *Service) persistAsyncResult(ctx context.Context, tx *sql.Tx, attemptID,
 	return err
 }
 
-func (s *Service) prepareManagedCopies(ctx context.Context, in AsyncResultInput) ([]ManagedCopy, error) {
+func (s *Service) prepareManagedCopies(ctx context.Context, in AsyncResultInput) ([]managedCopyPreparation, error) {
 	if in.State != execution.AsyncSucceeded || in.Result == nil || len(in.Sources) == 0 {
 		return nil, nil
 	}
@@ -184,32 +222,26 @@ func (s *Service) prepareManagedCopies(ctx context.Context, in AsyncResultInput)
 	return s.prepareManagedResultCopies(ctx, dispatch.AttemptID, dispatch.DeliveryMode, in.Sources)
 }
 
-func (s *Service) prepareManagedResultCopies(ctx context.Context, attemptID uint64, deliveryMode string, sources []delivery.RemoteResult) ([]ManagedCopy, error) {
+func (s *Service) prepareManagedResultCopies(ctx context.Context, attemptID uint64, deliveryMode string, sources []delivery.RemoteResult) ([]managedCopyPreparation, error) {
 	if deliveryMode != "managed_copy" {
 		return nil, nil
 	}
 	if attemptID == 0 {
 		return nil, repository.ErrInvalidInput
 	}
-	var userID, tokenID uint64
-	if err := s.Store.DB().QueryRowContext(ctx, `SELECT c.user_id,c.token_id FROM gw_api_call_attempts a JOIN gw_api_calls c ON c.id=a.call_id WHERE a.id=?`, attemptID).Scan(&userID, &tokenID); err != nil {
+	storage, err := s.Store.ReadAttemptFileStorage(ctx, attemptID)
+	if err != nil {
 		return nil, err
+	}
+	if storage.APIKey == "" {
+		return nil, repository.ErrConflict
 	}
 	maxBytes := int64(64 << 20)
 	if config.C != nil && config.C.FileStorage.MaxFileSizeMB > 0 {
 		maxBytes = int64(config.C.FileStorage.MaxFileSizeMB) * 1024 * 1024
 	}
-	type preparedResult struct {
-		data                []byte
-		contentType, sha256 string
-	}
-	prepared := make([]preparedResult, 0, len(sources))
-	defer func() {
-		for index := range prepared {
-			clear(prepared[index].data)
-		}
-	}()
-	for _, source := range sources {
+	result := make([]managedCopyPreparation, 0, len(sources))
+	for ordinal, source := range sources {
 		if !delivery.ValidSource(source) {
 			return nil, fmt.Errorf("invalid managed result source")
 		}
@@ -218,80 +250,127 @@ func (s *Service) prepareManagedResultCopies(ctx context.Context, attemptID uint
 		if source.URL != "" {
 			downloaded, err := downloadManagedResult(ctx, source.URL, maxBytes)
 			if err != nil {
-				return nil, fmt.Errorf("download managed result: %w", err)
+				if ctx.Err() != nil {
+					return nil, ctx.Err()
+				}
+				result = append(result, managedCopyPreparation{FailureReason: delivery.ManagedCopyDownloadFailed})
+				continue
 			}
 			data = downloaded.Data
 			contentType = strings.TrimSpace(strings.Split(downloaded.ContentType, ";")[0])
 		} else {
 			if int64(len(source.InlineData)) > maxBytes {
-				return nil, fmt.Errorf("managed result exceeds storage limit")
+				clear(source.InlineData)
+				sources[ordinal].InlineData = []byte{0}
+				result = append(result, managedCopyPreparation{FailureReason: delivery.ManagedCopySizeExceeded})
+				continue
 			}
-			data = bytes.Clone(source.InlineData)
+			data = source.InlineData
 			contentType = strings.TrimSpace(strings.Split(source.ContentType, ";")[0])
 		}
+		releaseData := func() {
+			clear(data)
+			if source.URL == "" {
+				// Preserve the already validated inline source kind without retaining
+				// the complete provider payload during transactional persistence.
+				sources[ordinal].InlineData = []byte{0}
+			}
+		}
 		if len(data) == 0 {
-			return nil, fmt.Errorf("managed result is empty")
+			releaseData()
+			result = append(result, managedCopyPreparation{FailureReason: delivery.ManagedCopyEmpty})
+			continue
 		}
 		if contentType == "" {
 			contentType = http.DetectContentType(data)
 		}
 		contentType = strings.ToLower(contentType)
 		if !validManagedResultMIME(source.Role, contentType, http.DetectContentType(data)) {
-			return nil, fmt.Errorf("managed result content type does not match role")
+			releaseData()
+			result = append(result, managedCopyPreparation{FailureReason: delivery.ManagedCopyContentTypeInvalid})
+			continue
 		}
 		hash := sha256.Sum256(data)
-		prepared = append(prepared, preparedResult{data: data, contentType: contentType, sha256: hex.EncodeToString(hash[:])})
-	}
-
-	result := make([]ManagedCopy, 0, len(prepared))
-	for ordinal, item := range prepared {
+		digest := hex.EncodeToString(hash[:])
 		logicalKey := fmt.Sprintf("gateway-result:%d:%d", attemptID, ordinal)
 		retentionUntil := time.Now().UTC().Add(config.ResourceHistoryRetentionDuration())
 		var asset repository.ManagedCopyAssetRecord
 		err := s.Store.WithTx(ctx, func(tx *sql.Tx) error {
 			var reserveErr error
 			asset, reserveErr = s.Store.ReserveManagedCopyAsset(ctx, tx, attemptID, repository.MediaAssetInput{
-				UserID: userID, TokenID: tokenID, Purpose: "result", ObjectKey: logicalKey,
-				ContentType: item.contentType, ContentLength: uint64(len(item.data)), SHA256: item.sha256, RetentionUntil: &retentionUntil,
+				UserID: storage.UserID, TokenID: storage.TokenID, Purpose: "result", ObjectKey: logicalKey,
+				ContentType: contentType, ContentLength: uint64(len(data)), SHA256: digest, RetentionUntil: &retentionUntil,
 			})
 			return reserveErr
 		})
 		if err != nil {
+			releaseData()
 			return nil, fmt.Errorf("reserve managed result: %w", err)
 		}
 		if asset.State == "active" {
-			result = append(result, managedCopyFromAsset(asset))
+			releaseData()
+			result = append(result, managedCopyPreparation{ManagedCopy: managedCopyFromAsset(asset)})
 			continue
 		}
 		if asset.StorageLocator == "" {
-			uploaded, uploadErr := uploadManagedResult(ctx, item.data, item.contentType, managedResultStoragePath(asset.ID), managedResultStorageFilename(item.sha256, item.contentType))
+			uploaded, uploadErr := uploadManagedResult(ctx, storage.APIKey, data, contentType, managedResultStoragePath(asset.ID), managedResultStorageFilename(digest, contentType))
 			if uploadErr != nil {
-				return nil, fmt.Errorf("upload managed result: %w", uploadErr)
+				releaseData()
+				if ctx.Err() != nil {
+					return nil, ctx.Err()
+				}
+				result = append(result, managedCopyPreparation{FailureReason: delivery.ManagedCopyUploadFailed})
+				continue
 			}
-			if !delivery.ValidRemoteURL(uploaded.URL) {
-				_ = deleteManagedResult(context.WithoutCancel(ctx), uploaded.URL)
-				return nil, fmt.Errorf("managed result storage returned an invalid URL")
+			locator := uploaded.StorageLocator()
+			if locator == "" || len(locator) > 2048 {
+				deleteManagedResultBestEffort(ctx, storage.APIKey, locator)
+				releaseData()
+				result = append(result, managedCopyPreparation{FailureReason: delivery.ManagedCopyUploadFailed})
+				continue
 			}
-			if verifyErr := verifyManagedResult(ctx, uploaded.URL, int64(len(item.data)), item.sha256); verifyErr != nil {
-				_ = deleteManagedResult(context.WithoutCancel(ctx), uploaded.URL)
-				return nil, fmt.Errorf("verify managed result: %w", verifyErr)
+			if verifyErr := verifyManagedResult(ctx, storage.APIKey, locator, int64(len(data)), digest); verifyErr != nil {
+				deleteManagedResultBestEffort(ctx, storage.APIKey, locator)
+				releaseData()
+				if ctx.Err() != nil {
+					return nil, ctx.Err()
+				}
+				result = append(result, managedCopyPreparation{FailureReason: delivery.ManagedCopyVerificationFailed})
+				continue
 			}
 			objectVersion := strings.TrimSpace(uploaded.ObjectID)
 			if objectVersion == "" {
 				objectVersion = strings.TrimSpace(uploaded.ID)
 			}
 			if recordErr := s.Store.WithTx(ctx, func(tx *sql.Tx) error {
-				return s.Store.RecordManagedCopyUpload(ctx, tx, asset.ID, uploaded.URL, objectVersion)
+				return s.Store.RecordManagedCopyUpload(ctx, tx, asset.ID, locator, objectVersion)
 			}); recordErr != nil {
+				deleteManagedResultBestEffort(ctx, storage.APIKey, locator)
+				releaseData()
 				return nil, fmt.Errorf("record managed result: %w", recordErr)
 			}
-			asset.StorageLocator, asset.ObjectVersion = uploaded.URL, objectVersion
-		} else if verifyErr := verifyManagedResult(ctx, asset.StorageLocator, int64(asset.ContentLength), asset.SHA256); verifyErr != nil {
-			return nil, fmt.Errorf("verify existing managed result: %w", verifyErr)
+			asset.StorageLocator, asset.ObjectVersion = locator, objectVersion
+		} else if verifyErr := verifyManagedResult(ctx, storage.APIKey, asset.StorageLocator, int64(asset.ContentLength), asset.SHA256); verifyErr != nil {
+			releaseData()
+			if ctx.Err() != nil {
+				return nil, ctx.Err()
+			}
+			result = append(result, managedCopyPreparation{FailureReason: delivery.ManagedCopyVerificationFailed})
+			continue
 		}
-		result = append(result, managedCopyFromAsset(asset))
+		releaseData()
+		result = append(result, managedCopyPreparation{ManagedCopy: managedCopyFromAsset(asset)})
 	}
 	return result, nil
+}
+
+func deleteManagedResultBestEffort(ctx context.Context, apiKey, locator string) {
+	if strings.TrimSpace(locator) == "" {
+		return
+	}
+	cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), managedResultCleanupTimeout)
+	defer cancel()
+	_ = deleteManagedResult(cleanupCtx, apiKey, locator)
 }
 
 func managedCopyFromAsset(asset repository.ManagedCopyAssetRecord) ManagedCopy {

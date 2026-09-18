@@ -141,7 +141,12 @@ func TestMySQLCatalogAllowsMultipleSKUsForOneModelOperation(t *testing.T) {
 	}
 }
 
-func TestMySQLCatalogManagementLifecyclePublishesCompleteRelease(t *testing.T) {
+// mysqlPublishableRelease builds one complete draft against real MySQL: channel,
+// credential pool, settlement currency, SKU, product with transport and actions,
+// cost plan, and reviewed sell and cost evidence. It stops short of publishing so
+// callers can drive the lifecycle themselves.
+func mysqlPublishableRelease(t *testing.T) (*repository.Store, uint64) {
+	t.Helper()
 	store := mysqlCatalogStore(t)
 	ctx := context.Background()
 	const actorID = 1
@@ -273,7 +278,20 @@ func TestMySQLCatalogManagementLifecyclePublishesCompleteRelease(t *testing.T) {
 	}
 	createRate("sell", skuID, sellEvidenceID, 3)
 	createRate("cost", costPlanID, costEvidenceID, 4)
-	if err := store.WithTx(ctx, func(tx *sql.Tx) error { return store.PublishRelease(ctx, tx, releaseID, actorID) }); err != nil {
+	var downstreamPath string
+	if err := store.DB().QueryRowContext(ctx, `SELECT path FROM gw_sku_downstream_paths WHERE release_id=? AND sku_id=?`, releaseID, skuID).Scan(&downstreamPath); err != nil {
+		t.Fatal(err)
+	}
+	if downstreamPath != "/v1/videos/generations" {
+		t.Fatalf("default downstream path=%q", downstreamPath)
+	}
+	return store, releaseID
+}
+
+func TestMySQLCatalogManagementLifecyclePublishesCompleteRelease(t *testing.T) {
+	store, releaseID := mysqlPublishableRelease(t)
+	ctx := context.Background()
+	if err := store.WithTx(ctx, func(tx *sql.Tx) error { return store.PublishRelease(ctx, tx, releaseID, 1) }); err != nil {
 		t.Fatal(err)
 	}
 	var status, contentHash string
@@ -283,5 +301,147 @@ func TestMySQLCatalogManagementLifecyclePublishesCompleteRelease(t *testing.T) {
 	}
 	if status != "published" || version != 6 || len(contentHash) != 64 {
 		t.Fatalf("published release status=%s version=%d hash=%q", status, version, contentHash)
+	}
+}
+
+// mysqlClonedTables is checked for row-count equality after a fork. The
+// authoritative layer set — and its correspondence with the content digest — is
+// locked by TestCloneCoversExactlyTheDigestedTables; what this list adds is that
+// real composite foreign keys and CHECK constraints accept every cloned row.
+var mysqlClonedTables = []string{
+	"gw_catalog_models", "gw_catalog_model_names", "gw_model_operations", "gw_skus",
+	"gw_sku_downstream_paths", "gw_sell_rates", "gw_channel_transports",
+	"gw_transport_allowed_hosts", "gw_products", "gw_product_transports",
+	"gw_product_transport_actions", "gw_offerings", "gw_cost_plans", "gw_cost_rates",
+	"gw_routes", "gw_offering_runtime_state",
+}
+
+// TestMySQLForkedReleasePublishesAndActivates is the lifecycle the sqlite clone
+// tests cannot reach: PublishRelease locks with a literal FOR UPDATE, the catalog
+// tables carry composite (release_id, id) foreign keys, and MySQL 8 enforces the
+// CHECK constraints. It walks the whole operator edit cycle with zero edits —
+// publish, fork, publish the fork, activate it — because a fork that cannot
+// complete that cycle is not a usable starting point for any edit.
+func TestMySQLForkedReleasePublishesAndActivates(t *testing.T) {
+	store, sourceID := mysqlPublishableRelease(t)
+	ctx := context.Background()
+	const actorID = 1
+	if err := store.WithTx(ctx, func(tx *sql.Tx) error { return store.PublishRelease(ctx, tx, sourceID, actorID) }); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.WithTx(ctx, func(tx *sql.Tx) error { return store.ActivateRelease(ctx, tx, sourceID, 1) }); err != nil {
+		t.Fatal(err)
+	}
+	var forkID uint64
+	err := store.WithTx(ctx, func(tx *sql.Tx) error {
+		var err error
+		forkID, err = store.ForkCatalogRelease(ctx, tx, sourceID, repository.CatalogDraftInput{
+			SemanticVersion: "1.0.1", SemanticDigest: adapter.SemanticDigest(),
+		}, actorID)
+		return err
+	})
+	if err != nil {
+		t.Fatalf("forking a published release failed: %v", err)
+	}
+	if forkID == sourceID {
+		t.Fatal("the fork reused the source release id")
+	}
+	mysqlAssertForkMirrorsSource(t, store, sourceID, forkID)
+	mysqlAssertForkGoesLive(t, store, sourceID, forkID)
+}
+
+// mysqlAssertForkMirrorsSource checks the clone against the source row for row,
+// and that nothing in the fork still points into the source release.
+func mysqlAssertForkMirrorsSource(t *testing.T, store *repository.Store, sourceID, forkID uint64) {
+	t.Helper()
+	ctx := context.Background()
+	for _, table := range mysqlClonedTables {
+		var source, fork uint64
+		query := `SELECT COUNT(*) FROM ` + table + ` WHERE release_id=?`
+		if err := store.DB().QueryRowContext(ctx, query, sourceID).Scan(&source); err != nil {
+			t.Fatalf("count %s of source: %v", table, err)
+		}
+		if err := store.DB().QueryRowContext(ctx, query, forkID).Scan(&fork); err != nil {
+			t.Fatalf("count %s of fork: %v", table, err)
+		}
+		// An empty source table would make the comparison vacuous, so the fixture
+		// is required to populate every layer the fork is supposed to copy.
+		if source == 0 {
+			t.Fatalf("the source release has no %s rows, so the clone assertion proves nothing", table)
+		}
+		if fork != source {
+			t.Fatalf("%s: fork has %d rows, source has %d", table, fork, source)
+		}
+	}
+	// Rates reuse the source's accepted evidence rather than inventing a second
+	// review of a price nobody reviewed twice (§5.2.1 requirement 3).
+	for _, table := range []string{"gw_sell_rates", "gw_cost_rates"} {
+		var shared uint64
+		if err := store.DB().QueryRowContext(ctx, `SELECT COUNT(*) FROM `+table+` f WHERE f.release_id=? AND NOT EXISTS (SELECT 1 FROM `+table+` s WHERE s.release_id=? AND s.rate_evidence_review_event_id=f.rate_evidence_review_event_id)`, forkID, sourceID).Scan(&shared); err != nil {
+			t.Fatal(err)
+		}
+		if shared != 0 {
+			t.Fatalf("%s: %d cloned rates reference evidence the source never used", table, shared)
+		}
+	}
+	// The composite foreign keys already make a cross-release parent impossible to
+	// insert; this states the invariant the keys enforce, so a future migration
+	// that relaxes one does not silently relax the clone.
+	var leaked uint64
+	if err := store.DB().QueryRowContext(ctx, `SELECT COUNT(*) FROM gw_routes r JOIN gw_skus s ON s.id=r.sku_id JOIN gw_offerings o ON o.id=r.offering_id WHERE r.release_id=? AND (s.release_id<>? OR o.release_id<>?)`, forkID, forkID, forkID).Scan(&leaked); err != nil {
+		t.Fatal(err)
+	}
+	if leaked != 0 {
+		t.Fatalf("%d forked routes point outside the fork", leaked)
+	}
+}
+
+// mysqlAssertForkGoesLive publishes the unedited fork and moves the active
+// pointer onto it. This is the requirement M3a exists to satisfy: the operator
+// forks, edits, publishes, activates, and the fork must survive that path even
+// when the edit is empty.
+func mysqlAssertForkGoesLive(t *testing.T, store *repository.Store, sourceID, forkID uint64) {
+	t.Helper()
+	ctx := context.Background()
+	if err := store.WithTx(ctx, func(tx *sql.Tx) error { return store.PublishRelease(ctx, tx, forkID, 1) }); err != nil {
+		t.Fatalf("an unedited fork was not publishable: %v", err)
+	}
+	var forkHash, sourceHash string
+	if err := store.DB().QueryRowContext(ctx, `SELECT content_hash FROM gw_catalog_releases WHERE id=?`, forkID).Scan(&forkHash); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.DB().QueryRowContext(ctx, `SELECT content_hash FROM gw_catalog_releases WHERE id=?`, sourceID).Scan(&sourceHash); err != nil {
+		t.Fatal(err)
+	}
+	// Different by design: the digest covers primary keys and the clone has new
+	// ones. Equal hashes would trip uq_gw_catalog_releases_content_hash and make
+	// the fork impossible to publish alongside the release it came from
+	// (§5.2.1 requirement 2).
+	if len(forkHash) != 64 || forkHash == sourceHash {
+		t.Fatalf("fork hash=%q source hash=%q", forkHash, sourceHash)
+	}
+	// The source activation bumped the singleton to version 2.
+	if err := store.WithTx(ctx, func(tx *sql.Tx) error { return store.ActivateRelease(ctx, tx, forkID, 2) }); err != nil {
+		t.Fatalf("the published fork could not be activated: %v", err)
+	}
+	var active uint64
+	if err := store.DB().QueryRowContext(ctx, `SELECT active_release_id FROM gw_catalog_runtime_state WHERE id=1`).Scan(&active); err != nil {
+		t.Fatal(err)
+	}
+	if active != forkID {
+		t.Fatalf("active release is %d, want the fork %d", active, forkID)
+	}
+	// Routing serves only offerings whose runtime state is active, so a fork that
+	// copied catalog content but not runtime state would activate and then serve
+	// nothing. Every cloned offering must be routable.
+	var offerings, routable uint64
+	if err := store.DB().QueryRowContext(ctx, `SELECT COUNT(*) FROM gw_offerings WHERE release_id=?`, forkID).Scan(&offerings); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.DB().QueryRowContext(ctx, `SELECT COUNT(*) FROM gw_offering_runtime_state WHERE release_id=? AND state='active'`, forkID).Scan(&routable); err != nil {
+		t.Fatal(err)
+	}
+	if offerings == 0 || routable != offerings {
+		t.Fatalf("the activated fork has %d offerings but %d are active", offerings, routable)
 	}
 }

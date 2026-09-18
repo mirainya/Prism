@@ -307,7 +307,11 @@ func writeAnthropicExecutionError(c *gin.Context, err error) {
 		status, errorType = http.StatusBadRequest, "invalid_request_error"
 		message = "The requested model does not support this Anthropic request"
 	} else if errors.Is(err, routing.ErrNoRoute) {
+		// message still held err.Error() here, so this branch used to answer the
+		// caller with the raw Go sentinel text. The other two protocols return a
+		// stable sentence; match them, plus the breaker attribution when we have it.
 		status, errorType = http.StatusServiceUnavailable, "overloaded_error"
+		message = describeModelUnavailable(c, err, "The requested model is temporarily unavailable")
 	} else if status == http.StatusUnauthorized {
 		errorType = "authentication_error"
 	} else if status == http.StatusForbidden {

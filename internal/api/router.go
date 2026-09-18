@@ -52,7 +52,7 @@ func SetupRouter(executionEngine *engine.Engine, readiness gatewayruntime.Readin
 	r.Use(middleware.ErrorHandler())
 
 	// 健康检查
-	r.GET("/health", healthCheck)
+	r.GET("/health", healthCheck(readiness))
 
 	// Prometheus 指标
 	registry := metrics.InitPrometheus()
@@ -106,6 +106,19 @@ func SetupRouter(executionEngine *engine.Engine, readiness gatewayruntime.Readin
 		fileServer.ServeHTTP(c.Writer, c.Request)
 	})
 
+	// The v5 console lives at /ops-console. Keep the old browser entry point
+	// reachable during the migration, while leaving /api/admin/unified-gateway
+	// available to existing clients until their API base path is migrated.
+	redirectOpsConsole := func(c *gin.Context) {
+		target := "/ops-console"
+		if c.Request.URL.RawQuery != "" {
+			target += "?" + c.Request.URL.RawQuery
+		}
+		c.Redirect(http.StatusFound, target)
+	}
+	r.GET("/unified-gateway", redirectOpsConsole)
+	r.GET("/unified-gateway/*path", redirectOpsConsole)
+
 	// SPA 路由: 所有未匹配的路由返回 index.html
 	r.NoRoute(func(c *gin.Context) {
 		// API 路由返回 404
@@ -138,18 +151,21 @@ func SetupRouter(executionEngine *engine.Engine, readiness gatewayruntime.Readin
 	return r
 }
 
-func healthCheck(c *gin.Context) {
-	dbOK := true
-	if sqlDB, err := model.DB().DB(); err != nil || sqlDB.Ping() != nil {
-		dbOK = false
-	}
-	redisOK := cache.Client.Ping(c).Err() == nil
+func healthCheck(readiness gatewayruntime.ReadinessCheck) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		dbOK := true
+		if sqlDB, err := model.DB().DB(); err != nil || sqlDB.Ping() != nil {
+			dbOK = false
+		}
+		redisOK := cache.Client.Ping(c).Err() == nil
+		gatewayOK := readiness.Require(c.Request.Context()) == nil
 
-	status := "ok"
-	code := 200
-	if !dbOK || !redisOK {
-		status = "degraded"
-		code = 503
+		status := "ok"
+		code := http.StatusOK
+		if !dbOK || !redisOK || !gatewayOK {
+			status = "degraded"
+			code = http.StatusServiceUnavailable
+		}
+		c.JSON(code, gin.H{"status": status, "db": dbOK, "redis": redisOK, "gateway": gatewayOK})
 	}
-	c.JSON(code, gin.H{"status": status, "db": dbOK, "redis": redisOK})
 }

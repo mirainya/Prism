@@ -35,8 +35,8 @@ type TransportAttempt struct {
 	Transport model.UpstreamTransport
 }
 
-// SelectTransport resolves requests exclusively through the active immutable
-// catalog. Legacy routing tables are migration sources only.
+// SelectTransport resolves requests exclusively through the active catalog.
+// Legacy routing tables are migration sources only.
 func (r *Router) SelectTransport(ctx context.Context, modelName string, requirements RouteRequirements, options RouteOptions) (*RouteResult, error) {
 	if ctx == nil || options.SelectionKey == "" {
 		return nil, ErrInvalidSelectionKey

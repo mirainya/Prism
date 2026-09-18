@@ -15,6 +15,15 @@ func genericVideoConfig() []byte {
 	return []byte(`{"adapter":{"profile":"json_task_v1","auth_location":"header","auth_key":"Authorization","auth_prefix":"","submit":{"enabled":true,"method":"POST","path":"/workflow/h3"},"poll":{"enabled":true,"method":"GET","path":"/workflow/result/{task_id}"},"request":{"fields":{"model":"workflow","prompt":"prompt","duration":"duration","task_mode":"mode"},"include_content":false,"content_projections":[{"source":"url","target":"ref_image_0","types":["image_url"],"index":0}],"params_mode":"merge_missing"},"response":{"task_id_paths":["data.task_id"],"status_paths":["data.status"],"video_url_paths":["data.results.0.url"],"thumbnail_url_paths":["data.thumbnail_url"],"duration_paths":["data.duration"],"status_map":{"queued":"submitted","running":"tracking","success":"completed","failed":"failed"},"submit_default_status":"submitted","poll_default_status":"tracking","unknown_status":"tracking"},"validation":{"models":{"minimax-h3":{"duration_min":1,"duration_max":15,"task_modes":["first_frame"],"max_images":9}}}}}`)
 }
 
+func TestValidateCatalogProductUsesRuntimeGenericValidation(t *testing.T) {
+	if err := ValidateCatalogProduct("generic", 1, "https://autodl.example", "POST", "/workflow/h3", "minimax-h3", genericVideoConfig()); err != nil {
+		t.Fatalf("valid generic product rejected: %v", err)
+	}
+	if err := ValidateCatalogProduct("generic", 1, "https://autodl.example", "POST", "/workflow/h3", "minimax-h3", []byte(`{}`)); err == nil {
+		t.Fatal("empty generic mapping was accepted")
+	}
+}
+
 func TestGenericVideoUsesPinnedModelAndCatalogMapping(t *testing.T) {
 	fixed := repository.AsyncDispatch{
 		AdapterCode: "generic", AdapterVersion: 1, BaseURL: "https://autodl.example",
@@ -55,6 +64,24 @@ func TestGenericVideoDecodesTerminalResultAndExactBillingFacts(t *testing.T) {
 	}
 	if out.Facts.Quantities[billing.QuantityGeneratedSeconds] != "6.123456789123456789" || out.Facts.Quantities[billing.QuantityRequestedSeconds] != "5" || out.Facts.Quantities[billing.QuantityGeneratedVideos] != "1" {
 		t.Fatalf("facts = %+v", out.Facts)
+	}
+}
+
+func TestGenericVideoDecodeInjectsExpressionFacts(t *testing.T) {
+	fixed := repository.AsyncDispatch{BaseURL: "https://autodl.example", AdapterConfig: genericVideoConfig()}
+	request := []byte(`{"duration":5,"resolution":"720p","generate_audio":true,"task_mode":"first_frame","content":[{"type":"video_url"}]}`)
+	response := []byte(`{"data":{"task_id":"task-1","status":"success","duration":6.5,"results":[{"url":"https://media.example/result.mp4"}]}}`)
+	out, err := (GenericVideo{}).DecodeWithDispatch("query", fixed, request, response)
+	if err != nil {
+		t.Fatal(err)
+	}
+	expression, err := billing.ParseExpression("seconds + has_audio + has_video_ref + success", out.Facts.Expr.Declared)
+	if err != nil {
+		t.Fatal(err)
+	}
+	amount, err := expression.Evaluate(out.Facts.Expr)
+	if err != nil || amount.String() != "9.5" {
+		t.Fatalf("amount=%s err=%v expr=%+v", amount.String(), err, out.Facts.Expr)
 	}
 }
 

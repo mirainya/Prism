@@ -4,13 +4,15 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"os"
 	"sync/atomic"
 	"time"
 
 	"github.com/mirainya/Prism/internal/gateway/repository"
+	"github.com/mirainya/Prism/internal/gateway/security"
 )
 
-var ErrNotReady = errors.New("gateway runtime: deployment is not ready")
+var ErrNotReady = errors.New("gateway runtime is not ready")
 
 // ReadinessCheck is the common gate used by HTTP handlers and workers.
 // Implementations must return ErrNotReady, directly or through errors.Join,
@@ -31,7 +33,7 @@ func (check ReadinessCheck) Require(ctx context.Context) error {
 }
 
 // ReadinessGate is a process-lifetime fail-closed latch. Once disabled it
-// cannot be re-enabled; a new process must prove readiness before serving.
+// cannot be re-enabled; a new process must pass readiness before serving.
 type ReadinessGate struct {
 	ready atomic.Bool
 }
@@ -92,63 +94,85 @@ func (gate *ReadinessGate) Watch(ctx context.Context, interval time.Duration, ch
 	}
 }
 
-// RequireConfiguredReadiness verifies that this process may execute data-plane
-// work. Control-plane HTTP handlers may still start when this returns
-// ErrNotReady; public execution and workers must remain disabled.
+// RequireConfiguredReadiness verifies that the active catalog can execute
+// data-plane work. Control-plane HTTP handlers may still start when this
+// returns ErrNotReady; public execution and workers must remain disabled.
 func RequireConfiguredReadiness(ctx context.Context, db *sql.DB) error {
 	if db == nil {
 		return ErrNotReady
 	}
-	var releaseID, generationID sql.NullInt64
-	if err := db.QueryRowContext(ctx, `SELECT active_release_id,active_deployment_generation_id FROM gw_catalog_runtime_state WHERE id=1`).Scan(&releaseID, &generationID); err != nil {
-		return errors.Join(ErrNotReady, err)
-	}
-	if !releaseID.Valid || releaseID.Int64 <= 0 || !generationID.Valid || generationID.Int64 <= 0 {
-		return ErrNotReady
-	}
-	return CheckReadiness(ctx, db, uint64(generationID.Int64), uint64(releaseID.Int64))
-}
-
-// CheckReadiness verifies the immutable deployment generation before traffic
-// is enabled. It is deliberately a read-only gate; activation remains an
-// explicit repository transaction.
-func CheckReadiness(ctx context.Context, db *sql.DB, generationID, releaseID uint64) error {
-	if db == nil || generationID == 0 || releaseID == 0 {
-		return ErrNotReady
-	}
-	// The caller must validate the exact singleton pointer, not merely an
-	// independently active generation/release pair. This prevents a stale
-	// process or management endpoint from treating an old deployment as ready
-	// after a cutover.
-	var activeRelease, activeGeneration sql.NullInt64
-	if err := db.QueryRowContext(ctx, `SELECT active_release_id,active_deployment_generation_id FROM gw_catalog_runtime_state WHERE id=1`).Scan(&activeRelease, &activeGeneration); err != nil {
-		return errors.Join(ErrNotReady, err)
-	}
-	if !activeRelease.Valid || !activeGeneration.Valid || activeRelease.Int64 != int64(releaseID) || activeGeneration.Int64 != int64(generationID) {
-		return ErrNotReady
-	}
-	var status string
-	if err := db.QueryRowContext(ctx, `SELECT status FROM gw_deployment_generations WHERE id=?`, generationID).Scan(&status); err != nil || status != "active" {
-		return ErrNotReady
-	}
-	identity, err := CurrentProcessIdentity()
+	releaseID, err := configuredReleaseID(ctx, db)
 	if err != nil {
 		return errors.Join(ErrNotReady, err)
 	}
-	if err := repository.CheckCatalogReadiness(ctx, db, generationID, releaseID, identity); err != nil {
+	return CheckReadiness(ctx, db, releaseID)
+}
+
+func configuredReleaseID(ctx context.Context, db *sql.DB) (uint64, error) {
+	if db == nil {
+		return 0, ErrNotReady
+	}
+	var releaseID sql.NullInt64
+	if err := db.QueryRowContext(ctx, `SELECT active_release_id FROM gw_catalog_runtime_state WHERE id=1`).Scan(&releaseID); err != nil {
+		return 0, err
+	}
+	if !releaseID.Valid || releaseID.Int64 <= 0 {
+		return 0, ErrNotReady
+	}
+	return uint64(releaseID.Int64), nil
+}
+
+// CheckReadiness validates the currently active published catalog and the
+// durable dependencies used by each request. Deployment generations and
+// process proofs are retained only as legacy control-plane data.
+func CheckReadiness(ctx context.Context, db *sql.DB, releaseID uint64) error {
+	if db == nil || releaseID == 0 {
+		return ErrNotReady
+	}
+	activeRelease, err := configuredReleaseID(ctx, db)
+	if err != nil {
+		return errors.Join(ErrNotReady, err)
+	}
+	if activeRelease != releaseID {
+		return ErrNotReady
+	}
+	var status string
+	if err := db.QueryRowContext(ctx, `SELECT status FROM gw_catalog_releases WHERE id=?`, releaseID).Scan(&status); err != nil || status != "published" {
+		return errors.Join(ErrNotReady, err)
+	}
+	if err := repository.CheckCatalogStructure(ctx, db, releaseID); err != nil {
 		return errors.Join(ErrNotReady, err)
 	}
 	if err := repository.CheckCatalogPricing(ctx, db, releaseID); err != nil {
 		return errors.Join(ErrNotReady, err)
 	}
-	if err := repository.CheckCatalogValidations(ctx, db, releaseID); err != nil {
+	if err := repository.CheckRuntimeKeyReadiness(ctx, db); err != nil {
 		return errors.Join(ErrNotReady, err)
 	}
-	if err := repository.CheckCryptoReadiness(ctx, db, generationID); err != nil {
+	if err := checkRuntimeKeyMaterial(ctx, db); err != nil {
 		return errors.Join(ErrNotReady, err)
 	}
 	if err := repository.CheckBillingReadiness(ctx, db); err != nil {
 		return errors.Join(ErrNotReady, err)
+	}
+	return nil
+}
+
+func checkRuntimeKeyMaterial(ctx context.Context, db repository.ReadinessQuery) error {
+	names := []string{"PRISM_GATEWAY_PAYLOAD_KEK_B64", "PRISM_GATEWAY_PAYLOAD_HMAC_B64"}
+	requireCredential, err := repository.LegacyCredentialCryptoRequired(ctx, db)
+	if err != nil {
+		return err
+	}
+	if requireCredential {
+		names = append(names, "PRISM_GATEWAY_KEK_B64", "PRISM_GATEWAY_HMAC_B64")
+	}
+	for _, name := range names {
+		key, err := security.DecodeBase64Key(os.Getenv(name))
+		if err != nil {
+			return err
+		}
+		clear(key)
 	}
 	return nil
 }

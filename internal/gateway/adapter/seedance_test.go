@@ -67,6 +67,48 @@ func TestSeedancePreservesExactDurationAndDoesNotInventUsage(t *testing.T) {
 	}
 }
 
+func TestSeedanceDecodeInjectsExpressionFacts(t *testing.T) {
+	request := []byte(`{"duration":5,"resolution":"720p","generate_audio":true,"task_mode":"references","content":[{"type":"video_url"}]}`)
+	response := []byte(`{"status":"succeeded","duration":6.123456789123456789,"content":{"video_url":"https://example.invalid/video.mp4"}}`)
+	out, err := (Seedance{}).Decode("query", request, response)
+	if err != nil {
+		t.Fatal(err)
+	}
+	expression, err := billing.ParseExpression("(resolution=='720p' ? seconds : 0) + has_audio + has_video_ref + success", out.Facts.Expr.Declared)
+	if err != nil {
+		t.Fatal(err)
+	}
+	amount, err := expression.Evaluate(out.Facts.Expr)
+	if err != nil || amount.String() != "9.123456789123456789" {
+		t.Fatalf("amount=%s err=%v expr=%+v", amount.String(), err, out.Facts.Expr)
+	}
+}
+
+func TestSeedanceDecodeInjectsPriorityExpressionFact(t *testing.T) {
+	request := []byte(`{"duration":5,"resolution":"720p","task_mode":"references","params":{"priority":4}}`)
+	response := []byte(`{"status":"succeeded","duration":6,"content":{"video_url":"https://example.invalid/video.mp4"}}`)
+	out, err := (Seedance{}).Decode("query", request, response)
+	if err != nil {
+		t.Fatal(err)
+	}
+	expression, err := billing.ParseExpression("seconds * (priority==4 ? 1.5 : 1)", out.Facts.Expr.Declared)
+	if err != nil {
+		t.Fatal(err)
+	}
+	amount, err := expression.Evaluate(out.Facts.Expr)
+	if err != nil || amount.String() != "9" {
+		t.Fatalf("amount=%s err=%v expr=%+v", amount.String(), err, out.Facts.Expr)
+	}
+}
+
+func TestSeedanceDecodeRejectsFractionalPriorityFact(t *testing.T) {
+	request := []byte(`{"duration":5,"params":{"priority":4.5}}`)
+	response := []byte(`{"status":"succeeded","duration":6,"content":{"video_url":"https://example.invalid/video.mp4"}}`)
+	if _, err := (Seedance{}).Decode("query", request, response); err == nil {
+		t.Fatal("fractional priority was accepted")
+	}
+}
+
 func TestSeedanceIsPollingOnly(t *testing.T) {
 	var codec any = Seedance{}
 	if _, ok := codec.(runtime.CallbackCodec); ok {

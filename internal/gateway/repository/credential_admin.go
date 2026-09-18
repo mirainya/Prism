@@ -2,6 +2,7 @@ package repository
 
 import (
 	"context"
+	"crypto/sha256"
 	"database/sql"
 	"encoding/hex"
 	"errors"
@@ -21,6 +22,71 @@ type ManagedCredentialInput struct {
 	Weight       uint64                `json:"weight"`
 	Purposes     []credentials.Purpose `json:"purposes"`
 	Secret       []byte                `json:"-"`
+}
+
+// CreateManagedCredentialPlaintext is the simplified operator path. It keeps
+// the identity and active-version rows required by existing validation and
+// audit paths, while the upstream key itself lives directly on the credential.
+func (s *Store) CreateManagedCredentialPlaintext(ctx context.Context, tx *sql.Tx, poolID uint64, in ManagedCredentialInput, actorID uint64) (uint64, error) {
+	if tx == nil || poolID == 0 || actorID == 0 {
+		return 0, ErrInvalidInput
+	}
+	if err := in.Validate(); err != nil {
+		return 0, err
+	}
+	var channelID uint64
+	if err := tx.QueryRowContext(ctx, `SELECT channel_id FROM gw_credential_pools WHERE id=?`, poolID).Scan(&channelID); err == sql.ErrNoRows {
+		return 0, ErrNotFound
+	} else if err != nil {
+		return 0, err
+	}
+	var state string
+	if err := tx.QueryRowContext(ctx, `SELECT status FROM gateway_channels WHERE id=? FOR SHARE`, channelID).Scan(&state); err != nil {
+		return 0, err
+	}
+	if state != "active" {
+		return 0, ErrConflict
+	}
+	if err := tx.QueryRowContext(ctx, `SELECT status FROM gw_credential_pools WHERE id=? AND channel_id=? FOR UPDATE`, poolID, channelID).Scan(&state); err != nil {
+		return 0, err
+	}
+	if state != "active" {
+		return 0, ErrConflict
+	}
+	// Keep the identity and version rows populated because runtime admission
+	// and validation records are still pinned to them.
+	identityID, err := s.ensureActivePlaintextSecretIdentity(ctx, tx, channelID, in.Secret)
+	if err != nil {
+		return 0, err
+	}
+	var existing uint64
+	if err := tx.QueryRowContext(ctx, `SELECT id FROM gw_credentials WHERE channel_id=? AND credential_code=? FOR UPDATE`, channelID, in.Code).Scan(&existing); err == nil {
+		return 0, ErrDuplicateCredentialSecret
+	} else if err != sql.ErrNoRows {
+		return 0, err
+	}
+	if err := tx.QueryRowContext(ctx, `SELECT id FROM gw_credentials WHERE channel_id=? AND (BINARY secret=BINARY ? OR ((secret IS NULL OR secret='') AND secret_identity_id=?)) FOR UPDATE`, channelID, string(in.Secret), identityID).Scan(&existing); err == nil {
+		return 0, ErrDuplicateCredentialSecret
+	} else if err != sql.ErrNoRows {
+		return 0, err
+	}
+	id, err := s.CreateCredential(ctx, tx, CredentialInput{ChannelID: channelID, PoolID: poolID, SecretIdentityID: identityID, Code: in.Code, Secret: in.Secret, RequestLimit: in.RequestLimit, TaskLimit: in.TaskLimit, Weight: &in.Weight})
+	if err != nil {
+		return 0, err
+	}
+	versionID, err := s.CreateCredentialVersion(ctx, tx, CredentialVersionInput{ChannelID: channelID, CredentialID: id, SecretIdentityID: identityID, VersionNo: 1})
+	if err != nil {
+		return 0, err
+	}
+	if err := s.ActivateCredentialVersion(ctx, tx, id, versionID); err != nil {
+		return 0, err
+	}
+	for _, purpose := range in.Purposes {
+		if _, err := s.GrantCredentialPurpose(ctx, tx, id, purpose, 1); err != nil {
+			return 0, err
+		}
+	}
+	return id, recordCatalogAdminChange(ctx, tx, actorID, "unified.credential.create", "credential", id, ginSafeMetadata{"credential_code": in.Code, "purposes": in.Purposes})
 }
 
 func (in ManagedCredentialInput) Validate() error {
@@ -89,7 +155,7 @@ func (s *Store) CreateManagedCredential(ctx context.Context, tx *sql.Tx, poolID 
 	} else if err != sql.ErrNoRows {
 		return 0, err
 	}
-	id, err := s.CreateCredential(ctx, tx, CredentialInput{ChannelID: channelID, PoolID: poolID, SecretIdentityID: identityID, Code: in.Code, RequestLimit: in.RequestLimit, TaskLimit: in.TaskLimit, Weight: &in.Weight})
+	id, err := s.CreateCredential(ctx, tx, CredentialInput{ChannelID: channelID, PoolID: poolID, SecretIdentityID: identityID, Code: in.Code, Secret: in.Secret, RequestLimit: in.RequestLimit, TaskLimit: in.TaskLimit, Weight: &in.Weight})
 	if err != nil {
 		return 0, err
 	}
@@ -153,6 +219,8 @@ func (s *Store) credentialWriteKeyring(ctx context.Context, tx *sql.Tx, kek, hma
 }
 
 type CredentialUpdate struct {
+	// Secret replaces the upstream key in place. Nil leaves the key unchanged.
+	Secret          *string `json:"secret"`
 	RequestLimit    *uint64 `json:"request_limit"`
 	TaskLimit       *uint64 `json:"task_limit"`
 	Weight          uint64  `json:"weight"`
@@ -162,6 +230,17 @@ type CredentialUpdate struct {
 func (in CredentialUpdate) Validate() error {
 	if !validPoolLimit(in.RequestLimit) || !validPoolLimit(in.TaskLimit) || in.Weight == 0 || in.Weight > 1000000 || in.ExpectedVersion == 0 {
 		return ErrInvalidInput
+	}
+	if in.Secret != nil {
+		value := []byte(*in.Secret)
+		if len(value) == 0 || len(value) > 8192 {
+			return ErrInvalidInput
+		}
+		for _, b := range value {
+			if b < 33 || b > 126 {
+				return ErrInvalidInput
+			}
+		}
 	}
 	return nil
 }
@@ -174,8 +253,8 @@ func (s *Store) UpdateManagedCredential(ctx context.Context, tx *sql.Tx, id uint
 		return err
 	}
 	var state string
-	var version uint64
-	if err := tx.QueryRowContext(ctx, `SELECT status,config_version FROM gw_credentials WHERE id=? FOR UPDATE`, id).Scan(&state, &version); err == sql.ErrNoRows {
+	var version, channelID uint64
+	if err := tx.QueryRowContext(ctx, `SELECT status,config_version,channel_id FROM gw_credentials WHERE id=? FOR UPDATE`, id).Scan(&state, &version, &channelID); err == sql.ErrNoRows {
 		return ErrNotFound
 	} else if err != nil {
 		return err
@@ -183,8 +262,46 @@ func (s *Store) UpdateManagedCredential(ctx context.Context, tx *sql.Tx, id uint
 	if state != "active" || version != in.ExpectedVersion {
 		return ErrConflict
 	}
-	if _, err := tx.ExecContext(ctx, `UPDATE gw_credentials SET request_limit=?,task_limit=?,weight=?,config_version=config_version+1,updated_at=? WHERE id=?`, nullableUint64(in.RequestLimit), nullableUint64(in.TaskLimit), in.Weight, nowUTC(), id); err != nil {
+	if in.Secret != nil {
+		var duplicateID uint64
+		if err := tx.QueryRowContext(ctx, `SELECT id FROM gw_credentials WHERE channel_id=? AND id<>? AND BINARY secret=BINARY ? FOR UPDATE`, channelID, id, *in.Secret).Scan(&duplicateID); err == nil {
+			return ErrDuplicateCredentialSecret
+		} else if err != sql.ErrNoRows {
+			return err
+		}
+		if err := requireOneRow(tx.ExecContext(ctx, `UPDATE gw_credentials SET secret=?,request_limit=?,task_limit=?,weight=?,config_version=config_version+1,updated_at=? WHERE id=? AND config_version=?`, *in.Secret, nullableUint64(in.RequestLimit), nullableUint64(in.TaskLimit), in.Weight, nowUTC(), id, in.ExpectedVersion)); err != nil {
+			return err
+		}
+		// Route breakers are namespaced with bit 31 and keyed by credential ID.
+		// A replacement secret fixes the failed identity represented by those
+		// rows, so retaining them would keep the new key out of the next request.
+		if _, err := tx.ExecContext(ctx, `DELETE FROM gw_route_states WHERE (key_id & 2147483648)<>0 AND (key_id & 2147483647)=?`, id); err != nil {
+			return err
+		}
+	} else if err := requireOneRow(tx.ExecContext(ctx, `UPDATE gw_credentials SET request_limit=?,task_limit=?,weight=?,config_version=config_version+1,updated_at=? WHERE id=? AND config_version=?`, nullableUint64(in.RequestLimit), nullableUint64(in.TaskLimit), in.Weight, nowUTC(), id, in.ExpectedVersion)); err != nil {
 		return err
 	}
-	return recordCatalogAdminChange(ctx, tx, actorID, "unified.credential.update", "credential", id, in)
+	metadata := in
+	metadata.Secret = nil
+	return recordCatalogAdminChange(ctx, tx, actorID, "unified.credential.update", "credential", id, metadata)
+}
+
+func (s *Store) ensureActivePlaintextSecretIdentity(ctx context.Context, tx *sql.Tx, channelID uint64, secret []byte) (uint64, error) {
+	digest := sha256.Sum256(secret)
+	identityID, err := s.EnsureSecretIdentity(ctx, tx, SecretIdentityInput{
+		ChannelID:      channelID,
+		SecretHMAC:     hex.EncodeToString(digest[:]),
+		HMACKeyVersion: 1,
+	})
+	if err != nil {
+		return 0, err
+	}
+	var state string
+	if err := tx.QueryRowContext(ctx, `SELECT status FROM gw_credential_secret_identities WHERE id=? FOR UPDATE`, identityID).Scan(&state); err != nil {
+		return 0, err
+	}
+	if state != "active" {
+		return 0, ErrConflict
+	}
+	return identityID, nil
 }

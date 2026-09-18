@@ -165,9 +165,10 @@ func (s *Store) FailResultDelivery(ctx context.Context, tx *sql.Tx, deliveryID u
 	if tx == nil || deliveryID == 0 || reason == "" || len(reason) > 64 {
 		return ErrInvalidInput
 	}
-	var state string
+	var state, mode, sourceKind string
 	var version uint64
-	if err := tx.QueryRowContext(ctx, `SELECT state,state_version FROM gw_result_deliveries WHERE id=? FOR UPDATE`, deliveryID).Scan(&state, &version); err == sql.ErrNoRows {
+	var currentSourceID sql.NullInt64
+	if err := tx.QueryRowContext(ctx, `SELECT state,state_version,delivery_mode,source_kind,current_source_id FROM gw_result_deliveries WHERE id=? FOR UPDATE`, deliveryID).Scan(&state, &version, &mode, &sourceKind, &currentSourceID); err == sql.ErrNoRows {
 		return ErrNotFound
 	} else if err != nil {
 		return err
@@ -179,7 +180,52 @@ func (s *Store) FailResultDelivery(ctx context.Context, tx *sql.Tx, deliveryID u
 	if err := requireOneRow(tx.ExecContext(ctx, `UPDATE gw_result_deliveries SET state='delivery_failed',reason_code=?,state_version=state_version+1,updated_at=? WHERE id=? AND state='pending' AND state_version=?`, reason, now, deliveryID, version)); err != nil {
 		return err
 	}
-	return requireOneRow(tx.ExecContext(ctx, `INSERT INTO gw_state_transition_events(result_delivery_id,old_state,new_state,state_version,reason_code,created_at) VALUES (?,'pending','delivery_failed',?,?,?)`, deliveryID, version+1, reason, now))
+	if err := requireOneRow(tx.ExecContext(ctx, `INSERT INTO gw_state_transition_events(result_delivery_id,old_state,new_state,state_version,reason_code,created_at) VALUES (?,'pending','delivery_failed',?,?,?)`, deliveryID, version+1, reason, now)); err != nil {
+		return err
+	}
+	if mode == "managed_copy" && sourceKind == "remote_url" && currentSourceID.Valid && delivery.RetryableManagedCopyFailure(reason) {
+		_, err := s.ScheduleDeliveryReconciliation(ctx, tx, deliveryID, now)
+		return err
+	}
+	return nil
+}
+
+// CreateFailedManagedCopyDelivery preserves an observed remote source before
+// recording a local transfer failure. The source is recovery input, never a
+// public result URL.
+func (s *Store) CreateFailedManagedCopyDelivery(ctx context.Context, tx *sql.Tx, in ResultDeliveryInput, source BlobInput, requestID uint64, expiresAt *time.Time, reason string) (uint64, error) {
+	if in.Mode != "managed_copy" || in.SourceKind != "remote_url" || !delivery.RetryableManagedCopyFailure(reason) || requestID == 0 ||
+		!delivery.ValidRemoteURL(string(source.Plaintext)) || source.KeyringID == 0 || source.KEKVersion == 0 || len(source.KEK) != security.KeySize || len(source.HMACKey) != security.KeySize {
+		return 0, ErrInvalidInput
+	}
+	deliveryID, err := s.CreateResultDelivery(ctx, tx, in)
+	if err != nil {
+		return 0, err
+	}
+	source.Purpose, source.SchemaVersion = "gateway-result-source", 1
+	source.Owner = []byte(fmt.Sprintf("delivery:%d:source:%d", deliveryID, 1))
+	blobID, err := s.PutEncryptedBlob(ctx, tx, source)
+	if err != nil {
+		return 0, err
+	}
+	hmac := security.HMACSHA256(source.HMACKey, source.Plaintext)
+	sourceID, err := s.AddResultSource(ctx, tx, ResultSourceInput{
+		DeliveryID: deliveryID, Sequence: 1, EncryptedURLBlobID: blobID,
+		URLHMAC: hex.EncodeToString(hmac[:]), ObservedRequestLogID: requestID, ExpiresAt: expiresAt,
+	})
+	if err != nil {
+		return 0, err
+	}
+	if err := requireOneRow(tx.ExecContext(ctx, `UPDATE gw_result_delivery_sources SET state='active' WHERE id=? AND result_delivery_id=? AND state='superseded'`, sourceID, deliveryID)); err != nil {
+		return 0, err
+	}
+	if err := requireOneRow(tx.ExecContext(ctx, `UPDATE gw_result_deliveries SET current_source_id=?,updated_at=? WHERE id=? AND state='pending' AND state_version=1 AND current_source_id IS NULL`, sourceID, nowUTC(), deliveryID)); err != nil {
+		return 0, err
+	}
+	if err := s.FailResultDelivery(ctx, tx, deliveryID, reason); err != nil {
+		return 0, err
+	}
+	return deliveryID, nil
 }
 
 // ExpireResultDelivery advances a ready reference after its fixed expiry.
@@ -221,7 +267,7 @@ func (s *Store) ExpireReadyDeliveries(ctx context.Context, limit int) (int, erro
 	if s == nil || s.db == nil || limit <= 0 || limit > 1000 {
 		return 0, ErrInvalidInput
 	}
-	rows, err := s.db.QueryContext(ctx, `SELECT id FROM gw_result_deliveries WHERE state='ready' AND expires_at IS NOT NULL AND expires_at<=UTC_TIMESTAMP(3) ORDER BY id LIMIT ?`, limit)
+	rows, err := s.db.QueryContext(ctx, `SELECT id FROM gw_result_deliveries WHERE state='ready' AND expires_at IS NOT NULL AND expires_at<=CURRENT_TIMESTAMP(3) ORDER BY id LIMIT ?`, limit)
 	if err != nil {
 		return 0, err
 	}
@@ -452,6 +498,12 @@ type ManagedCopyDeliveryInput struct {
 	ContentLength       uint64
 }
 
+type ManagedCopyRecoveryInput struct {
+	MediaAssetID        uint64
+	ContentType, SHA256 string
+	ContentLength       uint64
+}
+
 func (s *Store) CreateManagedCopyDelivery(ctx context.Context, tx *sql.Tx, in ManagedCopyDeliveryInput) (uint64, error) {
 	if in.Mode != "managed_copy" || in.SourceKind != "remote_url" && in.SourceKind != "inline_response" || in.MediaAssetID == 0 || in.ContentType == "" || in.ContentLength == 0 || !validHexDigest(in.SHA256, 32) {
 		return 0, ErrInvalidInput
@@ -460,31 +512,73 @@ func (s *Store) CreateManagedCopyDelivery(ctx context.Context, tx *sql.Tx, in Ma
 	if err != nil {
 		return 0, err
 	}
-	var userID, tokenID, contentLength uint64
-	var purpose, state, contentType, digest string
-	var locator sql.NullString
-	if err := tx.QueryRowContext(ctx, `SELECT user_id,token_id,purpose,state,content_type,content_length,sha256,storage_locator FROM gw_media_assets WHERE id=? FOR UPDATE`, in.MediaAssetID).
-		Scan(&userID, &tokenID, &purpose, &state, &contentType, &contentLength, &digest, &locator); err != nil {
-		return 0, err
-	}
-	if userID != in.UserID || tokenID != in.TokenID || purpose != "result" || state != "staging" || !locator.Valid || locator.String == "" || contentType != in.ContentType || contentLength != in.ContentLength || !strings.EqualFold(digest, in.SHA256) {
-		return 0, ErrConflict
-	}
-	if err := s.TransitionMediaAssetWithReason(ctx, tx, in.MediaAssetID, "staging", "active", "managed_copy_published"); err != nil {
-		return 0, err
-	}
-	refID, err := s.AddMediaAssetRef(ctx, tx, MediaAssetRefInput{MediaAssetID: in.MediaAssetID, UserID: in.UserID, TokenID: in.TokenID, Role: "result", Ordinal: in.Ordinal, ResultDeliveryID: &deliveryID})
-	if err != nil {
-		return 0, err
-	}
-	now := nowUTC()
-	if err := requireOneRow(tx.ExecContext(ctx, `UPDATE gw_result_deliveries SET media_asset_ref_id=?,content_sha256=?,content_length=?,content_type=?,state='ready',reason_code='managed_copy_available',state_version=state_version+1,updated_at=? WHERE id=? AND state='pending'`, refID, in.SHA256, in.ContentLength, in.ContentType, now, deliveryID)); err != nil {
-		return 0, err
-	}
-	if err := requireOneRow(tx.ExecContext(ctx, `INSERT INTO gw_state_transition_events(result_delivery_id,old_state,new_state,state_version,reason_code,created_at) VALUES (?,'pending','ready',2,'managed_copy_available',?)`, deliveryID, now)); err != nil {
+	if err := s.publishManagedCopyDelivery(ctx, tx, deliveryID, "pending", ManagedCopyRecoveryInput{MediaAssetID: in.MediaAssetID, ContentType: in.ContentType, ContentLength: in.ContentLength, SHA256: in.SHA256}); err != nil {
 		return 0, err
 	}
 	return deliveryID, nil
+}
+
+// RecoverManagedCopyDelivery publishes a verified staging object into the
+// original failed delivery without changing generation or billing facts.
+func (s *Store) RecoverManagedCopyDelivery(ctx context.Context, tx *sql.Tx, deliveryID uint64, in ManagedCopyRecoveryInput) error {
+	if tx == nil || deliveryID == 0 || in.MediaAssetID == 0 || in.ContentType == "" || in.ContentLength == 0 || !validHexDigest(in.SHA256, 32) {
+		return ErrInvalidInput
+	}
+	return s.publishManagedCopyDelivery(ctx, tx, deliveryID, "delivery_failed", in)
+}
+
+func (s *Store) publishManagedCopyDelivery(ctx context.Context, tx *sql.Tx, deliveryID uint64, expectedState string, in ManagedCopyRecoveryInput) error {
+	var attemptID, userID, tokenID, version uint64
+	var ordinal uint32
+	var mode, state string
+	var currentSourceID sql.NullInt64
+	if err := tx.QueryRowContext(ctx, `SELECT attempt_id,user_id,token_id,result_ordinal,delivery_mode,state,state_version,current_source_id FROM gw_result_deliveries WHERE id=? FOR UPDATE`, deliveryID).
+		Scan(&attemptID, &userID, &tokenID, &ordinal, &mode, &state, &version, &currentSourceID); err == sql.ErrNoRows {
+		return ErrNotFound
+	} else if err != nil {
+		return err
+	}
+	if attemptID == 0 || mode != "managed_copy" || state != expectedState || version == ^uint64(0) {
+		return ErrConflict
+	}
+	var assetUserID, assetTokenID, assetAttemptID, contentLength uint64
+	var purpose, assetState, contentType, digest string
+	var locator sql.NullString
+	if err := tx.QueryRowContext(ctx, `SELECT user_id,token_id,COALESCE(attempt_id,0),purpose,state,content_type,content_length,sha256,storage_locator FROM gw_media_assets WHERE id=? FOR UPDATE`, in.MediaAssetID).
+		Scan(&assetUserID, &assetTokenID, &assetAttemptID, &purpose, &assetState, &contentType, &contentLength, &digest, &locator); err == sql.ErrNoRows {
+		return ErrNotFound
+	} else if err != nil {
+		return err
+	}
+	if assetUserID != userID || assetTokenID != tokenID || assetAttemptID != attemptID || purpose != "result" || assetState != "staging" || !locator.Valid || locator.String == "" || contentType != in.ContentType || contentLength != in.ContentLength || !strings.EqualFold(digest, in.SHA256) {
+		return ErrConflict
+	}
+	if err := s.TransitionMediaAssetWithReason(ctx, tx, in.MediaAssetID, "staging", "active", "managed_copy_published"); err != nil {
+		return err
+	}
+	refID, err := s.AddMediaAssetRef(ctx, tx, MediaAssetRefInput{MediaAssetID: in.MediaAssetID, UserID: userID, TokenID: tokenID, Role: "result", Ordinal: ordinal, ResultDeliveryID: &deliveryID})
+	if err != nil {
+		return err
+	}
+	reason := "managed_copy_available"
+	if expectedState == "delivery_failed" {
+		reason = "managed_copy_recovered"
+		if !currentSourceID.Valid || currentSourceID.Int64 <= 0 {
+			return ErrConflict
+		}
+		if err := requireOneRow(tx.ExecContext(ctx, `UPDATE gw_result_delivery_sources SET state='consumed' WHERE id=? AND result_delivery_id=? AND state='active'`, uint64(currentSourceID.Int64), deliveryID)); err != nil {
+			return err
+		}
+	}
+	now := nowUTC()
+	var currentSource any = currentSourceID
+	if expectedState == "delivery_failed" {
+		currentSource = nil
+	}
+	if err := requireOneRow(tx.ExecContext(ctx, `UPDATE gw_result_deliveries SET current_source_id=?,media_asset_ref_id=?,content_sha256=?,content_length=?,content_type=?,state='ready',reason_code=?,retry_at=NULL,state_version=state_version+1,updated_at=? WHERE id=? AND state=? AND state_version=?`, currentSource, refID, in.SHA256, in.ContentLength, in.ContentType, reason, now, deliveryID, expectedState, version)); err != nil {
+		return err
+	}
+	return requireOneRow(tx.ExecContext(ctx, `INSERT INTO gw_state_transition_events(result_delivery_id,old_state,new_state,state_version,reason_code,created_at) VALUES (?,?,'ready',?,?,?)`, deliveryID, expectedState, version+1, reason, now))
 }
 
 type CallbackDeliveryInput struct {

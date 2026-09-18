@@ -1,6 +1,7 @@
 package engine
 
 import (
+	"encoding/json"
 	"errors"
 	"testing"
 
@@ -72,5 +73,37 @@ func TestCanonicalBillingValidatesCachedTokenSubset(t *testing.T) {
 		if _, err := canonicalBillingFacts(usage); !errors.Is(err, billing.ErrInvalidAmount) {
 			t.Fatalf("invalid usage accepted: %v", usage)
 		}
+	}
+}
+
+func TestCanonicalBillingFactsPopulateExpressionVariables(t *testing.T) {
+	facts, err := canonicalBillingFacts(&canonical.Usage{
+		InputTokens: 20, CachedInputTokens: 7, OutputTokens: 4, ReasoningOutputTokens: 3,
+		Extra: map[string]json.RawMessage{"cache_creation_input_tokens": json.RawMessage("2")},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	expression, err := billing.ParseExpression("input_tokens + output_tokens + cache_read_tokens + cache_write_tokens + reasoning_tokens + success", facts.Expr.Declared)
+	if err != nil {
+		t.Fatal(err)
+	}
+	amount, err := expression.Evaluate(facts.Expr)
+	if err != nil || amount.String() != "37" {
+		t.Fatalf("expression amount=%s err=%v facts=%+v", amount.String(), err, facts)
+	}
+}
+
+func TestCanonicalBillingFactsLeaveUnknownExpressionVariableMissing(t *testing.T) {
+	facts, err := canonicalBillingFacts(&canonical.Usage{InputTokens: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	expression, err := billing.ParseExpression("cache_write_tokens + 1", facts.Expr.Declared)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := expression.Evaluate(facts.Expr); !errors.Is(err, billing.ErrMissingFact) {
+		t.Fatalf("err=%v, want missing cache write fact", err)
 	}
 }

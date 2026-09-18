@@ -42,8 +42,9 @@ type cryptoReadinessRequest struct {
 	ExpiresAt  time.Time `json:"expires_at"`
 }
 type activateCatalogRequest struct {
-	GenerationID         uint64 `json:"generation_id"`
-	ExpectedStateVersion uint64 `json:"expected_state_version"`
+	GenerationID            uint64 `json:"generation_id"`
+	ExpectedStateVersion    uint64 `json:"expected_state_version"`
+	ExpectedActiveReleaseID uint64 `json:"expected_active_release_id"`
 }
 
 type proveCurrentDeploymentRequest struct {
@@ -286,6 +287,9 @@ func ActivateUnifiedCatalog(c *gin.Context) {
 		return
 	}
 	err = store.WithTx(c.Request.Context(), func(tx *sql.Tx) error {
+		if in.ExpectedActiveReleaseID != 0 {
+			return store.ActivateReleaseWhenReadyFrom(c.Request.Context(), tx, uint64(releaseID), in.ExpectedActiveReleaseID, in.ExpectedStateVersion, in.GenerationID, identity)
+		}
 		return store.ActivateReleaseWhenReady(c.Request.Context(), tx, uint64(releaseID), in.ExpectedStateVersion, in.GenerationID, identity)
 	})
 	if err != nil {

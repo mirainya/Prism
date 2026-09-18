@@ -9,11 +9,19 @@ import (
 )
 
 type billingAccount struct {
-	id, userID, version uint64
-	currency            string
-	currencyVersion     uint32
-	posted, held        billing.Amount
-	status              string
+	id, userID, version  uint64
+	currency             string
+	currencyVersion      uint32
+	posted, held, credit billing.Amount
+	status               string
+}
+
+func (a billingAccount) available() billing.Amount {
+	return a.posted.Add(a.credit).Sub(a.held)
+}
+
+func (a billingAccount) exceedsCredit(posted billing.Amount) bool {
+	return posted.Add(a.credit).Sign() < 0
 }
 
 type billingWindow struct {
@@ -34,9 +42,9 @@ type lockedReservation struct {
 
 func (s *Store) lockBillingAccount(ctx context.Context, tx *sql.Tx, id uint64) (billingAccount, error) {
 	a := billingAccount{id: id}
-	var posted, held string
-	if err := tx.QueryRowContext(ctx, s.forUpdate(`SELECT user_id,currency_code,currency_version,posted_balance,held_amount,status,state_version FROM billing_accounts WHERE id=?`), id).
-		Scan(&a.userID, &a.currency, &a.currencyVersion, &posted, &held, &a.status, &a.version); err != nil {
+	var posted, held, credit string
+	if err := tx.QueryRowContext(ctx, s.forUpdate(`SELECT user_id,currency_code,currency_version,posted_balance,held_amount,credit_limit,status,state_version FROM billing_accounts WHERE id=?`), id).
+		Scan(&a.userID, &a.currency, &a.currencyVersion, &posted, &held, &credit, &a.status, &a.version); err != nil {
 		return a, err
 	}
 	var err error
@@ -45,6 +53,10 @@ func (s *Store) lockBillingAccount(ctx context.Context, tx *sql.Tx, id uint64) (
 		return a, err
 	}
 	a.held, err = billing.ParseAmount(held, 18, true)
+	if err != nil {
+		return a, err
+	}
+	a.credit, err = billing.ParseAmount(credit, 18, true)
 	return a, err
 }
 

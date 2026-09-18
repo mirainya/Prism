@@ -44,7 +44,7 @@ type CredentialVersionInput struct {
 }
 
 func (s *Store) CreateCredentialVersion(ctx context.Context, tx *sql.Tx, in CredentialVersionInput) (uint64, error) {
-	if tx == nil || in.ChannelID == 0 || in.CredentialID == 0 || in.SecretIdentityID == 0 || in.EncryptedBlobID == 0 || in.VersionNo == 0 {
+	if tx == nil || in.ChannelID == 0 || in.CredentialID == 0 || in.SecretIdentityID == 0 || in.VersionNo == 0 {
 		return 0, ErrInvalidInput
 	}
 	var credentialSecretID uint64
@@ -71,7 +71,11 @@ func (s *Store) CreateCredentialVersion(ctx context.Context, tx *sql.Tx, in Cred
 	if in.ValidUntil != nil {
 		valid = in.ValidUntil.UTC()
 	}
-	result, err := tx.ExecContext(ctx, `INSERT INTO gw_credential_versions(channel_id,credential_id,secret_identity_id,version_no,encrypted_blob_id,status,valid_until,created_at) VALUES (?,?,?,?,?,'preparing',?,?)`, in.ChannelID, in.CredentialID, in.SecretIdentityID, in.VersionNo, in.EncryptedBlobID, valid, now)
+	var blob any
+	if in.EncryptedBlobID != 0 {
+		blob = in.EncryptedBlobID
+	}
+	result, err := tx.ExecContext(ctx, `INSERT INTO gw_credential_versions(channel_id,credential_id,secret_identity_id,version_no,encrypted_blob_id,status,valid_until,created_at) VALUES (?,?,?,?,?,'preparing',?,?)`, in.ChannelID, in.CredentialID, in.SecretIdentityID, in.VersionNo, blob, valid, now)
 	if err != nil {
 		return 0, fmt.Errorf("insert credential version: %w", err)
 	}

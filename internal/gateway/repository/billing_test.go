@@ -8,15 +8,71 @@ import (
 	"time"
 
 	"github.com/DATA-DOG/go-sqlmock"
+	"github.com/mirainya/Prism/internal/gateway/billing"
 )
 
 func expectReservation(mock sqlmock.Sqlmock, state string) {
 	mock.ExpectQuery("SELECT call_id,billing_account_id,budget_window_id FROM billing_reservations").WithArgs(uint64(9)).WillReturnRows(sqlmock.NewRows([]string{"call_id", "billing_account_id", "budget_window_id"}).AddRow(1, 2, 3))
-	mock.ExpectQuery("SELECT user_id,currency_code,currency_version,posted_balance,held_amount,status,state_version FROM billing_accounts").WithArgs(uint64(2)).WillReturnRows(sqlmock.NewRows([]string{"user_id", "currency_code", "currency_version", "posted_balance", "held_amount", "status", "state_version"}).AddRow(8, "CNY", 1, "100", "10", "open", 5))
+	mock.ExpectQuery("SELECT user_id,currency_code,currency_version,posted_balance,held_amount,credit_limit,status,state_version FROM billing_accounts").WithArgs(uint64(2)).WillReturnRows(sqlmock.NewRows([]string{"user_id", "currency_code", "currency_version", "posted_balance", "held_amount", "credit_limit", "status", "state_version"}).AddRow(8, "CNY", 1, "100", "10", "0", "open", 5))
 	mock.ExpectQuery("SELECT token_id,limit_amount,used_amount,held_amount,window_start,window_end FROM token_budget_windows").WithArgs(uint64(3)).WillReturnRows(sqlmock.NewRows([]string{"token_id", "limit_amount", "used_amount", "held_amount", "window_start", "window_end"}).AddRow(7, nil, "0", "10", time.Now().Add(-time.Hour), nil))
 	mock.ExpectQuery("SELECT user_id,token_id FROM gw_api_calls").WithArgs(uint64(1)).WillReturnRows(sqlmock.NewRows([]string{"user_id", "token_id"}).AddRow(8, 7))
 	mock.ExpectQuery("SELECT user_id FROM tokens").WithArgs(uint64(7)).WillReturnRows(sqlmock.NewRows([]string{"user_id"}).AddRow(8))
 	mock.ExpectQuery("SELECT call_id,billing_account_id,budget_window_id,amount,state,state_version FROM billing_reservations").WithArgs(uint64(9)).WillReturnRows(sqlmock.NewRows([]string{"call_id", "billing_account_id", "budget_window_id", "amount", "state", "state_version"}).AddRow(1, 2, 3, "10", state, 4))
+}
+
+func TestBillingAccountCreditAvailability(t *testing.T) {
+	posted, _ := billing.ParseAmount("0", 18, false)
+	held, _ := billing.ParseAmount("3", 18, true)
+	credit, _ := billing.ParseAmount("10", 18, true)
+	account := billingAccount{posted: posted, held: held, credit: credit}
+
+	available, _ := billing.ParseAmount("7", 18, true)
+	if account.available().Cmp(available) != 0 {
+		t.Fatalf("available = %s, want %s", account.available().String(), available.String())
+	}
+	withinCredit, _ := billing.ParseAmount("-10", 18, false)
+	beyondCredit, _ := billing.ParseAmount("-10.00000001", 18, false)
+	if account.exceedsCredit(withinCredit) {
+		t.Fatal("balance at the credit limit was treated as an overrun")
+	}
+	if !account.exceedsCredit(beyondCredit) {
+		t.Fatal("balance beyond the credit limit was accepted")
+	}
+}
+
+func TestOpenBillingAccountRepairsMissingLedger(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	store, _ := New(db)
+
+	mock.ExpectBegin()
+	mock.ExpectQuery("SELECT id FROM users").WithArgs(uint64(8)).WillReturnRows(
+		sqlmock.NewRows([]string{"id"}).AddRow(8),
+	)
+	mock.ExpectQuery("SELECT id,currency_code,currency_version FROM billing_accounts").WithArgs(uint64(8)).WillReturnRows(
+		sqlmock.NewRows([]string{"id", "currency_code", "currency_version"}).AddRow(2, "CNY", 1),
+	)
+	mock.ExpectExec("INSERT INTO ledger_accounts").WithArgs(uint64(2), "CNY", uint32(1), sqlmock.AnyArg()).WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectCommit()
+
+	var accountID uint64
+	err = store.WithTx(context.Background(), func(tx *sql.Tx) error {
+		var err error
+		accountID, err = store.OpenBillingAccount(context.Background(), tx, 8)
+		return err
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if accountID != 2 {
+		t.Fatalf("account id = %d, want 2", accountID)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatal(err)
+	}
 }
 
 func expectPostingRule(mock sqlmock.Sqlmock, event string) {

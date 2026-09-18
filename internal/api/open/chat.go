@@ -12,7 +12,7 @@ import (
 // Model metadata comes from the executable routes in the active catalog.
 func GetChatModelDetail(c *gin.Context) {
 	code := c.Param("code")
-	rows, err := service.NewQueryService().ListAvailableCapabilities(c.Request.Context(), "", "chat")
+	rows, err := service.NewQueryService().ListAvailableCapabilities(c.Request.Context(), "", "")
 	if err != nil {
 		resp.ErrorMsg(c, http.StatusServiceUnavailable, 503, "model catalog is unavailable")
 		return
@@ -28,9 +28,10 @@ func GetChatModelDetail(c *gin.Context) {
 }
 
 // ListChatModelsPublic GET /v1/models
-// Only models with an executable chat operation in the active catalog appear.
+// Every executable model in the active catalog appears. The response retains
+// the OpenAI model-list fields and adds Prism metadata for multimodal clients.
 func ListChatModelsPublic(c *gin.Context) {
-	rows, err := service.NewQueryService().ListAvailableCapabilities(c.Request.Context(), "", "chat")
+	rows, err := service.NewQueryService().ListAvailableCapabilities(c.Request.Context(), "", "")
 	if err != nil {
 		resp.ErrorMsg(c, http.StatusServiceUnavailable, 503, "model catalog is unavailable")
 		return
@@ -63,12 +64,18 @@ func publicChatModel(model service.AvailableModelCapability) gin.H {
 		"object":               "model",
 		"owned_by":             "prism",
 		"name":                 model.Name,
-		"model_code":           model.ModelCode,
+		"model_code":           model.ID,
+		"description":          model.Description,
+		"type":                 model.Type,
+		"types":                model.Types,
 		"visibility":           model.Visibility,
 		"features":             model.Features,
 		"native_transports":    model.Transports,
 		"supported_operations": operations,
 		"supported_endpoints":  endpoints,
+	}
+	if model.Availability != nil {
+		item["availability"] = model.Availability
 	}
 	return item
 }

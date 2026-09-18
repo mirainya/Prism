@@ -48,7 +48,7 @@ func RecordUnifiedOfferingValidation(c *gin.Context) {
 		unifiedChannelError(c, repository.ErrInvalidInput)
 		return
 	}
-	hmacKey, err := adminGatewayKey("PRISM_GATEWAY_HMAC_B64")
+	hmacKey, err := adminGatewayKey("PRISM_GATEWAY_PAYLOAD_HMAC_B64")
 	if err != nil {
 		unifiedChannelError(c, repository.ErrCredentialEncryptionUnavailable)
 		return

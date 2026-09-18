@@ -11,6 +11,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/mirainya/Prism/internal/gateway/billing"
 	"github.com/mirainya/Prism/internal/gateway/delivery"
 )
 
@@ -135,6 +136,22 @@ func TestOpenAIImagesDecodeObservationExposesTokenBillingFacts(t *testing.T) {
 	}
 	if observation.Facts.Quantities["usage.input_tokens"] != "3" || observation.Facts.Quantities["usage.output_tokens"] != "4" {
 		t.Fatalf("billing facts=%+v", observation.Facts)
+	}
+}
+
+func TestOpenAIImagesDecodeObservationInjectsExpressionFacts(t *testing.T) {
+	body := []byte(`{"data":[{"url":"https://images.example/result.png"}],"usage":{"input_tokens":3,"output_tokens":4}}`)
+	observation, err := (OpenAIImages{}).DecodeObservation(body, false, "png")
+	if err != nil {
+		t.Fatal(err)
+	}
+	expression, err := billing.ParseExpression("count + input_tokens + output_tokens + success", observation.Facts.Expr.Declared)
+	if err != nil {
+		t.Fatal(err)
+	}
+	amount, err := expression.Evaluate(observation.Facts.Expr)
+	if err != nil || amount.String() != "9" {
+		t.Fatalf("amount=%s err=%v expr=%+v", amount.String(), err, observation.Facts.Expr)
 	}
 }
 

@@ -5,7 +5,7 @@ import (
 	"errors"
 )
 
-// Router resolves routes from the active immutable gateway catalog.
+// Router resolves routes from the active gateway catalog.
 type Router struct{ unified *unifiedSelector }
 
 func NewRouter() *Router { return &Router{unified: &unifiedSelector{}} }
@@ -30,8 +30,7 @@ var (
 // owned and released by the transactional call lifecycle.
 func (*Router) Release(uint) {}
 
-// UnifiedActive reports whether the published catalog and deployment
-// readiness gates currently permit new traffic.
+// UnifiedActive reports whether the active catalog currently permits traffic.
 func (r *Router) UnifiedActive(ctx context.Context) bool {
 	return r.unifiedActive(ctx)
 }

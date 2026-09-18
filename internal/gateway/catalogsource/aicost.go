@@ -12,6 +12,7 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+	"unicode"
 	"unicode/utf8"
 
 	"github.com/mirainya/Prism/internal/gateway/billing"
@@ -24,7 +25,6 @@ const (
 
 var (
 	ErrInvalidSnapshot = errors.New("catalog source: invalid provider snapshot")
-	modelCodePattern   = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._:/-]{0,127}$`)
 	endpointPattern    = regexp.MustCompile(`^[a-z][a-z0-9._-]{0,63}$`)
 )
 
@@ -99,7 +99,7 @@ func ParseAICostModels(value []byte, group string) ([]DiscoveredModel, error) {
 	seen := make(map[string]struct{}, len(response.Data))
 	for _, item := range response.Data {
 		code := strings.TrimSpace(item.ID)
-		if !modelCodePattern.MatchString(code) {
+		if !validModelCode(code) {
 			return nil, ErrInvalidSnapshot
 		}
 		if _, exists := seen[code]; exists {
@@ -155,10 +155,10 @@ func ParseAICostPricing(value []byte) ([]DiscoveredModel, error) {
 
 func normalizeAICostPrice(item aicostPrice) (DiscoveredModel, error) {
 	item.ModelName = strings.TrimSpace(item.ModelName)
-	item.Description = strings.TrimSpace(item.Description)
-	item.Tags = strings.TrimSpace(item.Tags)
-	item.OwnerBy = strings.TrimSpace(item.OwnerBy)
-	if !modelCodePattern.MatchString(item.ModelName) || !validOptionalText(item.Description, 1000) ||
+	item.Description = normalizeProviderText(item.Description)
+	item.Tags = normalizeProviderText(item.Tags)
+	item.OwnerBy = normalizeProviderText(item.OwnerBy)
+	if !validModelCode(item.ModelName) || !validOptionalText(item.Description, 1000) ||
 		!validOptionalText(item.Tags, 512) || !validOptionalText(item.OwnerBy, 128) ||
 		item.QuotaType != nil && *item.QuotaType > 1 {
 		return DiscoveredModel{}, ErrInvalidSnapshot
@@ -194,6 +194,13 @@ func normalizeAICostPrice(item aicostPrice) (DiscoveredModel, error) {
 		OwnerBy: item.OwnerBy, PricingVersion: version,
 		Groups: groups, EndpointTypes: endpoints,
 	}, nil
+}
+
+func normalizeProviderText(value string) string {
+	if !utf8.ValidString(value) {
+		return value
+	}
+	return strings.Join(strings.Fields(value), " ")
 }
 
 func optionalDecimal(number json.Number) (*string, error) {
@@ -253,6 +260,23 @@ func normalizeStrings(values []string, maxLength int, pattern *regexp.Regexp) ([
 
 func validText(value string, maxRunes int) bool {
 	return value != "" && validOptionalText(value, maxRunes)
+}
+
+func validModelCode(value string) bool {
+	if !utf8.ValidString(value) {
+		return false
+	}
+	runes := []rune(value)
+	if len(runes) == 0 || len(runes) > 128 || !unicode.IsLetter(runes[0]) && !unicode.IsDigit(runes[0]) {
+		return false
+	}
+	for _, current := range runes[1:] {
+		if unicode.IsLetter(current) || unicode.IsDigit(current) || strings.ContainsRune("._:/-%", current) {
+			continue
+		}
+		return false
+	}
+	return true
 }
 
 func validOptionalText(value string, maxRunes int) bool {

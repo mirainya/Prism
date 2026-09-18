@@ -126,26 +126,26 @@ func verifyAsyncHTTPDispatch(t *testing.T, db *sql.DB, store *repository.Store, 
 			query string
 			args  []any
 		}{
-			{`UPDATE gw_async_outbox SET available_at=DATE_ADD(UTC_TIMESTAMP(3),INTERVAL 1 DAY) WHERE status='pending'`, nil},
+			{`UPDATE gw_async_outbox SET available_at=DATE_ADD(CURRENT_TIMESTAMP(3),INTERVAL 1 DAY) WHERE status='pending'`, nil},
 			{`UPDATE gw_product_transports SET task_scope='task',timeout_ms=30000 WHERE id=?`, []any{input.Attempt.ProductTransportID}},
 			{`UPDATE gw_credential_pools SET request_limit=NULL,task_limit=NULL WHERE id=?`, []any{input.Attempt.CredentialPoolID}},
 			{`UPDATE gw_credentials SET request_limit=NULL,task_limit=NULL WHERE id=?`, []any{input.Attempt.CredentialID}},
 			{`UPDATE gw_adapter_implementations SET adapter_code='seedance',contract_version=1 WHERE id=?`, []any{adapterID}},
 			{`UPDATE gw_channel_transports SET base_url=?,protocol='seedance',request_path='/tasks',timeout_ms=30000 WHERE id=?`, []any{upstream.URL, transportID}},
-			{`INSERT INTO gw_transport_allowed_hosts(release_id,channel_transport_id,protocol,host_pattern,port,created_at) VALUES (?,?,'http',?,?,UTC_TIMESTAMP(3))`, []any{input.Call.CatalogReleaseID, transportID, parsed.Hostname(), parsed.Port()}},
-			{`INSERT INTO gw_transport_allowed_hosts(release_id,channel_transport_id,protocol,host_pattern,port,created_at) VALUES (?,?,'https','example.invalid',443,UTC_TIMESTAMP(3)) ON DUPLICATE KEY UPDATE protocol=VALUES(protocol)`, []any{input.Call.CatalogReleaseID, transportID}},
+			{`INSERT INTO gw_transport_allowed_hosts(release_id,channel_transport_id,protocol,host_pattern,port,created_at) VALUES (?,?,'http',?,?,CURRENT_TIMESTAMP(3))`, []any{input.Call.CatalogReleaseID, transportID, parsed.Hostname(), parsed.Port()}},
+			{`INSERT INTO gw_transport_allowed_hosts(release_id,channel_transport_id,protocol,host_pattern,port,created_at) VALUES (?,?,'https','example.invalid',443,CURRENT_TIMESTAMP(3)) ON DUPLICATE KEY UPDATE protocol=VALUES(protocol)`, []any{input.Call.CatalogReleaseID, transportID}},
 		}
 		for _, statement := range statements {
 			if _, err := tx.Exec(statement.query, statement.args...); err != nil {
 				return err
 			}
 		}
-		evidence, err := tx.Exec(`INSERT INTO gw_rate_evidence(source_type,authority_level,source_reference,observed_at,fact_hmac,unit_code,unit_price,currency_code,currency_version,created_at) VALUES ('qa','manual','qa-http-rate',UTC_TIMESTAMP(3),?,'second',0.1,?,?,UTC_TIMESTAMP(3))`, strings.Repeat("a", 64), input.Call.Currency, input.Call.CurrencyVersion)
+		evidence, err := tx.Exec(`INSERT INTO gw_rate_evidence(source_type,authority_level,source_reference,observed_at,fact_hmac,unit_code,unit_price,currency_code,currency_version,created_at) VALUES ('qa','manual','qa-http-rate',CURRENT_TIMESTAMP(3),?,'second',0.1,?,?,CURRENT_TIMESTAMP(3))`, strings.Repeat("a", 64), input.Call.Currency, input.Call.CurrencyVersion)
 		if err != nil {
 			return err
 		}
 		evidenceID, _ := evidence.LastInsertId()
-		review, err := tx.Exec(`INSERT INTO gw_rate_evidence_review_events(rate_evidence_id,review_seq,decision,reviewer_user_id,reason_code,created_at) VALUES (?,1,'accepted',?,'qa_http_rate',UTC_TIMESTAMP(3))`, evidenceID, input.Call.UserID)
+		review, err := tx.Exec(`INSERT INTO gw_rate_evidence_review_events(rate_evidence_id,review_seq,decision,reviewer_user_id,reason_code,created_at) VALUES (?,1,'accepted',?,'qa_http_rate',CURRENT_TIMESTAMP(3))`, evidenceID, input.Call.UserID)
 		if err != nil {
 			return err
 		}
@@ -153,7 +153,7 @@ func verifyAsyncHTTPDispatch(t *testing.T, db *sql.DB, store *repository.Store, 
 		if _, err := tx.Exec(`INSERT INTO gw_rate_evidence_review_state(rate_evidence_id,state,state_version,latest_review_event_id) VALUES (?,'accepted',1,?)`, evidenceID, reviewID); err != nil {
 			return err
 		}
-		_, err = tx.Exec(`INSERT INTO gw_sell_rates(release_id,sku_id,rate_evidence_review_event_id,unit_code,unit_price,currency_code,currency_version,created_at,component_code,quantity_source,charge_event,unit_scale,quantity_step,max_quantity) VALUES (?,?,?,'second',0.1,?,?,UTC_TIMESTAMP(3),'video_seconds','result.seconds','call.succeeded',0,0,10)`, input.Call.CatalogReleaseID, input.Call.SKUID, reviewID, input.Call.Currency, input.Call.CurrencyVersion)
+		_, err = tx.Exec(`INSERT INTO gw_sell_rates(release_id,sku_id,rate_evidence_review_event_id,unit_code,unit_price,currency_code,currency_version,created_at,component_code,quantity_source,charge_event,unit_scale,quantity_step,max_quantity) VALUES (?,?,?,'second',0.1,?,?,CURRENT_TIMESTAMP(3),'video_seconds','result.seconds','call.succeeded',0,0,10)`, input.Call.CatalogReleaseID, input.Call.SKUID, reviewID, input.Call.Currency, input.Call.CurrencyVersion)
 		return err
 	}); err != nil {
 		t.Fatal(err)
@@ -178,7 +178,7 @@ func verifyAsyncHTTPDispatch(t *testing.T, db *sql.DB, store *repository.Store, 
 	}
 	process := func(created gatewayruntime.Submission) error {
 		t.Helper()
-		if _, err := db.Exec(`UPDATE gw_async_outbox SET available_at=UTC_TIMESTAMP(3) WHERE async_execution_id=? AND status='pending'`, created.AsyncExecutionID); err != nil {
+		if _, err := db.Exec(`UPDATE gw_async_outbox SET available_at=CURRENT_TIMESTAMP(3) WHERE async_execution_id=? AND status='pending'`, created.AsyncExecutionID); err != nil {
 			t.Fatal(err)
 		}
 		worked, err := service.ProcessOne(ctx, "qa-http-worker", time.Minute, time.Second, dispatcher)
@@ -266,7 +266,7 @@ func verifyAsyncHTTPDispatch(t *testing.T, db *sql.DB, store *repository.Store, 
 		}
 		response.Body.Close()
 		before := submits.Load()
-		if _, err := db.Exec(`UPDATE gw_async_outbox SET lease_expires_at=DATE_SUB(UTC_TIMESTAMP(3),INTERVAL 1 SECOND) WHERE id=?`, item.ID); err != nil {
+		if _, err := db.Exec(`UPDATE gw_async_outbox SET lease_expires_at=DATE_SUB(CURRENT_TIMESTAMP(3),INTERVAL 1 SECOND) WHERE id=?`, item.ID); err != nil {
 			t.Fatal(err)
 		}
 		if err := process(created); err != nil {
@@ -429,7 +429,7 @@ func verifyAsyncHTTPDispatch(t *testing.T, db *sql.DB, store *repository.Store, 
 		if err := db.QueryRow(`SELECT id FROM gw_result_deliveries WHERE attempt_id=? AND result_ordinal=0`, created.AttemptID).Scan(&deliveryID); err != nil {
 			t.Fatal(err)
 		}
-		if _, err := db.Exec(`UPDATE gw_result_deliveries SET expires_at=DATE_SUB(UTC_TIMESTAMP(3),INTERVAL 1 SECOND) WHERE id=?`, deliveryID); err != nil {
+		if _, err := db.Exec(`UPDATE gw_result_deliveries SET expires_at=DATE_SUB(CURRENT_TIMESTAMP(3),INTERVAL 1 SECOND) WHERE id=?`, deliveryID); err != nil {
 			t.Fatal(err)
 		}
 		if err := store.WithTx(ctx, func(tx *sql.Tx) error { return store.ExpireResultDelivery(ctx, tx, deliveryID) }); err != nil {
@@ -437,7 +437,7 @@ func verifyAsyncHTTPDispatch(t *testing.T, db *sql.DB, store *repository.Store, 
 		}
 		processDelivery := func(owner string) error {
 			t.Helper()
-			if _, err := db.Exec(`UPDATE gw_async_outbox SET available_at=UTC_TIMESTAMP(3) WHERE result_delivery_id=? AND status='pending'`, deliveryID); err != nil {
+			if _, err := db.Exec(`UPDATE gw_async_outbox SET available_at=CURRENT_TIMESTAMP(3) WHERE result_delivery_id=? AND status='pending'`, deliveryID); err != nil {
 				t.Fatal(err)
 			}
 			worked, err := service.ProcessDeliveryOne(ctx, owner, time.Minute, time.Millisecond, dispatcher)
@@ -458,7 +458,7 @@ func verifyAsyncHTTPDispatch(t *testing.T, db *sql.DB, store *repository.Store, 
 		}
 
 		mode.Store("delivery_refresh")
-		if _, err := db.Exec(`UPDATE gw_async_outbox SET available_at=UTC_TIMESTAMP(3) WHERE result_delivery_id=?`, deliveryID); err != nil {
+		if _, err := db.Exec(`UPDATE gw_async_outbox SET available_at=CURRENT_TIMESTAMP(3) WHERE result_delivery_id=?`, deliveryID); err != nil {
 			t.Fatal(err)
 		}
 		var crashed repository.OutboxItem
@@ -482,7 +482,7 @@ func verifyAsyncHTTPDispatch(t *testing.T, db *sql.DB, store *repository.Store, 
 			t.Fatal(err)
 		}
 		response.Body.Close()
-		if _, err := db.Exec(`UPDATE gw_async_outbox SET lease_expires_at=DATE_SUB(UTC_TIMESTAMP(3),INTERVAL 1 SECOND) WHERE id=?`, crashed.ID); err != nil {
+		if _, err := db.Exec(`UPDATE gw_async_outbox SET lease_expires_at=DATE_SUB(CURRENT_TIMESTAMP(3),INTERVAL 1 SECOND) WHERE id=?`, crashed.ID); err != nil {
 			t.Fatal(err)
 		}
 		if err := processDelivery("qa-delivery-reclaimed"); err != nil {

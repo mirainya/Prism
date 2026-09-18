@@ -32,6 +32,35 @@ func TestParseAICostPricingPreservesDecimalFacts(t *testing.T) {
 	}
 }
 
+func TestParseAICostPricingAcceptsProviderModelIdentifiers(t *testing.T) {
+	models, err := ParseAICostPricing([]byte(`{
+		"success":true,
+		"data":[
+			{"model_name":"seedance2.5-10图","description":"video","tags":"video","enable_groups":["g"],"supported_endpoint_types":["openai"]},
+			{"model_name":"seedance2.0-480p-100%","description":"video","tags":"video","enable_groups":["g"],"supported_endpoint_types":["openai"]}
+		]
+	}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(models) != 2 {
+		t.Fatalf("models=%#v", models)
+	}
+}
+
+func TestParseAICostPricingNormalizesDescriptionWhitespace(t *testing.T) {
+	models, err := ParseAICostPricing([]byte(`{
+		"success":true,
+		"data":[{"model_name":"video-model","description":"first line\nsecond\tline","tags":" video ","enable_groups":["g"],"supported_endpoint_types":["openai"]}]
+	}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(models) != 1 || models[0].Description != "first line second line" || models[0].Tags != "video" {
+		t.Fatalf("model=%#v", models)
+	}
+}
+
 func TestAICostParsersRejectAmbiguousOrMalformedFacts(t *testing.T) {
 	for _, test := range []struct {
 		name string

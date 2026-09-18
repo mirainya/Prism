@@ -38,11 +38,11 @@ func TestFailResultDeliveryTransitionAndRollback(t *testing.T) {
 			defer db.Close()
 			store, _ := New(db)
 			mock.ExpectBegin()
-			rows := sqlmock.NewRows([]string{"state", "state_version"})
+			rows := sqlmock.NewRows([]string{"state", "state_version", "delivery_mode", "source_kind", "current_source_id"})
 			if !test.missing {
-				rows.AddRow(test.state, 1)
+				rows.AddRow(test.state, 1, "reference", "remote_url", nil)
 			}
-			mock.ExpectQuery("SELECT state,state_version FROM gw_result_deliveries.*FOR UPDATE").WithArgs(uint64(7)).WillReturnRows(rows)
+			mock.ExpectQuery("SELECT state,state_version,delivery_mode,source_kind,current_source_id FROM gw_result_deliveries.*FOR UPDATE").WithArgs(uint64(7)).WillReturnRows(rows)
 			if test.state == "pending" {
 				mock.ExpectExec("UPDATE gw_result_deliveries SET state='delivery_failed'.*WHERE id=\\? AND state='pending' AND state_version=\\?").
 					WithArgs("source_expiry_unknown", sqlmock.AnyArg(), uint64(7), uint64(1)).WillReturnResult(sqlmock.NewResult(0, test.updateRows))
@@ -71,6 +71,40 @@ func TestFailResultDeliveryTransitionAndRollback(t *testing.T) {
 				t.Fatal(err)
 			}
 		})
+	}
+}
+
+func TestFailManagedCopyDeliverySchedulesRecoveryAtomically(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	store, _ := New(db)
+	mock.ExpectBegin()
+	mock.ExpectQuery("SELECT state,state_version,delivery_mode,source_kind,current_source_id FROM gw_result_deliveries").WithArgs(uint64(7)).
+		WillReturnRows(sqlmock.NewRows([]string{"state", "state_version", "delivery_mode", "source_kind", "current_source_id"}).AddRow("pending", 1, "managed_copy", "remote_url", 17))
+	mock.ExpectExec("UPDATE gw_result_deliveries SET state='delivery_failed'").
+		WithArgs("managed_copy_upload_failed", sqlmock.AnyArg(), uint64(7), uint64(1)).WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectExec("INSERT INTO gw_state_transition_events.*'pending','delivery_failed'").
+		WithArgs(uint64(7), uint64(2), "managed_copy_upload_failed", sqlmock.AnyArg()).WillReturnResult(sqlmock.NewResult(1, 1))
+	mock.ExpectQuery("SELECT d.attempt_id,d.state,d.state_version,d.action_seq,d.delivery_mode,d.source_kind,pt.source_url_policy,d.reason_code,\\(s.id IS NOT NULL\\) FROM gw_result_deliveries").
+		WithArgs(uint64(7)).WillReturnRows(sqlmock.NewRows([]string{"attempt_id", "state", "state_version", "action_seq", "delivery_mode", "source_kind", "source_url_policy", "reason_code", "source_available"}).
+		AddRow(3, "delivery_failed", 2, 0, "managed_copy", "remote_url", "fixed", "managed_copy_upload_failed", true))
+	mock.ExpectQuery("SELECT id FROM gw_async_outbox WHERE result_delivery_id=\\? AND state_version=\\?").
+		WithArgs(uint64(7), uint64(2)).WillReturnRows(sqlmock.NewRows([]string{"id"}))
+	mock.ExpectExec("UPDATE gw_result_deliveries SET action_seq=action_seq\\+1,retry_at=\\?").
+		WithArgs(sqlmock.AnyArg(), sqlmock.AnyArg(), uint64(7), "delivery_failed", uint64(2), uint64(0)).WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectExec("INSERT INTO gw_async_outbox\\(result_delivery_id,action_seq,action,status,state_version").
+		WithArgs(uint64(7), uint64(1), uint64(2), sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg()).WillReturnResult(sqlmock.NewResult(9, 1))
+	mock.ExpectCommit()
+	if err := store.WithTx(context.Background(), func(tx *sql.Tx) error {
+		return store.FailResultDelivery(context.Background(), tx, 7, "managed_copy_upload_failed")
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatal(err)
 	}
 }
 

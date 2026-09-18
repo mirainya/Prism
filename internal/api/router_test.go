@@ -33,6 +33,25 @@ func TestSetupRouterDoesNotServeSPAForLegacyCallback(t *testing.T) {
 	}
 }
 
+func TestSetupRouterRedirectsLegacyUnifiedGatewayBrowserPath(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	previousLogger := logger.L
+	logger.L = zap.NewNop()
+	t.Cleanup(func() { logger.L = previousLogger })
+
+	router := setupRouterForTest(t)
+	request := httptest.NewRequest(http.MethodGet, "/unified-gateway/catalog?tab=pricing", nil)
+	response := httptest.NewRecorder()
+	router.ServeHTTP(response, request)
+
+	if response.Code != http.StatusFound {
+		t.Fatalf("status = %d, want %d", response.Code, http.StatusFound)
+	}
+	if got := response.Header().Get("Location"); got != "/ops-console?tab=pricing" {
+		t.Fatalf("location = %q, want %q", got, "/ops-console?tab=pricing")
+	}
+}
+
 func TestSetupRouterReturnsNotFoundForRetiredV2Chat(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	previousLogger := logger.L

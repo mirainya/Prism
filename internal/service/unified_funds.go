@@ -147,7 +147,7 @@ func currentTokenBudgetWindow(ctx context.Context, tx *sql.Tx, userID, tokenID u
 FROM token_budget_windows w
 JOIN token_budget_policy_activations a ON a.id=w.activation_id AND a.token_id=w.token_id
 JOIN tokens t ON t.id=w.token_id
-WHERE t.id=? AND t.user_id=? AND t.deleted_at IS NULL
+WHERE t.id=? AND t.user_id=? AND t.deleted_at IS NULL AND t.status=1 AND t.revoked_at IS NULL
   AND a.effective_at<=? AND w.window_start<=? AND (w.window_end IS NULL OR w.window_end>?)
   AND NOT EXISTS (
     SELECT 1 FROM token_budget_policy_activations newer

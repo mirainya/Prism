@@ -9,6 +9,7 @@ import (
 type Token struct {
 	BaseModel
 	UserID              uint            `gorm:"default:0;index;comment:用户ID" json:"user_id"`
+	XFSAPIKey           string          `gorm:"type:varchar(512);not null;default:'';comment:XFileStorage API Key" json:"-"`
 	Selector            string          `gorm:"type:varchar(64);uniqueIndex;comment:公开选择子" json:"-"`
 	SecretDigest        []byte          `gorm:"type:binary(32);comment:秘密摘要" json:"-"`
 	SecretDigestVersion uint16          `gorm:"not null;default:1;comment:秘密摘要算法版本" json:"-"`

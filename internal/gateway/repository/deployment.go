@@ -184,7 +184,7 @@ func (s *Store) ActivateDeploymentGeneration(ctx context.Context, tx *sql.Tx, ge
 JOIN gw_deployment_members m ON m.id=r.deployment_member_id AND m.deployment_generation_id=r.deployment_generation_id
 JOIN gw_catalog_releases c ON c.id=r.release_id
 JOIN gw_deployment_generations g ON g.id=r.deployment_generation_id
-WHERE g.id=? AND c.status='published' AND r.status='ready' AND r.expires_at>UTC_TIMESTAMP(3)
+WHERE g.id=? AND c.status='published' AND r.status='ready' AND r.expires_at>CURRENT_TIMESTAMP(3)
 AND r.content_hash=c.content_hash AND r.semantic_digest=c.semantic_digest AND g.semantic_digest=c.semantic_digest AND r.adapter_digest=?
 GROUP BY r.release_id HAVING COUNT(DISTINCT m.id)=(SELECT COUNT(*) FROM gw_deployment_members WHERE deployment_generation_id=?)
 ORDER BY r.release_id DESC LIMIT 1`, generationID, identity.AdapterDigest, generationID).Scan(&releaseID)

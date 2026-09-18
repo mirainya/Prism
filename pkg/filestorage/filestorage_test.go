@@ -55,7 +55,7 @@ func TestTransferReaderStreamsMultipartUpload(t *testing.T) {
 			return
 		}
 		_ = json.NewEncoder(w).Encode(map[string]any{
-			"code": 200, "message": "ok", "data": map[string]any{"url": "https://cdn.example/video.mp4"},
+			"code": 200, "message": "ok", "data": map[string]any{"url": "https://temporary.example/video.mp4?sig=short", "rawUrl": "https://cdn.example/video.mp4"},
 		})
 	}))
 	defer server.Close()
@@ -67,7 +67,7 @@ func TestTransferReaderStreamsMultipartUpload(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got != "https://cdn.example/video.mp4" {
+	if got != "https://temporary.example/video.mp4?sig=short" {
 		t.Fatalf("URL = %q", got)
 	}
 }
@@ -82,7 +82,7 @@ func TestUploadReaderReturnsStableStorageIdentity(t *testing.T) {
 			"code": 200,
 			"data": map[string]any{
 				"id": "storage-row-1", "objectId": "object-1", "platform": "r2-main",
-				"url": serverURL(r), "path": "prism/files/file-1/", "filename": "stored.bin",
+				"url": "https://temporary.example/stored.bin?sig=short", "rawUrl": serverURL(r), "path": "prism/files/file-1/", "filename": "stored.bin",
 				"size": len(payload), "contentType": "application/octet-stream",
 			},
 		})
@@ -101,7 +101,7 @@ func TestUploadReaderReturnsStableStorageIdentity(t *testing.T) {
 	}
 }
 
-func TestUploadReaderAtPathWithFilenameUsesDeterministicObjectName(t *testing.T) {
+func TestUploadReaderAtPathWithFilenameSendsRecoveryIdentity(t *testing.T) {
 	const filename = "8c7dd922ad47494fc02c388e12c00eac67da1f5cd03cc320e384d10cf4cf2ad7.mp4"
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		file, header, err := r.FormFile("file")
@@ -114,7 +114,7 @@ func TestUploadReaderAtPathWithFilenameUsesDeterministicObjectName(t *testing.T)
 		}
 		_ = json.NewEncoder(w).Encode(map[string]any{
 			"code": 200,
-			"data": map[string]any{"url": "https://cdn.example/result.mp4", "filename": filename, "path": "prism/gateway-results/17/"},
+			"data": map[string]any{"url": "https://temporary.example/result.mp4?sig=short", "rawUrl": "prism/gateway-results/17/generated.mp4", "filename": "generated.mp4", "originalFilename": filename, "path": "prism/gateway-results/17/"},
 		})
 	}))
 	defer server.Close()
@@ -126,7 +126,7 @@ func TestUploadReaderAtPathWithFilenameUsesDeterministicObjectName(t *testing.T)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if result.Filename != filename {
+	if result.Filename != "generated.mp4" || result.OriginalName != filename || result.URL != "https://temporary.example/result.mp4?sig=short" || result.RawURL != "prism/gateway-results/17/generated.mp4" || result.StorageLocator() != result.RawURL {
 		t.Fatalf("result=%+v", result)
 	}
 	for _, invalid := range []string{"", "../result.mp4", `nested\\result.mp4`, "result.mp4\nignored"} {
@@ -204,5 +204,62 @@ func TestDeleteURLUsesDocumentedEndpoint(t *testing.T) {
 
 	if err := DeleteURL(context.Background(), assetURL); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestBoundClientProbeSupportsRelativeLocator(t *testing.T) {
+	payload := []byte("prism-xfs-binding-probe")
+	const locator = "Prism/system-check/2026-09-17/probe.txt"
+	calls := map[string]int{}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("X-Api-Key") != "bound-key" {
+			http.Error(w, "wrong key", http.StatusUnauthorized)
+			return
+		}
+		switch r.URL.Path {
+		case "/api/v1/upload":
+			calls["upload"]++
+			file, _, err := r.FormFile("file")
+			if err != nil {
+				http.Error(w, "missing file", http.StatusBadRequest)
+				return
+			}
+			defer file.Close()
+			body, _ := io.ReadAll(file)
+			if !bytes.Equal(body, payload) {
+				http.Error(w, "wrong body", http.StatusBadRequest)
+				return
+			}
+			_ = json.NewEncoder(w).Encode(map[string]any{"code": 200, "data": map[string]any{"url": "https://temporary.example/probe?sig=short", "rawUrl": locator, "size": len(body)}})
+		case "/api/v1/file/download":
+			calls["download"]++
+			if r.URL.Query().Get("url") != locator {
+				http.Error(w, "wrong locator", http.StatusBadRequest)
+				return
+			}
+			w.Header().Set("Content-Length", "23")
+			_, _ = w.Write(payload)
+		case "/api/v1/file/presigned-url":
+			calls["presign"]++
+			_ = json.NewEncoder(w).Encode(map[string]any{"code": 200, "data": "https://cdn.example/probe.txt?signature=test"})
+		case "/api/v1/file/delete":
+			calls["delete"]++
+			_ = json.NewEncoder(w).Encode(map[string]any{"code": 200, "data": true})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+	previous := config.C
+	config.C = &config.Config{FileStorage: config.FileStorageConfig{BaseURL: server.URL, APIKey: "global-key", UploadPath: "Prism/"}}
+	t.Cleanup(func() { config.C = previous })
+
+	if err := WithAPIKey("bound-key").Probe(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	for _, operation := range []string{"upload", "download", "presign", "delete"} {
+		if calls[operation] != 1 {
+			t.Fatalf("%s calls = %d, want 1", operation, calls[operation])
+		}
 	}
 }

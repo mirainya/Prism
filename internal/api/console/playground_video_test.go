@@ -41,18 +41,21 @@ func TestListVideoModelsUsesPublishedRuntimeCatalog(t *testing.T) {
 	mock.ExpectQuery(`SELECT rel\.id`).WillReturnRows(sqlmock.NewRows([]string{
 		"release_id", "catalog_model_id", "model_id", "sort_order", "model_code", "api_name", "is_primary",
 		"display_name", "description", "visibility", "capability_tags", "operation_code", "http_method",
-		"route_template", "sku_id", "sku_code", "delivery_mode", "max_results", "idempotency_mode",
+		"route_template", "downstream_operation", "downstream_http_method", "downstream_path",
+		"sku_id", "sku_code", "delivery_mode", "max_results", "idempotency_mode",
 		"service_tiers", "channel_id", "channel_code", "channel_name", "vendor_model", "protocol",
 		"task_scope", "capability_constraints", "cancel_mode",
 	}).
 		AddRow(1, 10, 20, 1, "seedance_2_0", "seedance-2.0", true,
 			"Seedance 2.0", "", "public", []byte(`[]`), "videos.generate", "POST",
-			"/v1/videos/generations", 30, "standard", "async", 1, "request",
+			"/v1/videos/generations", "videos.generate", "POST", "/v1/videos/generations",
+			30, "standard", "async", 1, "request",
 			[]byte(`["standard"]`), 40, "seedance", "Seedance", "seedance-2.0", "openai",
 			"task", []byte(`{"resolutions":["720p"],"task_types":["text"]}`), "none").
 		AddRow(1, 10, 20, 1, "seedance_2_0", "seedance-2.0", true,
 			"Seedance 2.0", "", "public", []byte(`[]`), "videos.generate", "POST",
-			"/v1/videos/generations", 31, "priority", "async", 1, "request",
+			"/v1/videos/generations", "videos.generate", "POST", "/v1/videos/generations",
+			31, "priority", "async", 1, "request",
 			[]byte(`["priority"]`), 40, "seedance", "Seedance", "seedance-2.0", "openai",
 			"task", []byte(`{"resolutions":["1080p"],"task_types":["multimodal"]}`), "upstream"))
 

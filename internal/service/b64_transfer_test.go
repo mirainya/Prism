@@ -35,7 +35,10 @@ func TestResolveB64ToURLsContinuesAfterParentCancellation(t *testing.T) {
 		}
 		_ = json.NewEncoder(w).Encode(map[string]any{
 			"code": 200,
-			"data": map[string]any{"url": "https://cdn.example/image.png"},
+			"data": map[string]any{
+				"url":    "https://cdn.example/image.png?temporary=1",
+				"rawUrl": "https://cdn.example/image.png",
+			},
 		})
 	}))
 	defer server.Close()
@@ -52,7 +55,7 @@ func TestResolveB64ToURLsContinuesAfterParentCancellation(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(urls) != 1 || urls[0] != "https://cdn.example/image.png" {
+	if len(urls) != 1 || urls[0] != "https://cdn.example/image.png?temporary=1" {
 		t.Fatalf("URLs = %#v", urls)
 	}
 }

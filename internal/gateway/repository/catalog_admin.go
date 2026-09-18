@@ -78,10 +78,13 @@ type CatalogSKUInput struct {
 	RouteTemplate        string   `json:"route_template"`
 	NormalizationVersion uint32   `json:"normalization_version"`
 	SKUCode              string   `json:"sku_code"`
-	DeliveryMode         string   `json:"delivery_mode"`
-	MaxResults           uint32   `json:"max_results"`
-	IdempotencyMode      string   `json:"idempotency_mode"`
-	ServiceTiers         []string `json:"service_tiers"`
+	// VariantCode selects the adapter manifest's commercial shape. Empty means
+	// the implicit default, so every existing caller keeps working.
+	VariantCode     string   `json:"variant_code"`
+	DeliveryMode    string   `json:"delivery_mode"`
+	MaxResults      uint32   `json:"max_results"`
+	IdempotencyMode string   `json:"idempotency_mode"`
+	ServiceTiers    []string `json:"service_tiers"`
 }
 
 func (in *CatalogSKUInput) Normalize() {
@@ -94,6 +97,10 @@ func (in *CatalogSKUInput) Normalize() {
 	in.HTTPMethod = strings.ToUpper(strings.TrimSpace(in.HTTPMethod))
 	in.RouteTemplate = strings.TrimSpace(in.RouteTemplate)
 	in.SKUCode = strings.ToLower(strings.TrimSpace(in.SKUCode))
+	in.VariantCode = strings.ToLower(strings.TrimSpace(in.VariantCode))
+	if in.VariantCode == "" {
+		in.VariantCode = DefaultVariantCode
+	}
 	in.DeliveryMode = strings.ToLower(strings.TrimSpace(in.DeliveryMode))
 	in.IdempotencyMode = strings.ToLower(strings.TrimSpace(in.IdempotencyMode))
 	for index := range in.CapabilityTags {
@@ -111,8 +118,9 @@ func (in CatalogSKUInput) Validate() error {
 		!validDisplayName(in.DisplayName) || !utf8.ValidString(in.Description) || utf8.RuneCountInString(in.Description) > 1000 ||
 		(in.Visibility != "visible" && in.Visibility != "deprecated" && in.Visibility != "hidden") ||
 		!catalogIdentityPattern.MatchString(in.OperationCode) || in.ContractVersion == 0 || in.NormalizationVersion == 0 ||
-		(in.HTTPMethod != "GET" && in.HTTPMethod != "POST" && in.HTTPMethod != "DELETE") || !validRouteTemplate(in.RouteTemplate) ||
-		!catalogIdentityPattern.MatchString(in.SKUCode) || (in.DeliveryMode != "reference" && in.DeliveryMode != "managed_copy") ||
+		(in.HTTPMethod != "GET" && in.HTTPMethod != "POST" && in.HTTPMethod != "DELETE") || !validRouteTemplate(in.RouteTemplate) || len(in.RouteTemplate) > 128 ||
+		!catalogIdentityPattern.MatchString(in.SKUCode) || !catalogIdentityPattern.MatchString(in.VariantCode) ||
+		len(in.VariantCode) > 64 || (in.DeliveryMode != "reference" && in.DeliveryMode != "managed_copy") ||
 		in.MaxResults == 0 || in.MaxResults > 64 || (in.IdempotencyMode != "required" && in.IdempotencyMode != "optional" && in.IdempotencyMode != "forbidden") ||
 		!validStringSet(in.CapabilityTags, 32, 64) || !validStringSet(in.ServiceTiers, 16, 32) || len(in.ServiceTiers) == 0 {
 		return ErrInvalidInput
@@ -192,6 +200,14 @@ func (s *Store) CreateCatalogSKU(ctx context.Context, tx *sql.Tx, releaseID uint
 	if err != nil {
 		return 0, err
 	}
+	skuID, err := createCatalogSKURows(ctx, tx, releaseID, lock.SemanticDigest, in)
+	if err != nil {
+		return 0, err
+	}
+	return skuID, advanceCatalogDraft(ctx, tx, releaseID, lock, "unified.catalog.sku.create", skuID, actorID, ginSafeMetadata{"sku_code": in.SKUCode, "variant_code": in.VariantCode, "model_code": in.ModelCode, "operation_code": in.OperationCode})
+}
+
+func createCatalogSKURows(ctx context.Context, tx *sql.Tx, releaseID uint64, semanticDigest string, in CatalogSKUInput) (uint64, error) {
 	modelID, modelNameID, err := ensureCatalogModelIdentity(ctx, tx, in.ModelCode, in.APIName)
 	if err != nil {
 		return 0, err
@@ -204,12 +220,12 @@ func (s *Store) CreateCatalogSKU(ctx context.Context, tx *sql.Tx, releaseID uint
 	if err != nil {
 		return 0, err
 	}
-	operationID, err := ensureCatalogModelOperation(ctx, tx, releaseID, catalogModelID, contractID, lock.SemanticDigest, in.NormalizationVersion)
+	operationID, err := ensureCatalogModelOperation(ctx, tx, releaseID, catalogModelID, contractID, semanticDigest, in.NormalizationVersion)
 	if err != nil {
 		return 0, err
 	}
 	tiers, _ := json.Marshal(in.ServiceTiers)
-	result, err := tx.ExecContext(ctx, `INSERT INTO gw_skus(release_id,model_operation_id,sku_code,delivery_mode,max_results,idempotency_mode,service_tiers,created_at) VALUES (?,?,?,?,?,?,?,?)`, releaseID, operationID, in.SKUCode, in.DeliveryMode, in.MaxResults, in.IdempotencyMode, tiers, nowUTC())
+	result, err := tx.ExecContext(ctx, `INSERT INTO gw_skus(release_id,model_operation_id,sku_code,variant_code,delivery_mode,max_results,idempotency_mode,service_tiers,created_at) VALUES (?,?,?,?,?,?,?,?,?)`, releaseID, operationID, in.SKUCode, in.VariantCode, in.DeliveryMode, in.MaxResults, in.IdempotencyMode, tiers, nowUTC())
 	if err != nil {
 		return 0, err
 	}
@@ -217,7 +233,80 @@ func (s *Store) CreateCatalogSKU(ctx context.Context, tx *sql.Tx, releaseID uint
 	if err != nil {
 		return 0, err
 	}
-	return skuID, advanceCatalogDraft(ctx, tx, releaseID, lock, "unified.catalog.sku.create", skuID, actorID, ginSafeMetadata{"sku_code": in.SKUCode, "model_code": in.ModelCode, "operation_code": in.OperationCode})
+	// Every newly created SKU starts with its public operation route as its
+	// declared downstream entry. Additional aliases are release-scoped edits;
+	// leaving this row out would publish a SKU that the runtime selector can
+	// never resolve.
+	if _, err := tx.ExecContext(ctx, `INSERT INTO gw_sku_downstream_paths(release_id,sku_id,path,created_at) VALUES (?,?,?,?)`, releaseID, skuID, in.RouteTemplate, nowUTC()); err != nil {
+		return 0, err
+	}
+	if err := validateSKUVariant(ctx, tx, releaseID, skuID, in.VariantCode); err != nil {
+		return 0, err
+	}
+	return skuID, nil
+}
+
+// UpdateCatalogSKU edits the mutable presentation and delivery fields of a SKU
+// inside a draft. Model identity and operation routing are intentionally stable:
+// changing those relationships would require rebuilding the release graph and
+// is handled by creating a new service item instead.
+func (s *Store) UpdateCatalogSKU(ctx context.Context, tx *sql.Tx, releaseID, skuID uint64, in CatalogSKUInput, actorID uint64) error {
+	if tx == nil || releaseID == 0 || skuID == 0 || actorID == 0 {
+		return ErrInvalidInput
+	}
+	in.Normalize()
+	if err := in.Validate(); err != nil {
+		return err
+	}
+	lock, err := lockCatalogDraft(ctx, tx, releaseID, in.ExpectedVersion)
+	if err != nil {
+		return err
+	}
+	var modelCode, apiName, operationCode, method, route string
+	var existingSKUCode string
+	var contractVersion uint32
+	var modelOperationID, catalogModelID uint64
+	err = tx.QueryRowContext(ctx, `SELECT s.model_operation_id,s.sku_code,m.catalog_model_id,gm.model_code,mn.api_name,oc.operation_code,oc.contract_version,op.http_method,op.route_template
+FROM gw_skus s
+JOIN gw_model_operations m ON m.id=s.model_operation_id AND m.release_id=s.release_id
+JOIN gw_catalog_models cm ON cm.id=m.catalog_model_id AND cm.release_id=m.release_id
+JOIN gw_models gm ON gm.id=cm.model_id
+JOIN gw_catalog_model_names cmn ON cmn.catalog_model_id=cm.id AND cmn.release_id=cm.release_id AND cmn.is_primary=TRUE
+JOIN gw_model_names mn ON mn.id=cmn.model_name_id
+JOIN gw_operation_contracts oc ON oc.id=m.operation_contract_id
+JOIN gw_operation_routes op ON op.operation_contract_id=oc.id
+WHERE s.release_id=? AND s.id=? FOR UPDATE`, releaseID, skuID).
+		Scan(&modelOperationID, &existingSKUCode, &catalogModelID, &modelCode, &apiName, &operationCode, &contractVersion, &method, &route)
+	if err == sql.ErrNoRows {
+		return ErrNotFound
+	}
+	if err != nil {
+		return err
+	}
+	if in.ModelCode != modelCode || in.APIName != apiName || in.SKUCode != existingSKUCode || in.OperationCode != operationCode ||
+		in.ContractVersion != contractVersion || in.HTTPMethod != method || in.RouteTemplate != route {
+		return fmt.Errorf("%w: model identity, SKU identity and operation route are immutable", ErrConflict)
+	}
+	tags, marshalErr := json.Marshal(in.CapabilityTags)
+	if marshalErr != nil {
+		return marshalErr
+	}
+	if _, err := tx.ExecContext(ctx, `UPDATE gw_catalog_models SET display_name=?,description=?,capability_tags=?,visibility=? WHERE release_id=? AND id=?`, in.DisplayName, in.Description, tags, in.Visibility, releaseID, catalogModelID); err != nil {
+		return err
+	}
+	tiers, marshalErr := json.Marshal(in.ServiceTiers)
+	if marshalErr != nil {
+		return marshalErr
+	}
+	if _, err := tx.ExecContext(ctx, `UPDATE gw_skus SET sku_code=?,variant_code=?,delivery_mode=?,max_results=?,idempotency_mode=?,service_tiers=? WHERE release_id=? AND id=?`, in.SKUCode, in.VariantCode, in.DeliveryMode, in.MaxResults, in.IdempotencyMode, tiers, releaseID, skuID); err != nil {
+		return err
+	}
+	if err := validateSKUVariant(ctx, tx, releaseID, skuID, in.VariantCode); err != nil {
+		return err
+	}
+	return advanceCatalogDraft(ctx, tx, releaseID, lock, "unified.catalog.sku.update", skuID, actorID, ginSafeMetadata{
+		"sku_code": in.SKUCode, "model_code": modelCode, "operation_code": operationCode, "model_operation_id": modelOperationID,
+	})
 }
 
 func ensureCatalogModelIdentity(ctx context.Context, tx *sql.Tx, modelCode, apiName string) (uint64, uint64, error) {

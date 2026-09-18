@@ -14,7 +14,7 @@ import (
 type readinessTestDB struct{ *sql.DB }
 
 func (db readinessTestDB) QueryRowContext(ctx context.Context, query string, args ...any) *sql.Row {
-	return db.DB.QueryRowContext(ctx, strings.ReplaceAll(query, "UTC_TIMESTAMP(3)", "'2099-01-01 00:00:00'"), args...)
+	return db.DB.QueryRowContext(ctx, strings.ReplaceAll(query, "CURRENT_TIMESTAMP(3)", "'2099-01-01 00:00:00'"), args...)
 }
 
 func cryptoFixture(t *testing.T) readinessTestDB {
@@ -26,12 +26,16 @@ func cryptoFixture(t *testing.T) readinessTestDB {
 	db.SetMaxOpenConns(1)
 	t.Cleanup(func() { db.Close() })
 	for _, query := range []string{
+		`CREATE TABLE gw_credentials(id INTEGER, status TEXT, secret TEXT)`,
+		`CREATE TABLE gw_credential_versions(credential_id INTEGER, encrypted_blob_id INTEGER)`,
 		`CREATE TABLE crypto_keyring_state(id INTEGER, purpose TEXT, current_version INTEGER)`,
 		`CREATE TABLE crypto_key_versions(keyring_id INTEGER, key_version INTEGER, status TEXT)`,
 		`CREATE TABLE gw_deployment_members(id INTEGER, deployment_generation_id INTEGER, instance_id TEXT, role TEXT)`,
 		`CREATE TABLE crypto_key_readiness(deployment_generation_id INTEGER, deployment_member_id INTEGER, keyring_id INTEGER, key_version INTEGER, operation TEXT, status TEXT, expires_at TEXT)`,
 		`INSERT INTO crypto_keyring_state VALUES (1,'gateway-credential',2),(2,'gateway-payload',2)`,
 		`INSERT INTO crypto_key_versions VALUES (1,2,'current'),(2,2,'current')`,
+		`INSERT INTO gw_credentials VALUES (20,'active',NULL)`,
+		`INSERT INTO gw_credential_versions VALUES (20,30)`,
 		`INSERT INTO gw_deployment_members VALUES (10,1,'instance-a','api-worker'),(11,1,'instance-b','api-worker')`,
 		`INSERT INTO crypto_key_readiness SELECT m.deployment_generation_id,m.id,k.id,k.current_version,o.operation,'ready','2099-01-02 00:00:00' FROM gw_deployment_members m CROSS JOIN crypto_keyring_state k CROSS JOIN (SELECT 'mac' AS operation UNION ALL SELECT 'wrap' UNION ALL SELECT 'unwrap' UNION ALL SELECT 'encrypt' UNION ALL SELECT 'decrypt') o`,
 	} {
@@ -88,5 +92,76 @@ func TestCryptoReadinessAcceptsHistoricalReadOperations(t *testing.T) {
 	}
 	if err := CheckCryptoReadiness(context.Background(), db, 1); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestCryptoReadinessPlaintextCredentialsOnlyRequirePayloadKeys(t *testing.T) {
+	db := cryptoFixture(t)
+	for _, query := range []string{
+		`UPDATE gw_credentials SET secret='plain-api-key' WHERE id=20`,
+		`DELETE FROM crypto_keyring_state WHERE purpose='gateway-credential'`,
+		`DELETE FROM crypto_key_readiness WHERE keyring_id=1`,
+	} {
+		if _, err := db.Exec(query); err != nil {
+			t.Fatal(err)
+		}
+	}
+	required, err := LegacyCredentialCryptoRequired(context.Background(), db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if required {
+		t.Fatal("credential crypto was required after a direct secret became available")
+	}
+	if err := CheckCryptoReadiness(context.Background(), db, 1); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestRuntimeKeyReadinessDoesNotRequireDeploymentProofs(t *testing.T) {
+	db := cryptoFixture(t)
+	for _, query := range []string{
+		`UPDATE gw_credentials SET secret='plain-api-key' WHERE id=20`,
+		`DELETE FROM crypto_keyring_state WHERE purpose='gateway-credential'`,
+		`DELETE FROM crypto_key_readiness`,
+		`DELETE FROM gw_deployment_members`,
+	} {
+		if _, err := db.Exec(query); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := CheckRuntimeKeyReadiness(context.Background(), db); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`DELETE FROM crypto_keyring_state WHERE purpose='gateway-payload'`); err != nil {
+		t.Fatal(err)
+	}
+	if err := CheckRuntimeKeyReadiness(context.Background(), db); !errors.Is(err, ErrConflict) {
+		t.Fatalf("missing payload keyring error=%v, want ErrConflict", err)
+	}
+}
+
+func TestLegacyCredentialCryptoRequiredByCredentialState(t *testing.T) {
+	for _, test := range []struct {
+		status   string
+		required bool
+	}{
+		{status: "active", required: true},
+		{status: "draining", required: true},
+		{status: "disabled", required: false},
+	} {
+		t.Run(test.status, func(t *testing.T) {
+			db := cryptoFixture(t)
+			if _, err := db.Exec(`UPDATE gw_credentials SET status=? WHERE id=20`, test.status); err != nil {
+				t.Fatal(err)
+			}
+			required, err := LegacyCredentialCryptoRequired(context.Background(), db)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if required != test.required {
+				t.Fatalf("required=%v, want %v", required, test.required)
+			}
+		})
 	}
 }

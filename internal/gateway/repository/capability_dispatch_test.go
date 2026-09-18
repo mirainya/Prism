@@ -17,12 +17,12 @@ func TestReadCapabilityDispatchReturnsImmutableSnapshot(t *testing.T) {
 	defer db.Close()
 	store, _ := New(db)
 	rows := sqlmock.NewRows([]string{
-		"call_id", "attempt_id", "credential_id", "credential_blob_id", "request_blob_id",
+		"call_id", "attempt_id", "credential_id", "credential_secret", "credential_blob_id", "request_blob_id",
 		"channel_transport_id", "release_id", "public_id", "protocol", "base_url", "method", "path",
 		"auth_scheme", "vendor_model", "delivery_mode", "source_url_policy", "adapter_code",
 		"adapter_version", "timeout_ms",
-	}).AddRow(1, 2, 3, 4, 5, 6, 7, "call-public", "openai_images", "https://provider.example", "POST", "/v1/images/generations", "bearer", "vendor-image", "managed_copy", "fixed", "openai_images", 1, 90000)
-	mock.ExpectQuery("SELECT c.id,a.id,a.credential_id").WithArgs(uint64(2)).WillReturnRows(rows)
+	}).AddRow(1, 2, 3, nil, 4, 5, 6, 7, "call-public", "openai_images", "https://provider.example", "POST", "/v1/images/generations", "bearer", "vendor-image", "managed_copy", "fixed", "openai_images", 1, 90000)
+	mock.ExpectQuery("SELECT c.id,a.id,a.credential_id,credential.secret").WithArgs(uint64(2)).WillReturnRows(rows)
 
 	got, err := store.ReadCapabilityDispatch(context.Background(), 2)
 	if err != nil {
@@ -45,7 +45,7 @@ func TestReadCapabilityDispatchHidesMissingAttempt(t *testing.T) {
 	}
 	defer db.Close()
 	store, _ := New(db)
-	mock.ExpectQuery("SELECT c.id,a.id,a.credential_id").WithArgs(uint64(9)).WillReturnError(sql.ErrNoRows)
+	mock.ExpectQuery("SELECT c.id,a.id,a.credential_id,credential.secret").WithArgs(uint64(9)).WillReturnError(sql.ErrNoRows)
 
 	_, err = store.ReadCapabilityDispatch(context.Background(), 9)
 	if !errors.Is(err, ErrNotFound) {

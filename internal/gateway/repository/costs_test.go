@@ -175,14 +175,15 @@ func TestRecordEstimatedUpstreamCostEventsUsesAttemptCostPlanSnapshot(t *testing
 		t.Fatal(err)
 	}
 	const attemptID, releaseID, costPlanID, requestLogID = uint64(12), uint64(3), uint64(44), uint64(41)
-	mock.ExpectQuery(regexp.QuoteMeta("SELECT catalog_release_id,cost_plan_id,state FROM gw_api_call_attempts WHERE id=? FOR UPDATE")).
-		WithArgs(attemptID).WillReturnRows(sqlmock.NewRows([]string{"catalog_release_id", "cost_plan_id", "state"}).
-		AddRow(releaseID, costPlanID, "completed"))
+	mock.ExpectQuery(regexp.QuoteMeta("SELECT a.catalog_release_id,a.cost_plan_id,a.state,EXISTS(")).
+		WithArgs(attemptID).WillReturnRows(sqlmock.NewRows([]string{"catalog_release_id", "cost_plan_id", "state", "has_rates"}).
+		AddRow(releaseID, costPlanID, "completed", true))
 	mock.ExpectQuery("FROM gw_cost_rates r").WithArgs(releaseID, costPlanID).
 		WillReturnRows(sqlmock.NewRows([]string{
-			"cost_plan_id", "id", "component_code", "unit_code", "quantity_source", "charge_event", "unit_price", "unit_scale",
+			"cost_plan_id", "id", "component_code", "unit_code", "quantity_source", "charge_event", "unit_price",
+			"pricing_mode", "pricing_expr", "max_price", "unit_scale",
 			"quantity_step", "max_quantity", "currency_code", "currency_version", "fraction_digits", "rounding_mode", "max_amount", "valid",
-		}).AddRow(costPlanID, 71, "base", "request", "one", "call.succeeded", "0.25", 0, "0", "1", "USD", 1, 2, "half_even", "1000000", true))
+		}).AddRow(costPlanID, 71, "base", "request", "one", "call.succeeded", "0.25", "flat", "", "", 0, "0", "1", "USD", 1, 2, "half_even", "1000000", true))
 	mock.ExpectQuery(regexp.QuoteMeta("SELECT id FROM gw_channel_request_logs WHERE attempt_id=? AND status IN (?) ORDER BY request_seq DESC LIMIT 1 FOR SHARE")).
 		WithArgs(attemptID, "response_recorded").WillReturnRows(sqlmock.NewRows([]string{"id"}).AddRow(requestLogID))
 	mock.ExpectQuery(regexp.QuoteMeta("SELECT a.state,product.channel_id,r.currency_code,r.currency_version")).
@@ -198,6 +199,35 @@ func TestRecordEstimatedUpstreamCostEventsUsesAttemptCostPlanSnapshot(t *testing
 
 	err = store.RecordEstimatedUpstreamCostEvents(context.Background(), tx, attemptID, billing.Facts{})
 	if err != nil {
+		t.Fatal(err)
+	}
+	mock.ExpectRollback()
+	if err := tx.Rollback(); err != nil {
+		t.Fatal(err)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestRecordEstimatedUpstreamCostEventsSkipsUnpricedPlan(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	store, _ := New(db)
+	mock.ExpectBegin()
+	tx, err := db.Begin()
+	if err != nil {
+		t.Fatal(err)
+	}
+	const attemptID, releaseID, costPlanID = uint64(12), uint64(3), uint64(44)
+	mock.ExpectQuery(regexp.QuoteMeta("SELECT a.catalog_release_id,a.cost_plan_id,a.state,EXISTS(")).
+		WithArgs(attemptID).WillReturnRows(sqlmock.NewRows([]string{"catalog_release_id", "cost_plan_id", "state", "has_rates"}).
+		AddRow(releaseID, costPlanID, "completed", false))
+
+	if err := store.RecordEstimatedUpstreamCostEvents(context.Background(), tx, attemptID, billing.Facts{}); err != nil {
 		t.Fatal(err)
 	}
 	mock.ExpectRollback()

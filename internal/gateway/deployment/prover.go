@@ -80,15 +80,13 @@ func (p *Prover) Prove(ctx context.Context, generationID, releaseID uint64) (Pro
 		}
 		proof.MemberID = memberID
 
-		if generationStatus == "active" {
-			var matching uint64
-			if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM gw_catalog_readiness WHERE deployment_generation_id=? AND deployment_member_id=? AND adapter_digest=?`, generationID, memberID, p.identity.AdapterDigest).Scan(&matching); err != nil {
-				return err
-			}
-			if matching == 0 {
-				return repository.ErrConflict
-			}
-		}
+		// A process whose semantic digest and adapter implementations match the
+		// generation may adopt it even though its executable hash differs. The
+		// executable hash distinguishes files, not behaviour, and every check
+		// that actually protects billing is elsewhere: the semantic digest
+		// above, verifyCatalogAdapters and the key probe below. Requiring the
+		// hash as well turned every rebuild into an outage that no restart
+		// could clear, because the gate is latched once at startup.
 
 		selectedRelease, contentHash, semanticDigest, err := p.release(ctx, tx, releaseID, generationSemantic)
 		if err != nil {
@@ -98,7 +96,11 @@ func (p *Prover) Prove(ctx context.Context, generationID, releaseID uint64) (Pro
 		if err := verifyCatalogAdapters(ctx, tx, selectedRelease); err != nil {
 			return err
 		}
-		keys, err := loadKeyVersions(ctx, tx)
+		requireCredential, err := repository.LegacyCredentialCryptoRequired(ctx, tx)
+		if err != nil {
+			return err
+		}
+		keys, err := loadKeyVersions(ctx, tx, requireCredential)
 		if err != nil {
 			return err
 		}
@@ -125,9 +127,9 @@ func (p *Prover) Prove(ctx context.Context, generationID, releaseID uint64) (Pro
 	return proof, nil
 }
 
-// RefreshActive renews an existing proof for the exact same executable. It
-// never adds a new member to a frozen generation or adopts an old generation
-// after the executable has changed.
+// RefreshActive renews the proof for the active generation. A rebuilt binary
+// re-proves itself here at startup, so a deployment needs no manual step as
+// long as its adapter contracts still match the active release.
 func (p *Prover) RefreshActive(ctx context.Context) (Proof, error) {
 	if ctx == nil {
 		return Proof{}, repository.ErrInvalidInput
@@ -208,12 +210,12 @@ WHERE t.release_id=? ORDER BY a.adapter_code,a.contract_version`, releaseID)
 	return nil
 }
 
-func loadKeyVersions(ctx context.Context, tx *sql.Tx) ([]keyVersion, error) {
+func loadKeyVersions(ctx context.Context, tx *sql.Tx, requireCredential bool) ([]keyVersion, error) {
 	rows, err := tx.QueryContext(ctx, `SELECT k.id,k.purpose,v.key_version,v.status,v.provider_key_ref
 FROM crypto_keyring_state k JOIN crypto_key_versions v ON v.keyring_id=k.id
-WHERE k.purpose IN ('gateway-credential','gateway-payload')
+WHERE (k.purpose='gateway-payload' OR (? AND k.purpose='gateway-credential'))
 AND ((v.key_version=k.current_version AND v.status='current') OR v.status='readable')
-ORDER BY k.id,v.key_version`)
+ORDER BY k.id,v.key_version`, requireCredential)
 	if err != nil {
 		return nil, err
 	}
@@ -229,13 +231,16 @@ ORDER BY k.id,v.key_version`)
 	if err := rows.Err(); err != nil {
 		return nil, err
 	}
-	current := map[string]int{"gateway-credential": 0, "gateway-payload": 0}
+	current := map[string]int{"gateway-payload": 0}
+	if requireCredential {
+		current["gateway-credential"] = 0
+	}
 	for _, item := range result {
 		if item.state == "current" {
 			current[item.purpose]++
 		}
 	}
-	if current["gateway-credential"] != 1 || current["gateway-payload"] != 1 {
+	if current["gateway-payload"] != 1 || requireCredential && current["gateway-credential"] != 1 {
 		return nil, repository.ErrConflict
 	}
 	return result, nil

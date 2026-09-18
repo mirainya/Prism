@@ -13,6 +13,7 @@ type DeferredDispatch struct {
 	RouteID, OfferingID, ProductTransportID, CredentialPoolID uint64
 	CredentialID, CredentialVersionID, PurposeGrantID         uint64
 	CredentialBlobID, RequestBlobID                           uint64
+	CredentialSecret                                          []byte
 	ChannelID                                                 uint64
 	PublicID, PublicModel, VendorModel, Protocol, BaseURL     string
 	RequestPath, DeliveryMode                                 string
@@ -27,9 +28,10 @@ func (s *Store) ReadDeferredDispatch(ctx context.Context, attemptID uint64) (Def
 	err := s.db.QueryRowContext(ctx, `SELECT c.id,a.id,r.id,c.user_id,c.token_id,
 c.catalog_release_id,c.operation_contract_id,c.model_operation_id,c.sku_id,
 a.route_id,a.offering_id,a.product_transport_id,a.credential_pool_id,a.credential_id,a.credential_version_id,a.purpose_grant_id,
-cv.encrypted_blob_id,payload.encrypted_blob_id,product.channel_id,c.public_id,product.vendor_model,ct.protocol,ct.base_url,ct.request_path,c.delivery_mode,cm.capability_tags
+COALESCE(cv.encrypted_blob_id,0),credential.secret,payload.encrypted_blob_id,product.channel_id,c.public_id,product.vendor_model,ct.protocol,ct.base_url,ct.request_path,c.delivery_mode,cm.capability_tags
 FROM gw_api_call_attempts a
 JOIN gw_api_calls c ON c.id=a.call_id
+JOIN gw_credentials credential ON credential.id=a.credential_id
 JOIN gw_api_resources r ON r.call_id=c.id AND r.resource_kind='response'
 JOIN gw_ai_responses response ON response.resource_id=r.id
 JOIN gw_api_call_payloads payload ON payload.id=c.request_payload_id AND payload.call_id=c.id AND payload.kind='request'
@@ -44,7 +46,7 @@ WHERE a.id=?`, attemptID).Scan(
 		&out.ReleaseID, &out.OperationContractID, &out.ModelOperationID, &out.SKUID,
 		&out.RouteID, &out.OfferingID, &out.ProductTransportID, &out.CredentialPoolID,
 		&out.CredentialID, &out.CredentialVersionID, &out.PurposeGrantID,
-		&out.CredentialBlobID, &out.RequestBlobID, &out.ChannelID, &out.PublicID,
+		&out.CredentialBlobID, &out.CredentialSecret, &out.RequestBlobID, &out.ChannelID, &out.PublicID,
 		&out.VendorModel, &out.Protocol, &out.BaseURL, &out.RequestPath, &out.DeliveryMode,
 		&out.Capabilities,
 	)

@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"reflect"
 
 	"github.com/mirainya/Prism/internal/gateway/billing"
 )
@@ -94,6 +95,77 @@ func loadCostScheduleByPlan(ctx context.Context, db CatalogPricingQuery, release
 	return schedule, nil
 }
 
+// pendingExpression locates a component that still needs its expression parsed.
+type pendingExpression struct {
+	parent uint64
+	index  int
+	rateID uint64
+	source string
+}
+
+// rateExpressionCache is shared across loads: the same released expression text
+// is parsed once per manifest coordinate for the lifetime of the process.
+var rateExpressionCache = billing.NewExpressionCache()
+
+// attachExpressions parses each expression component against the whitelist of
+// every adapter manifest that can serve its parent. Requiring all coordinates to
+// accept the text keeps a rate from becoming valid only on the route that
+// happened to be selected.
+func attachExpressions(ctx context.Context, db CatalogPricingQuery, releaseID uint64, cost bool,
+	schedules map[uint64]billing.RateSchedule, pending []pendingExpression) error {
+	if len(pending) == 0 {
+		return nil
+	}
+	source := currentExpressionSpecSource()
+	if source == nil {
+		return fmt.Errorf("%w: no manifest source is registered", ErrExpressionSpecUnavailable)
+	}
+	variants, err := loadRateAdapterVariants(ctx, db, releaseID, 0, cost)
+	if err != nil {
+		return err
+	}
+	for _, item := range pending {
+		refs := variants[item.parent]
+		if len(refs) == 0 {
+			return fmt.Errorf("%w: rate %d has no adapter route", ErrExpressionSpecUnavailable, item.rateID)
+		}
+		var parsed *billing.Expression
+		var tiers map[string][]billing.ExprTier
+		for _, ref := range refs {
+			spec, err := source.ExpressionSpec(ref.Code, ref.Version, ref.Variant)
+			if err != nil {
+				return fmt.Errorf("%w: rate %d under %s: %w", ErrExpressionSpecUnavailable, item.rateID, ref, err)
+			}
+			expression, err := rateExpressionCache.Parse(item.source, spec.Declared, spec.Digest)
+			if err != nil {
+				return fmt.Errorf("%w: rate %d under %s: %w", ErrConflict, item.rateID, ref, err)
+			}
+			if parsed == nil {
+				parsed = expression
+				tiers = cloneExpressionTiers(spec.Tiers)
+			} else if !reflect.DeepEqual(tiers, spec.Tiers) {
+				return fmt.Errorf("%w: rate %d has incompatible tier tables under %s", ErrExpressionSpecUnavailable, item.rateID, ref)
+			}
+		}
+		schedule := schedules[item.parent]
+		schedule.Components[item.index].Expr = parsed
+		schedule.Components[item.index].ExprTiers = tiers
+		schedules[item.parent] = schedule
+	}
+	return nil
+}
+
+func cloneExpressionTiers(source map[string][]billing.ExprTier) map[string][]billing.ExprTier {
+	if len(source) == 0 {
+		return nil
+	}
+	clone := make(map[string][]billing.ExprTier, len(source))
+	for name, tiers := range source {
+		clone[name] = append([]billing.ExprTier(nil), tiers...)
+	}
+	return clone
+}
+
 func loadRateSchedules(ctx context.Context, db CatalogPricingQuery, releaseID, parentID uint64, cost, requireCurrentReview bool) (map[uint64]billing.RateSchedule, error) {
 	table, parent := "gw_sell_rates", "sku_id"
 	platform := ` AND EXISTS (SELECT 1 FROM billing_system_state b WHERE b.id=1 AND b.currency_code=r.currency_code AND b.currency_version=r.currency_version)`
@@ -108,7 +180,8 @@ func loadRateSchedules(ctx context.Context, db CatalogPricingQuery, releaseID, p
 		validity = `d.id IS NOT NULL AND e.decision='accepted'`
 	}
 	query := `SELECT r.` + parent + `,r.id,COALESCE(r.component_code,''),r.unit_code,
-COALESCE(r.quantity_source,''),COALESCE(r.charge_event,''),r.unit_price,r.unit_scale,
+COALESCE(r.quantity_source,''),COALESCE(r.charge_event,''),r.unit_price,
+COALESCE(r.pricing_mode,''),COALESCE(r.pricing_expr,''),COALESCE(r.max_price,''),r.unit_scale,
 r.quantity_step,COALESCE(r.max_quantity,''),r.currency_code,r.currency_version,
 COALESCE(d.fraction_digits,0),COALESCE(d.rounding_mode,''),COALESCE(d.max_amount,0),
 CASE WHEN ` + validity + platform + ` THEN 1 ELSE 0 END
@@ -129,13 +202,19 @@ WHERE r.release_id=?`
 	}
 	defer rows.Close()
 	schedules := make(map[uint64]billing.RateSchedule)
+	// Expression rows need the adapter manifest whitelist before they can be
+	// parsed. They are collected here so a flat-only schedule — every schedule
+	// that exists today — costs no extra query on the hot path.
+	var pending []pendingExpression
 	for rows.Next() {
 		var id uint64
 		var component billing.RateComponent
 		var currency billing.Currency
+		var source string
 		var valid bool
 		if err := rows.Scan(&id, &component.ID, &component.Code, &component.Unit, &component.Source, &component.Event,
-			&component.UnitPrice, &component.UnitScale, &component.QuantityStep, &component.MaxQuantity,
+			&component.UnitPrice, &component.PricingMode, &source, &component.MaxPrice, &component.UnitScale,
+			&component.QuantityStep, &component.MaxQuantity,
 			&currency.Code, &currency.Version, &currency.FractionDigits, &currency.RoundingMode, &currency.MaxAmount, &valid); err != nil {
 			return nil, err
 		}
@@ -151,9 +230,17 @@ WHERE r.release_id=?`
 		if len(schedule.Components) > 32 {
 			return nil, fmt.Errorf("%w: too many rate components", ErrConflict)
 		}
+		if component.PricingMode == billing.PricingModeExpression {
+			pending = append(pending, pendingExpression{
+				parent: id, index: len(schedule.Components) - 1, rateID: component.ID, source: source,
+			})
+		}
 		schedules[id] = schedule
 	}
 	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	if err := attachExpressions(ctx, db, releaseID, cost, schedules, pending); err != nil {
 		return nil, err
 	}
 	for id, schedule := range schedules {
