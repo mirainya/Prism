@@ -1,6 +1,6 @@
 # Prism v2.0.0 使用教程
 
-本文说明当前仓库代码的安装、目录配置和 API 使用。生产发布步骤必须按运维文档执行。
+本文说明当前仓库代码的安装、目录配置和 API 使用。生产部署步骤必须按运维文档执行。
 
 ## 1. 环境
 
@@ -66,18 +66,16 @@ npm run dev
 
 后台执行没有 YAML 队列配置。SQL Worker 的并发和租约策略由当前实现管理。
 
-Files API、图片编辑素材和 managed-copy 交付依赖 x-file-storage。启用这些能力时必须同时配置 `file_storage.base_url` 与 `file_storage.api_key`；两者为空表示明确禁用托管文件存储。
+Files API 与图片编辑素材使用 `file_storage.api_key`。图片和视频结果使用控制台中为各 Prism Token 设置的 XFileStorage Key；只需共用 `file_storage.base_url` 与 `upload_path`。Token 有 Key 时，新 Call 使用 `managed_copy` 转存；未设置 Key 时，新 Call 使用 `reference`，直接返回上游结果地址。创建调用时，系统把 Token 当前的 Key 固定到 Call；更换或清除 Token 的 Key 只影响后续调用，在途任务和历史结果继续使用各自 Call 固定的 Key。
 
-生产环境还必须提供四个独立的 32 字节 Base64 环境密钥：
+生产环境始终需要两个独立的 32 字节 Base64 Payload 密钥：
 
 ```text
-PRISM_GATEWAY_KEK_B64
-PRISM_GATEWAY_HMAC_B64
 PRISM_GATEWAY_PAYLOAD_KEK_B64
 PRISM_GATEWAY_PAYLOAD_HMAC_B64
 ```
 
-凭据 KEK/HMAC 用于渠道密钥，Payload KEK/HMAC 用于规范化请求、结果、回调目标及敏感证据。已有 KEK 不能直接替换。
+Payload KEK/HMAC 用于请求、结果、回调目标及敏感证据。上游 API Key 明文保存在 `gw_credentials.secret`，新建和替换 Key 不使用凭据密钥环。只有启用中或停止分配中的旧凭据仍依赖密文时，数据面才需要旧的 `PRISM_GATEWAY_KEK_B64` 与 `PRISM_GATEWAY_HMAC_B64`。
 
 ## 4. 数据库初始化与升级
 
@@ -106,9 +104,10 @@ PRISM_GATEWAY_PAYLOAD_HMAC_B64
 ./prism migrate import-runtime
 ./prism migrate import-video-assets
 ./prism migrate import-ai-files
-./prism migrate verify-crypto
 ./prism migrate audit-deep
 ```
+
+需要核验旧加密凭据时，在最终 `audit-deep` 前额外执行 `./prism migrate verify-crypto`，并提供生成这些密文时使用的旧凭据 KEK/HMAC。该命令只属于一次性迁移，不是日常 Key 管理步骤。
 
 只有最终 `audit-deep` 明确 `ready_for_cleanup=true`，并完成备份与停机验证后，才能执行：
 
@@ -129,14 +128,13 @@ Prism 不创建默认管理员：
 统一网关配置顺序：
 
 1. 创建结算币种；
-2. 创建渠道、凭据池和加密凭据，授予用途；
-3. 创建目录草稿；
-4. 配置 Product、SKU、Operation、Transport、Route、Offering；
-5. 配置售价、成本方案及费率证据；
-6. 运行目录发现与审核；
-7. 发布目录；
-8. 创建部署代次，登记实例并提交目录与加密就绪证明；
-9. 激活部署代次与目录发布版。
+2. 创建渠道、凭据池和 API Key；
+3. 在运维台按模型类型检查模型、上游、映射、参数和下游入口；
+4. 直接编辑售价、上游成本、路由权重和 Key 状态；
+5. 运行目录发现与审核（仅迁移或来源核验需要）；
+6. 用专用 Token 验证对话、图片和视频调用。
+
+配置保存后直接更新活动目录，下一次请求使用新值，不需要创建草稿、发布或部署代次。
 
 目录未就绪时，控制面仍可使用，统一数据面返回不可用，不会改走旧执行链。
 
@@ -200,7 +198,10 @@ curl "$BASE_URL/v1/videos/generations/<id>" \
 - 调用在发送前按目录售价预授权，终态按实际计量结算；
 - Attempt 固定成本方案，上游成本按同一方案产生证据与事件；
 - 异步任务使用 SQL Outbox 与租约，提交结果不确定时进入恢复或人工核验；
-- 结果 URL、托管复制和客户端回调是独立交付事实，不改变生成计费终态。
+- 托管复制保存持久定位符，任务查询接口使用 Call 固定的 XFileStorage Key 生成新的临时签名 URL；
+- 客户端回调只返回交付 ID，不返回私有定位符或临时签名 URL；客户端凭交付 ID 查询任务详情；
+- 结果转存和客户端回调是独立交付事实；转存失败不会改变已经成功的生成与计费终态。
+- `managed_copy` 的远程 URL 在下载、上传或校验出现临时失败时，保存加密来源并仅重试该转存；不会重新调用或查询上游生成。内联结果和永久失败不自动重试。
 
 调用列表只读取有界元数据。敏感正文单独加密保存并受权限、完整性与保留期约束。
 

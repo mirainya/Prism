@@ -181,10 +181,10 @@ OpenAI 风格 `multipart/form-data` 图片编辑接口。输入图片会转为�
 
 | 方法 | 路径 | 说明 |
 |---|---|---|
-| GET | `/v1/models` | 当前可用公开模型列表 |
-| GET | `/v1/models/:code` | 模型详情与参数 Schema |
+| GET | `/v1/models` | 当前可用模型列表，含类型、介绍、协议端点与近期成功率 |
+| GET | `/v1/models/:code` | 单个模型详情，字段与列表项一致 |
 
-模型列表来自已激活的统一目录，不提供渠道或能力配置详情。
+模型列表来自已激活的统一目录，覆盖语言、图片、视频等全部可调用模型。`availability` 仅在存在有效样本时返回；没有样本时省略，不能按 `0%` 处理。
 
 ## 不存在的旧路由
 
@@ -202,6 +202,15 @@ OpenAI 风格 `multipart/form-data` 图片编辑接口。输入图片会转为�
 公开认证：`POST /api/auth/register`、`POST /api/auth/login`、`POST /api/auth/logout`、`GET /api/public/pricing`。
 
 登录用户可管理自身资料和 Token，查看仪表盘、统一调用、只读任务投影、观测日志、Conversation、文档及 Playground。
+
+Token 结果转存接口：
+
+| 方法 | 路径 | 说明 |
+|---|---|---|
+| PUT | `/api/tokens/:id/file-storage` | 验证并替换该 Token 当前的 XFileStorage Key，请求体为 `{"api_key":"xfs_..."}` |
+| DELETE | `/api/tokens/:id/file-storage` | 清空该 Token 的 XFileStorage Key；后续图片和视频结果直接使用上游地址 |
+
+Token 列表与详情只返回是否已配置及 Key 尾号，不返回完整 XFileStorage Key。
 
 管理员统一网关路由以 `/api/admin/unified-gateway/*` 为前缀，覆盖：
 

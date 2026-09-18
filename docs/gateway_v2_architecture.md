@@ -3,6 +3,8 @@
 This document describes the implemented Prism v2.0.0 runtime. The complete
 domain invariants and database contract are defined in
 [`specs/2026-09-04-unified-gateway-catalog-billing-architecture.md`](specs/2026-09-04-unified-gateway-catalog-billing-architecture.md).
+Current configuration behavior is defined by
+[`specs/2026-09-15-prism-configuration-simplification.md`](specs/2026-09-15-prism-configuration-simplification.md).
 
 ## Runtime shape
 
@@ -44,7 +46,7 @@ not silently submitted again.
   usage, errors, and provider state.
 - `internal/gateway/codec`: downstream Chat, Responses, and Messages codecs.
 - `internal/gateway/adapter`: image and video operation adapters.
-- `internal/gateway/catalog`: published catalog and selector rules.
+- `internal/gateway/catalog`: active catalog and selector rules.
 - `internal/gateway/routing`: route, offering, credential, and slot selection.
 - `internal/gateway/transport`: conversational upstream protocols.
 - `internal/gateway/engine`: synchronous execution, Attempt lifecycle, and
@@ -53,7 +55,8 @@ not silently submitted again.
 - `internal/gateway/runtime`: Outbox consumers, callbacks, recovery, retention,
   and media workers.
 - `internal/gateway/repository`: typed SQL operations and transaction boundaries.
-- `internal/gateway/security`: keyrings, HMAC identities, and encrypted blobs.
+- `internal/gateway/security`: Payload keyrings, HMAC identities, encrypted
+  blobs, and legacy credential decryption for compatibility.
 - `internal/gateway/delivery`: result reference and managed-copy policies.
 - `internal/gateway/catalogsource`: catalog discovery and import workers.
 
@@ -63,16 +66,16 @@ The unified runtime writes only the normalized `gw_*` model:
 
 - catalog: releases, models, operation contracts, SKUs, products, transports,
   offerings, routes, sell rates, and cost plans;
-- credentials: channels, pools, purpose grants, immutable encrypted versions,
-  and request/task slots;
+- credentials: channels, pools, plaintext API Keys, purpose grants, and
+  request/task slots; legacy encrypted versions remain readable during migration;
 - execution: API Calls, Attempts, request logs, encrypted payloads, resources,
   async executions, and Outbox events;
 - billing: accounts, budget windows, reservations, ledger transactions,
   settlement events, and upstream cost events;
 - delivery: media assets, result deliveries and sources, callback deliveries,
   and immutable state events;
-- control plane: catalog discovery, evidence review, deployment generations,
-  member proofs, and readiness facts.
+- control plane: catalog discovery, evidence review, runtime state, and
+  readiness facts; old deployment records remain only for compatibility.
 
 Large request bodies, prompts, callback payloads, signed URLs, and upstream IDs
 are not stored in list projections. Sensitive recoverable values are held in
@@ -86,8 +89,8 @@ related tables are migration sources only. New requests do not write them.
 1. The active catalog release resolves the public operation and model.
 2. The normalized request selects exactly one public SKU and user price.
 3. Routing selects an eligible offering without changing the public SKU price.
-4. The Attempt fixes the release, SKU, product transport, offering, cost plan,
-   credential, and credential version before dispatch.
+4. The Attempt fixes the request's SKU, product transport, offering, cost plan,
+   and credential configuration before dispatch.
 5. A credential slot is acquired for each external request; task-scoped slots
    remain held until the upstream task is known to have ended.
 6. Provider state is reused only within the scope declared by its product
@@ -95,16 +98,18 @@ related tables are migration sources only. New requests do not write them.
 7. Cancellation is exposed only when the selected product transport declares a
    supported upstream cancellation action.
 
-Published catalog facts are immutable. Runtime availability is stored outside
-the release, so disabling a route does not rewrite historical pricing or
-execution identity.
+Admin edits update the active catalog in one transaction with `config_version`
+concurrency checks. A successful edit affects the next request; requests that
+already started keep their fixed configuration.
 
-## Deployment readiness
+## Runtime readiness
 
 The control plane can start without an active catalog, but the unified data
-plane remains unavailable until migrations, keyrings, commercial facts, an
-active catalog release, and deployment member proofs are valid. Every active
-member must report the expected role and adapter digest for the current binary.
+plane remains unavailable until migrations, Payload keys, commercial facts,
+and the active catalog are valid. Credential KEK/HMAC are required by the data
+plane only while an active or draining credential has no plaintext Key and
+still depends on a legacy encrypted blob. Deployment generations and member
+proofs are not runtime prerequisites.
 
 Startup never applies migrations automatically. Operators use `prism migrate`
 commands during a stopped, backed-up deployment. The detailed sequence and
