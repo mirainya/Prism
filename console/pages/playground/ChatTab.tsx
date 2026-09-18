@@ -25,18 +25,15 @@ import {
 } from './utils';
 import {
   PLAYGROUND_PROTOCOLS, buildProtocolPayload, consumeProtocolStreamEvent,
-  createProtocolStreamState, parseProtocolResponse,
+  createProtocolStreamState, getSupportedPlaygroundProtocols, parseProtocolResponse,
 } from './protocol';
 import { Dialog } from '../../components/ui';
 
-const protocolOperations: Record<PlaygroundProtocol, string> = {
-  chat: 'chat.completions',
-  responses: 'responses.create',
-  anthropic: 'messages.create',
-};
-
 const ChatTab: React.FC<{ tokenId: string }> = ({ tokenId }) => {
   const [models, setModels] = useState<PlaygroundModelInfo[]>([]);
+  const [modelsLoading, setModelsLoading] = useState(true);
+  const [modelsError, setModelsError] = useState('');
+  const [modelReloadKey, setModelReloadKey] = useState(0);
   const [selectedModel, setSelectedModel] = useState('');
   const [protocol, setProtocol] = useState<PlaygroundProtocol>('chat');
   const [thinkingLevel, setThinkingLevel] = useState('');
@@ -100,12 +97,11 @@ const ChatTab: React.FC<{ tokenId: string }> = ({ tokenId }) => {
   const hasConversationMessages = chat.messages.some(msg => msg.role === 'user' || msg.role === 'assistant');
   const modelChangedOnConversation = Boolean(selectedConversationId && conversationModel && selectedModel && conversationModel !== selectedModel && hasConversationMessages);
   const protocolInfo = PLAYGROUND_PROTOCOLS.find(item => item.value === protocol)!;
-	const supportedProtocols = useMemo(() => new Set(
-		PLAYGROUND_PROTOCOLS
-			.filter(item => selectedModelInfo?.supported_operations.includes(protocolOperations[item.value]))
-			.map(item => item.value),
-	), [selectedModelInfo]);
-	const protocolSupported = supportedProtocols.has(protocol);
+  const supportedProtocols = useMemo(
+    () => new Set(getSupportedPlaygroundProtocols(selectedModelInfo?.supported_endpoints)),
+    [selectedModelInfo?.supported_endpoints],
+  );
+  const protocolSupported = supportedProtocols.has(protocol);
 
   const loadHistory = async () => {
     if (!tokenId) return;
@@ -131,28 +127,42 @@ const ChatTab: React.FC<{ tokenId: string }> = ({ tokenId }) => {
       if (requestNo === historyLoadRef.current && requestedToken === activeTokenRef.current) setHistoryLoading(false);
     }
   };
+
+  const loadModels = useCallback(() => {
+    if (!tokenId) return;
+    const requestNo = ++modelLoadRef.current;
+    const requestedToken = tokenId;
+    setModelsLoading(true);
+    setModelsError('');
+    playgroundListModels(requestedToken)
+      .then(items => {
+        if (requestNo !== modelLoadRef.current || requestedToken !== activeTokenRef.current) return;
+        setModels(items);
+        setSelectedModel(previous => previous && items.some(item => item.id === previous) ? previous : items[0]?.id || '');
+      })
+      .catch(reason => {
+        if (requestNo !== modelLoadRef.current || requestedToken !== activeTokenRef.current) return;
+        setModels([]);
+        setSelectedModel('');
+        setModelsError(reason instanceof Error ? reason.message : 'LLM 模型读取失败');
+      })
+      .finally(() => {
+        if (requestNo === modelLoadRef.current && requestedToken === activeTokenRef.current) setModelsLoading(false);
+      });
+  }, [modelReloadKey, tokenId]);
+
   useEffect(() => {
     if (!tokenId) return;
     conversationLoadRef.current += 1;
     historyLoadRef.current += 1;
-    modelLoadRef.current += 1;
     setLoadingConversationId(undefined);
     clearChatAttachments();
-    const requestNo = modelLoadRef.current;
-    const requestedToken = tokenId;
-    playgroundListModels(tokenId)
-      .then(m => {
-        if (requestNo !== modelLoadRef.current || requestedToken !== activeTokenRef.current) return;
-        setModels(m);
-        if (m.length > 0) {
-          setSelectedModel(prev => (prev && m.some((item: PlaygroundModelInfo) => item.id === prev) ? prev : m[0].id));
-        }
-      })
-      .catch(() => {
-        if (requestNo === modelLoadRef.current && requestedToken === activeTokenRef.current) setModels([]);
-      });
     loadHistory();
   }, [tokenId, clearChatAttachments]);
+
+  useEffect(() => {
+    loadModels();
+  }, [loadModels]);
 
   useEffect(() => {
     if (!selectedModelInfo) return;
@@ -165,11 +175,11 @@ const ChatTab: React.FC<{ tokenId: string }> = ({ tokenId }) => {
     setThinkingLevel(selectedModelInfo?.thinking?.default || '');
   }, [selectedModelInfo?.id]);
 
-	useEffect(() => {
-		if (!selectedModelInfo || protocolSupported || selectedConversationId || hasConversationMessages) return;
-		const next = PLAYGROUND_PROTOCOLS.find(item => supportedProtocols.has(item.value));
-		if (next) setProtocol(next.value);
-	}, [selectedModelInfo, protocolSupported, supportedProtocols, selectedConversationId, hasConversationMessages]);
+  useEffect(() => {
+    if (!selectedModelInfo || protocolSupported || selectedConversationId || hasConversationMessages) return;
+    const next = PLAYGROUND_PROTOCOLS.find(item => supportedProtocols.has(item.value));
+    if (next) setProtocol(next.value);
+  }, [selectedModelInfo, protocolSupported, supportedProtocols, selectedConversationId, hasConversationMessages]);
 
   useEffect(() => {
     const limit = selectedModelInfo?.max_tokens || 0;
@@ -239,7 +249,7 @@ const ChatTab: React.FC<{ tokenId: string }> = ({ tokenId }) => {
     const readyAttachments = attachments.filter(a => a.uploaded && a.url);
     const hasAttachments = readyAttachments.length > 0;
     if ((!hasText && !hasAttachments) || chat.isStreaming || loadingConversationId !== undefined || !selectedModel) return;
-		if (!protocolSupported) { setError('当前模型不支持所选协议'); return; }
+    if (!protocolSupported) { setError('当前模型不支持所选协议'); return; }
     if (attachments.some(a => a.uploading)) { setError('请等待文件上传完成'); return; }
     if (attachments.some(a => a.error)) { setError('有文件上传失败，请移除后重试'); return; }
     setError('');
@@ -510,7 +520,7 @@ const ChatTab: React.FC<{ tokenId: string }> = ({ tokenId }) => {
           key={item.value}
           type="button"
           title={item.endpoint}
-			disabled={chat.isStreaming || !supportedProtocols.has(item.value)}
+          disabled={chat.isStreaming || !supportedProtocols.has(item.value)}
           onClick={() => handleProtocolChange(item.value)}
           className={`${compact ? 'px-2' : 'px-2.5'} h-7 rounded-md text-[11px] font-medium transition-colors disabled:opacity-40 ${protocol === item.value ? 'bg-[var(--surface-card)] text-[var(--primary)] shadow-sm' : 'text-[var(--text-secondary)] hover:text-[var(--text-primary)]'}`}
         >
@@ -635,7 +645,7 @@ const ChatTab: React.FC<{ tokenId: string }> = ({ tokenId }) => {
           {/* Mobile: 极简顶栏 */}
           <div className="px-3 py-2 border-b border-[var(--border-soft)] flex flex-col gap-2 md:hidden">
             <div className="flex items-center justify-between gap-2">
-              <ModelSelector options={models.map(m => ({ id: m.id, provider: m.group || m.owned_by }))} value={selectedModel} onChange={handleModelSelect} className="min-w-0 flex-1" />
+              <ModelSelector options={models.map(m => ({ id: m.id, provider: m.group || m.owned_by }))} value={selectedModel} onChange={handleModelSelect} placeholder={modelsLoading ? '正在读取 LLM' : '选择模型'} disabled={modelsLoading} className="min-w-0 flex-1" />
               <button type="button" onClick={() => setShowMobileMenu(true)} className="p-2 rounded-lg text-[var(--text-secondary)] hover:bg-[var(--surface)]"><MoreHorizontal size={18} /></button>
             </div>
             {renderProtocolSwitch(true)}
@@ -668,7 +678,7 @@ const ChatTab: React.FC<{ tokenId: string }> = ({ tokenId }) => {
           {/* Desktop: 完整工具栏 */}
           <div className="hidden md:flex px-4 py-2 border-b border-[var(--border-soft)] items-center gap-2 flex-wrap">
             <div className="flex items-center gap-2 min-w-0 flex-1 basis-[21rem]">
-              <ModelSelector options={models.map(m => ({ id: m.id, provider: m.group || m.owned_by }))} value={selectedModel} onChange={handleModelSelect} className="min-w-[10rem] max-w-[13rem] flex-1" />
+              <ModelSelector options={models.map(m => ({ id: m.id, provider: m.group || m.owned_by }))} value={selectedModel} onChange={handleModelSelect} placeholder={modelsLoading ? '正在读取 LLM' : '选择模型'} disabled={modelsLoading} className="min-w-[10rem] max-w-[13rem] flex-1" />
               {renderProtocolSwitch()}
             </div>
             <div className="flex items-center gap-1.5 ml-auto">
@@ -679,6 +689,13 @@ const ChatTab: React.FC<{ tokenId: string }> = ({ tokenId }) => {
               <button type="button" aria-label="清空" title="清空" onClick={handleClear} className="inline-flex h-7 w-7 items-center justify-center rounded-lg border border-[var(--border-soft)] text-[var(--text-secondary)] hover:bg-[var(--surface)]"><Trash2 size={13} /></button>
             </div>
           </div>
+
+          {!modelsLoading && (modelsError || models.length === 0) && (
+            <div role={modelsError ? 'alert' : 'status'} className={`mx-3 mt-2 flex items-center justify-between gap-3 rounded-lg border px-3 py-2 text-xs md:mx-4 ${modelsError ? 'border-red-200 bg-red-50 text-red-700' : 'border-amber-200 bg-amber-50 text-amber-700'}`}>
+              <span className="flex min-w-0 items-center gap-2"><AlertCircle size={14} className="shrink-0" /><span className="truncate" title={modelsError || undefined}>{modelsError || '当前目录没有可试用的 LLM 模型'}</span></span>
+              <button type="button" onClick={() => setModelReloadKey(key => key + 1)} className="shrink-0 font-semibold hover:underline">重新读取</button>
+            </div>
+          )}
 
           {pendingModel && (
             <div className="mx-3 md:mx-4 mt-2 px-3 py-2 bg-amber-50 border border-amber-200 text-amber-700 text-sm rounded-lg flex items-center justify-between gap-2">
@@ -730,8 +747,8 @@ const ChatTab: React.FC<{ tokenId: string }> = ({ tokenId }) => {
           <div className="flex-1 overflow-y-auto p-3 md:p-4 space-y-4 min-h-0">
             {chat.messages.length === 0 && (
               <div className="flex flex-col items-center justify-center h-full text-gray-300">
-                <Bot size={56} strokeWidth={1} />
-                <p className="mt-3 text-sm">选择模型，开始对话</p>
+                {modelsLoading ? <Loader2 size={40} className="animate-spin" /> : <Bot size={56} strokeWidth={1} />}
+                <p className="mt-3 text-sm">{modelsLoading ? '正在读取 LLM 模型' : models.length === 0 ? '暂无可用 LLM 模型' : '选择模型，开始对话'}</p>
               </div>
             )}
             {chat.messages.map((msg, i) => (
@@ -853,7 +870,7 @@ const ChatTab: React.FC<{ tokenId: string }> = ({ tokenId }) => {
                 {chat.isStreaming ? (
                   <button onClick={handleStop} className="px-4 py-2.5 bg-red-500 text-white rounded-xl hover:bg-red-600 transition-colors flex-shrink-0"><Square size={18} /></button>
                 ) : (
-				  <button onClick={handleSend} disabled={loadingConversationId !== undefined || (!input.trim() && attachments.filter(a => a.uploaded).length === 0) || !selectedModel || !protocolSupported} className="px-3 md:px-4 py-2.5 bg-[var(--primary)] text-white rounded-xl hover:opacity-90 disabled:opacity-30 disabled:cursor-not-allowed transition-colors flex-shrink-0 flex items-center gap-1.5">
+                  <button onClick={handleSend} disabled={loadingConversationId !== undefined || (!input.trim() && attachments.filter(a => a.uploaded).length === 0) || !selectedModel || !protocolSupported} className="px-3 md:px-4 py-2.5 bg-[var(--primary)] text-white rounded-xl hover:opacity-90 disabled:opacity-30 disabled:cursor-not-allowed transition-colors flex-shrink-0 flex items-center gap-1.5">
                     <Send size={16} /><span className="text-sm font-medium hidden sm:inline">发送</span>
                   </button>
                 )}

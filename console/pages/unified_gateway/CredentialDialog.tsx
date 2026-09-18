@@ -1,8 +1,10 @@
 import React, { useRef, useState } from 'react';
-import { Save } from 'lucide-react';
-import { Button, Modal } from '../../components/ui';
+import { PowerOff, Save } from 'lucide-react';
+import { Button, Modal, useAppDialog } from '../../components/ui';
 import {
   createManagedCredential,
+  managedCredentialTransition,
+  transitionManagedCredential,
   updateManagedCredential,
   type CredentialPurpose,
 } from '../../services/unifiedCredentialApi';
@@ -26,6 +28,7 @@ export const CredentialDialog: React.FC<{
   onClose: () => void;
   onSaved: () => void;
 }> = ({ item, poolId, readOnly, onClose, onSaved }) => {
+  const { askConfirmation } = useAppDialog();
   const [code, setCode] = useState(item?.credential_code ?? '');
   const [secret, setSecret] = useState('');
   const [weight, setWeight] = useState(String(item?.weight ?? 1));
@@ -37,6 +40,7 @@ export const CredentialDialog: React.FC<{
   const [pending, setPending] = useState(false);
   const locked = useRef(false);
   const [error, setError] = useState('');
+  const transition = item ? managedCredentialTransition(item.status) : null;
   const submit = async (event: React.FormEvent) => {
     event.preventDefault();
     if (locked.current || readOnly) return;
@@ -69,7 +73,12 @@ export const CredentialDialog: React.FC<{
     setPending(true);
     setError('');
     try {
-      if (item) await updateManagedCredential(item, fields);
+      if (item) {
+        await updateManagedCredential(item, {
+          ...fields,
+          ...(secret ? { secret } : {}),
+        });
+      }
       else
         await createManagedCredential(poolId!, {
           ...fields,
@@ -86,19 +95,49 @@ export const CredentialDialog: React.FC<{
       setPending(false);
     }
   };
+  const changeStatus = async () => {
+    if (locked.current || readOnly || !item || !transition) return;
+    locked.current = true;
+    const confirmed = await askConfirmation({
+      title: transition.label,
+      description: item.status === 'active'
+        ? '停止使用后，此 Key 不再接收新调用。'
+        : '完成停用后，此 Key 将不可再使用。',
+      confirmLabel: transition.label,
+      tone: item.status === 'active' ? 'warning' : 'danger',
+    });
+    if (!confirmed) {
+      locked.current = false;
+      return;
+    }
+    setPending(true);
+    setError('');
+    try {
+      await transitionManagedCredential(item);
+      onSaved();
+    } catch (err: unknown) {
+      setError(errorMessage(err));
+    } finally {
+      locked.current = false;
+      setPending(false);
+    }
+  };
   return (
     <Modal
       open
-      title={item ? '编辑凭据' : '新建凭据'}
+      title={item ? '编辑API Key' : '新建API Key'}
       onClose={() => {
         if (!pending) onClose();
       }}
     >
       <form onSubmit={submit} className="space-y-4" autoComplete="off">
         {error && <ErrorNotice message={error} />}
-        <fieldset disabled={pending || readOnly} className="min-w-0 space-y-4">
+        <fieldset
+          disabled={pending || readOnly || Boolean(item && item.status !== 'active')}
+          className="min-w-0 space-y-4"
+        >
           <label className="block space-y-2 text-sm font-semibold">
-            <span>凭据标识</span>
+            <span>Key 名称</span>
             <input
               className={`${inputClass} font-mono`}
               required
@@ -108,22 +147,21 @@ export const CredentialDialog: React.FC<{
               onChange={(event) => setCode(event.target.value)}
             />
           </label>
-          {!item && (
-            <>
+          <>
               <label className="block space-y-2 text-sm font-semibold">
-                <span>密钥</span>
+                <span>{item ? '替换密钥（可选）' : '密钥'}</span>
                 <input
                   type="password"
                   autoComplete="new-password"
                   spellCheck={false}
                   className={inputClass}
-                  required
+                  required={!item}
                   maxLength={8192}
                   value={secret}
                   onChange={(event) => setSecret(event.target.value)}
                 />
               </label>
-              <fieldset className="space-y-2">
+              {!item && <fieldset className="space-y-2">
                 <legend className="mb-2 text-sm font-semibold">用途</legend>
                 <div className="flex flex-wrap gap-4">
                   {purposes.map((purpose) => (
@@ -149,9 +187,8 @@ export const CredentialDialog: React.FC<{
                     </label>
                   ))}
                 </div>
-              </fieldset>
-            </>
-          )}
+              </fieldset>}
+          </>
           <label className="block space-y-2 text-sm font-semibold">
             <span>权重</span>
             <input
@@ -180,19 +217,42 @@ export const CredentialDialog: React.FC<{
             />
           </div>
         </fieldset>
-        <div className="flex justify-end gap-2 border-t border-[var(--border-soft)] pt-4">
-          <Button
-            type="button"
-            variant="ghost"
-            disabled={pending}
-            onClick={onClose}
-          >
-            取消
-          </Button>
-          <Button type="submit" loading={pending} disabled={readOnly}>
-            <Save size={15} />
-            保存
-          </Button>
+        {item?.status === 'draining' && (
+          <p className="text-xs leading-5 text-[var(--text-secondary)]">
+            此 Key 已停止接收新调用，确认没有进行中的调用后可完成停用。
+          </p>
+        )}
+        <div className="flex flex-wrap items-center justify-between gap-2 border-t border-[var(--border-soft)] pt-4">
+          <div>
+            {item && transition && (
+              <Button
+                type="button"
+                variant="danger"
+                loading={pending}
+                disabled={readOnly}
+                onClick={() => void changeStatus()}
+              >
+                <PowerOff size={15} />
+                {transition.label}
+              </Button>
+            )}
+          </div>
+          <div className="flex gap-2">
+            <Button
+              type="button"
+              variant="ghost"
+              disabled={pending}
+              onClick={onClose}
+            >
+              取消
+            </Button>
+            {(!item || item.status === 'active') && (
+              <Button type="submit" loading={pending} disabled={readOnly}>
+                <Save size={15} />
+                保存
+              </Button>
+            )}
+          </div>
         </div>
       </form>
     </Modal>

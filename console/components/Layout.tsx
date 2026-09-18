@@ -372,8 +372,8 @@ const Layout: React.FC<LayoutProps> = ({ children, user, onLogout }) => {
           </div>
         </aside>
 
-        <main className="min-h-0 min-w-0 flex-1 overflow-y-auto">
-          <div className="page-enter mx-auto w-full max-w-[1800px] pb-4">{children}</div>
+        <main className={`min-h-0 min-w-0 flex-1 overflow-y-auto ${location.pathname.startsWith('/ops-console') ? 'ops-main' : ''}`}>
+          <div className={`page-enter mx-auto w-full max-w-[1800px] pb-4 ${location.pathname.startsWith('/ops-console') ? 'ops-page-enter' : ''}`}>{children}</div>
         </main>
       </div>
     </div>

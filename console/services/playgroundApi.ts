@@ -432,7 +432,12 @@ export interface VideoTask {
     resolution?: string;
     ratio?: string;
     duration?: number;
-    result?: { video_url?: string; thumbnail_url?: string; duration?: number };
+    result?: {
+        video_url?: string;
+        thumbnail_url?: string;
+        duration?: number | string;
+        delivery_status?: string;
+    };
     error_message?: string;
     created_at: string;
     completed_at?: string;
@@ -576,3 +581,22 @@ export const playgroundListVideos = async (tokenId: string): Promise<{ items: Vi
 export const playgroundGetVideo = async (tokenId: string, taskId: string): Promise<VideoTask> => {
     return await request<VideoTask>(`/playground/${tokenId}/videos/generations/${taskId}`);
 };
+
+// The list endpoint intentionally returns only lightweight task summaries.
+// Resolve completed tasks through the detail endpoint so result delivery URLs
+// are available to the playground without making one failed detail hide the list.
+export const playgroundHydrateCompletedVideoTasks = async (
+    tokenId: string,
+    tasks: VideoTask[],
+): Promise<VideoTask[]> => Promise.all(tasks.map(async task => {
+    if (task.status !== 'completed' || task.result?.video_url) return task;
+    try {
+        const detail = await playgroundGetVideo(tokenId, task.id);
+        return { ...task, ...detail };
+    } catch {
+        return {
+            ...task,
+            result: { ...task.result, delivery_status: 'detail_error' },
+        };
+    }
+}));

@@ -8,6 +8,11 @@ export interface UnifiedChannel {
   status: 'active' | 'disabled';
   pool_count: number;
   credential_count: number;
+  model_types: Array<'llm' | 'image' | 'video' | 'other'>;
+  product_count: number;
+  vendor_models: string[];
+  protocols: string[];
+  adapters: string[];
   created_at: string;
 }
 export interface UnifiedPool {
@@ -19,19 +24,22 @@ export interface UnifiedPool {
   config_version: number;
   request_limit: number | null;
   task_limit: number | null;
+  cost_group_ratio: string;
   credential_count: number;
 }
 export interface PoolFields {
   display_name: string;
   request_limit: number | null;
   task_limit: number | null;
+  cost_group_ratio?: string;
 }
 export const fetchUnifiedChannels = (
   page: number,
   size: number,
   search: string,
   status: string,
-  signal?: AbortSignal
+  signal?: AbortSignal,
+  modelType = ''
 ) => {
   const params = new URLSearchParams({
     page: String(page),
@@ -39,6 +47,7 @@ export const fetchUnifiedChannels = (
     q: search,
     status,
   });
+  if (modelType) params.set('type', modelType);
   return request<UnifiedGatewayPage<UnifiedChannel>>(
     `/admin/unified-gateway/channels?${params}`,
     { signal }

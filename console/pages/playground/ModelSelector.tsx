@@ -24,7 +24,8 @@ const ModelSelector: React.FC<{
   placeholder?: string;
   allOption?: string;
   className?: string;
-}> = ({ options, value, onChange, placeholder = '选择模型', allOption, className }) => {
+  disabled?: boolean;
+}> = ({ options, value, onChange, placeholder = '选择模型', allOption, className, disabled = false }) => {
   const [open, setOpen] = useState(false);
   const [search, setSearch] = useState('');
   const ref = useRef<HTMLDivElement>(null);
@@ -62,8 +63,9 @@ const ModelSelector: React.FC<{
     <div ref={ref} className={`relative ${className || ''}`}>
       <button
         type="button"
-        onClick={() => setOpen(!open)}
-        className="inline-flex items-center gap-2 h-10 px-3 border border-[var(--border-soft)] rounded-lg text-sm bg-[var(--surface-card)] hover:bg-[var(--surface)] focus:outline-none focus:ring-2 focus:ring-[var(--primary)] w-full"
+        disabled={disabled}
+        onClick={() => !disabled && setOpen(!open)}
+        className="inline-flex h-10 w-full items-center gap-2 rounded-lg border border-[var(--border-soft)] bg-[var(--surface-card)] px-3 text-sm hover:bg-[var(--surface)] focus:outline-none focus:ring-2 focus:ring-[var(--primary)] disabled:cursor-wait disabled:opacity-60"
       >
         <span className={`truncate flex-1 text-left ${!selected && !allOption ? 'text-[var(--text-tertiary)]' : ''}`}>{displayText}</span>
         <ChevronDown size={14} className="text-[var(--text-tertiary)] flex-shrink-0" />

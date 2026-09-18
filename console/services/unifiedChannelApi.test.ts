@@ -13,9 +13,9 @@ afterEach(() => vi.clearAllMocks());
 describe('unified channel configuration', () => {
   it('encodes filters and passes cancellation', async () => {
     const controller = new AbortController();
-    await fetchUnifiedChannels(2, 50, 'a&b', 'active', controller.signal);
+    await fetchUnifiedChannels(2, 50, 'a&b', 'active', controller.signal, 'image');
     expect(request).toHaveBeenCalledWith(
-      '/admin/unified-gateway/channels?page=2&page_size=50&q=a%26b&status=active',
+      '/admin/unified-gateway/channels?page=2&page_size=50&q=a%26b&status=active&type=image',
       { signal: controller.signal }
     );
   });
@@ -52,6 +52,25 @@ describe('unified channel configuration', () => {
         display_name: 'Pool',
         request_limit: null,
         task_limit: 1,
+        expected_version: 8,
+      }),
+    });
+  });
+  it('sends the fixed-point upstream cost group ratio', async () => {
+    const pool = { id: 5, config_version: 8 } as UnifiedPool;
+    await updateUnifiedPool(pool, {
+      display_name: 'Pool',
+      request_limit: null,
+      task_limit: 1,
+      cost_group_ratio: '1.25000000',
+    });
+    expect(request).toHaveBeenCalledWith('/admin/unified-gateway/pools/5', {
+      method: 'PUT',
+      body: JSON.stringify({
+        display_name: 'Pool',
+        request_limit: null,
+        task_limit: 1,
+        cost_group_ratio: '1.25000000',
         expected_version: 8,
       }),
     });

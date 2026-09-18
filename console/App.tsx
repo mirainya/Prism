@@ -15,10 +15,13 @@ const CallLogs = lazy(() => import('./pages/CallLogs'));
 const Observability = lazy(() => import('./pages/Observability'));
 const ApiDocs = lazy(() => import('./pages/ApiDocs'));
 const ChatLogs = lazy(() => import('./pages/ChatLogs'));
-const UnifiedGateway = lazy(() => import('./pages/UnifiedGateway'));
+const OpsConsole = lazy(() => import('./pages/OpsConsole'));
 const ChangePassword = lazy(() => import('./pages/ChangePassword'));
 const Playground = lazy(() => import('./pages/Playground'));
 const VideoTasks = lazy(() => import('./pages/VideoTasks'));
+const CircuitBreakers = lazy(() => import('./pages/CircuitBreakers'));
+const Relations = lazy(() => import('./pages/Relations'));
+const Adapters = lazy(() => import('./pages/Adapters'));
 import { User, UserRole } from './types';
 import { login, register, logout, getCurrentUser } from './services/api';
 import {LogIn, UserPlus, ArrowLeft} from 'lucide-react';
@@ -247,18 +250,23 @@ const App: React.FC = () => {
         <ErrorBoundary>
         <Suspense fallback={<PageSkeleton />}>
         <Routes>
-          <Route path="/" element={<Navigate to="/dashboard" replace />} />
+          <Route path="/" element={<Navigate to={isAdmin ? "/ops-console" : "/dashboard"} replace />} />
           <Route path="/dashboard" element={<Dashboard />} />
 
           {isAdmin && (
             <>
-              <Route path="/unified-gateway" element={<UnifiedGateway />} />
+              <Route path="/ops-console" element={<OpsConsole />} />
+              <Route path="/unified-gateway/*" element={<Navigate to="/ops-console" replace />} />
               <Route path="/video-tasks" element={<VideoTasks />} />
+              <Route path="/circuit-breakers" element={<CircuitBreakers />} />
+              <Route path="/relations" element={<Relations />} />
+              <Route path="/adapters" element={<Adapters />} />
               <Route path="/users" element={<Users />} />
             </>
           )}
 
           <Route path="/tokens" element={<Tokens />} />
+            <Route path="/pricing" element={<Pricing variant="console" />} />
             <Route path="/playground" element={<Playground/>}/>
             <Route path="/api-docs" element={<ApiDocs/>}/>
           <Route path="/logs" element={<Logs />} />

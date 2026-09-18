@@ -6,20 +6,30 @@ import {
     Trash2,
     CheckCircle2,
     AlertCircle,
-    Wallet,
     PlusCircle,
     Edit2,
+    HardDriveUpload,
+    Unlink,
+    LoaderCircle,
+    ShieldCheck,
 } from 'lucide-react';
-import { Modal, useAppDialog } from '../components/ui';
+import { Badge, Button, Modal, Table, type TableColumn, useAppDialog } from '../components/ui';
+import { PageHeader } from '../components/shell';
 import {
     fetchTokens,
     createToken,
     deleteToken,
     rechargeToken,
     updateToken,
+    bindTokenFileStorage,
+    unbindTokenFileStorage,
 } from '../services/api';
-import {ApiToken} from '../types';
-import { STATUS_COLORS, STATUS_LABELS } from '../constants';
+import { ApiToken } from '../types';
+
+const formatAmount = (value: number) => value.toLocaleString('zh-CN', {
+  minimumFractionDigits: 2,
+  maximumFractionDigits: 4,
+});
 
 const Tokens: React.FC = () => {
   const { askConfirmation, showAlert } = useAppDialog();
@@ -31,6 +41,7 @@ const Tokens: React.FC = () => {
     const [newTokenBalance, setNewTokenBalance] = useState<string>('');
   const [newTokenKey, setNewTokenKey] = useState('');
   const [isCreating, setIsCreating] = useState(false);
+  const [deletingTokenId, setDeletingTokenId] = useState<string | null>(null);
 
     // 充值相关状态
     const [showRechargeModal, setShowRechargeModal] = useState(false);
@@ -44,6 +55,11 @@ const Tokens: React.FC = () => {
     const [editTokenId, setEditTokenId] = useState<string>('');
     const [editTokenName, setEditTokenName] = useState<string>('');
     const [isEditing, setIsEditing] = useState(false);
+
+    // 每个 Prism API Key 独立选择结果转存账号。
+    const [storageToken, setStorageToken] = useState<ApiToken | null>(null);
+    const [storageAPIKey, setStorageAPIKey] = useState('');
+    const [isSavingStorage, setIsSavingStorage] = useState(false);
 
   const loadTokens = () => {
     setIsLoading(true);
@@ -94,11 +110,14 @@ const Tokens: React.FC = () => {
       tone: 'danger',
     });
     if (!confirmed) return;
+    setDeletingTokenId(id);
     try {
       await deleteToken(id);
-      loadTokens();
+      setTokens(current => current.filter(token => token.id !== id));
     } catch (err: any) {
       await showAlert({ title: '删除失败', description: err.message || '令牌删除失败，请稍后重试。', tone: 'danger' });
+    } finally {
+      setDeletingTokenId(null);
     }
   };
 
@@ -150,6 +169,58 @@ const Tokens: React.FC = () => {
         }
     };
 
+    const openStorageModal = (token: ApiToken) => {
+        setStorageToken(token);
+        setStorageAPIKey('');
+    };
+
+    const closeStorageModal = () => {
+        if (isSavingStorage) return;
+        setStorageToken(null);
+        setStorageAPIKey('');
+    };
+
+    const handleBindStorage = async () => {
+        if (!storageToken || !storageAPIKey.trim()) return;
+        setIsSavingStorage(true);
+        try {
+            await bindTokenFileStorage(storageToken.id, storageAPIKey.trim());
+            loadTokens();
+            setStorageToken(null);
+            setStorageAPIKey('');
+        } catch (err: any) {
+            await showAlert({
+                title: '绑定失败',
+                description: err.message || 'XFileStorage Key 验证失败，请检查 Key 与服务状态。',
+                tone: 'danger',
+            });
+        } finally {
+            setIsSavingStorage(false);
+        }
+    };
+
+    const handleUnbindStorage = async () => {
+        if (!storageToken) return;
+        const confirmed = await askConfirmation({
+            title: '停止新任务转存？',
+            description: `解绑后，“${storageToken.name}”的图片和视频结果将直接使用上游地址。`,
+            confirmLabel: '确认解绑',
+            tone: 'danger',
+        });
+        if (!confirmed) return;
+        setIsSavingStorage(true);
+        try {
+            await unbindTokenFileStorage(storageToken.id);
+            loadTokens();
+            setStorageToken(null);
+            setStorageAPIKey('');
+        } catch (err: any) {
+            await showAlert({ title: '解绑失败', description: err.message || '暂时无法解绑，请稍后重试。', tone: 'danger' });
+        } finally {
+            setIsSavingStorage(false);
+        }
+    };
+
     const closeModal = () => {
         setShowCreateModal(false);
         setNewTokenName('');
@@ -157,102 +228,114 @@ const Tokens: React.FC = () => {
         setNewTokenKey('');
     };
 
+  const storageCount = tokens.filter(token => token.xfsStorage.configured).length;
+  const columns: TableColumn<ApiToken>[] = [
+    {
+      header: '令牌',
+      wrap: true,
+      render: token => (
+        <div className="min-w-[190px]">
+          <div className="font-semibold text-[var(--text-primary)]">{token.name}</div>
+          <code className="mt-1 block text-xs text-[var(--text-secondary)]">{token.key}</code>
+        </div>
+      ),
+    },
+    {
+      header: '结果转存',
+      render: token => (
+        <div className="flex items-center gap-2">
+          <Badge variant={token.xfsStorage.configured ? 'success' : 'default'}>
+            {token.xfsStorage.configured ? token.xfsStorage.keyHint : '未绑定'}
+          </Badge>
+          <button
+            type="button"
+            onClick={() => openStorageModal(token)}
+            className="inline-flex items-center gap-1 rounded-lg px-2 py-1 text-xs font-semibold text-[var(--primary)] transition hover:bg-[var(--primary-lighter)]"
+          >
+            <HardDriveUpload size={14} />
+            {token.xfsStorage.configured ? '管理' : '绑定'}
+          </button>
+        </div>
+      ),
+    },
+    {
+      header: '可用余额',
+      className: 'tabular-nums',
+      render: token => <span className="font-semibold text-emerald-600">¥{formatAmount(token.balance)}</span>,
+    },
+    {
+      header: '已使用',
+      className: 'tabular-nums',
+      render: token => <span className="text-[var(--text-secondary)]">¥{formatAmount(token.totalUsed)}</span>,
+    },
+    {
+      header: <span className="sr-only">操作</span>,
+      className: 'w-px',
+      render: token => (
+        <div className="flex items-center justify-end gap-1">
+          <button
+            type="button"
+            onClick={() => openRechargeModal(token)}
+            className="flex h-8 w-8 items-center justify-center rounded-lg text-[var(--text-secondary)] transition hover:bg-emerald-50 hover:text-emerald-600"
+            title="充值"
+            aria-label={`为 ${token.name} 充值`}
+          >
+            <PlusCircle size={16} />
+          </button>
+          <button
+            type="button"
+            onClick={() => openEditModal(token)}
+            className="flex h-8 w-8 items-center justify-center rounded-lg text-[var(--text-secondary)] transition hover:bg-[var(--primary-lighter)] hover:text-[var(--primary)]"
+            title="编辑"
+            aria-label={`编辑 ${token.name}`}
+          >
+            <Edit2 size={16} />
+          </button>
+          <button
+            type="button"
+            onClick={() => void handleDelete(token.id, token.name)}
+            disabled={deletingTokenId !== null}
+            className="flex h-8 w-8 items-center justify-center rounded-lg text-[var(--text-secondary)] transition hover:bg-red-50 hover:text-red-600 disabled:opacity-40"
+            title="删除"
+            aria-label={`删除 ${token.name}`}
+          >
+            {deletingTokenId === token.id ? <LoaderCircle size={16} className="animate-spin" /> : <Trash2 size={16} />}
+          </button>
+        </div>
+      ),
+    },
+  ];
+
 
   return (
-    <div className="space-y-4 md:space-y-6">
-      <div className="flex items-center justify-between flex-wrap gap-3">
-        <div>
-          <h1 className="text-xl md:text-2xl font-bold text-[var(--text-primary)]">API 令牌管理</h1>
-          <p className="text-[var(--text-secondary)] mt-1 text-sm md:text-base">创建和管理用于调用 Prism API 的密钥</p>
+    <div className="space-y-4">
+      <PageHeader
+        icon={Key}
+        title="API 令牌"
+        meta={isLoading ? '正在读取令牌' : `共 ${tokens.length} 个令牌 · ${storageCount} 个已启用结果转存`}
+        actions={(
+          <Button onClick={() => setShowCreateModal(true)}>
+            <Plus size={16} />
+            创建令牌
+          </Button>
+        )}
+      />
+
+      <section className="overflow-hidden rounded-lg border border-[var(--border-soft)] bg-[var(--surface-card)] shadow-[var(--shadow-soft)]">
+        <Table
+          aria-label="API 令牌列表"
+          columns={columns}
+          rows={isLoading ? [] : tokens}
+          rowKey={token => token.id}
+          minWidth="760px"
+          busy={isLoading}
+          empty={isLoading ? '正在读取令牌...' : '暂无令牌'}
+        />
+        <div className="flex items-start gap-2 border-t border-[var(--border-soft)] bg-[var(--surface-muted)]/40 px-4 py-3 text-xs text-[var(--text-secondary)]">
+          <ShieldCheck size={15} className="mt-0.5 shrink-0 text-[var(--primary)]" />
+          完整密钥仅在创建时显示。删除令牌后，该令牌会立即停止授权。
         </div>
-        <button
-          onClick={() => setShowCreateModal(true)}
-          className="flex items-center gap-2 px-4 md:px-6 py-2 bg-[var(--primary)] text-white rounded-lg text-sm font-bold hover:opacity-90 transition-all shadow-sm"
-        >
-          <Plus size={18} />
-          <span className="hidden md:inline">创建新令牌</span>
-          <span className="md:hidden">创建</span>
-        </button>
-      </div>
-
-      <div className="grid grid-cols-1 gap-4">
-        {isLoading ? (
-          Array.from({ length: 3 }).map((_, i) => (
-            <div key={i} className="bg-[var(--surface-card)] p-8 rounded-2xl border border-[var(--border-soft)] animate-pulse h-32"></div>
-          ))
-        ) : tokens.length === 0 ? (
-          <div className="bg-[var(--surface-card)] p-12 rounded-2xl border border-[var(--border-soft)] text-center">
-            <Key className="mx-auto text-gray-300 mb-4" size={48} />
-            <p className="text-[var(--text-secondary)]">暂无令牌，点击上方按钮创建</p>
-          </div>
-        ) : tokens.map(token => (
-          <div key={token.id} className="bg-[var(--surface-card)] p-4 md:p-6 rounded-2xl border border-[var(--border-soft)] shadow-sm flex flex-col md:flex-row items-start md:items-center gap-4 md:gap-6 group">
-            <div className="p-3 md:p-4 bg-[var(--surface)] rounded-2xl text-[var(--primary)] hidden md:block">
-              <Key size={24} />
-            </div>
-
-            <div className="flex-1 min-w-0">
-              <div className="flex items-center gap-3 mb-1">
-                <h3 className="font-bold text-[var(--text-primary)] truncate">{token.name}</h3>
-                <span className={`px-2 py-0.5 rounded-full text-[10px] font-bold uppercase ${STATUS_COLORS[token.status]}`}>
-                  {STATUS_LABELS[token.status]}
-                </span>
-              </div>
-              <div className="flex items-center gap-2 text-xs md:text-sm text-[var(--text-secondary)] font-mono overflow-hidden">
-                <code className="truncate max-w-[180px] md:max-w-none">{token.key}</code>
-              </div>
-            </div>
-
-              <div className="flex items-center gap-4 md:gap-6">
-                  <div className="text-center">
-                      <div className="flex items-center gap-1 text-[10px] font-bold text-[var(--text-secondary)] uppercase mb-1">
-                          <Wallet size={12}/>
-                          <span>余额</span>
-                      </div>
-                      <p className="text-base md:text-lg font-bold text-green-600">¥{token.balance.toFixed(4)}</p>
-              </div>
-                  <div className="text-center">
-                      <div className="text-[10px] font-bold text-[var(--text-secondary)] uppercase mb-1">已使用</div>
-                      <p className="text-base md:text-lg font-bold text-[var(--text-secondary)]">¥{token.totalUsed.toFixed(4)}</p>
-              </div>
-            </div>
-
-            <div className="flex gap-2 md:opacity-0 md:group-hover:opacity-100 transition-opacity">
-                <button
-                    onClick={() => openEditModal(token)}
-                    className="p-2 text-[var(--text-secondary)] hover:text-indigo-500 hover:bg-[var(--primary-lighter)] rounded-lg"
-                    title="编辑"
-                >
-                    <Edit2 size={18}/>
-                </button>
-                <button
-                  onClick={() => openRechargeModal(token)}
-                  className="p-2 text-[var(--text-secondary)] hover:text-green-500 hover:bg-green-50 rounded-lg"
-                  title="充值"
-              >
-                  <PlusCircle size={18}/>
-              </button>
-                <button
-                onClick={() => handleDelete(token.id, token.name)}
-                className="p-2 text-[var(--text-secondary)] hover:text-red-500 hover:bg-red-50 rounded-lg"
-                title="删除"
-              >
-                <Trash2 size={18} />
-              </button>
-            </div>
-          </div>
-        ))}
-      </div>
-
-      <div className="bg-amber-50 border border-amber-100 rounded-2xl p-6 flex gap-4 items-start">
-        <AlertCircle className="text-amber-500 mt-1 flex-shrink-0" />
-        <div>
-          <h4 className="font-bold text-amber-900">安全提示</h4>
-          <p className="text-sm text-amber-700 mt-1">
-            API 令牌是您访问 Prism 服务的唯一凭证。请不要在前端代码中硬编码令牌，也不要在公开场合分享您的密钥。
-          </p>
-        </div>
-      </div>
+      </section>
 
         {/* 创建令牌弹窗 */}
         <Modal open={showCreateModal} onClose={closeModal} title="创建新令牌" width="max-w-xl">
@@ -375,6 +458,61 @@ const Tokens: React.FC = () => {
                       </div>
                     </div>
             </Modal>
+
+        <Modal open={storageToken !== null} onClose={closeStorageModal} title="结果转存设置" width="max-w-lg">
+          <div className="modal-form">
+            <div className="modal-scroll-body space-y-4">
+              <div className="rounded-xl bg-[var(--surface)] p-4">
+                <p className="text-xs text-[var(--text-secondary)]">API 令牌</p>
+                <p className="mt-1 font-bold text-[var(--text-primary)]">{storageToken?.name}</p>
+                <p className="mt-2 text-sm text-[var(--text-secondary)]">
+                  绑定后，此令牌的图片和视频结果会转存到当前 XFileStorage。
+                </p>
+              </div>
+              {storageToken?.xfsStorage.configured && (
+                <div className="flex items-center justify-between gap-3 rounded-xl border border-green-200 bg-green-50 p-3 text-sm">
+                  <span className="font-semibold text-green-700">当前已绑定 {storageToken.xfsStorage.keyHint}</span>
+                  <button
+                    type="button"
+                    onClick={() => void handleUnbindStorage()}
+                    disabled={isSavingStorage}
+                    className="inline-flex items-center gap-1 font-semibold text-red-600 disabled:opacity-50"
+                  >
+                    <Unlink size={14} />
+                    解绑
+                  </button>
+                </div>
+              )}
+              <div>
+                <label className="mb-1 block text-sm font-medium text-[var(--text-primary)]">
+                  {storageToken?.xfsStorage.configured ? '新的 XFileStorage Key' : 'XFileStorage Key'}
+                </label>
+                <input
+                  type="text"
+                  value={storageAPIKey}
+                  onChange={event => setStorageAPIKey(event.target.value)}
+                  placeholder="xfs_..."
+                  autoComplete="off"
+                  spellCheck={false}
+                  className="w-full rounded-lg border border-[var(--border-soft)] px-4 py-3 font-mono text-sm focus:outline-none focus:ring-2 focus:ring-[var(--primary)]"
+                />
+                <p className="mt-2 text-xs text-[var(--text-secondary)]">保存时会验证上传、读取、签名和删除权限。</p>
+              </div>
+            </div>
+            <div className="modal-footer">
+              <button type="button" onClick={closeStorageModal} disabled={isSavingStorage} className="modal-button modal-button-secondary">取消</button>
+              <button
+                type="button"
+                onClick={() => void handleBindStorage()}
+                disabled={isSavingStorage || !storageAPIKey.trim()}
+                className="modal-button modal-button-primary"
+              >
+                <HardDriveUpload size={17} />
+                {isSavingStorage ? '正在验证' : storageToken?.xfsStorage.configured ? '验证并更换' : '验证并绑定'}
+              </button>
+            </div>
+          </div>
+        </Modal>
 
         {/* 编辑令牌弹窗 */}
             <Modal open={showEditModal} onClose={() => setShowEditModal(false)} title="编辑令牌" width="max-w-xl">

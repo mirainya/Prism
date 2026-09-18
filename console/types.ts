@@ -20,6 +20,10 @@ export interface ApiToken {
   balance: number;
   totalUsed: number;
   status: 'active' | 'expired';
+  xfsStorage: {
+    configured: boolean;
+    keyHint: string;
+  };
 }
 
 export interface TaskLog {

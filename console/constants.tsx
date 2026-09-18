@@ -16,6 +16,8 @@ import {
     Network,
     Sparkles,
     ClipboardList,
+    ShieldAlert,
+    Coins,
 } from 'lucide-react';
 
 export interface RouteItem {
@@ -50,7 +52,7 @@ export const ROUTE_GROUPS: RouteGroup[] = [
     icon: <Network size={18} />,
     roles: ['admin'],
     children: [
-      { path: '/unified-gateway', name: '统一网关', icon: <Layers3 size={20} />, roles: ['admin'] },
+      { path: '/ops-console', name: '运维台', icon: <Layers3 size={20} />, roles: ['admin'] },
     ],
   },
   {
@@ -60,6 +62,7 @@ export const ROUTE_GROUPS: RouteGroup[] = [
     roles: ['user', 'admin'],
     children: [
       { path: '/tokens', name: '令牌管理', icon: <Key size={20} />, roles: ['user', 'admin'] },
+      { path: '/pricing', name: '模型价格', icon: <Coins size={20} />, roles: ['user', 'admin'] },
       { path: '/playground', name: '在线试用', icon: <Play size={20} />, roles: ['user', 'admin'] },
       { path: '/api-docs', name: 'API 文档', icon: <Book size={20} />, roles: ['user', 'admin'] },
     ],
@@ -71,6 +74,9 @@ export const ROUTE_GROUPS: RouteGroup[] = [
     roles: ['user', 'admin'],
     children: [
       { path: '/calls', name: '调用记录', icon: <Activity size={20} />, roles: ['user', 'admin'] },
+      // 熔断是「配好了却不通」的头号原因，放在日志组里是因为它回答的是同一个问题：
+      // 刚才那次请求为什么失败。
+      { path: '/circuit-breakers', name: '熔断状态', icon: <ShieldAlert size={20} />, roles: ['admin'] },
       { path: '/observability', name: '审计与流水', icon: <ScrollText size={20} />, roles: ['user', 'admin'] },
       { path: '/logs', name: '异步任务', icon: <FileText size={20} />, roles: ['user', 'admin'] },
       { path: '/video-tasks', name: '视频任务', icon: <Video size={20} />, roles: ['admin'] },

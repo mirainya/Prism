@@ -1,22 +1,3 @@
-import type { UnifiedGatewayOverview } from '../../services/unifiedGatewayApi';
-
-export const gatewayStatus = (data: UnifiedGatewayOverview | null, failed = false) => {
-  if (failed) return { ready: false, label: '运行状态读取失败' };
-  if (!data) return { ready: false, label: '运行状态未读取' };
-  if (data.legacy.channels > 0 || data.legacy.abilities > 0) return { ready: false, label: '迁移未完成' };
-  if (data.runtime_ready && data.ready_for_cutover) return { ready: true, label: '运行条件已满足' };
-  if (data.target.channels === 0 && data.target.catalog_releases === 0) return { ready: false, label: '尚未配置' };
-  return { ready: false, label: '运行条件未满足' };
-};
-
-export const gatewayChecks = (data: UnifiedGatewayOverview | null) => [
-  { label: '活动目录', ok: Boolean(data?.runtime.active_release_id), value: data?.runtime.active_release_id ? `#${data.runtime.active_release_id}` : '未激活' },
-  { label: '正式售价', ok: (data?.target.sell_rates ?? 0) > 0, value: data ? `${data.target.sell_rates ?? 0} 项` : '-' },
-  { label: '成本费率', ok: (data?.target.cost_rates ?? 0) > 0, value: data ? `${data.target.cost_rates ?? 0} 项` : '-' },
-  { label: '结算币种', ok: (data?.target.currencies ?? 0) > 0, value: data?.target.currencies ? '已配置' : '未配置' },
-  { label: '目录与加密证明', ok: Boolean(data?.runtime_ready), value: data?.runtime_ready ? '已通过' : '未通过' },
-];
-
 export const formatDate = (value?: string | null) => {
   if (!value) return '-';
   const date = new Date(value);
@@ -34,3 +15,23 @@ const statusLabels: Record<string, string> = {
   confirmed: '已确认', dismissed: '已忽略',
 };
 export const statusLabel = (status: string) => statusLabels[status] || status;
+
+// 关系查询里 blocked_by 的原因码。后端给的是稳定标识符，话术留在前端，
+// 这样改措辞不用碰接口。`<scope>_<state>` 形式的码由 describeRelationBlock 兜底。
+const relationBlockLabels: Record<string, string> = {
+  commercial_validation_missing: '缺有效商业校验',
+  entitlement_validation_missing: '缺有效授权校验',
+  secret_identity_inactive: '密钥身份未激活',
+  execution_grant_missing: '缺 execution 授权',
+  credential_version_unusable: '密钥版本失效或过期',
+  circuit_broken: '熔断中',
+};
+const relationBlockScopes: Record<string, string> = {
+  offering: 'Offering', credential: '凭据', pool: '密钥池', channel: '渠道',
+};
+export const describeRelationBlock = (code: string) => {
+  if (relationBlockLabels[code]) return relationBlockLabels[code];
+  const separator = code.indexOf('_');
+  const scope = separator > 0 ? relationBlockScopes[code.slice(0, separator)] : undefined;
+  return scope ? `${scope}状态 ${code.slice(separator + 1) || 'unset'}` : code;
+};

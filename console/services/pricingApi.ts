@@ -23,6 +23,22 @@ export interface PublicPricingCurrency {
   fraction_digits: number;
 }
 
+/**
+ * Recently observed success rate for a SKU, on a 0..100 scale.
+ *
+ * `source` is `local` when measured from this deployment's own calls and
+ * `upstream` when reported by the provider. Only the local figure carries
+ * `samples`; the provider publishes no sample count, which is why a 100% figure
+ * from upstream may rest on a single call.
+ */
+export interface PublicPricingAvailability {
+  success_rate: string;
+  source: 'local' | 'upstream';
+  samples?: number;
+  window_minutes: number;
+  observed_at: string;
+}
+
 export interface PublicPricingSKU {
   id: number;
   code: string;
@@ -34,6 +50,7 @@ export interface PublicPricingSKU {
   service_tiers: string[];
   currency: PublicPricingCurrency;
   components: PublicRateComponent[];
+  availability?: PublicPricingAvailability;
 }
 
 export interface PublicPricingModel {

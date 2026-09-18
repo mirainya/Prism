@@ -1,8 +1,9 @@
 import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
-import { Loader2, AlertCircle, Video, XCircle, CheckCircle2, Clock, Play, Download, Plus, Trash2, Upload, AtSign, Type, Image as ImageIcon, Images, Layers3, Film, Scissors } from 'lucide-react';
+import { Loader2, AlertCircle, AlertTriangle, Video, XCircle, CheckCircle2, Clock, Play, Download, Plus, Trash2, Upload, AtSign, Type, Image as ImageIcon, Images, Layers3, Film, Scissors } from 'lucide-react';
 import {
   playgroundCreateVideo, playgroundListVideos,
   playgroundEstimateVideo, playgroundListVideoModels, playgroundUploadVideoAsset,
+  playgroundHydrateCompletedVideoTasks,
   VideoTask, VideoEstimate, VideoCreateParams, VideoContentItem, PlaygroundVideoModelOptions,
   PlaygroundVideoServiceTierOption,
 } from '../../services/playgroundApi';
@@ -144,7 +145,8 @@ const referencePlaceholder = (kind: ReferenceKind) => {
   return 'https://example.com/video.mp4';
 };
 
-const isTerminal = (s: string) => ['completed', 'failed', 'cancelled'].includes(s);
+const isTerminal = (s: string) => ['completed', 'failed', 'cancelled', 'submission_unknown'].includes(s);
+const COMPLETED_DETAIL_RETRY_LIMIT = 30;
 
 const ProgressRing: React.FC<{ percent: number }> = ({ percent }) => {
   const r = 22, c = 2 * Math.PI * r;
@@ -183,6 +185,8 @@ const VideoTab: React.FC<{ tokenId: string }> = ({ tokenId }) => {
   const [tasks, setTasks] = useState<VideoTask[]>([]);
   const [filter, setFilter] = useState<FilterType>('all');
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const completedTaskCacheRef = useRef<Map<string, VideoTask>>(new Map());
+  const completedTaskRetryRef = useRef<Map<string, number>>(new Map());
   const promptRef = useRef<HTMLTextAreaElement | null>(null);
   const currentModelOptions = modelOptions[model];
   const configuredTaskTypes = currentModelOptions?.task_types;
@@ -425,31 +429,69 @@ const VideoTab: React.FC<{ tokenId: string }> = ({ tokenId }) => {
   const loadTasks = useCallback(async () => {
     try {
       const res = await playgroundListVideos(tokenId);
-      setTasks(res.items);
+      const cachedTasks = res.items.map(task => {
+        const cached = completedTaskCacheRef.current.get(task.id);
+        return cached ? { ...task, ...cached } : task;
+      });
+      const retryableTasks = cachedTasks.filter(task => (
+        task.status === 'completed'
+        && !task.result?.video_url
+        && task.result?.delivery_status !== 'detail_error'
+        && (completedTaskRetryRef.current.get(task.id) || 0) < COMPLETED_DETAIL_RETRY_LIMIT
+      ));
+      const hydratedByID = new Map(
+        (await playgroundHydrateCompletedVideoTasks(tokenId, retryableTasks)).map(task => [task.id, task]),
+      );
+      const hydratedTasks = cachedTasks.map(task => hydratedByID.get(task.id) || task);
+      for (const task of hydratedTasks) {
+        if (task.result?.video_url) {
+          completedTaskCacheRef.current.set(task.id, task);
+          completedTaskRetryRef.current.delete(task.id);
+        } else if (task.result?.delivery_status === 'detail_error') {
+          completedTaskCacheRef.current.set(task.id, task);
+          completedTaskRetryRef.current.delete(task.id);
+        } else if (hydratedByID.has(task.id)) {
+          completedTaskRetryRef.current.set(task.id, (completedTaskRetryRef.current.get(task.id) || 0) + 1);
+        }
+      }
+      setTasks(hydratedTasks.map(task => {
+        const retries = completedTaskRetryRef.current.get(task.id) || 0;
+        if (task.status !== 'completed' || task.result?.video_url || retries < COMPLETED_DETAIL_RETRY_LIMIT) {
+          return task;
+        }
+        return { ...task, result: { ...task.result, delivery_status: 'unavailable' } };
+      }));
     } catch {}
   }, [tokenId]);
 
   useEffect(() => {
+    completedTaskCacheRef.current.clear();
+    completedTaskRetryRef.current.clear();
     loadTasks();
     return () => { if (pollRef.current) clearInterval(pollRef.current); };
-  }, [tokenId]);
+  }, [loadTasks]);
 
   useEffect(() => {
-    const hasActive = tasks.some(t => !isTerminal(t.status));
+    const hasActive = tasks.some(t => !isTerminal(t.status) || (
+      t.status === 'completed'
+      && !t.result?.video_url
+      && t.result?.delivery_status !== 'detail_error'
+      && (completedTaskRetryRef.current.get(t.id) || 0) < COMPLETED_DETAIL_RETRY_LIMIT
+    ));
     if (hasActive && !pollRef.current) {
-      pollRef.current = setInterval(async () => {
-        const res = await playgroundListVideos(tokenId);
-        setTasks(res.items);
-        if (!res.items.some(t => !isTerminal(t.status))) {
-          if (pollRef.current) { clearInterval(pollRef.current); pollRef.current = null; }
-        }
-      }, 4000);
+      pollRef.current = setInterval(() => { void loadTasks(); }, 4000);
     } else if (!hasActive && pollRef.current) {
       clearInterval(pollRef.current);
       pollRef.current = null;
     }
     return () => { if (pollRef.current) { clearInterval(pollRef.current); pollRef.current = null; } };
-  }, [tasks, tokenId]);
+  }, [tasks, loadTasks]);
+
+  const retryCompletedTaskDetail = useCallback((taskID: string) => {
+    completedTaskCacheRef.current.delete(taskID);
+    completedTaskRetryRef.current.delete(taskID);
+    void loadTasks();
+  }, [loadTasks]);
 
   const updateReference = (index: number, patch: Partial<ReferenceInput>) => {
     setReferences(items => items.map((item, itemIndex) => itemIndex === index ? { ...item, ...patch } : item));
@@ -855,7 +897,9 @@ const VideoTab: React.FC<{ tokenId: string }> = ({ tokenId }) => {
             </div>
           ) : (
             <div className="grid grid-cols-1 lg:grid-cols-2 xl:grid-cols-2 2xl:grid-cols-3 gap-3">
-              {filteredTasks.map(task => <TaskCard key={task.id} task={task} />)}
+              {filteredTasks.map(task => (
+                <TaskCard key={task.id} task={task} onRetryDetail={retryCompletedTaskDetail} />
+              ))}
             </div>
           )}
         </div>
@@ -864,7 +908,7 @@ const VideoTab: React.FC<{ tokenId: string }> = ({ tokenId }) => {
   );
 };
 
-const TaskCard: React.FC<{ task: VideoTask }> = ({ task }) => {
+const TaskCard: React.FC<{ task: VideoTask; onRetryDetail: (taskID: string) => void }> = ({ task, onRetryDetail }) => {
   const statusMap: Record<string, { label: string; icon: React.ReactNode; cls: string }> = {
     queued: { label: '排队中', icon: <Clock size={12} />, cls: 'bg-gray-100 text-gray-600' },
     submitted: { label: '已提交', icon: <Loader2 size={12} className="animate-spin" />, cls: 'bg-blue-50 text-blue-600' },
@@ -872,8 +916,11 @@ const TaskCard: React.FC<{ task: VideoTask }> = ({ task }) => {
     completed: { label: '已完成', icon: <CheckCircle2 size={12} />, cls: 'bg-green-50 text-green-600' },
     failed: { label: '失败', icon: <XCircle size={12} />, cls: 'bg-red-50 text-red-600' },
     cancelled: { label: '已取消', icon: <XCircle size={12} />, cls: 'bg-gray-100 text-gray-500' },
+    submission_unknown: { label: '结果待确认', icon: <AlertTriangle size={12} />, cls: 'bg-amber-50 text-amber-700' },
   };
   const sc = statusMap[task.status] || statusMap.queued;
+  const detailFailed = task.result?.delivery_status === 'detail_error';
+  const deliveryUnavailable = task.result?.delivery_status === 'unavailable';
 
   return (
     <div className={`min-w-0 bg-[var(--surface-card)] rounded-xl border border-[var(--border-soft)] overflow-hidden transition-all hover:shadow-md hover:-translate-y-0.5 ${task.status === 'cancelled' ? 'opacity-60' : ''}`}>
@@ -888,7 +935,25 @@ const TaskCard: React.FC<{ task: VideoTask }> = ({ task }) => {
               </span>
             )}
           </>
-        ) : task.status === 'failed' ? (
+        ) : task.status === 'completed' ? (
+          <div className="text-center px-4">
+            {detailFailed || deliveryUnavailable
+              ? <AlertTriangle size={28} className="mx-auto mb-1.5 text-amber-500" />
+              : <Loader2 size={28} className="mx-auto mb-1.5 animate-spin text-[var(--primary)]" />}
+            <p className="text-xs text-[var(--text-secondary)]">
+              {detailFailed ? '无法读取视频地址' : deliveryUnavailable ? '视频地址暂不可用' : '正在获取视频地址...'}
+            </p>
+            {(detailFailed || deliveryUnavailable) && (
+              <button
+                type="button"
+                onClick={() => onRetryDetail(task.id)}
+                className="mt-2 text-xs font-medium text-[var(--primary)] hover:underline"
+              >
+                重试
+              </button>
+            )}
+          </div>
+        ) : task.status === 'failed' || task.status === 'submission_unknown' ? (
           <div className="text-center px-4">
             <XCircle size={28} className="mx-auto mb-1.5 text-red-400" />
             <p className="max-w-full break-words overflow-hidden text-xs text-red-500 line-clamp-3">{task.error_message || '生成失败'}</p>

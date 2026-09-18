@@ -1,7 +1,8 @@
 import { request } from './request';
-import type {
-  UnifiedCredential,
-  UnifiedGatewayPage,
+import {
+  clearUnifiedCredentialRouteStates,
+  type UnifiedCredential,
+  type UnifiedGatewayPage,
 } from './unifiedGatewayApi';
 
 export type CredentialPurpose =
@@ -13,6 +14,20 @@ export interface CredentialFields {
   task_limit: number | null;
   weight: number;
 }
+export interface CredentialUpdateFields extends CredentialFields {
+  secret?: string;
+}
+export type CredentialTransition = {
+  status: 'draining' | 'disabled';
+  label: '停止使用' | '完成停用';
+};
+export const managedCredentialTransition = (
+  status: string,
+): CredentialTransition | null => {
+  if (status === 'active') return { status: 'draining', label: '停止使用' };
+  if (status === 'draining') return { status: 'disabled', label: '完成停用' };
+  return null;
+};
 export const fetchManagedCredentials = (
   page: number,
   size: number,
@@ -41,19 +56,25 @@ export const createManagedCredential = (
     method: 'POST',
     body: JSON.stringify(data),
   });
-export const updateManagedCredential = (
+export const updateManagedCredential = async (
   item: UnifiedCredential,
-  data: CredentialFields,
-) =>
-  request(`/admin/unified-gateway/credentials/${item.id}`, {
+  data: CredentialUpdateFields,
+) => {
+  const result = await request(`/admin/unified-gateway/credentials/${item.id}`, {
     method: 'PUT',
     body: JSON.stringify({ ...data, expected_version: item.config_version }),
   });
-export const transitionManagedCredential = (item: UnifiedCredential) =>
-  request(`/admin/unified-gateway/credentials/${item.id}/status`, {
+  if (data.secret) await clearUnifiedCredentialRouteStates(item.id);
+  return result;
+};
+export const transitionManagedCredential = (item: UnifiedCredential) => {
+  const transition = managedCredentialTransition(item.status);
+  if (!transition) return Promise.reject(new Error('此 API Key 已停用'));
+  return request(`/admin/unified-gateway/credentials/${item.id}/status`, {
     method: 'POST',
     body: JSON.stringify({
-      status: item.status === 'active' ? 'draining' : 'disabled',
+      status: transition.status,
       expected_version: item.config_version,
     }),
   });
+};

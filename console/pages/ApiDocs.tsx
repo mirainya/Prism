@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
-import { Book, Copy, Check, ChevronDown, ChevronRight, Play, Loader2, MessageSquare, AlertTriangle, Video, Braces, FileUp } from 'lucide-react';
-import { fetchDocsVideos, DocsVideosResponse, DocsVideoModelOptions } from '../services/docsApi';
+import { Book, Copy, Check, ChevronDown, ChevronRight, Play, Loader2, MessageSquare, AlertTriangle, Video, Braces, FileUp, Image as ImageIcon, Boxes } from 'lucide-react';
+import { fetchDocsModels, fetchDocsVideos, DocsModel, DocsVideosResponse, DocsVideoModelOptions } from '../services/docsApi';
 import { TryItDrawer } from './TryItDrawer';
 
 // ===== 代码块组件 =====
@@ -277,8 +277,28 @@ interface NavGroup {
 }
 
 // ===== Chat 接口参数定义 =====
-const CHAT_COMPLETIONS_PARAMS = [
-  { name: 'model', type: 'string', required: true, description: '模型标识，如 gpt-4o, claude-sonnet-4-20250514' },
+// 示例里的模型名原来是写死的（gpt-4o / claude-sonnet-4 / doubao-seed-2-0-pro）——
+// 这个部署里很可能一个都不存在，照着示例发请求必然 404。`GET /api/docs/models`
+// 本来就返回当前生效目录里可执行的模型，只是前端一直没调。现在按下游协议挑一个
+// 真名填进示例；取不到才退回占位符。
+const modelDisplayName = (model: DocsModel) => model.code || model.model_code || model.id;
+
+// transports 是该模型在目录里实际可用的上游 Transport，用它判断哪条下游协议示例
+// 该拿哪个模型：走不了 anthropic_messages 的模型，放进 /v1/messages 示例只会误导。
+export const pickDocsModel = (models: DocsModel[], transports: string[], fallback: string): string => {
+  const matched = models.find(model => (model.transports || []).some(code => transports.includes(code)));
+  return matched ? modelDisplayName(matched) : models[0] ? modelDisplayName(models[0]) : fallback;
+};
+
+const buildChatParams = (models: DocsModel[]) => {
+  const names = models.slice(0, 3).map(modelDisplayName).filter(Boolean);
+  return [
+    { name: 'model', type: 'string', required: true, description: names.length ? `模型标识，当前可用：${names.join('、')}${models.length > names.length ? ' 等' : ''}` : '模型标识；当前目录里没有可用模型' },
+    ...CHAT_COMMON_PARAMS,
+  ];
+};
+
+const CHAT_COMMON_PARAMS = [
   { name: 'messages', type: 'array', required: true, description: '消息数组，每条包含 role(system/user/assistant/tool) 和 content' },
   { name: 'stream', type: 'boolean', required: false, description: '是否流式返回，默认 false' },
   { name: 'temperature', type: 'number', required: false, description: '温度 (0-2)，值越高越随机' },
@@ -295,7 +315,7 @@ const CHAT_COMPLETIONS_PARAMS = [
   { name: 'conversation_id', type: 'integer|string', required: false, description: '续接当前 Token 所属的 Prism 对话；也可使用 X-Prism-Conversation-ID 请求头' },
 ];
 
-const ANTHROPIC_MESSAGES_ENDPOINTS: ApiEndpoint[] = [{
+const buildAnthropicEndpoints = (model: string): ApiEndpoint[] => [{
   id: 'ep-anthropic-messages',
   method: 'POST',
   path: '/v1/messages',
@@ -316,13 +336,13 @@ const ANTHROPIC_MESSAGES_ENDPOINTS: ApiEndpoint[] = [{
     { name: 'X-Prism-Conversation-ID (header)', type: 'integer', required: false, description: '续接当前 Token 所属的 Prism 对话' },
   ],
   requestExample: JSON.stringify({
-    model: 'claude-sonnet-4-20250514',
+    model,
     max_tokens: 1024,
     messages: [{ role: 'user', content: [{ type: 'text', text: '你好' }] }],
     stream: false,
   }, null, 2),
   responseExample: JSON.stringify({
-    id: 'msg_abc123', type: 'message', role: 'assistant', model: 'claude-sonnet-4-20250514',
+    id: 'msg_abc123', type: 'message', role: 'assistant', model,
     content: [{ type: 'text', text: '你好！' }], stop_reason: 'end_turn',
     usage: { input_tokens: 8, output_tokens: 4 },
   }, null, 2),
@@ -365,7 +385,7 @@ const RESPONSES_PARAMS = [
   { name: 'session', type: 'object', required: false, description: '火山方舟会话配置' },
 ];
 
-const RESPONSES_ENDPOINTS: ApiEndpoint[] = [
+const buildResponsesEndpoints = (model: string): ApiEndpoint[] => [
   {
     id: 'ep-responses-create',
     method: 'POST',
@@ -374,7 +394,7 @@ const RESPONSES_ENDPOINTS: ApiEndpoint[] = [
     description: 'OpenAI Responses 兼容入口，支持多模态、函数工具、流式、续话和后台执行，并自动保存成功、失败和中断的对话轮次。JSON 请求体上限 32 MiB，大文件应先上传到 /v1/files 并使用 file_id。Idempotency-Key 结果保留 24 小时；store=false 不保存 Responses 资源正文，但仍保存 Conversation 投影。火山 v3 专属字段及未来扩展会原样保留；无法无损转换的字段返回 400。',
     params: RESPONSES_PARAMS,
     requestExample: JSON.stringify({
-      model: 'doubao-seed-2-0-pro',
+      model,
       input: [{
         role: 'user',
         content: [
@@ -389,7 +409,7 @@ const RESPONSES_ENDPOINTS: ApiEndpoint[] = [
       id: 'resp_abc123',
       object: 'response',
       status: 'completed',
-      model: 'doubao-seed-2-0-pro',
+      model,
       output: [{ type: 'message', role: 'assistant', content: [{ type: 'output_text', text: '图片描述...' }] }],
       usage: { input_tokens: 120, output_tokens: 32, total_tokens: 152 },
     }, null, 2),
@@ -486,6 +506,62 @@ const FILE_ENDPOINTS: ApiEndpoint[] = [
   },
 ];
 
+// 图像两个入口此前在文档里完全缺失，而它们是真实存在且带一堆约束的：
+// n 上限 10、partial_images 必须配 stream=true、input_fidelity 必须有图输入、
+// /v1/images/generations 带了 image_urls 会自动转成 images.edit 计费。
+const buildImageEndpoints = (model: string): ApiEndpoint[] => {
+  const shared = [
+    { name: 'n', type: 'integer', required: false, description: '生成张数，1-10，默认 1' },
+    { name: 'size', type: 'string', required: false, description: '输出尺寸，如 1024x1024；具体可用值以所选模型能力为准' },
+    { name: 'aspect_ratio', type: 'string', required: false, description: '画面比例，与 size 二选一，取决于上游支持' },
+    { name: 'quality', type: 'string', required: false, description: '画质档位，以所选模型能力为准' },
+    { name: 'response_format', type: 'string', required: false, description: 'url 或 b64_json，默认 url' },
+    { name: 'output_format', type: 'string', required: false, description: '输出文件格式，如 png、jpeg、webp' },
+    { name: 'output_compression', type: 'integer', required: false, description: '压缩质量 0-100' },
+    { name: 'moderation', type: 'string', required: false, description: '内容审核档位' },
+    { name: 'style', type: 'string', required: false, description: '风格参数' },
+    { name: 'background', type: 'string', required: false, description: '背景处理，如 transparent' },
+    { name: 'stream', type: 'boolean', required: false, description: '是否以 SSE 流式返回（OpenAI 标准的 partial image 事件）' },
+    { name: 'partial_images', type: 'integer', required: false, description: '流式中间帧数量，0-3，必须同时 stream=true' },
+    { name: 'user', type: 'string', required: false, description: '终端用户标识' },
+  ];
+  return [
+    {
+      id: 'ep-images-generations',
+      method: 'POST',
+      path: '/v1/images/generations',
+      name: '图像生成',
+      description: '兼容 OpenAI Images API。异步上游由 Prism 自动轮询后同步返图，调用方无需自己查任务。带上 image_urls 时按图生图（images.edit）执行与计费。',
+      params: [
+        { name: 'model', type: 'string', required: true, description: '模型标识' },
+        { name: 'prompt', type: 'string', required: true, description: '文本提示词' },
+        { name: 'image_urls', type: 'string[]', required: false, description: '参考图 URL 或 data URI；给了就转为图生图' },
+        { name: 'input_fidelity', type: 'string', required: false, description: '参考图保真度；没有图像输入时提交会 400' },
+        ...shared,
+      ],
+      requestExample: JSON.stringify({ model, prompt: '赛博朋克风格的城市夜景', n: 1, size: '1024x1024', response_format: 'url' }, null, 2),
+      responseExample: JSON.stringify({ created: 1704067200, data: [{ url: 'https://example.com/generated.png', revised_prompt: '...' }] }, null, 2),
+    },
+    {
+      id: 'ep-images-edits',
+      method: 'POST',
+      path: '/v1/images/edits',
+      name: '图像编辑',
+      description: '以 multipart/form-data 上传原图做图生图。字段名固定为 image，可重复多次传多张；其余参数与生成接口同名，均以表单字段提交。',
+      bodyType: 'multipart',
+      params: [
+        { name: 'image', type: 'file', required: true, description: '原图文件，可重复该字段上传多张' },
+        { name: 'model', type: 'string', required: true, description: '模型标识' },
+        { name: 'prompt', type: 'string', required: true, description: '编辑指令' },
+        { name: 'input_fidelity', type: 'string', required: false, description: '原图保真度' },
+        ...shared,
+      ],
+      requestExample: `curl -X POST ${window.location.origin}/v1/images/edits \\\n  -H "Authorization: YOUR_TOKEN" \\\n  -F "model=${model}" \\\n  -F "prompt=把背景换成雪山" \\\n  -F "image=@./source.png"`,
+      responseExample: JSON.stringify({ created: 1704067200, data: [{ url: 'https://example.com/edited.png' }] }, null, 2),
+    },
+  ];
+};
+
 const buildVideoDocEndpoints = (docs: DocsVideosResponse): ApiEndpoint[] => {
   const modelOptions = docs.model_options || {};
   const videoModels = (docs.models || []).map(model => ({ model, options: modelOptions[model] || {} }));
@@ -546,6 +622,7 @@ const buildVideoDocEndpoints = (docs: DocsVideosResponse): ApiEndpoint[] => {
 // ===== 主组件 =====
 const ApiDocs: React.FC = () => {
   const [videoDocs, setVideoDocs] = useState<DocsVideosResponse>({ models: [], model_options: {} });
+  const [models, setModels] = useState<DocsModel[]>([]);
   const [loading, setLoading] = useState(true);
   const [activeSection, setActiveSection] = useState('quickstart');
   const [docsCopied, setDocsCopied] = useState(false);
@@ -553,14 +630,25 @@ const ApiDocs: React.FC = () => {
   const contentRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
-    fetchDocsVideos()
-      .catch(() => ({ models: [], model_options: {} }))
-      .then(videos => {
+    // 两个接口各自容错：模型目录挂了不该让整页文档打不开。
+    Promise.all([
+      fetchDocsVideos().catch(() => ({ models: [], model_options: {} } as DocsVideosResponse)),
+      fetchDocsModels().catch(() => [] as DocsModel[]),
+    ]).then(([videos, list]) => {
       setVideoDocs(videos);
+      setModels(Array.isArray(list) ? list : []);
       setLoading(false);
     });
   }, []);
 
+  const chatModel = pickDocsModel(models, ['openai_chat'], 'your-chat-model');
+  const anthropicModel = pickDocsModel(models, ['anthropic_messages'], 'your-anthropic-model');
+  const responsesModel = pickDocsModel(models, ['openai_responses', 'volcengine_responses_v3'], 'your-responses-model');
+  const imageModel = pickDocsModel(models.filter(model => (model.types || [model.type]).includes('image')), ['openai_images'], 'your-image-model');
+  const chatParams = buildChatParams(models);
+  const anthropicEndpoints = buildAnthropicEndpoints(anthropicModel);
+  const responsesEndpoints = buildResponsesEndpoints(responsesModel);
+  const imageEndpoints = buildImageEndpoints(imageModel);
   const videoEndpoints = buildVideoDocEndpoints(videoDocs);
 
   // IntersectionObserver for active nav tracking
@@ -580,7 +668,7 @@ const ApiDocs: React.FC = () => {
     const sections = contentRef.current?.querySelectorAll('section[id], div[id^="ep-"]');
     sections?.forEach(el => observer.observe(el));
     return () => observer.disconnect();
-  }, [loading, videoDocs]);
+  }, [loading, videoDocs, models]);
 
   const scrollTo = (id: string) => {
     const el = document.getElementById(id);
@@ -607,19 +695,26 @@ const ApiDocs: React.FC = () => {
           });
           section += '\n';
         }
-        if (ep.requestExample) section += `**请求示例:**\n\`\`\`json\n${ep.requestExample}\n\`\`\`\n\n`;
+        // 图像编辑的示例是 curl（multipart 没法用 JSON 表达），按内容选代码块语言。
+        if (ep.requestExample) section += `**请求示例:**\n\`\`\`${ep.requestExample.trimStart().startsWith('{') ? 'json' : 'bash'}\n${ep.requestExample}\n\`\`\`\n\n`;
         if (ep.responseExample) section += `**响应示例:**\n\`\`\`json\n${ep.responseExample}\n\`\`\`\n\n`;
       });
       return section;
     };
     let md = `# API 文档\n\nBase URL: ${window.location.origin}\n认证方式: 请求头 Authorization: YOUR_TOKEN\n\n`;
+    if (models.length) {
+      md += `## 可用模型\n\n| 模型 | 类型 | Transport |\n|------|------|------|\n`;
+      models.forEach(model => { md += `| ${modelDisplayName(model)} | ${(model.types || [model.type]).filter(Boolean).join('、') || '-'} | ${(model.transports || []).join('、') || '-'} |\n`; });
+      md += '\n';
+    }
     md += `## Chat 对话接口\n\n### POST /v1/chat/completions\n对话补全 - 兼容 OpenAI 格式，支持多模态（图片/文件）\n\n| 参数 | 类型 | 必填 | 说明 |\n|------|------|------|------|\n`;
-    CHAT_COMPLETIONS_PARAMS.forEach(p => { md += `| ${p.name} | ${p.type} | ${p.required ? '是' : '否'} | ${p.description} |\n`; });
-    md += `\n**多模态请求示例 (图片):**\n\`\`\`json\n${JSON.stringify({ model: "your-chat-model", messages: [{ role: "user", content: [{ type: "text", text: "这张图片里有什么？" }, { type: "image_url", image_url: { url: "https://example.com/image.jpg" } }] }], max_tokens: 1000 }, null, 2)}\n\`\`\`\n\n`;
-    md += `### GET /v1/models\n获取当前令牌可用的模型\n\n`;
-    md += `### GET /v1/models/:code\n获取单个模型详情\n\n| 参数 | 类型 | 必填 | 说明 |\n|------|------|------|------|\n| code | string | 是 | 模型标识（路径参数） |\n\n`;
-	md += appendEndpoints('Anthropic Messages API', '下游使用 Anthropic Messages 协议，模型可通过任一已配置 Transport 执行。', ANTHROPIC_MESSAGES_ENDPOINTS);
-    md += appendEndpoints('Responses API', '下游统一使用 /v1/responses。OpenAI 上游调用 /v1/responses；火山方舟调用原生 /api/v3/responses 并保留 v3 扩展；Anthropic 与 Google 由 Prism 转换。', RESPONSES_ENDPOINTS);
+    chatParams.forEach(p => { md += `| ${p.name} | ${p.type} | ${p.required ? '是' : '否'} | ${p.description} |\n`; });
+    md += `\n**多模态请求示例 (图片):**\n\`\`\`json\n${JSON.stringify({ model: chatModel, messages: [{ role: "user", content: [{ type: "text", text: "这张图片里有什么？" }, { type: "image_url", image_url: { url: "https://example.com/image.jpg" } }] }], max_tokens: 1000 }, null, 2)}\n\`\`\`\n\n`;
+    md += `### GET /v1/models\n获取当前令牌可用的全部模型，返回类型、介绍、协议端点与近期成功率。无有效样本时不返回 availability。\n\n`;
+    md += `### GET /v1/models/:code\n获取单个模型详情，字段与列表项一致。\n\n| 参数 | 类型 | 必填 | 说明 |\n|------|------|------|------|\n| code | string | 是 | 模型标识（路径参数） |\n\n`;
+    md += appendEndpoints('Anthropic Messages API', '下游使用 Anthropic Messages 协议，模型可通过任一已配置 Transport 执行。', anthropicEndpoints);
+    md += appendEndpoints('Responses API', '下游统一使用 /v1/responses。OpenAI 上游调用 /v1/responses；火山方舟调用原生 /api/v3/responses 并保留 v3 扩展；Anthropic 与 Google 由 Prism 转换。', responsesEndpoints);
+    md += appendEndpoints('Images API', '兼容 OpenAI Images。异步上游由 Prism 轮询后同步返图；/v1/images/edits 使用 multipart 上传原图。', imageEndpoints);
     md += appendEndpoints('Files API', '文件按 API Token 隔离，可通过 file_id 用于 Responses 多模态输入。', FILE_ENDPOINTS);
     md += appendEndpoints('Video API', '统一视频生成与队列查询。', videoEndpoints);
     md += `## 错误码\n\n| 错误码 | 说明 |\n|--------|------|\n| 0 | 成功 |\n| 400 | 参数错误 |\n| 401 | 未认证/Token无效 |\n| 402 | 余额不足 |\n| 403 | 无权限 |\n| 404 | 资源不存在 |\n| 429 | 请求过于频繁 |\n| 500 | 服务器内部错误 |\n`;
@@ -630,13 +725,15 @@ const ApiDocs: React.FC = () => {
 
   const navGroups: NavGroup[] = [
     { id: 'quickstart', label: '快速开始', icon: <Book size={14} />, items: [] },
+    ...(models.length ? [{ id: 'models', label: '可用模型', icon: <Boxes size={14} />, items: [] }] : []),
     { id: 'chat', label: 'Chat 对话', icon: <MessageSquare size={14} />, items: [
       { id: 'ep-chat-completions', label: '对话补全' },
       { id: 'ep-models', label: '模型列表' },
       { id: 'ep-model-detail', label: '模型详情' },
     ]},
-	{ id: 'anthropic', label: 'Anthropic Messages', icon: <MessageSquare size={14} />, items: ANTHROPIC_MESSAGES_ENDPOINTS.map(e => ({ id: e.id, label: e.name })) },
-    { id: 'responses', label: 'Responses', icon: <Braces size={14} />, items: RESPONSES_ENDPOINTS.map(e => ({ id: e.id, label: e.name })) },
+    { id: 'anthropic', label: 'Anthropic Messages', icon: <MessageSquare size={14} />, items: anthropicEndpoints.map(e => ({ id: e.id, label: e.name })) },
+    { id: 'responses', label: 'Responses', icon: <Braces size={14} />, items: responsesEndpoints.map(e => ({ id: e.id, label: e.name })) },
+    { id: 'images', label: 'Images', icon: <ImageIcon size={14} />, items: imageEndpoints.map(e => ({ id: e.id, label: e.name })) },
     { id: 'files', label: 'Files', icon: <FileUp size={14} />, items: FILE_ENDPOINTS.map(e => ({ id: e.id, label: e.name })) },
     { id: 'video', label: 'Video', icon: <Video size={14} />, items: videoEndpoints.map(e => ({ id: e.id, label: e.name })) },
     { id: 'errors', label: '错误码', icon: <AlertTriangle size={14} />, items: [] },
@@ -703,6 +800,34 @@ const ApiDocs: React.FC = () => {
           </div>
         </section>
 
+        {/* 可用模型 —— 来自 GET /api/docs/models，即当前生效目录里真的能执行的那些 */}
+        {models.length > 0 && (
+          <section id="models">
+            <h2 className="text-lg font-bold text-[var(--text-primary)] mb-3 flex items-center gap-2"><Boxes size={18} /> 可用模型</h2>
+            <p className="text-sm text-[var(--text-secondary)] mb-4">下表来自当前生效的模型套餐版本，共 {models.length} 个。下文示例里的模型名也取自这里。</p>
+            <div className="border border-[var(--border-soft)] rounded-xl overflow-hidden bg-[var(--surface-card)] overflow-x-auto">
+              <table className="w-full text-sm min-w-[560px]">
+                <thead>
+                  <tr className="bg-[var(--surface)]">
+                    <th className="px-4 py-3 text-left font-medium text-[var(--text-secondary)]">模型</th>
+                    <th className="px-4 py-3 text-left font-medium text-[var(--text-secondary)]">类型</th>
+                    <th className="px-4 py-3 text-left font-medium text-[var(--text-secondary)]">可用 Transport</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {models.map(model => (
+                    <tr key={model.id} className="border-t border-[var(--border-soft)]">
+                      <td className="px-4 py-3"><code className="text-xs text-[var(--primary)]">{modelDisplayName(model)}</code>{model.name && <span className="ml-2 text-xs text-[var(--text-secondary)]">{model.name}</span>}</td>
+                      <td className="px-4 py-3 text-xs text-[var(--text-secondary)]">{(model.types || [model.type]).filter(Boolean).join('、') || '-'}</td>
+                      <td className="px-4 py-3 text-xs text-[var(--text-secondary)]">{(model.transports || []).join('、') || '-'}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </section>
+        )}
+
         {/* Chat 对话接口 */}
         <section id="chat">
           <h2 className="text-lg font-bold text-[var(--text-primary)] mb-3 flex items-center gap-2"><MessageSquare size={18} /> Chat 对话接口</h2>
@@ -714,9 +839,9 @@ const ApiDocs: React.FC = () => {
               path: '/v1/chat/completions',
               name: '对话补全',
               description: '发送消息获取模型回复，支持流式/非流式、多模态、Tool Use，并自动保存成功、失败和中断的对话轮次',
-              params: CHAT_COMPLETIONS_PARAMS,
+              params: chatParams,
               requestExample: JSON.stringify({
-                model: "your-chat-model",
+                model: chatModel,
                 messages: [
                   { role: "system", content: "You are a helpful assistant." },
                   { role: "user", content: [
@@ -732,7 +857,7 @@ const ApiDocs: React.FC = () => {
                 id: "chatcmpl-abc123",
                 object: "chat.completion",
                 created: 1704067200,
-                model: "your-chat-model",
+                model: chatModel,
                 choices: [{ index: 0, message: { role: "assistant", content: "Hello! How can I help you?" }, finish_reason: "stop" }],
                 usage: { prompt_tokens: 20, completion_tokens: 10, total_tokens: 30 }
               }, null, 2),
@@ -743,11 +868,29 @@ const ApiDocs: React.FC = () => {
               method: 'GET',
               path: '/v1/models',
               name: '模型列表',
-              description: '获取当前令牌可用的模型',
+              description: '获取当前令牌可用的全部模型，含类型、介绍、协议端点与近期成功率',
               params: [],
               responseExample: JSON.stringify({
                 object: "list",
-                data: [{ id: "your-chat-model", object: "model", created: 1704067200, owned_by: "provider" }]
+                data: [{
+                  id: chatModel,
+                  object: "model",
+                  owned_by: "prism",
+                  name: chatModel,
+                  model_code: chatModel,
+                  description: "模型介绍",
+                  type: "chat",
+                  types: ["chat"],
+                  native_transports: ["openai"],
+                  supported_operations: ["chat.completions"],
+                  supported_endpoints: ["/v1/chat/completions"],
+                  availability: {
+                    success_rate: "99.5",
+                    source: "upstream",
+                    window_minutes: 120,
+                    observed_at: "2026-09-16T07:00:00Z"
+                  }
+                }]
               }, null, 2),
             }} onTryIt={setTryItApi} />
 
@@ -756,10 +899,16 @@ const ApiDocs: React.FC = () => {
               method: 'GET',
               path: '/v1/models/:code',
               name: '模型详情',
-              description: '获取单个模型的详细信息',
+              description: '获取单个模型详情，字段与列表项一致',
               params: [{ name: 'code', type: 'string', required: true, description: '模型标识（路径参数）' }],
               responseExample: JSON.stringify({
-                id: "your-chat-model", object: "model", created: 1704067200, owned_by: "provider", max_tokens: 4096
+                id: chatModel,
+                object: "model",
+                owned_by: "prism",
+                description: "模型介绍",
+                type: "chat",
+                native_transports: ["openai"],
+                supported_endpoints: ["/v1/chat/completions"]
               }, null, 2),
             }} onTryIt={setTryItApi} />
           </div>
@@ -769,7 +918,7 @@ const ApiDocs: React.FC = () => {
 		  <h2 className="text-lg font-bold text-[var(--text-primary)] mb-3 flex items-center gap-2"><MessageSquare size={18} /> Anthropic Messages API</h2>
 		  <p className="text-sm text-[var(--text-secondary)] mb-4">兼容 Anthropic Messages 请求、响应与流式事件格式。</p>
 		  <div className="space-y-3">
-			{ANTHROPIC_MESSAGES_ENDPOINTS.map(ep => <EndpointCard key={ep.id} api={ep} onTryIt={setTryItApi} />)}
+			{anthropicEndpoints.map(ep => <EndpointCard key={ep.id} api={ep} onTryIt={setTryItApi} />)}
 		  </div>
 		</section>
 
@@ -779,7 +928,18 @@ const ApiDocs: React.FC = () => {
           <p className="text-sm text-[var(--text-secondary)] mb-2">下游统一调用 OpenAI 兼容的 <code className="text-[var(--primary)]">/v1/responses</code>。</p>
           <p className="text-xs text-[var(--text-secondary)] mb-4">OpenAI 上游使用 <code>/v1/responses</code>；火山方舟使用原生 <code>/api/v3/responses</code>，保留 v3 扩展字段、工具事件和工具用量；Anthropic 与 Google 由 Prism 转换。后台执行、存储、24 小时幂等缓存和公开响应 ID 由 Prism 管理。</p>
           <div className="space-y-3">
-            {RESPONSES_ENDPOINTS.map(ep => (
+            {responsesEndpoints.map(ep => (
+              <EndpointCard key={ep.id} api={ep} onTryIt={setTryItApi} />
+            ))}
+          </div>
+        </section>
+
+        {/* Images API */}
+        <section id="images">
+          <h2 className="text-lg font-bold text-[var(--text-primary)] mb-3 flex items-center gap-2"><ImageIcon size={18} /> Images API</h2>
+          <p className="text-sm text-[var(--text-secondary)] mb-4">兼容 OpenAI Images API。上游是异步任务制的渠道由 Prism 轮询后同步返图，调用方不需要自己查任务；<code className="text-[var(--primary)]">/v1/images/generations</code> 带上 <code>image_urls</code> 即按图生图执行与计费。</p>
+          <div className="space-y-3">
+            {imageEndpoints.map(ep => (
               <EndpointCard key={ep.id} api={ep} onTryIt={setTryItApi} />
             ))}
           </div>

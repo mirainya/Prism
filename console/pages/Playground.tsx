@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { Play, Bot, Loader2, Video } from 'lucide-react';
+import { AlertCircle, Bot, Loader2, Play, RefreshCw, Video } from 'lucide-react';
 import { fetchTokens } from '../services/api';
 import { ApiToken } from '../types';
 import { Select } from '../components/ui';
@@ -13,9 +13,12 @@ const Playground: React.FC = () => {
   const [tokens, setTokens] = useState<ApiToken[]>([]);
   const [selectedTokenId, setSelectedTokenId] = useState('');
   const [isLoadingTokens, setIsLoadingTokens] = useState(true);
+  const [tokenError, setTokenError] = useState('');
+  const [tokenReloadKey, setTokenReloadKey] = useState(0);
 
   useEffect(() => {
     setIsLoadingTokens(true);
+    setTokenError('');
     fetchTokens()
       .then(list => {
         const active = list.filter((t: ApiToken) => t.status === 'active');
@@ -24,9 +27,13 @@ const Playground: React.FC = () => {
           setSelectedTokenId(active[0].id);
         }
       })
-      .catch(() => setTokens([]))
+      .catch(reason => {
+        setTokens([]);
+        setSelectedTokenId('');
+        setTokenError(reason instanceof Error ? reason.message : '令牌读取失败');
+      })
       .finally(() => setIsLoadingTokens(false));
-  }, []);
+  }, [tokenReloadKey]);
 
   const tabs = [
     { key: 'chat' as TabType, label: 'Chat 调试', icon: <Bot size={16} /> },
@@ -52,6 +59,12 @@ const Playground: React.FC = () => {
           <label className="text-sm text-[var(--text-secondary)] flex-shrink-0">令牌：</label>
           {isLoadingTokens ? (
             <div className="flex items-center gap-2 text-sm text-[var(--text-secondary)]"><Loader2 size={14} className="animate-spin" /> 加载中...</div>
+          ) : tokenError ? (
+            <div role="alert" className="flex min-w-0 items-center gap-2 text-sm text-red-600">
+              <AlertCircle size={14} className="shrink-0" />
+              <span className="max-w-48 truncate" title={tokenError}>{tokenError}</span>
+              <button type="button" onClick={() => setTokenReloadKey(key => key + 1)} title="重新读取令牌" aria-label="重新读取令牌" className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg hover:bg-red-50"><RefreshCw size={14} /></button>
+            </div>
           ) : tokens.length === 0 ? (
             <span className="text-sm text-red-500">暂无可用令牌，请先创建</span>
           ) : (

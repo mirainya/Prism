@@ -12,6 +12,15 @@ export const PLAYGROUND_PROTOCOLS: { value: PlaygroundProtocol; label: string; e
   { value: 'anthropic', label: 'Messages', endpoint: '/v1/messages' },
 ];
 
+export const getSupportedPlaygroundProtocols = (
+  supportedEndpoints: readonly string[] | null | undefined,
+): PlaygroundProtocol[] => {
+  const endpoints = new Set(supportedEndpoints || []);
+  return PLAYGROUND_PROTOCOLS
+    .filter(item => endpoints.has(item.endpoint))
+    .map(item => item.value);
+};
+
 interface BuildPayloadOptions {
   protocol: PlaygroundProtocol;
   model: string;

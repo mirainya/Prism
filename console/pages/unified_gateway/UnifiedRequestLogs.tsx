@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import { ChevronDown, ChevronRight, LoaderCircle, RefreshCw } from 'lucide-react';
-import { Pagination } from '../../components/ui';
+import { Badge, Pagination } from '../../components/ui';
 import {
   fetchUnifiedRequestLogPayloads,
   fetchUnifiedRequestLogs,
@@ -10,9 +10,14 @@ import {
 } from '../../services/unifiedGatewayApi';
 import { ErrorNotice, errorMessage } from './Feedback';
 import { formatDate, statusLabel } from './presentation';
-import { StatusBadge } from './UnifiedTable';
 
 const actions: Record<string, string> = { submit: '提交', query: '查询', recover: '恢复', cancel: '取消', result_fetch: '下载结果', named_action: '任务操作' };
+
+const StatusBadge: React.FC<{ status: string }> = ({ status }) => (
+  <Badge variant={['active', 'completed', 'succeeded', 'response_recorded', 'accepted', 'confirmed'].includes(status) ? 'success' : ['failed', 'rejected'].includes(status) ? 'error' : ['preparing', 'draining', 'submission_unknown', 'manual_review', 'unknown', 'terminated_unknown', 'indeterminate', 'scheduled', 'submitted', 'pending'].includes(status) ? 'warning' : 'default'}>
+    {statusLabel(status)}
+  </Badge>
+);
 
 export const UnifiedRequestLogs: React.FC<{ callId: number }> = ({ callId }) => {
   const [query, setQuery] = useState({ page: 1, pageSize: 20 });

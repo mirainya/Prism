@@ -3,6 +3,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import {
     playgroundGetConversationTurns,
     playgroundEstimateVideo,
+    playgroundHydrateCompletedVideoTasks,
     playgroundListConversations,
     playgroundListModels,
     playgroundListVideoModels,
@@ -98,6 +99,75 @@ describe('playgroundApi', () => {
       },
     });
     expect(requestMock).toHaveBeenCalledWith('/playground/token-1/videos/models');
+  });
+
+  it('loads result URLs from completed video task details', async () => {
+    requestMock.mockResolvedValueOnce({
+      id: 'video-1',
+      model: 'seedance-2.0',
+      status: 'completed',
+      progress: 100,
+      prompt: 'ocean',
+      result: { video_url: 'https://media.example/video.mp4' },
+      created_at: '2026-09-17T00:00:00Z',
+    });
+
+    const tasks = await playgroundHydrateCompletedVideoTasks('token-1', [{
+      id: 'video-1',
+      model: 'seedance-2.0',
+      status: 'completed',
+      progress: 100,
+      prompt: '',
+      created_at: '2026-09-17T00:00:00Z',
+    }]);
+
+    expect(requestMock).toHaveBeenCalledWith('/playground/token-1/videos/generations/video-1');
+    expect(tasks[0]).toMatchObject({
+      prompt: 'ocean',
+      result: { video_url: 'https://media.example/video.mp4' },
+    });
+  });
+
+  it('marks completed video details unavailable when the detail request fails', async () => {
+    requestMock.mockRejectedValueOnce(new Error('temporary failure'));
+    const summary = {
+      id: 'video-1',
+      model: 'seedance-2.0',
+      status: 'completed',
+      progress: 100,
+      prompt: '',
+      created_at: '2026-09-17T00:00:00Z',
+    };
+
+    await expect(playgroundHydrateCompletedVideoTasks('token-1', [summary])).resolves.toEqual([{
+      ...summary,
+      result: { delivery_status: 'detail_error' },
+    }]);
+  });
+
+  it('retries completed video details until a video URL is available', async () => {
+    requestMock.mockResolvedValueOnce({
+      id: 'video-1',
+      model: 'seedance-2.0',
+      status: 'completed',
+      progress: 100,
+      prompt: 'ocean',
+      result: { delivery_status: 'unavailable' },
+      created_at: '2026-09-17T00:00:00Z',
+    });
+
+    const tasks = await playgroundHydrateCompletedVideoTasks('token-1', [{
+      id: 'video-1',
+      model: 'seedance-2.0',
+      status: 'completed',
+      progress: 100,
+      prompt: 'ocean',
+      result: { delivery_status: 'unavailable' },
+      created_at: '2026-09-17T00:00:00Z',
+    }]);
+
+    expect(requestMock).toHaveBeenCalledWith('/playground/token-1/videos/generations/video-1');
+    expect(tasks[0].result).toEqual({ delivery_status: 'unavailable' });
   });
 
   it('builds conversation queries and maps API fields', async () => {
