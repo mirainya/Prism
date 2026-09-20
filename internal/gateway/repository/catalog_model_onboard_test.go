@@ -50,6 +50,30 @@ func validCatalogModelOnboardInput() CatalogModelOnboardInput {
 	}
 }
 
+func newCatalogModelOnboardTestStore(t *testing.T) (*Store, sqlmock.Sqlmock) {
+	t.Helper()
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	store, err := New(db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return store, mock
+}
+
+func ensureCatalogModelForTest(store *Store, releaseID, modelID, modelNameID uint64, in CatalogSKUInput) (uint64, error) {
+	var catalogModelID uint64
+	err := store.WithTx(context.Background(), func(tx *sql.Tx) error {
+		var err error
+		catalogModelID, err = ensureCatalogModel(context.Background(), tx, releaseID, modelID, modelNameID, in)
+		return err
+	})
+	return catalogModelID, err
+}
+
 func TestCatalogModelOnboardInputRejectsCallerOwnedIntermediateIdentity(t *testing.T) {
 	base := validCatalogModelOnboardInput()
 	if err := base.Normalize(); err != nil {
@@ -82,23 +106,117 @@ func TestCatalogModelOnboardInputRejectsCallerOwnedIntermediateIdentity(t *testi
 	}
 }
 
-func TestModelOnboardUsesAdapterDownstreamPaths(t *testing.T) {
+func TestCatalogModelOnboardInputRejectsOmittedCostRate(t *testing.T) {
+	in := validCatalogModelOnboardInput()
+	in.CostRate = CatalogModelOnboardRate{}
+	if err := in.Normalize(); err != nil {
+		t.Fatal(err)
+	}
+	if err := in.Validate(); !errors.Is(err, ErrInvalidInput) {
+		t.Fatalf("err=%v, want ErrInvalidInput", err)
+	}
+}
+
+func TestModelOnboardDeclaresOnlySelectedDownstreamPath(t *testing.T) {
 	previous := downstreamPathSource
 	SetDownstreamPathSource(onboardDownstreamPathSource{
-		"openai_chat": {"/v1/chat/completions", "/v1/responses", "/v1/messages"},
+		"openai_images": {"/v1/images/generations", "/v1/images/edits"},
 	})
 	t.Cleanup(func() { SetDownstreamPathSource(previous) })
 
-	paths, err := modelOnboardDownstreamPaths("openai_chat", 1, "/v1/chat/completions")
+	for _, operationPath := range []string{"/v1/images/generations", "/v1/images/edits"} {
+		paths, err := modelOnboardDownstreamPaths("openai_images", 1, operationPath)
+		if err != nil {
+			t.Fatalf("path %q: %v", operationPath, err)
+		}
+		want := []string{operationPath}
+		if strings.Join(paths, "\x00") != strings.Join(want, "\x00") {
+			t.Fatalf("path %q declared paths=%v, want %v", operationPath, paths, want)
+		}
+	}
+	if _, err := modelOnboardDownstreamPaths("openai_images", 1, "/v1/videos/generations"); !errors.Is(err, ErrInvalidInput) {
+		t.Fatalf("mismatched operation path error=%v", err)
+	}
+}
+
+func TestEnsureCatalogModelPromotesEmptyHiddenPlaceholder(t *testing.T) {
+	store, mock := newCatalogModelOnboardTestStore(t)
+	in := validCatalogModelOnboardInput().SKU
+
+	mock.ExpectBegin()
+	mock.ExpectQuery(regexp.QuoteMeta(`SELECT id,display_name,description,capability_tags,visibility FROM gw_catalog_models WHERE release_id=? AND model_id=?`)).
+		WithArgs(7, 31).
+		WillReturnRows(sqlmock.NewRows([]string{"id", "display_name", "description", "capability_tags", "visibility"}).
+			AddRow(41, "Legacy placeholder", "", []byte(`["legacy"]`), "hidden"))
+	mock.ExpectQuery(regexp.QuoteMeta(`SELECT COUNT(DISTINCT mo.id),COUNT(DISTINCT s.id)
+FROM gw_model_operations mo
+LEFT JOIN gw_skus s ON s.release_id=mo.release_id AND s.model_operation_id=mo.id
+WHERE mo.release_id=? AND mo.catalog_model_id=?`)).
+		WithArgs(7, 41).
+		WillReturnRows(sqlmock.NewRows([]string{"operation_count", "sku_count"}).AddRow(0, 0))
+	mock.ExpectExec(regexp.QuoteMeta(`UPDATE gw_catalog_models SET display_name=?,description=?,capability_tags=?,visibility=? WHERE release_id=? AND id=? AND visibility='hidden'`)).
+		WithArgs("New model", "A model", []byte(`["llm"]`), "visible", 7, 41).
+		WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectQuery(regexp.QuoteMeta(`SELECT catalog_model_id FROM gw_catalog_model_names WHERE release_id=? AND model_name_id=?`)).
+		WithArgs(7, 32).
+		WillReturnRows(sqlmock.NewRows([]string{"catalog_model_id"}).AddRow(41))
+	mock.ExpectCommit()
+
+	catalogModelID, err := ensureCatalogModelForTest(store, 7, 31, 32, in)
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := []string{"/v1/chat/completions", "/v1/responses", "/v1/messages"}
-	if strings.Join(paths, "\x00") != strings.Join(want, "\x00") {
-		t.Fatalf("paths=%v, want %v", paths, want)
+	if catalogModelID != 41 {
+		t.Fatalf("catalog model id=%d, want 41", catalogModelID)
 	}
-	if _, err := modelOnboardDownstreamPaths("openai_chat", 1, "/v1/videos/generations"); !errors.Is(err, ErrInvalidInput) {
-		t.Fatalf("mismatched operation path error=%v", err)
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestEnsureCatalogModelRejectsPopulatedHiddenPlaceholder(t *testing.T) {
+	store, mock := newCatalogModelOnboardTestStore(t)
+	in := validCatalogModelOnboardInput().SKU
+
+	mock.ExpectBegin()
+	mock.ExpectQuery(regexp.QuoteMeta(`SELECT id,display_name,description,capability_tags,visibility FROM gw_catalog_models WHERE release_id=? AND model_id=?`)).
+		WithArgs(7, 31).
+		WillReturnRows(sqlmock.NewRows([]string{"id", "display_name", "description", "capability_tags", "visibility"}).
+			AddRow(41, "Legacy placeholder", "", []byte(`["legacy"]`), "hidden"))
+	mock.ExpectQuery(regexp.QuoteMeta(`SELECT COUNT(DISTINCT mo.id),COUNT(DISTINCT s.id)
+FROM gw_model_operations mo
+LEFT JOIN gw_skus s ON s.release_id=mo.release_id AND s.model_operation_id=mo.id
+WHERE mo.release_id=? AND mo.catalog_model_id=?`)).
+		WithArgs(7, 41).
+		WillReturnRows(sqlmock.NewRows([]string{"operation_count", "sku_count"}).AddRow(1, 1))
+	mock.ExpectRollback()
+
+	_, err := ensureCatalogModelForTest(store, 7, 31, 32, in)
+	if !errors.Is(err, ErrConflict) {
+		t.Fatalf("err=%v, want ErrConflict", err)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestEnsureCatalogModelRejectsVisibleMetadataMismatch(t *testing.T) {
+	store, mock := newCatalogModelOnboardTestStore(t)
+	in := validCatalogModelOnboardInput().SKU
+
+	mock.ExpectBegin()
+	mock.ExpectQuery(regexp.QuoteMeta(`SELECT id,display_name,description,capability_tags,visibility FROM gw_catalog_models WHERE release_id=? AND model_id=?`)).
+		WithArgs(7, 31).
+		WillReturnRows(sqlmock.NewRows([]string{"id", "display_name", "description", "capability_tags", "visibility"}).
+			AddRow(41, "Different model", "A model", []byte(`["llm"]`), "visible"))
+	mock.ExpectRollback()
+
+	_, err := ensureCatalogModelForTest(store, 7, 31, 32, in)
+	if !errors.Is(err, ErrConflict) {
+		t.Fatalf("err=%v, want ErrConflict", err)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatal(err)
 	}
 }
 

@@ -1,12 +1,13 @@
 import React, { useState, useEffect } from 'react';
-import { AlertCircle, Bot, Loader2, Play, RefreshCw, Video } from 'lucide-react';
+import { AlertCircle, Bot, Image as ImageIcon, Loader2, Play, RefreshCw, Video } from 'lucide-react';
 import { fetchTokens } from '../services/api';
 import { ApiToken } from '../types';
 import { Select } from '../components/ui';
 import ChatTab from './playground/ChatTab';
+import ImageTab from './playground/ImageTab';
 import VideoTab from './playground/VideoTab';
 
-type TabType = 'chat' | 'video';
+type TabType = 'chat' | 'image' | 'video';
 
 const Playground: React.FC = () => {
   const [activeTab, setActiveTab] = useState<TabType>('chat');
@@ -37,6 +38,7 @@ const Playground: React.FC = () => {
 
   const tabs = [
     { key: 'chat' as TabType, label: 'Chat 调试', icon: <Bot size={16} /> },
+    { key: 'image' as TabType, label: '图片生成', icon: <ImageIcon size={16} /> },
     { key: 'video' as TabType, label: '视频生成', icon: <Video size={16} /> },
   ];
 
@@ -86,6 +88,8 @@ const Playground: React.FC = () => {
           </div>
         ) : activeTab === 'chat' ? (
           <ChatTab tokenId={selectedTokenId} />
+        ) : activeTab === 'image' ? (
+          <ImageTab tokenId={selectedTokenId} />
         ) : (
           <VideoTab tokenId={selectedTokenId} />
         )}

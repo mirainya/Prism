@@ -16,18 +16,25 @@ func TestRegisterRoutesUsesUnifiedImagePathsAndExcludesLegacyCapabilityTasks(t *
 		"/v1/capabilities/:capability": true,
 		"/v1/tasks/:task_no":           true,
 	}
-	images := map[string]bool{"/v1/images/generations": false, "/v1/images/edits": false}
+	images := map[string]bool{
+		"POST /v1/images/generations":       false,
+		"POST /v1/images/edits":             false,
+		"POST /v1/images/generations/async": false,
+		"POST /v1/images/edits/async":       false,
+		"GET /v1/images/tasks/:id":          false,
+	}
 	for _, route := range router.Routes() {
 		if legacy[route.Path] {
 			t.Fatalf("legacy route is still registered: %s %s", route.Method, route.Path)
 		}
-		if _, ok := images[route.Path]; ok && route.Method == "POST" {
-			images[route.Path] = true
+		key := route.Method + " " + route.Path
+		if _, ok := images[key]; ok {
+			images[key] = true
 		}
 	}
-	for path, registered := range images {
+	for route, registered := range images {
 		if !registered {
-			t.Fatalf("unified image route is not registered: POST %s", path)
+			t.Fatalf("unified image route is not registered: %s", route)
 		}
 	}
 }

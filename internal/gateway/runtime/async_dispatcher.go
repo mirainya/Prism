@@ -15,6 +15,7 @@ import (
 	"github.com/mirainya/Prism/internal/gateway/billing"
 	"github.com/mirainya/Prism/internal/gateway/delivery"
 	"github.com/mirainya/Prism/internal/gateway/execution"
+	"github.com/mirainya/Prism/internal/gateway/payloadview"
 	"github.com/mirainya/Prism/internal/gateway/repository"
 	"github.com/mirainya/Prism/internal/gateway/security"
 	"github.com/mirainya/Prism/pkg/config"
@@ -31,19 +32,46 @@ type AsyncRequest struct {
 	CredentialPrefix string
 }
 
-type AsyncObservation struct {
-	TaskID  string
-	State   execution.AsyncState
-	Result  []byte
-	Facts   billing.Facts
-	Sources []delivery.RemoteResult
+type AsyncAsset struct {
+	Data        []byte
+	ContentType string
 }
 
-// Codecs perform no network I/O. The dispatcher is the sole HTTP sender, so
-// every exchange is authorized and logged before it can reach the provider.
+type AsyncAssetLoader interface {
+	LoadAsyncAsset(context.Context, string) (AsyncAsset, error)
+}
+
+type AsyncAssetLoaderFunc func(context.Context, string) (AsyncAsset, error)
+
+func (load AsyncAssetLoaderFunc) LoadAsyncAsset(ctx context.Context, location string) (AsyncAsset, error) {
+	return load(ctx, location)
+}
+
+var ErrAsyncAssetUnavailable = errors.New("gateway runtime: async input asset unavailable")
+
+type AsyncObservation struct {
+	TaskID               string
+	State                execution.AsyncState
+	Result               []byte
+	Facts                billing.Facts
+	Sources              []delivery.RemoteResult
+	ProviderErrorCode    string
+	ProviderErrorMessage string
+	ProviderHTTPStatus   *uint16
+}
+
+// Codecs never send provider requests. The dispatcher is the sole HTTP sender,
+// so every exchange is authorized and logged before it reaches the provider.
 type AsyncCodec interface {
 	Prepare(context.Context, string, repository.AsyncDispatch, []byte, string) (AsyncRequest, error)
 	Decode(string, []byte, []byte) (AsyncObservation, error)
+}
+
+// AssetAwareAsyncCodec materializes gateway-managed inputs immediately before
+// dispatch. Canonical task payloads continue to contain storage locations, not
+// image bytes.
+type AssetAwareAsyncCodec interface {
+	PrepareWithAssets(context.Context, string, repository.AsyncDispatch, []byte, string, AsyncAssetLoader) (AsyncRequest, error)
 }
 
 // CallbackCodec optionally decodes a provider callback. A codec may reuse its
@@ -56,6 +84,12 @@ type CallbackCodec interface {
 // response mapping is stored in the immutable catalog product.
 type DispatchAwareAsyncCodec interface {
 	DecodeWithDispatch(string, repository.AsyncDispatch, []byte, []byte) (AsyncObservation, error)
+}
+
+// DispatchFailureAwareAsyncCodec extracts mapped failure evidence from a
+// non-2xx response without interpreting it as a normal task-state payload.
+type DispatchFailureAwareAsyncCodec interface {
+	DecodeFailureWithDispatch(repository.AsyncDispatch, []byte, uint16) (AsyncObservation, error)
 }
 
 type DispatchAwareCallbackCodec interface {
@@ -91,13 +125,19 @@ func validateAsyncKeys(keys AsyncKeys) error {
 }
 
 type AsyncDispatcher struct {
-	service *Service
-	client  *http.Client
-	keys    AsyncKeys
-	codecs  map[string]AsyncCodec
+	service     *Service
+	client      *http.Client
+	keys        AsyncKeys
+	codecs      map[string]AsyncCodec
+	assetLoader AsyncAssetLoader
 }
 
-const maxCapturedExchangeBody = 4 << 20
+const (
+	maxCapturedExchangeBody       = 4 << 20
+	maxAsyncProviderRequestBody   = 128 << 20
+	asyncExchangeCompletionMargin = 30 * time.Second
+	asyncResultCommitMargin       = 5 * time.Second
+)
 
 // HandleCallback implements CallbackOutboxHandler. Authentication and payload
 // persistence happened at ingress; this method only decrypts, decodes and
@@ -165,7 +205,24 @@ func (d *AsyncDispatcher) HandleCallback(ctx context.Context, item repository.Ou
 	if err := d.service.Store.DB().QueryRowContext(ctx, `SELECT k.id,k.current_version FROM crypto_keyring_state k JOIN crypto_key_versions v ON v.keyring_id=k.id AND v.key_version=k.current_version AND v.status='current' WHERE k.purpose='gateway-payload'`).Scan(&keys.KeyringID, &keys.KEKVersion); err != nil {
 		return err
 	}
-	return d.service.ApplyCallbackObservation(ctx, item, CallbackObservation{AsyncExecutionID: receipt.AsyncExecutionID, ReceiptID: receipt.ID, State: observation.State, TaskID: observation.TaskID, Result: observation.Result, Facts: observation.Facts, Sources: observation.Sources, SourceURLPolicy: fixed.SourceURLPolicy, PayloadHMAC: receipt.PayloadHMAC}, fixed, keys)
+	return d.service.ApplyCallbackObservation(ctx, item, callbackObservationFromAsync(receipt, fixed, observation), fixed, keys)
+}
+
+func callbackObservationFromAsync(receipt repository.CallbackReceiptRecord, fixed repository.AsyncDispatch, observation AsyncObservation) CallbackObservation {
+	return CallbackObservation{
+		AsyncExecutionID:     receipt.AsyncExecutionID,
+		ReceiptID:            receipt.ID,
+		State:                observation.State,
+		TaskID:               observation.TaskID,
+		Result:               observation.Result,
+		Facts:                observation.Facts,
+		Sources:              observation.Sources,
+		SourceURLPolicy:      fixed.SourceURLPolicy,
+		PayloadHMAC:          receipt.PayloadHMAC,
+		ProviderErrorCode:    observation.ProviderErrorCode,
+		ProviderErrorMessage: observation.ProviderErrorMessage,
+		ProviderHTTPStatus:   observation.ProviderHTTPStatus,
+	}
 }
 
 func NewAsyncDispatcher(service *Service, client *http.Client, keys AsyncKeys, codecs map[string]AsyncCodec) (*AsyncDispatcher, error) {
@@ -195,7 +252,7 @@ func NewAsyncDispatcher(service *Service, client *http.Client, keys AsyncKeys, c
 	return &AsyncDispatcher{service: service, client: &configured, keys: AsyncKeys{
 		CredentialKEK: bytes.Clone(keys.CredentialKEK), CredentialHMAC: bytes.Clone(keys.CredentialHMAC),
 		PayloadKEK: bytes.Clone(keys.PayloadKEK), PayloadHMAC: bytes.Clone(keys.PayloadHMAC),
-	}, codecs: registered}, nil
+	}, codecs: registered, assetLoader: storedAsyncAssetLoader{}}, nil
 }
 
 func (d *AsyncDispatcher) Recover(ctx context.Context, item repository.OutboxItem) error {
@@ -242,8 +299,16 @@ func (d *AsyncDispatcher) Dispatch(ctx context.Context, item repository.OutboxIt
 		}
 		defer clear(taskID)
 	}
-	prepared, err := codec.Prepare(ctx, item.Action, fixed, body, string(taskID))
+	var prepared AsyncRequest
+	if aware, ok := codec.(AssetAwareAsyncCodec); ok {
+		prepared, err = aware.PrepareWithAssets(ctx, item.Action, fixed, body, string(taskID), d.assetLoader)
+	} else {
+		prepared, err = codec.Prepare(ctx, item.Action, fixed, body, string(taskID))
+	}
 	if err != nil {
+		if errors.Is(err, ErrAsyncAssetUnavailable) {
+			return err
+		}
 		return &PermanentDispatchError{Code: "invalid_async_request"}
 	}
 	if item.Action == "submit" && fixed.CallbackBindingTokenBlobID != 0 {
@@ -266,7 +331,7 @@ func (d *AsyncDispatcher) Dispatch(ctx context.Context, item repository.OutboxIt
 		}
 	}
 	defer clear(prepared.Body)
-	if len(prepared.Body) > maxCapturedExchangeBody {
+	if len(prepared.Body) > maxAsyncProviderRequestBody {
 		return &PermanentDispatchError{Code: "provider_request_body_too_large"}
 	}
 	secret, err := d.openCredential(ctx, fixed.CredentialID, fixed.CredentialSecret, fixed.CredentialBlobID)
@@ -279,7 +344,7 @@ func (d *AsyncDispatcher) Dispatch(ctx context.Context, item repository.OutboxIt
 		return err
 	}
 	// Leave time to durably record the HTTP outcome before the lease expires.
-	timeout := min(time.Duration(min(fixed.TimeoutMS, uint64(300000)))*time.Millisecond, time.Until(item.LeaseExpiresAt)-5*time.Second)
+	timeout := asyncExchangeTimeout(time.Duration(min(fixed.TimeoutMS, uint64(300000)))*time.Millisecond, item.LeaseExpiresAt, time.Now())
 	if timeout <= 0 {
 		return context.DeadlineExceeded
 	}
@@ -288,7 +353,7 @@ func (d *AsyncDispatcher) Dispatch(ctx context.Context, item repository.OutboxIt
 	request = request.WithContext(workCtx)
 	mapping := security.DomainDigest(d.keys.PayloadHMAC, "async-request-mapping-v1", []byte(fixed.Protocol), []byte(prepared.Method), []byte(request.URL.String()), []byte(prepared.CredentialHeader), []byte(prepared.CredentialPrefix), prepared.Body)
 	var requestPayload *repository.BlobInput
-	if len(prepared.Body) != 0 {
+	if len(prepared.Body) != 0 && len(prepared.Body) <= maxCapturedExchangeBody {
 		blob, blobErr := d.payloadBlob(ctx, prepared.Body)
 		if blobErr != nil {
 			return blobErr
@@ -303,8 +368,10 @@ func (d *AsyncDispatcher) Dispatch(ctx context.Context, item repository.OutboxIt
 	}
 	responseBody, response := d.exchange(request)
 	defer clear(responseBody)
-	// Shutdown cancellation must not discard a received provider response.
-	markCtx, markCancel := context.WithTimeout(context.WithoutCancel(ctx), 4*time.Second)
+	// Shutdown cancellation must not discard a received provider response. A
+	// terminal result can include a managed copy, so keep the context alive for
+	// the remaining lease instead of imposing a short database-only timeout.
+	markCtx, markCancel := asyncResultCommitContext(ctx, item.LeaseExpiresAt)
 	defer markCancel()
 	if len(responseBody) != 0 {
 		blob, blobErr := d.payloadBlob(markCtx, responseBody)
@@ -314,6 +381,13 @@ func (d *AsyncDispatcher) Dispatch(ctx context.Context, item repository.OutboxIt
 		response.ResponsePayload = &blob
 	}
 	if response.ErrorCode != "" {
+		if response.ErrorCode == "provider_http_error" && response.HTTPStatus != nil {
+			if observation, ok := decodeMappedDispatchFailure(codec, fixed, responseBody, *response.HTTPStatus); ok {
+				if err := d.attachAsyncFailureDiagnostic(markCtx, &response, observation); err != nil {
+					return err
+				}
+			}
+		}
 		return d.exchangeFailure(markCtx, item, requestID, response)
 	}
 	var observation AsyncObservation
@@ -341,29 +415,79 @@ func (d *AsyncDispatcher) Dispatch(ctx context.Context, item repository.OutboxIt
 		return d.exchangeFailure(markCtx, item, requestID, response)
 	}
 	if item.Action == "submit" {
-		if strings.TrimSpace(observation.TaskID) == "" {
-			response.ErrorCode = "missing_provider_task_id"
+		switch observation.State {
+		case execution.AsyncSucceeded, execution.AsyncFailed, execution.AsyncCancelled:
+			return d.recordAsyncObservation(markCtx, item, fixed, requestID, response, observation)
+		case execution.AsyncAccepted, execution.AsyncRunning:
+			if strings.TrimSpace(observation.TaskID) == "" {
+				response.ErrorCode = "missing_provider_task_id"
+				return d.exchangeFailure(markCtx, item, requestID, response)
+			}
+			blob, err := d.payloadBlob(markCtx, []byte(observation.TaskID))
+			if err != nil {
+				return err
+			}
+			_, err = d.service.AcceptAsyncSubmission(markCtx, AcceptAsyncInput{Item: item, RequestID: requestID, TaskIdentity: blob,
+				IdentityExpiresAt: time.Now().UTC().Add(30 * 24 * time.Hour), QueryAt: time.Now().UTC().Add(5 * time.Second), Response: response})
+			return err
+		default:
+			response.ErrorCode = "invalid_provider_response"
 			return d.exchangeFailure(markCtx, item, requestID, response)
 		}
-		blob, err := d.payloadBlob(markCtx, []byte(observation.TaskID))
-		if err != nil {
+	}
+	return d.recordAsyncObservation(markCtx, item, fixed, requestID, response, observation)
+}
+
+func (d *AsyncDispatcher) recordAsyncObservation(ctx context.Context, item repository.OutboxItem, fixed repository.AsyncDispatch, requestID uint64, response repository.RequestLogResult, observation AsyncObservation) error {
+	if observation.State == execution.AsyncFailed {
+		response.ErrorCode = asyncProviderFailureCode(observation.ProviderErrorCode, observation.ProviderHTTPStatus)
+		if err := d.attachAsyncFailureDiagnostic(ctx, &response, observation); err != nil {
 			return err
 		}
-		_, err = d.service.AcceptAsyncSubmission(markCtx, AcceptAsyncInput{Item: item, RequestID: requestID, TaskIdentity: blob,
-			IdentityExpiresAt: time.Now().UTC().Add(30 * 24 * time.Hour), QueryAt: time.Now().UTC().Add(5 * time.Second), Response: response})
-		return err
 	}
 	input := AsyncResultInput{Item: item, RequestID: requestID, Response: response, State: observation.State,
 		Facts: observation.Facts, Sources: observation.Sources, SourceURLPolicy: fixed.SourceURLPolicy, NextQuery: time.Now().UTC().Add(5 * time.Second)}
 	if observation.State == execution.AsyncSucceeded {
-		blob, err := d.payloadBlob(markCtx, observation.Result)
+		blob, err := d.payloadBlob(ctx, observation.Result)
 		if err != nil {
 			return err
 		}
 		input.Result = &blob
 	}
-	err = d.service.RecordAsyncResult(markCtx, input)
-	return err
+	return d.service.RecordAsyncResult(ctx, input)
+}
+
+func (d *AsyncDispatcher) attachAsyncFailureDiagnostic(ctx context.Context, response *repository.RequestLogResult, observation AsyncObservation) error {
+	if response == nil {
+		return repository.ErrInvalidInput
+	}
+	diagnostic, err := payloadview.EncodeFailureDiagnostic(observation.ProviderErrorCode, observation.ProviderErrorMessage, observation.ProviderHTTPStatus)
+	if err != nil || len(diagnostic) == 0 {
+		return err
+	}
+	blob, err := d.payloadBlob(ctx, diagnostic)
+	if err != nil {
+		return err
+	}
+	response.Diagnostic = &blob
+	return nil
+}
+
+func decodeMappedDispatchFailure(codec AsyncCodec, fixed repository.AsyncDispatch, response []byte, status uint16) (AsyncObservation, bool) {
+	failureCodec, ok := codec.(DispatchFailureAwareAsyncCodec)
+	if !ok {
+		return AsyncObservation{}, false
+	}
+	observation, err := failureCodec.DecodeFailureWithDispatch(fixed, response, status)
+	return observation, err == nil
+}
+
+func asyncExchangeTimeout(configured time.Duration, leaseExpiresAt, now time.Time) time.Duration {
+	return min(configured, leaseExpiresAt.Sub(now)-asyncExchangeCompletionMargin)
+}
+
+func asyncResultCommitContext(parent context.Context, leaseExpiresAt time.Time) (context.Context, context.CancelFunc) {
+	return context.WithDeadline(context.WithoutCancel(parent), leaseExpiresAt.Add(-asyncResultCommitMargin))
 }
 
 func (d *AsyncDispatcher) exchange(request *http.Request) ([]byte, repository.RequestLogResult) {
@@ -410,11 +534,33 @@ func (d *AsyncDispatcher) exchangeFailure(ctx context.Context, item repository.O
 	if err := d.service.FinishRequest(ctx, requestID, status, response); err != nil {
 		return err
 	}
+	if item.Action == "query" && definitiveQueryFailure(response) {
+		return &PermanentDispatchError{Code: response.ErrorCode}
+	}
 	return errors.New(response.ErrorCode)
 }
 
 func definitiveSubmissionRejection(response repository.RequestLogResult) bool {
 	return response.HTTPStatus != nil && (*response.HTTPStatus < http.StatusOK || *response.HTTPStatus >= http.StatusMultipleChoices) && response.RequestComplete && response.ResponseComplete
+}
+
+func definitiveQueryFailure(response repository.RequestLogResult) bool {
+	if response.HTTPStatus == nil || !response.RequestComplete || !response.ResponseComplete {
+		return false
+	}
+	status := int(*response.HTTPStatus)
+	if status >= http.StatusOK && status < http.StatusMultipleChoices {
+		return response.ErrorCode == "invalid_provider_response"
+	}
+	return status >= http.StatusBadRequest && status < http.StatusInternalServerError &&
+		status != http.StatusRequestTimeout && status != http.StatusTooEarly && status != http.StatusTooManyRequests
+}
+
+func asyncProviderFailureCode(code string, status *uint16) string {
+	if status != nil && *status >= http.StatusBadRequest && *status < http.StatusInternalServerError {
+		return "provider_task_rejected"
+	}
+	return "provider_task_failed"
 }
 
 func (d *AsyncDispatcher) openBlob(ctx context.Context, id uint64, owner, purpose string, credential bool) ([]byte, error) {

@@ -148,6 +148,18 @@ const referencePlaceholder = (kind: ReferenceKind) => {
 const isTerminal = (s: string) => ['completed', 'failed', 'cancelled', 'submission_unknown'].includes(s);
 const COMPLETED_DETAIL_RETRY_LIMIT = 30;
 
+const deliveryErrorMessage = (code?: string) => {
+  switch (code) {
+    case 'managed_copy_size_exceeded': return '视频超过转存大小限制';
+    case 'managed_copy_empty': return '上游返回了空视频';
+    case 'managed_copy_content_type_invalid': return '视频格式无法识别';
+    case 'managed_copy_verification_failed': return '视频转存校验失败';
+    case 'managed_copy_upload_failed': return '视频转存失败';
+    case 'managed_copy_storage_unconfigured': return '当前令牌未配置文件存储';
+    default: return '视频地址暂不可用';
+  }
+};
+
 const ProgressRing: React.FC<{ percent: number }> = ({ percent }) => {
   const r = 22, c = 2 * Math.PI * r;
   return (
@@ -941,7 +953,7 @@ const TaskCard: React.FC<{ task: VideoTask; onRetryDetail: (taskID: string) => v
               ? <AlertTriangle size={28} className="mx-auto mb-1.5 text-amber-500" />
               : <Loader2 size={28} className="mx-auto mb-1.5 animate-spin text-[var(--primary)]" />}
             <p className="text-xs text-[var(--text-secondary)]">
-              {detailFailed ? '无法读取视频地址' : deliveryUnavailable ? '视频地址暂不可用' : '正在获取视频地址...'}
+              {detailFailed ? '无法读取视频地址' : deliveryUnavailable ? deliveryErrorMessage(task.result?.delivery_error_code) : '正在获取视频地址...'}
             </p>
             {(detailFailed || deliveryUnavailable) && (
               <button

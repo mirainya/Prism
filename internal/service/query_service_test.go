@@ -182,6 +182,49 @@ func TestListAvailableCapabilitiesExcludesUnexecutableCatalogRoutes(t *testing.T
 	}
 }
 
+func TestListAvailableCapabilitiesAcceptsPlaintextCredentialWithoutCryptoMaterial(t *testing.T) {
+	db := setupPublicCatalogQueryDB(t)
+	for _, statement := range []string{
+		`UPDATE gw_credentials SET secret='plain-secret'`,
+		`DELETE FROM encrypted_blob_key_wraps`,
+		`UPDATE crypto_key_versions SET status='readable'`,
+	} {
+		if _, err := db.Exec(statement); err != nil {
+			t.Fatal(err)
+		}
+	}
+	items, err := newQueryServiceWithDB(db).ListAvailableCapabilities(context.Background(), "", "")
+	if err != nil || len(items) != 1 {
+		t.Fatalf("items = %#v, error = %v", items, err)
+	}
+}
+
+func TestActivePublicCatalogDoesNotMultiplyRoutesForOverlappingCredentials(t *testing.T) {
+	db := setupPublicCatalogQueryDB(t)
+	service := newQueryServiceWithDB(db)
+	before, _, err := service.activeRoutes(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, statement := range []string{
+		`INSERT INTO gw_credential_secret_identities VALUES (111,50,'active')`,
+		`INSERT INTO gw_credentials VALUES (101,50,90,'active',111,121,'plain-secret')`,
+		`INSERT INTO gw_credential_purpose_grants VALUES (101,'execution','active')`,
+		`INSERT INTO gw_credential_versions VALUES (121,101,111,'active',NULL,130)`,
+	} {
+		if _, err := db.Exec(statement); err != nil {
+			t.Fatal(err)
+		}
+	}
+	after, _, err := service.activeRoutes(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(after) != len(before) {
+		t.Fatalf("route count with overlapping credentials = %d, want %d", len(after), len(before))
+	}
+}
+
 func TestListAvailableCapabilitiesDoesNotRequireLegacyValidations(t *testing.T) {
 	db := setupPublicCatalogQueryDB(t)
 	for _, statement := range []string{

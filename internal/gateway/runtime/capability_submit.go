@@ -45,8 +45,9 @@ type CapabilitySubmitInput struct {
 	Idempotency                              *repository.IdempotencyInput
 }
 
-// SubmitCapability commits a synchronous capability Call and its fixed
-// Attempt before any provider request is authorized.
+// SubmitCapability commits a capability Call and its fixed Attempt before any
+// provider request is authorized. Task-scoped products are queued through the
+// same durable async lifecycle used by other provider tasks.
 func (s *Service) SubmitCapability(ctx context.Context, in CapabilitySubmitInput) (Submission, error) {
 	if s == nil || len(in.RequestPayload) == 0 || len(in.PayloadKEK) != security.KeySize ||
 		len(in.PayloadHMAC) != security.KeySize || in.PayloadKeyringID == 0 ||
@@ -58,7 +59,7 @@ func (s *Service) SubmitCapability(ctx context.Context, in CapabilitySubmitInput
 		return Submission{}, err
 	}
 	if in.Route.DeliveryMode != "reference" && in.Route.DeliveryMode != "managed_copy" ||
-		in.Route.TaskScope != "none" && in.Route.TaskScope != "request" ||
+		in.Route.TaskScope != "none" && in.Route.TaskScope != "request" && in.Route.TaskScope != "task" ||
 		in.Route.CancelMode != "none" ||
 		in.Route.SourceURLPolicy != "fixed" && in.Route.SourceURLPolicy != "refreshable" {
 		return Submission{}, repository.ErrConflict
@@ -100,6 +101,8 @@ func (s *Service) SubmitCapability(ctx context.Context, in CapabilitySubmitInput
 		},
 		Idempotency: in.Idempotency, ResourceKind: "capability_task",
 		ResourceSummary: in.ResourceSummary, MediaAssetIDs: in.MediaAssetIDs,
+		Asynchronous: in.Route.TaskScope == "task", AsyncScopeKind: in.Route.UpstreamScopeKind,
+		AsyncScopeKey: in.Route.UpstreamScopeKey,
 	})
 }
 

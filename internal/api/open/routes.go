@@ -5,7 +5,10 @@ import "github.com/gin-gonic/gin"
 // RegisterRoutes 注册 /v1 Token 认证路由
 func RegisterRoutes(group *gin.RouterGroup) {
 	group.POST("/images/generations", CreateImageGenerationOpenAI)
+	group.POST("/images/generations/async", CreateImageGenerationAsync)
 	group.POST("/images/edits", CreateImageEditOpenAI)
+	group.POST("/images/edits/async", CreateImageEditAsync)
+	group.GET("/images/tasks/:id", GetImageTask)
 	group.POST("/videos/generations", CreateVideoGeneration)
 	group.POST("/videos/estimate", EstimateVideoGeneration)
 	group.GET("/videos/generations", ListVideoGenerations)

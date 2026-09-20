@@ -21,6 +21,7 @@ type RouteOptions struct {
 	SelectionKey        string
 	OperationMethod     string
 	OperationPath       string
+	RequiredTaskScope   string
 	AllowedTransports   []model.UpstreamTransport
 	PreferredTransports []model.UpstreamTransport
 	ExcludeChannels     []uint
@@ -93,6 +94,10 @@ func transportAllowed(transport model.UpstreamTransport, allowed []model.Upstrea
 		}
 	}
 	return false
+}
+
+func taskScopeAllowed(taskScope string, required string) bool {
+	return required == "" || taskScope == required
 }
 
 func transportRank(transport model.UpstreamTransport, preferred []model.UpstreamTransport) int {

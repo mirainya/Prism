@@ -27,7 +27,6 @@ type VideoResult struct {
 var ErrInvalidResult = errors.New("delivery: invalid video result")
 
 const (
-	ManagedCopyDownloadFailed     = "managed_copy_download_failed"
 	ManagedCopyUploadFailed       = "managed_copy_upload_failed"
 	ManagedCopyVerificationFailed = "managed_copy_verification_failed"
 	ManagedCopySizeExceeded       = "managed_copy_size_exceeded"
@@ -37,7 +36,7 @@ const (
 
 func RetryableManagedCopyFailure(reason string) bool {
 	switch reason {
-	case ManagedCopyDownloadFailed, ManagedCopyUploadFailed, ManagedCopyVerificationFailed:
+	case ManagedCopyUploadFailed, ManagedCopyVerificationFailed:
 		return true
 	default:
 		return false

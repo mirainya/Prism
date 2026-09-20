@@ -144,6 +144,10 @@ func hasVideoReference(content []video.ContentItem) bool {
 }
 
 func imageBillingFacts(observation OpenAIImagesObservation) (billing.ExprEnv, error) {
+	return imageBillingFactsForOutcome(len(observation.Outputs), observation.Usage, true)
+}
+
+func imageBillingFactsForOutcome(count int, usage OpenAIImagesUsage, success bool) (billing.ExprEnv, error) {
 	declared := map[string]bool{
 		"success":       true,
 		"duration_ms":   true,
@@ -161,19 +165,19 @@ func imageBillingFacts(observation OpenAIImagesObservation) (billing.ExprEnv, er
 		vars[name] = billing.ExprNumber(amount)
 		return nil
 	}
-	if err := putNumber("success", "1"); err != nil {
+	if err := putNumber("success", boolNumber(success)); err != nil {
 		return billing.ExprEnv{}, err
 	}
-	if err := putNumber("count", strconv.Itoa(len(observation.Outputs))); err != nil {
+	if err := putNumber("count", strconv.Itoa(count)); err != nil {
 		return billing.ExprEnv{}, err
 	}
-	if observation.Usage.InputTokens != nil {
-		if err := putNumber("input_tokens", strconv.FormatInt(*observation.Usage.InputTokens, 10)); err != nil {
+	if usage.InputTokens != nil {
+		if err := putNumber("input_tokens", strconv.FormatInt(*usage.InputTokens, 10)); err != nil {
 			return billing.ExprEnv{}, err
 		}
 	}
-	if observation.Usage.OutputTokens != nil {
-		if err := putNumber("output_tokens", strconv.FormatInt(*observation.Usage.OutputTokens, 10)); err != nil {
+	if usage.OutputTokens != nil {
+		if err := putNumber("output_tokens", strconv.FormatInt(*usage.OutputTokens, 10)); err != nil {
 			return billing.ExprEnv{}, err
 		}
 	}

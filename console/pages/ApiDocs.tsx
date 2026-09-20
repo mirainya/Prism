@@ -506,9 +506,7 @@ const FILE_ENDPOINTS: ApiEndpoint[] = [
   },
 ];
 
-// 图像两个入口此前在文档里完全缺失，而它们是真实存在且带一堆约束的：
-// n 上限 10、partial_images 必须配 stream=true、input_fidelity 必须有图输入、
-// /v1/images/generations 带了 image_urls 会自动转成 images.edit 计费。
+// 图像生成与编辑是两个明确操作。编辑端点同时支持 JSON 引用图和 multipart 文件。
 const buildImageEndpoints = (model: string): ApiEndpoint[] => {
   const shared = [
     { name: 'n', type: 'integer', required: false, description: '生成张数，1-10，默认 1' },
@@ -525,32 +523,58 @@ const buildImageEndpoints = (model: string): ApiEndpoint[] => {
     { name: 'partial_images', type: 'integer', required: false, description: '流式中间帧数量，0-3，必须同时 stream=true' },
     { name: 'user', type: 'string', required: false, description: '终端用户标识' },
   ];
+  const asyncShared = shared.filter(param => param.name !== 'stream' && param.name !== 'partial_images');
+  const asyncSubmitResponse = {
+    code: 0,
+    message: 'success',
+    data: {
+      id: '5fbc13b6-8f07-43ae-81d3-2ca260e637a7',
+      status: 'queued',
+      operation: 'images.generate',
+      location: '/v1/images/tasks/5fbc13b6-8f07-43ae-81d3-2ca260e637a7',
+    },
+  };
   return [
     {
       id: 'ep-images-generations',
       method: 'POST',
       path: '/v1/images/generations',
       name: '图像生成',
-      description: '兼容 OpenAI Images API。异步上游由 Prism 自动轮询后同步返图，调用方无需自己查任务。带上 image_urls 时按图生图（images.edit）执行与计费。',
+      description: '兼容 OpenAI Images API。该端点只执行图片生成；异步上游由 Prism 自动轮询后同步返图。',
       params: [
         { name: 'model', type: 'string', required: true, description: '模型标识' },
         { name: 'prompt', type: 'string', required: true, description: '文本提示词' },
-        { name: 'image_urls', type: 'string[]', required: false, description: '参考图 URL 或 data URI；给了就转为图生图' },
-        { name: 'input_fidelity', type: 'string', required: false, description: '参考图保真度；没有图像输入时提交会 400' },
         ...shared,
       ],
       requestExample: JSON.stringify({ model, prompt: '赛博朋克风格的城市夜景', n: 1, size: '1024x1024', response_format: 'url' }, null, 2),
       responseExample: JSON.stringify({ created: 1704067200, data: [{ url: 'https://example.com/generated.png', revised_prompt: '...' }] }, null, 2),
     },
     {
-      id: 'ep-images-edits',
+      id: 'ep-images-edits-json',
       method: 'POST',
       path: '/v1/images/edits',
-      name: '图像编辑',
+      name: 'URL/Base64 图片编辑',
+      description: '以 application/json 提交一张或多张参考图 URL、纯 Base64 或 data URI。该端点始终按 images.edit 执行与计费。',
+      params: [
+        { name: 'model', type: 'string', required: true, description: '模型标识' },
+        { name: 'prompt', type: 'string', required: true, description: '编辑指令' },
+        { name: 'image_urls', type: 'string[]', required: true, description: '一张或多张参考图 URL、纯 Base64 或 data URI' },
+        { name: 'input_fidelity', type: 'string', required: false, description: '参考图保真度' },
+        ...shared,
+      ],
+      requestExample: JSON.stringify({ model, prompt: '把背景换成雪山', image_urls: ['https://example.com/source.png'], response_format: 'url' }, null, 2),
+      responseExample: JSON.stringify({ created: 1704067200, data: [{ url: 'https://example.com/edited.png' }] }, null, 2),
+    },
+    {
+      id: 'ep-images-edits-upload',
+      method: 'POST',
+      path: '/v1/images/edits',
+      name: '本地文件图片编辑',
       description: '以 multipart/form-data 上传原图做图生图。字段名固定为 image，可重复多次传多张；其余参数与生成接口同名，均以表单字段提交。',
       bodyType: 'multipart',
       params: [
-        { name: 'image', type: 'file', required: true, description: '原图文件，可重复该字段上传多张' },
+        { name: 'image', type: 'file', required: true, description: '原图文件，可重复该字段上传，最多 16 张' },
+        { name: 'mask', type: 'file', required: false, description: 'PNG 蒙版，最多 1 张' },
         { name: 'model', type: 'string', required: true, description: '模型标识' },
         { name: 'prompt', type: 'string', required: true, description: '编辑指令' },
         { name: 'input_fidelity', type: 'string', required: false, description: '原图保真度' },
@@ -558,6 +582,83 @@ const buildImageEndpoints = (model: string): ApiEndpoint[] => {
       ],
       requestExample: `curl -X POST ${window.location.origin}/v1/images/edits \\\n  -H "Authorization: YOUR_TOKEN" \\\n  -F "model=${model}" \\\n  -F "prompt=把背景换成雪山" \\\n  -F "image=@./source.png"`,
       responseExample: JSON.stringify({ created: 1704067200, data: [{ url: 'https://example.com/edited.png' }] }, null, 2),
+    },
+    {
+      id: 'ep-images-generations-async',
+      method: 'POST',
+      path: '/v1/images/generations/async',
+      name: '异步图像生成',
+      description: '提交任务后立即返回 202；X-Prism-Call-ID 是任务编号，Location 是查询地址。stream 必须省略或为 false，且不能提交 partial_images。线路策略允许时，可通过 Idempotency-Key 在 24 小时内识别同一次提交。',
+      params: [
+        { name: 'model', type: 'string', required: true, description: '模型标识；必须具有任务型图片线路' },
+        { name: 'prompt', type: 'string', required: true, description: '文本提示词' },
+        ...asyncShared,
+      ],
+      requestExample: JSON.stringify({ model, prompt: '赛博朋克风格的城市夜景', n: 1, aspect_ratio: '16:9', response_format: 'url' }, null, 2),
+      responseExample: JSON.stringify(asyncSubmitResponse, null, 2),
+    },
+    {
+      id: 'ep-images-edits-async-json',
+      method: 'POST',
+      path: '/v1/images/edits/async',
+      name: '异步 URL/Base64 图片编辑',
+      description: '以 JSON 提交参考图并立即返回 202。image_urls 在提交阶段导入，成功后通过任务查询接口获取结果。重复提交编辑请求不保证复用原任务，请保存任务编号。',
+      params: [
+        { name: 'model', type: 'string', required: true, description: '模型标识；必须具有任务型图片编辑线路' },
+        { name: 'prompt', type: 'string', required: true, description: '编辑指令' },
+        { name: 'image_urls', type: 'string[]', required: true, description: '一张或多张参考图 URL、纯 Base64 或 data URI' },
+        { name: 'input_fidelity', type: 'string', required: false, description: '参考图保真度' },
+        ...asyncShared,
+      ],
+      requestExample: JSON.stringify({ model, prompt: '把背景换成雪山', image_urls: ['https://example.com/source.png'], response_format: 'url' }, null, 2),
+      responseExample: JSON.stringify({
+        ...asyncSubmitResponse,
+        data: { ...asyncSubmitResponse.data, operation: 'images.edit' },
+      }, null, 2),
+    },
+    {
+      id: 'ep-images-edits-async-upload',
+      method: 'POST',
+      path: '/v1/images/edits/async',
+      name: '异步本地文件图片编辑',
+      description: '以 multipart/form-data 上传参考图并立即返回 202。image 可重复，mask 最多一张 PNG；stream 必须省略或为 false，且不能提交 partial_images。',
+      bodyType: 'multipart',
+      params: [
+        { name: 'image', type: 'file', required: true, description: '原图文件，可重复该字段上传，最多 16 张' },
+        { name: 'mask', type: 'file', required: false, description: 'PNG 蒙版，最多 1 张' },
+        { name: 'model', type: 'string', required: true, description: '模型标识；必须具有任务型图片编辑线路' },
+        { name: 'prompt', type: 'string', required: true, description: '编辑指令' },
+        { name: 'input_fidelity', type: 'string', required: false, description: '参考图保真度' },
+        ...asyncShared,
+      ],
+      requestExample: `curl -X POST ${window.location.origin}/v1/images/edits/async \\\n  -H "Authorization: YOUR_TOKEN" \\\n  -F "model=${model}" \\\n  -F "prompt=把背景换成雪山" \\\n  -F "image=@./source.png"`,
+      responseExample: JSON.stringify({
+        ...asyncSubmitResponse,
+        data: { ...asyncSubmitResponse.data, operation: 'images.edit' },
+      }, null, 2),
+    },
+    {
+      id: 'ep-images-task',
+      method: 'GET',
+      path: '/v1/images/tasks/{id}',
+      name: '查询异步图片任务',
+      description: '使用创建任务的同一个 Prism Token 查询。queued 和 processing 需要继续轮询；completed 返回 result，failed 返回 error。',
+      params: [{ name: 'id', type: 'string', required: true, description: '提交响应 data.id 返回的任务编号' }],
+      requestExample: `curl ${window.location.origin}/v1/images/tasks/5fbc13b6-8f07-43ae-81d3-2ca260e637a7 \\\n  -H "Authorization: YOUR_TOKEN"`,
+      responseExample: JSON.stringify({
+        code: 0,
+        message: 'success',
+        data: {
+          id: '5fbc13b6-8f07-43ae-81d3-2ca260e637a7',
+          status: 'completed',
+          progress: 100,
+          model,
+          operation: 'images.generate',
+          created_at: '2026-09-20T11:20:00Z',
+          updated_at: '2026-09-20T11:20:18Z',
+          result: { created: 1789874418, data: [{ url: 'https://example.com/generated.png' }] },
+        },
+      }, null, 2),
     },
   ];
 };
@@ -714,7 +815,7 @@ const ApiDocs: React.FC = () => {
     md += `### GET /v1/models/:code\n获取单个模型详情，字段与列表项一致。\n\n| 参数 | 类型 | 必填 | 说明 |\n|------|------|------|------|\n| code | string | 是 | 模型标识（路径参数） |\n\n`;
     md += appendEndpoints('Anthropic Messages API', '下游使用 Anthropic Messages 协议，模型可通过任一已配置 Transport 执行。', anthropicEndpoints);
     md += appendEndpoints('Responses API', '下游统一使用 /v1/responses。OpenAI 上游调用 /v1/responses；火山方舟调用原生 /api/v3/responses 并保留 v3 扩展；Anthropic 与 Google 由 Prism 转换。', responsesEndpoints);
-    md += appendEndpoints('Images API', '兼容 OpenAI Images。异步上游由 Prism 轮询后同步返图；/v1/images/edits 使用 multipart 上传原图。', imageEndpoints);
+    md += appendEndpoints('Images API', '兼容 OpenAI Images。同步端点直接返回图片；任务型模型也可通过 /async 端点提交，并用 /v1/images/tasks/{id} 轮询。/v1/images/edits 支持 JSON URL/Base64 与 multipart 文件。', imageEndpoints);
     md += appendEndpoints('Files API', '文件按 API Token 隔离，可通过 file_id 用于 Responses 多模态输入。', FILE_ENDPOINTS);
     md += appendEndpoints('Video API', '统一视频生成与队列查询。', videoEndpoints);
     md += `## 错误码\n\n| 错误码 | 说明 |\n|--------|------|\n| 0 | 成功 |\n| 400 | 参数错误 |\n| 401 | 未认证/Token无效 |\n| 402 | 余额不足 |\n| 403 | 无权限 |\n| 404 | 资源不存在 |\n| 429 | 请求过于频繁 |\n| 500 | 服务器内部错误 |\n`;
@@ -937,7 +1038,7 @@ const ApiDocs: React.FC = () => {
         {/* Images API */}
         <section id="images">
           <h2 className="text-lg font-bold text-[var(--text-primary)] mb-3 flex items-center gap-2"><ImageIcon size={18} /> Images API</h2>
-          <p className="text-sm text-[var(--text-secondary)] mb-4">兼容 OpenAI Images API。上游是异步任务制的渠道由 Prism 轮询后同步返图，调用方不需要自己查任务；<code className="text-[var(--primary)]">/v1/images/generations</code> 带上 <code>image_urls</code> 即按图生图执行与计费。</p>
+          <p className="text-sm text-[var(--text-secondary)] mb-4">兼容 OpenAI Images API。同步端点直接返回图片；任务型模型也可通过 <code className="text-[var(--primary)]">/async</code> 端点提交，并用 <code className="text-[var(--primary)]">/v1/images/tasks/&#123;id&#125;</code> 轮询。图片编辑同时支持 JSON 参考图与 multipart 文件。</p>
           <div className="space-y-3">
             {imageEndpoints.map(ep => (
               <EndpointCard key={ep.id} api={ep} onTryIt={setTryItApi} />

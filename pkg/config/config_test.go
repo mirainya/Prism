@@ -27,6 +27,9 @@ func TestSampleConfigSetsFileStorageQuota(t *testing.T) {
 		if got := Get().FileStorage.MaxTotalSizeMB; got != DefaultFileStorageMaxTotalSizeMB {
 			t.Fatalf("%s max total size = %d, want %d", filename, got, DefaultFileStorageMaxTotalSizeMB)
 		}
+		if got := Get().FileStorage.MaxResultFileSizeMB; got != DefaultFileStorageMaxResultSizeMB {
+			t.Fatalf("%s max result size = %d, want %d", filename, got, DefaultFileStorageMaxResultSizeMB)
+		}
 	}
 }
 
@@ -36,13 +39,34 @@ func TestApplyDefaultsSetsFileStorageQuota(t *testing.T) {
 	if cfg.FileStorage.MaxTotalSizeMB != DefaultFileStorageMaxTotalSizeMB {
 		t.Fatalf("max total size = %d, want %d", cfg.FileStorage.MaxTotalSizeMB, DefaultFileStorageMaxTotalSizeMB)
 	}
+	if cfg.FileStorage.MaxResultFileSizeMB != DefaultFileStorageMaxResultSizeMB {
+		t.Fatalf("max result size = %d, want %d", cfg.FileStorage.MaxResultFileSizeMB, DefaultFileStorageMaxResultSizeMB)
+	}
 }
 
 func TestApplyDefaultsPreservesConfiguredFileQuota(t *testing.T) {
-	cfg := &Config{FileStorage: FileStorageConfig{MaxTotalSizeMB: 2048}}
+	cfg := &Config{FileStorage: FileStorageConfig{MaxTotalSizeMB: 2048, MaxResultFileSizeMB: 512}}
 	applyDefaults(cfg)
 	if cfg.FileStorage.MaxTotalSizeMB != 2048 {
 		t.Fatalf("max total size = %d, want 2048", cfg.FileStorage.MaxTotalSizeMB)
+	}
+	if cfg.FileStorage.MaxResultFileSizeMB != 512 {
+		t.Fatalf("max result size = %d, want 512", cfg.FileStorage.MaxResultFileSizeMB)
+	}
+}
+
+func TestFileStorageMaxResultSizeBytes(t *testing.T) {
+	previous := Get()
+	mu.Lock()
+	C = &Config{FileStorage: FileStorageConfig{MaxResultFileSizeMB: 320}}
+	mu.Unlock()
+	t.Cleanup(func() {
+		mu.Lock()
+		C = previous
+		mu.Unlock()
+	})
+	if got, want := FileStorageMaxResultSizeBytes(), int64(320*1024*1024); got != want {
+		t.Fatalf("max result bytes = %d, want %d", got, want)
 	}
 }
 

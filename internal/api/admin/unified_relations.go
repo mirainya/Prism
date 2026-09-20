@@ -34,7 +34,7 @@ SELECT mn.api_name, cm.display_name, cm.visibility,
        COALESCE(cm.capability_tags,JSON_ARRAY()),COALESCE(oc.operation_code,''),
        sku.id, sku.sku_code, sku.delivery_mode,
        r.id, r.priority, r.weight,
-       o.id, COALESCE(ors.state,''),
+       o.id, COALESCE(ors.state,''), COALESCE(ors.state_version,0),
 	   c.id, c.credential_code, c.status, c.config_version, c.weight, c.request_limit, c.task_limit,
        pool.id, pool.pool_code, pool.display_name, pool.status,
        ch.id, ch.display_name, ch.status, ct.transport_code, p.product_code, p.vendor_model,
@@ -71,18 +71,19 @@ LEFT JOIN gw_route_states rs ON rs.key_id=(c.id | ?)
 WHERE rel.id=? AND `
 
 type unifiedRelationLink struct {
-	APIName       string `json:"api_name"`
-	DisplayName   string `json:"display_name"`
-	Visibility    string `json:"visibility"`
-	ModelType     string `json:"model_type"`
-	SKUID         uint64 `json:"sku_id"`
-	SKUCode       string `json:"sku_code"`
-	DeliveryMode  string `json:"delivery_mode"`
-	RouteID       uint64 `json:"route_id"`
-	Priority      int64  `json:"priority"`
-	RouteWeight   uint64 `json:"route_weight"`
-	OfferingID    uint64 `json:"offering_id"`
-	OfferingState string `json:"offering_state"`
+	APIName              string `json:"api_name"`
+	DisplayName          string `json:"display_name"`
+	Visibility           string `json:"visibility"`
+	ModelType            string `json:"model_type"`
+	SKUID                uint64 `json:"sku_id"`
+	SKUCode              string `json:"sku_code"`
+	DeliveryMode         string `json:"delivery_mode"`
+	RouteID              uint64 `json:"route_id"`
+	Priority             int64  `json:"priority"`
+	RouteWeight          uint64 `json:"route_weight"`
+	OfferingID           uint64 `json:"offering_id"`
+	OfferingState        string `json:"offering_state"`
+	OfferingStateVersion uint64 `json:"offering_state_version"`
 
 	CredentialID      uint64 `json:"credential_id"`
 	CredentialCode    string `json:"credential_code"`
@@ -180,7 +181,7 @@ func queryUnifiedRelations(c *gin.Context, condition string, args ...any) {
 		if err := rows.Scan(&link.APIName, &link.DisplayName, &link.Visibility, &capabilityTags, &operationCode,
 			&link.SKUID, &link.SKUCode, &link.DeliveryMode,
 			&link.RouteID, &link.Priority, &link.RouteWeight,
-			&link.OfferingID, &link.OfferingState,
+			&link.OfferingID, &link.OfferingState, &link.OfferingStateVersion,
 			&link.CredentialID, &link.CredentialCode, &link.CredentialStatus, &link.CredentialVersion, &link.CredentialWeight, &requestLimit, &taskLimit,
 			&link.PoolID, &link.PoolCode, &link.PoolName, &link.PoolStatus,
 			&link.ChannelID, &link.ChannelName, &link.ChannelStatus, &link.TransportCode, &link.ProductCode, &link.VendorModel,

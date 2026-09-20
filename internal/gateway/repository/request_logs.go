@@ -35,6 +35,7 @@ type RequestLogResult struct {
 	ErrorCode                         string
 	RequestComplete, ResponseComplete bool
 	ResponsePayload                   *BlobInput `json:"-"`
+	Diagnostic                        *BlobInput `json:"-"`
 }
 
 func (s *Store) CompleteRequestLog(ctx context.Context, tx *sql.Tx, id uint64, status string, result RequestLogResult) error {
@@ -55,6 +56,11 @@ func (s *Store) CompleteRequestLog(ctx context.Context, tx *sql.Tx, id uint64, s
 	}
 	if result.ResponsePayload != nil {
 		if _, err := s.PutRequestLogPayload(ctx, tx, id, "response", *result.ResponsePayload); err != nil {
+			return err
+		}
+	}
+	if result.Diagnostic != nil {
+		if _, err := s.PutRequestLogDiagnostic(ctx, tx, id, *result.Diagnostic); err != nil {
 			return err
 		}
 	}

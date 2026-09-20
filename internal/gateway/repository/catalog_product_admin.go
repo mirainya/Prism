@@ -117,7 +117,7 @@ func (in CatalogProductInput) Validate() error {
 		!catalogIdentityPattern.MatchString(in.AdapterCode) || in.AdapterVersion == 0 || in.Adapter.Code != in.AdapterCode || in.Adapter.Version != in.AdapterVersion ||
 		in.Adapter.Protocol != in.Protocol || !validHexDigest(in.Adapter.ImplementationDigest, 32) || !semanticVersionPattern.MatchString(in.Adapter.MinimumSemanticVersion) ||
 		!catalogIdentityPattern.MatchString(in.TransportCode) || !catalogIdentityPattern.MatchString(in.Protocol) || in.Protocol == "catalog_discovery" ||
-		!validCatalogRequestMethod(in.AdapterCode, in.RequestMethod) || !validRouteTemplate(in.RequestPath) ||
+		!validCatalogRequestMethod(in.AdapterCode, in.RequestMethod) || !validCatalogRequestTarget(in.RequestPath) ||
 		in.AuthScheme != "bearer" || in.TransportTimeoutMS < 100 || in.TransportTimeoutMS > 300000 || in.TaskTimeoutMS < 100 || in.TaskTimeoutMS > 300000 ||
 		(in.TaskScope != "none" && in.TaskScope != "request" && in.TaskScope != "task") ||
 		(in.CancelMode != "none" && in.CancelMode != "upstream" && in.CancelMode != "local_only") ||
@@ -197,12 +197,27 @@ func validCatalogRequestMethod(adapterCode, method string) bool {
 	}
 }
 
+func validCatalogRequestTarget(value string) bool {
+	if value == "" || len(value) > 255 || !strings.HasPrefix(value, "/") || strings.HasPrefix(value, "//") || strings.ContainsAny(value, "#\x00\r\n") {
+		return false
+	}
+	parsed, err := url.ParseRequestURI(value)
+	if err != nil || parsed.IsAbs() || parsed.Host != "" || parsed.Opaque != "" || parsed.Fragment != "" || !strings.HasPrefix(parsed.Path, "/") {
+		return false
+	}
+	_, err = url.QueryUnescape(parsed.RawQuery)
+	return err == nil
+}
+
 func validCatalogTaskPolicy(adapterCode, taskScope, cancelMode string) bool {
 	if cancelMode != "none" {
 		return false
 	}
 	if adapterCode == "generic" || adapterCode == "seedance" {
 		return taskScope == "task"
+	}
+	if adapterCode == "openai_images" {
+		return taskScope == "none" || taskScope == "request" || taskScope == "task"
 	}
 	return taskScope == "none" || taskScope == "request"
 }
@@ -276,6 +291,33 @@ func validRemoteHost(host string) bool {
 		return !ip.IsPrivate() && !ip.IsLoopback() && !ip.IsUnspecified() && !ip.IsLinkLocalMulticast() && !ip.IsLinkLocalUnicast() && !ip.IsMulticast()
 	}
 	return !strings.ContainsAny(host, " /?#@\x00\r\n\t")
+}
+
+func validExactRemoteHost(host string) bool {
+	host = strings.ToLower(strings.TrimSuffix(strings.TrimSpace(host), "."))
+	if !validRemoteHost(host) {
+		return false
+	}
+	if net.ParseIP(host) != nil {
+		return true
+	}
+	if strings.ContainsAny(host, "*[]:") {
+		return false
+	}
+	if !strings.Contains(host, ".") {
+		return false
+	}
+	for _, label := range strings.Split(host, ".") {
+		if label == "" || len(label) > 63 || label[0] == '-' || label[len(label)-1] == '-' {
+			return false
+		}
+		for _, character := range label {
+			if character != '-' && (character < 'a' || character > 'z') && (character < '0' || character > '9') {
+				return false
+			}
+		}
+	}
+	return true
 }
 
 func validProductAction(action CatalogProductActionInput) bool {
@@ -483,7 +525,11 @@ func ensureCatalogAdapter(ctx context.Context, tx *sql.Tx, in CatalogAdapterInpu
 }
 
 func catalogAllowedHosts(in CatalogProductInput) ([]CatalogAllowedHostInput, error) {
-	base, err := validateCatalogBaseURL(in.BaseURL)
+	return normalizeCatalogAllowedHosts(in.BaseURL, in.AllowedHosts)
+}
+
+func normalizeCatalogAllowedHosts(baseURL string, allowedHosts []CatalogAllowedHostInput) ([]CatalogAllowedHostInput, error) {
+	base, err := validateCatalogBaseURL(baseURL)
 	if err != nil {
 		return nil, err
 	}
@@ -495,18 +541,23 @@ func catalogAllowedHosts(in CatalogProductInput) ([]CatalogAllowedHostInput, err
 		parsed, _ := strconv.ParseUint(base.Port(), 10, 16)
 		port = uint16(parsed)
 	}
-	values := append([]CatalogAllowedHostInput{{Protocol: base.Scheme, Host: strings.ToLower(base.Hostname()), Port: port}}, in.AllowedHosts...)
-	seen := make(map[string]struct{}, len(values))
+	values := append([]CatalogAllowedHostInput{{Protocol: base.Scheme, Host: strings.ToLower(base.Hostname()), Port: port}}, allowedHosts...)
+	seen := make(map[string]string, len(values))
 	out := make([]CatalogAllowedHostInput, 0, len(values))
 	for _, value := range values {
-		if value.Port == 0 || value.Protocol != "http" && value.Protocol != "https" || !validRemoteHost(value.Host) {
+		value.Protocol = strings.ToLower(strings.TrimSpace(value.Protocol))
+		value.Host = strings.ToLower(strings.TrimSuffix(strings.TrimSpace(value.Host), "."))
+		if value.Port == 0 || value.Protocol != "http" && value.Protocol != "https" || !validExactRemoteHost(value.Host) {
 			return nil, ErrInvalidInput
 		}
-		key := value.Protocol + "\x00" + value.Host + "\x00" + strconv.FormatUint(uint64(value.Port), 10)
-		if _, exists := seen[key]; exists {
+		key := value.Host + "\x00" + strconv.FormatUint(uint64(value.Port), 10)
+		if previous, exists := seen[key]; exists {
+			if previous != value.Protocol {
+				return nil, ErrInvalidInput
+			}
 			continue
 		}
-		seen[key] = struct{}{}
+		seen[key] = value.Protocol
 		out = append(out, value)
 	}
 	if len(out) > 32 {

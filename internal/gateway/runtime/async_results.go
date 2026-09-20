@@ -18,7 +18,6 @@ import (
 	"github.com/mirainya/Prism/internal/gateway/repository"
 	"github.com/mirainya/Prism/pkg/config"
 	"github.com/mirainya/Prism/pkg/filestorage"
-	"github.com/mirainya/Prism/pkg/safeurl"
 )
 
 type ManagedCopy struct {
@@ -35,7 +34,6 @@ type managedCopyPreparation struct {
 
 const managedResultCleanupTimeout = 15 * time.Second
 
-var downloadManagedResult = safeurl.Download
 var uploadManagedResult = func(ctx context.Context, apiKey string, data []byte, contentType, storagePath, filename string) (filestorage.UploadResult, error) {
 	return filestorage.WithAPIKey(apiKey).UploadReaderAtPathWithFilename(ctx, bytes.NewReader(data), contentType, storagePath, filename)
 }
@@ -58,15 +56,16 @@ type AsyncResultInput struct {
 	NextQuery       time.Time
 }
 
-// RecordAsyncResult commits a query's response and the next query or terminal
+// RecordAsyncResult commits a provider response and the next query or terminal
 // call, payload, task slot and billing outcome in one lease-fenced transaction.
+// A submit response may only be recorded here when it is already terminal.
 func (s *Service) RecordAsyncResult(ctx context.Context, in AsyncResultInput) error {
-	if in.RequestID == 0 || in.Item.Action != "query" || in.Response.HTTPStatus == nil || *in.Response.HTTPStatus < 200 || *in.Response.HTTPStatus >= 300 || !in.Response.ResponseComplete || in.Response.ResponseBytesHMAC == "" {
+	if in.RequestID == 0 || in.Item.Action != "query" && in.Item.Action != "submit" || in.Response.HTTPStatus == nil || *in.Response.HTTPStatus < 200 || *in.Response.HTTPStatus >= 300 || !in.Response.ResponseComplete || in.Response.ResponseBytesHMAC == "" {
 		return repository.ErrInvalidInput
 	}
 	switch in.State {
 	case execution.AsyncAccepted, execution.AsyncRunning:
-		if in.NextQuery.IsZero() || in.Result != nil || len(in.Sources) != 0 {
+		if in.Item.Action != "query" || in.NextQuery.IsZero() || in.Result != nil || len(in.Sources) != 0 {
 			return repository.ErrInvalidInput
 		}
 		return s.Store.WithTx(ctx, func(tx *sql.Tx) error {
@@ -236,38 +235,29 @@ func (s *Service) prepareManagedResultCopies(ctx context.Context, attemptID uint
 	if storage.APIKey == "" {
 		return nil, repository.ErrConflict
 	}
-	maxBytes := int64(64 << 20)
-	if config.C != nil && config.C.FileStorage.MaxFileSizeMB > 0 {
-		maxBytes = int64(config.C.FileStorage.MaxFileSizeMB) * 1024 * 1024
-	}
+	maxBytes := config.FileStorageMaxResultSizeBytes()
 	result := make([]managedCopyPreparation, 0, len(sources))
 	for ordinal, source := range sources {
 		if !delivery.ValidSource(source) {
 			return nil, fmt.Errorf("invalid managed result source")
 		}
-		var data []byte
-		var contentType string
 		if source.URL != "" {
-			downloaded, err := downloadManagedResult(ctx, source.URL, maxBytes)
-			if err != nil {
-				if ctx.Err() != nil {
-					return nil, ctx.Err()
-				}
-				result = append(result, managedCopyPreparation{FailureReason: delivery.ManagedCopyDownloadFailed})
-				continue
+			prepared, prepareErr := s.prepareManagedURLCopy(ctx, storage, attemptID, uint32(ordinal), source, maxBytes)
+			if prepareErr != nil {
+				return nil, prepareErr
 			}
-			data = downloaded.Data
-			contentType = strings.TrimSpace(strings.Split(downloaded.ContentType, ";")[0])
-		} else {
-			if int64(len(source.InlineData)) > maxBytes {
-				clear(source.InlineData)
-				sources[ordinal].InlineData = []byte{0}
-				result = append(result, managedCopyPreparation{FailureReason: delivery.ManagedCopySizeExceeded})
-				continue
-			}
-			data = source.InlineData
-			contentType = strings.TrimSpace(strings.Split(source.ContentType, ";")[0])
+			result = append(result, prepared)
+			continue
 		}
+		var data []byte
+		if int64(len(source.InlineData)) > maxBytes {
+			clear(source.InlineData)
+			sources[ordinal].InlineData = []byte{0}
+			result = append(result, managedCopyPreparation{FailureReason: delivery.ManagedCopySizeExceeded})
+			continue
+		}
+		data = source.InlineData
+		contentType := strings.TrimSpace(strings.Split(source.ContentType, ";")[0])
 		releaseData := func() {
 			clear(data)
 			if source.URL == "" {

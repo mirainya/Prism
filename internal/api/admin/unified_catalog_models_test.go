@@ -63,9 +63,23 @@ func TestListUnifiedCatalogModelEntriesKeepsModelsIndependentFromReleaseRows(t *
 		WillReturnRows(sqlmock.NewRows([]string{
 			"catalog_model_id", "model_code", "display_name", "visibility", "capability_tags", "sku_id", "sku_code", "variant_code", "delivery_mode", "max_results", "idempotency_mode", "service_tiers", "api_name", "operation_code", "contract_version", "http_method", "route_template", "sell_rate_count", "route_count", "downstream_paths",
 		}).AddRow(101, "seedance-2.0", "Seedance 2.0", "visible", []byte(`["video"]`), 201, "seedance-standard", "default", "managed_copy", 1, "required", []byte(`["standard"]`), "seedance-2.0", "videos.create", 1, "POST", "/v1/videos", 1, 1, []byte(`["/v1/videos"]`)))
-	mock.ExpectQuery(`SELECT cm\.id,p\.id,p\.product_code`).
+	mock.ExpectQuery(`(?s)SELECT cm\.id,p\.id,p\.product_code.*runtime_state\.state,runtime_state\.state_version.*JOIN gw_offering_runtime_state runtime_state`).
 		WithArgs(uint64(7), 101).
-		WillReturnRows(sqlmock.NewRows([]string{"model_id", "product_id", "product_code", "vendor_model", "capability_constraints", "constraints_schema_version", "channel_id", "channel_name", "product_transport_id", "task_scope", "cancel_mode", "source_url_policy", "channel_transport_id", "transport_code", "base_url", "protocol", "request_method", "request_path", "adapter_code", "adapter_version", "offering_id", "pool_id", "pool_name", "cost_plan_id", "cost_plan_code", "route_count", "cost_rate_count", "sku_id"}))
+		WillReturnRows(sqlmock.NewRows([]string{
+			"model_id", "product_id", "product_code", "vendor_model", "capability_constraints", "constraints_schema_version",
+			"channel_id", "channel_name", "product_transport_id", "task_scope", "cancel_mode", "source_url_policy",
+			"channel_transport_id", "transport_code", "base_url", "protocol", "request_method", "request_path",
+			"adapter_code", "adapter_version", "offering_id", "offering_state", "offering_state_version",
+			"pool_id", "pool_code", "pool_name", "cost_plan_id", "cost_plan_code", "route_count", "cost_rate_count",
+			"sku_id", "route_priority", "route_weight",
+		}).AddRow(
+			101, 701, "seedance-product", "seedance2.0-480p", []byte(`{"resolution":"480p"}`), 1,
+			42, "AICost", 601, "task", "none", "fixed",
+			801, "seedance-v1", "https://aicost.me", "seedance", "POST", "/v1/videos",
+			"seedance", 1, 301, "draining", 4,
+			501, "fseedance", "FSeedance", 901, "primary", 1, 2,
+			201, 100, 100,
+		))
 
 	router := gin.New()
 	router.GET("/catalog/:id/model-entries", ListUnifiedCatalogModelEntries)
@@ -74,7 +88,7 @@ func TestListUnifiedCatalogModelEntriesKeepsModelsIndependentFromReleaseRows(t *
 	if response.Code != 200 {
 		t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
 	}
-	if body := response.Body.String(); !strings.Contains(body, `"model_type":"video"`) || !strings.Contains(body, `"status":"active"`) || !strings.Contains(body, `"operation_code":"videos.create"`) {
+	if body := response.Body.String(); !strings.Contains(body, `"model_type":"video"`) || !strings.Contains(body, `"status":"active"`) || !strings.Contains(body, `"operation_code":"videos.create"`) || !strings.Contains(body, `"offering_state":"draining"`) || !strings.Contains(body, `"offering_state_version":4`) {
 		t.Fatalf("unexpected response=%s", body)
 	}
 	if err := mock.ExpectationsWereMet(); err != nil {

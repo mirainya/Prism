@@ -43,9 +43,11 @@ export interface TaskLog {
 }
 
 export interface TaskDetail extends TaskLog {
-  raw_params?: Record<string, any>;
-  vendor_response?: Record<string, any>;
-  result?: Record<string, any>;
+  gateway_call_id?: number;
+  raw_params?: unknown;
+  result?: unknown;
+  request_payload_expired?: boolean;
+  result_payload_expired?: boolean;
   vendor_task_id?: string;
   started_at?: string;
   callback_status?: string;

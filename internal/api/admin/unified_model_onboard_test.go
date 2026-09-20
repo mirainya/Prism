@@ -81,11 +81,13 @@ func TestCatalogModelOnboardValidatesBeforeAdminWrite(t *testing.T) {
 		"nested sku version":     strings.Replace(catalogModelOnboardBody, `"model_code":"new-model"`, `"expected_version":3,"model_code":"new-model"`, 1),
 		"caller route id":        strings.Replace(catalogModelOnboardBody, `"cost_plan_code":"new-model-cost"`, `"cost_plan_code":"new-model-cost","routes":[{"sku_id":99,"priority":1,"weight":1}]`, 1),
 		"missing sell price":     strings.Replace(catalogModelOnboardBody, `"unit_price":"1.25"`, `"unit_price":""`, 1),
-		"unknown adapter":        strings.Replace(catalogModelOnboardBody, `"adapter_code":"openai_chat"`, `"adapter_code":"missing"`, 1),
-		"adapter path mismatch":  strings.Replace(catalogModelOnboardBody, `"route_template":"/v1/chat/completions"`, `"route_template":"/v1/images/generations"`, 1),
-		"unknown field":          strings.Replace(catalogModelOnboardBody, `"channel_id":11`, `"unexpected":true,"channel_id":11`, 1),
-		"trailing JSON":          catalogModelOnboardBody + ` {}`,
-		"null":                   `null`,
+		"missing cost rate": strings.Replace(catalogModelOnboardBody, `,
+  "cost_rate":{"unit_code":"request","unit_price":"1.00","component_code":"request","quantity_source":"one","charge_event":"call.succeeded","unit_scale":0,"quantity_step":"0","max_quantity":"1","pricing_mode":"flat","pricing_expr":""}`, "", 1),
+		"unknown adapter":       strings.Replace(catalogModelOnboardBody, `"adapter_code":"openai_chat"`, `"adapter_code":"missing"`, 1),
+		"adapter path mismatch": strings.Replace(catalogModelOnboardBody, `"route_template":"/v1/chat/completions"`, `"route_template":"/v1/images/generations"`, 1),
+		"unknown field":         strings.Replace(catalogModelOnboardBody, `"channel_id":11`, `"unexpected":true,"channel_id":11`, 1),
+		"trailing JSON":         catalogModelOnboardBody + ` {}`,
+		"null":                  `null`,
 	}
 	for name, body := range tests {
 		t.Run(name, func(t *testing.T) {

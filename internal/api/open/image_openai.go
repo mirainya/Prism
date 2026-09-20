@@ -21,6 +21,7 @@ import (
 	"github.com/mirainya/Prism/internal/api/middleware"
 	"github.com/mirainya/Prism/internal/gateway/adapter"
 	"github.com/mirainya/Prism/internal/gateway/delivery"
+	"github.com/mirainya/Prism/internal/gateway/payloadview"
 	"github.com/mirainya/Prism/internal/gateway/repository"
 	"github.com/mirainya/Prism/internal/gateway/routing"
 	gatewayruntime "github.com/mirainya/Prism/internal/gateway/runtime"
@@ -52,6 +53,25 @@ type OpenAIImageRequest struct {
 	InputFidelity     string   `json:"input_fidelity"`
 	User              string   `json:"user"`
 	Stream            bool     `json:"stream"` // true=SSE 流式输出（OpenAI 标准）
+	nSet              bool
+}
+
+func (r *OpenAIImageRequest) UnmarshalJSON(data []byte) error {
+	type requestAlias OpenAIImageRequest
+	var value requestAlias
+	decoded := struct {
+		*requestAlias
+		N json.RawMessage `json:"n"`
+	}{requestAlias: &value}
+	if err := json.Unmarshal(data, &decoded); err != nil {
+		return err
+	}
+	*r = OpenAIImageRequest(value)
+	if decoded.N == nil {
+		return nil
+	}
+	r.nSet = true
+	return json.Unmarshal(decoded.N, &r.N)
 }
 
 // OpenAIImageData 单张图片结果
@@ -74,6 +94,8 @@ const (
 	openAIImageEditMaxFileBytes  = 20 << 20
 	openAIImageEditMaxTotalBytes = 32 << 20
 	openAIImageMaxRequestBytes   = 48 << 20
+	openAIImageEditMaxInputs     = 16
+	openAIImageEditMaxMasks      = 1
 )
 
 // openAIError 返回 OpenAI 风格的错误(不套 Prism {code,data} 外壳)
@@ -100,64 +122,84 @@ func normalizeOpenAIImageResponseFormat(value string) (string, bool) {
 // CreateImageGenerationOpenAI POST /v1/images/generations
 // 真正的 OpenAI 标准协议:同步返图,网关自动适配同步/异步渠道
 func CreateImageGenerationOpenAI(c *gin.Context) {
+	createImageGenerationOpenAI(c, false)
+}
+
+// CreateImageGenerationAsync POST /v1/images/generations/async
+// accepts the same JSON body as the synchronous endpoint and returns a Prism
+// task as soon as the durable asynchronous submission has been committed.
+func CreateImageGenerationAsync(c *gin.Context) {
+	createImageGenerationOpenAI(c, true)
+}
+
+func createImageGenerationOpenAI(c *gin.Context, asyncResponse bool) {
 	c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, openAIImageMaxRequestBytes)
 	token := middleware.GetToken(c)
 	if token == nil {
 		openAIError(c, http.StatusUnauthorized, "unauthorized", "authentication_error")
 		return
 	}
+	req, responseFormat, ok := bindOpenAIImageJSON(c, "generation")
+	if !ok {
+		return
+	}
+	if len(req.ImageURLs) > 0 {
+		openAIError(c, http.StatusBadRequest, "image_urls is only supported by /v1/images/edits", "invalid_request_error")
+		return
+	}
+	if strings.TrimSpace(req.InputFidelity) != "" {
+		openAIError(c, http.StatusBadRequest, "input_fidelity is only supported by /v1/images/edits", "invalid_request_error")
+		return
+	}
+	request := adaptOpenAIImageRequest(req, responseFormat, nil)
+	if err := adapter.ValidateOpenAIImagesRequestShape(adapter.ImagesGenerate, request); err != nil {
+		openAIError(c, http.StatusBadRequest, "invalid image generation options", "invalid_request_error")
+		return
+	}
+	_ = invokeOpenAIImage(c, token, request, nil, adapter.ImagesGenerate, asyncResponse)
+}
+
+func bindOpenAIImageJSON(c *gin.Context, action string) (OpenAIImageRequest, string, bool) {
 	var req OpenAIImageRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
 		var maxBytesErr *http.MaxBytesError
 		if errors.As(err, &maxBytesErr) {
 			openAIError(c, http.StatusRequestEntityTooLarge, "request is too large", "invalid_request_error")
-			return
+			return OpenAIImageRequest{}, "", false
 		}
 		openAIError(c, http.StatusBadRequest, "invalid request body: "+err.Error(), "invalid_request_error")
-		return
+		return OpenAIImageRequest{}, "", false
 	}
 	req.Model = strings.TrimSpace(req.Model)
-	if req.Model == "" || strings.TrimSpace(req.Prompt) == "" {
+	req.Prompt = strings.TrimSpace(req.Prompt)
+	if req.Model == "" || req.Prompt == "" {
 		openAIError(c, http.StatusBadRequest, "model and prompt are required", "invalid_request_error")
-		return
+		return OpenAIImageRequest{}, "", false
 	}
 	responseFormat, ok := normalizeOpenAIImageResponseFormat(req.ResponseFormat)
 	if !ok {
 		openAIError(c, http.StatusBadRequest, "response_format must be url or b64_json", "invalid_request_error")
-		return
+		return OpenAIImageRequest{}, "", false
 	}
-	if req.PartialImages != nil && *req.PartialImages < 0 {
-		openAIError(c, http.StatusBadRequest, "partial_images must be non-negative", "invalid_request_error")
-		return
-	}
-	if req.N == 0 {
+	if !req.nSet {
 		req.N = 1
 	}
-	if req.N < 1 || req.N > 10 || req.OutputCompression != nil && (*req.OutputCompression < 0 || *req.OutputCompression > 100) || req.PartialImages != nil && (*req.PartialImages > 3 || !req.Stream) {
-		openAIError(c, http.StatusBadRequest, "invalid image generation options", "invalid_request_error")
-		return
+	if req.N < 1 || req.N > 10 || req.OutputCompression != nil && (*req.OutputCompression < 0 || *req.OutputCompression > 100) || req.PartialImages != nil && (*req.PartialImages < 0 || *req.PartialImages > 3 || !req.Stream) {
+		openAIError(c, http.StatusBadRequest, "invalid image "+action+" options", "invalid_request_error")
+		return OpenAIImageRequest{}, "", false
 	}
-	if len(req.ImageURLs) == 0 && strings.TrimSpace(req.InputFidelity) != "" {
-		openAIError(c, http.StatusBadRequest, "input_fidelity requires an image input", "invalid_request_error")
-		return
-	}
-	inputs, err := importOpenAIImageValues(c.Request.Context(), token.UserID, token.ID, req.ImageURLs)
-	if err != nil {
-		openAIImageFileError(c, err)
-		return
-	}
-	operation := "images.generate"
-	if len(inputs.URLs) > 0 {
-		operation = "images.edit"
-	}
-	invokeOpenAIImage(c, token, adapter.OpenAIImagesRequest{
-		Model: req.Model, Prompt: req.Prompt, ImageURLs: inputs.URLs, N: req.N,
+	return req, responseFormat, true
+}
+
+func adaptOpenAIImageRequest(req OpenAIImageRequest, responseFormat string, imageURLs []string) adapter.OpenAIImagesRequest {
+	return adapter.OpenAIImagesRequest{
+		Model: req.Model, Prompt: req.Prompt, ImageURLs: imageURLs, N: req.N,
 		Size: req.Size, AspectRatio: req.AspectRatio, Quality: req.Quality,
 		ResponseFormat: responseFormat, OutputFormat: req.OutputFormat,
 		OutputCompression: req.OutputCompression, Moderation: req.Moderation,
 		Style: req.Style, Background: req.Background, InputFidelity: req.InputFidelity,
 		User: req.User, Stream: req.Stream, PartialImages: req.PartialImages,
-	}, inputs.AssetIDs, operation)
+	}
 }
 
 type storedImageInputs struct {
@@ -165,28 +207,31 @@ type storedImageInputs struct {
 	AssetIDs []uint64
 }
 
-func importOpenAIImageValues(ctx context.Context, userID, tokenID uint, values []string) (storedImageInputs, error) {
+type preparedOpenAIImageInput struct {
+	Data        []byte
+	ContentType string
+}
+
+func prepareOpenAIImageValues(ctx context.Context, values []string) ([]preparedOpenAIImageInput, error) {
 	if len(values) == 0 {
-		return storedImageInputs{}, nil
+		return nil, nil
 	}
-	if userID == 0 || tokenID == 0 || len(values) > 16 || !model.HasDB() {
-		return storedImageInputs{}, errors.New("invalid image inputs")
+	if len(values) > openAIImageEditMaxInputs {
+		return nil, fmt.Errorf("image inputs must contain at most %d images", openAIImageEditMaxInputs)
 	}
-	assetService := video.NewUnifiedAssetService(model.DB())
-	result := storedImageInputs{URLs: make([]string, 0, len(values)), AssetIDs: make([]uint64, 0, len(values))}
-	seen := make(map[uint64]struct{}, len(values))
+	prepared := make([]preparedOpenAIImageInput, 0, len(values))
 	var totalBytes int64
 	for _, value := range values {
 		value = strings.TrimSpace(value)
 		if value == "" {
-			return storedImageInputs{}, errors.New("image inputs must not contain empty values")
+			return nil, errors.New("image inputs must not contain empty values")
 		}
 		var data []byte
 		var contentType string
 		if strings.HasPrefix(value, "http://") || strings.HasPrefix(value, "https://") {
 			downloaded, err := safeurl.Download(ctx, value, openAIImageEditMaxFileBytes)
 			if err != nil {
-				return storedImageInputs{}, fmt.Errorf("download image input: %w", err)
+				return nil, fmt.Errorf("download image input: %w", err)
 			}
 			data, contentType = downloaded.Data, downloaded.ContentType
 		} else {
@@ -194,26 +239,26 @@ func importOpenAIImageValues(ctx context.Context, userID, tokenID uint, values [
 			if strings.HasPrefix(value, "data:") {
 				parts := strings.SplitN(value, ",", 2)
 				if len(parts) != 2 || !strings.Contains(parts[0], ";base64") {
-					return storedImageInputs{}, errors.New("image input contains an invalid data URL")
+					return nil, errors.New("image input contains an invalid data URL")
 				}
 				encoded = parts[1]
 			}
 			var err error
 			data, err = base64.StdEncoding.DecodeString(encoded)
 			if err != nil {
-				return storedImageInputs{}, errors.New("image inputs must be URLs or base64 images")
+				return nil, errors.New("image inputs must be URLs or base64 images")
 			}
 			contentType = http.DetectContentType(data)
 		}
 		if len(data) == 0 {
-			return storedImageInputs{}, errors.New("image inputs must not contain empty images")
+			return nil, errors.New("image inputs must not contain empty images")
 		}
 		if len(data) > openAIImageEditMaxFileBytes {
-			return storedImageInputs{}, errors.New("an image exceeds the 20 MiB file limit")
+			return nil, errors.New("an image exceeds the 20 MiB file limit")
 		}
 		totalBytes += int64(len(data))
 		if totalBytes > openAIImageEditMaxTotalBytes {
-			return storedImageInputs{}, errors.New("images exceed the 32 MiB total limit")
+			return nil, errors.New("images exceed the 32 MiB total limit")
 		}
 		contentType = strings.TrimSpace(strings.Split(contentType, ";")[0])
 		detected := http.DetectContentType(data)
@@ -223,17 +268,35 @@ func importOpenAIImageValues(ctx context.Context, userID, tokenID uint, values [
 		switch contentType {
 		case "image/png", "image/jpeg", "image/webp":
 		default:
-			return storedImageInputs{}, fmt.Errorf("images must be PNG, JPEG, or WebP, got %s", contentType)
+			return nil, fmt.Errorf("images must be PNG, JPEG, or WebP, got %s", contentType)
 		}
 		if detected != contentType {
-			return storedImageInputs{}, errors.New("image content type does not match its bytes")
+			return nil, errors.New("image content type does not match its bytes")
 		}
-		asset, err := persistOpenAIImageInput(ctx, assetService, userID, tokenID, data, contentType)
+		prepared = append(prepared, preparedOpenAIImageInput{Data: data, ContentType: contentType})
+	}
+	return prepared, nil
+}
+
+func persistOpenAIImageInputs(ctx context.Context, userID, tokenID uint, prepared []preparedOpenAIImageInput) (storedImageInputs, error) {
+	if len(prepared) == 0 {
+		return storedImageInputs{}, nil
+	}
+	if userID == 0 || tokenID == 0 || !model.HasDB() {
+		return storedImageInputs{}, errors.New("invalid image inputs")
+	}
+	assetService := video.NewUnifiedAssetService(model.DB())
+	result := storedImageInputs{URLs: make([]string, 0, len(prepared)), AssetIDs: make([]uint64, 0, len(prepared))}
+	seen := make(map[uint64]struct{}, len(prepared))
+	for _, input := range prepared {
+		asset, err := persistOpenAIImageInput(ctx, assetService, userID, tokenID, input.Data, input.ContentType)
 		if err != nil {
+			cleanupStoredOpenAIImageInputs(ctx, tokenID, result.AssetIDs)
 			return storedImageInputs{}, fmt.Errorf("%w: store image input: %v", errOpenAIImageStorage, err)
 		}
 		assetID, err := strconv.ParseUint(asset.ID, 10, 64)
 		if err != nil || assetID == 0 || strings.TrimSpace(asset.StoragePath) == "" {
+			cleanupStoredOpenAIImageInputs(ctx, tokenID, append(result.AssetIDs, assetID))
 			return storedImageInputs{}, fmt.Errorf("%w: invalid stored image identity", errOpenAIImageStorage)
 		}
 		result.URLs = append(result.URLs, asset.StoragePath)
@@ -243,6 +306,28 @@ func importOpenAIImageValues(ctx context.Context, userID, tokenID uint, values [
 		}
 	}
 	return result, nil
+}
+
+func importOpenAIImageValues(ctx context.Context, userID, tokenID uint, values []string) (storedImageInputs, error) {
+	prepared, err := prepareOpenAIImageValues(ctx, values)
+	if err != nil {
+		return storedImageInputs{}, err
+	}
+	return persistOpenAIImageInputs(ctx, userID, tokenID, prepared)
+}
+
+func cleanupStoredOpenAIImageInputs(ctx context.Context, tokenID uint, assetIDs []uint64) {
+	if tokenID == 0 || len(assetIDs) == 0 || !model.HasDB() {
+		return
+	}
+	cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 30*time.Second)
+	defer cancel()
+	assetService := video.NewUnifiedAssetService(model.DB())
+	for index := len(assetIDs) - 1; index >= 0; index-- {
+		if assetIDs[index] != 0 {
+			_ = assetService.Delete(cleanupCtx, tokenID, strconv.FormatUint(assetIDs[index], 10))
+		}
+	}
 }
 
 func persistOpenAIImageInput(ctx context.Context, assetService *video.UnifiedAssetService, userID, tokenID uint, data []byte, contentType string) (*video.VideoAsset, error) {
@@ -277,12 +362,56 @@ func appendUniqueUint64(target []uint64, values ...uint64) []uint64 {
 // Multipart files are stored before task creation, so asynchronous task params
 // contain URLs instead of embedded base64 payloads.
 func CreateImageEditOpenAI(c *gin.Context) {
+	createImageEditOpenAI(c, false)
+}
+
+// CreateImageEditAsync POST /v1/images/edits/async accepts either the JSON or
+// multipart edit shape and returns a Prism task without waiting for the image.
+func CreateImageEditAsync(c *gin.Context) {
+	createImageEditOpenAI(c, true)
+}
+
+func createImageEditOpenAI(c *gin.Context, asyncResponse bool) {
 	c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, openAIImageMaxRequestBytes)
 	token := middleware.GetToken(c)
 	if token == nil {
 		openAIError(c, http.StatusUnauthorized, "unauthorized", "authentication_error")
 		return
 	}
+	contentType := strings.ToLower(strings.TrimSpace(c.ContentType()))
+	if contentType == "application/json" || strings.HasSuffix(contentType, "+json") {
+		createImageEditJSON(c, token, asyncResponse)
+		return
+	}
+	createImageEditMultipart(c, token, asyncResponse)
+}
+
+func createImageEditJSON(c *gin.Context, token *model.Token, asyncResponse bool) {
+	req, responseFormat, ok := bindOpenAIImageJSON(c, "edit")
+	if !ok {
+		return
+	}
+	if len(req.ImageURLs) == 0 {
+		openAIError(c, http.StatusBadRequest, "image_urls is required", "invalid_request_error")
+		return
+	}
+	request := adaptOpenAIImageRequest(req, responseFormat, req.ImageURLs)
+	if err := adapter.ValidateOpenAIImagesRequestShape(adapter.ImagesEdit, request); err != nil {
+		openAIError(c, http.StatusBadRequest, "invalid image edit options", "invalid_request_error")
+		return
+	}
+	inputs, err := importOpenAIImageValues(c.Request.Context(), token.UserID, token.ID, req.ImageURLs)
+	if err != nil {
+		openAIImageFileError(c, err)
+		return
+	}
+	request.ImageURLs = inputs.URLs
+	if !invokeOpenAIImage(c, token, request, inputs.AssetIDs, adapter.ImagesEdit, asyncResponse) {
+		cleanupStoredOpenAIImageInputs(c.Request.Context(), token.ID, inputs.AssetIDs)
+	}
+}
+
+func createImageEditMultipart(c *gin.Context, token *model.Token, asyncResponse bool) {
 	if err := c.Request.ParseMultipartForm(openAIImageEditMaxMemory); err != nil {
 		var maxBytesErr *http.MaxBytesError
 		if errors.As(err, &maxBytesErr) {
@@ -308,18 +437,23 @@ func CreateImageEditOpenAI(c *gin.Context) {
 		return
 	}
 
-	images, err := importOpenAIImageEditFiles(c.Request.Context(), token.UserID, token.ID, c.Request.MultipartForm, "image")
-	if err != nil {
-		openAIImageFileError(c, err)
+	imageCount := countOpenAIImageEditFiles(c.Request.MultipartForm, "image")
+	if imageCount == 0 {
+		openAIError(c, http.StatusBadRequest, "image is required", "invalid_request_error")
 		return
 	}
-	if len(images.URLs) == 0 {
-		openAIError(c, http.StatusBadRequest, "image is required", "invalid_request_error")
+	if imageCount > openAIImageEditMaxInputs {
+		openAIError(c, http.StatusBadRequest, fmt.Sprintf("image must contain at most %d files", openAIImageEditMaxInputs), "invalid_request_error")
+		return
+	}
+	maskCount := countOpenAIImageEditFiles(c.Request.MultipartForm, "mask")
+	if maskCount > openAIImageEditMaxMasks {
+		openAIError(c, http.StatusBadRequest, fmt.Sprintf("mask must contain at most %d file", openAIImageEditMaxMasks), "invalid_request_error")
 		return
 	}
 
 	request := adapter.OpenAIImagesRequest{
-		Model: modelName, Prompt: prompt, ImageURLs: images.URLs, N: 1,
+		Model: modelName, Prompt: prompt, ImageURLs: make([]string, imageCount), MaskURLs: make([]string, maskCount), N: 1,
 		Size: strings.TrimSpace(c.PostForm("size")), AspectRatio: strings.TrimSpace(c.PostForm("aspect_ratio")),
 		Quality: strings.TrimSpace(c.PostForm("quality")), ResponseFormat: responseFormat,
 		OutputFormat: strings.TrimSpace(c.PostForm("output_format")), Moderation: strings.TrimSpace(c.PostForm("moderation")),
@@ -360,15 +494,40 @@ func CreateImageEditOpenAI(c *gin.Context) {
 		}
 		request.OutputCompression = &compression
 	}
-	assetIDs := append([]uint64(nil), images.AssetIDs...)
-	if masks, err := importOpenAIImageEditFiles(c.Request.Context(), token.UserID, token.ID, c.Request.MultipartForm, "mask"); err != nil {
+	if err := adapter.ValidateOpenAIImagesRequestShape(adapter.ImagesEdit, request); err != nil {
+		openAIError(c, http.StatusBadRequest, "invalid image edit options", "invalid_request_error")
+		return
+	}
+	preparedImages, err := prepareOpenAIImageEditFiles(c.Request.MultipartForm, "image", openAIImageEditMaxInputs)
+	if err != nil {
 		openAIImageFileError(c, err)
 		return
-	} else if len(masks.URLs) > 0 {
+	}
+	preparedMasks, err := prepareOpenAIImageEditFiles(c.Request.MultipartForm, "mask", openAIImageEditMaxMasks)
+	if err != nil {
+		openAIImageFileError(c, err)
+		return
+	}
+	images, err := persistOpenAIImageInputs(c.Request.Context(), token.UserID, token.ID, preparedImages)
+	if err != nil {
+		openAIImageFileError(c, err)
+		return
+	}
+	request.ImageURLs = images.URLs
+	assetIDs := append([]uint64(nil), images.AssetIDs...)
+	masks, err := persistOpenAIImageInputs(c.Request.Context(), token.UserID, token.ID, preparedMasks)
+	if err != nil {
+		cleanupStoredOpenAIImageInputs(c.Request.Context(), token.ID, images.AssetIDs)
+		openAIImageFileError(c, err)
+		return
+	}
+	if len(masks.URLs) > 0 {
 		request.MaskURLs = masks.URLs
 		assetIDs = appendUniqueUint64(assetIDs, masks.AssetIDs...)
 	}
-	invokeOpenAIImage(c, token, request, assetIDs, adapter.ImagesEdit)
+	if !invokeOpenAIImage(c, token, request, assetIDs, adapter.ImagesEdit, asyncResponse) {
+		cleanupStoredOpenAIImageInputs(c.Request.Context(), token.ID, assetIDs)
+	}
 }
 
 func openAIImageFileError(c *gin.Context, err error) {
@@ -379,9 +538,22 @@ func openAIImageFileError(c *gin.Context, err error) {
 	openAIError(c, http.StatusBadRequest, err.Error(), "invalid_request_error")
 }
 
-func importOpenAIImageEditFiles(ctx context.Context, userID, tokenID uint, form *multipart.Form, field string) (storedImageInputs, error) {
+func countOpenAIImageEditFiles(form *multipart.Form, field string) int {
 	if form == nil {
-		return storedImageInputs{}, nil
+		return 0
+	}
+	count := 0
+	for key, files := range form.File {
+		if key == field || key == field+"[]" || strings.HasPrefix(key, field+"[") {
+			count += len(files)
+		}
+	}
+	return count
+}
+
+func prepareOpenAIImageEditFiles(form *multipart.Form, field string, maxFiles int) ([]preparedOpenAIImageInput, error) {
+	if form == nil {
+		return nil, nil
 	}
 	keys := make([]string, 0, len(form.File))
 	for key := range form.File {
@@ -391,59 +563,53 @@ func importOpenAIImageEditFiles(ctx context.Context, userID, tokenID uint, form 
 	}
 	sort.Strings(keys)
 
+	fileCount := 0
+	for _, key := range keys {
+		fileCount += len(form.File[key])
+	}
+	if fileCount > maxFiles {
+		return nil, fmt.Errorf("%s must contain at most %d file(s)", field, maxFiles)
+	}
+
 	var totalBytes int64
-	result := storedImageInputs{}
-	seen := make(map[uint64]struct{})
-	assetService := video.NewUnifiedAssetService(model.DB())
+	prepared := make([]preparedOpenAIImageInput, 0, fileCount)
 	for _, key := range keys {
 		for _, header := range form.File[key] {
 			file, err := header.Open()
 			if err != nil {
-				return storedImageInputs{}, fmt.Errorf("open %s: %w", field, err)
+				return nil, fmt.Errorf("open %s: %w", field, err)
 			}
 			data, readErr := io.ReadAll(io.LimitReader(file, openAIImageEditMaxFileBytes+1))
 			closeErr := file.Close()
 			if readErr != nil {
-				return storedImageInputs{}, fmt.Errorf("read %s: %w", field, readErr)
+				return nil, fmt.Errorf("read %s: %w", field, readErr)
 			}
 			if closeErr != nil {
-				return storedImageInputs{}, fmt.Errorf("close %s: %w", field, closeErr)
+				return nil, fmt.Errorf("close %s: %w", field, closeErr)
 			}
 			if len(data) == 0 {
-				return storedImageInputs{}, fmt.Errorf("%s must not be empty", field)
+				return nil, fmt.Errorf("%s must not be empty", field)
 			}
 			if len(data) > openAIImageEditMaxFileBytes {
-				return storedImageInputs{}, fmt.Errorf("%s exceeds the 20 MiB file limit", field)
+				return nil, fmt.Errorf("%s exceeds the 20 MiB file limit", field)
 			}
 			totalBytes += int64(len(data))
 			if totalBytes > openAIImageEditMaxTotalBytes {
-				return storedImageInputs{}, fmt.Errorf("%s files exceed the 32 MiB total limit", field)
+				return nil, fmt.Errorf("%s files exceed the 32 MiB total limit", field)
 			}
 			contentType := http.DetectContentType(data)
 			switch contentType {
 			case "image/png", "image/jpeg", "image/webp":
 			default:
-				return storedImageInputs{}, fmt.Errorf("%s must be PNG, JPEG, or WebP", field)
+				return nil, fmt.Errorf("%s must be PNG, JPEG, or WebP", field)
 			}
 			if field == "mask" && contentType != "image/png" {
-				return storedImageInputs{}, errors.New("mask must be PNG")
+				return nil, errors.New("mask must be PNG")
 			}
-			asset, err := persistOpenAIImageInput(ctx, assetService, userID, tokenID, data, contentType)
-			if err != nil {
-				return storedImageInputs{}, fmt.Errorf("%w: store %s: %v", errOpenAIImageStorage, field, err)
-			}
-			result.URLs = append(result.URLs, asset.StoragePath)
-			assetID, err := strconv.ParseUint(asset.ID, 10, 64)
-			if err != nil || assetID == 0 {
-				return storedImageInputs{}, fmt.Errorf("%w: invalid stored %s identity", errOpenAIImageStorage, field)
-			}
-			if _, exists := seen[assetID]; !exists {
-				result.AssetIDs = append(result.AssetIDs, assetID)
-				seen[assetID] = struct{}{}
-			}
+			prepared = append(prepared, preparedOpenAIImageInput{Data: data, ContentType: contentType})
 		}
 	}
-	return result, nil
+	return prepared, nil
 }
 
 func imageExecutionContext(requestCtx context.Context) context.Context {
@@ -456,46 +622,55 @@ func invokeOpenAIImage(
 	request adapter.OpenAIImagesRequest,
 	mediaAssetIDs []uint64,
 	operation string,
-) {
+	asyncResponse bool,
+) bool {
 	if token == nil {
 		openAIError(c, http.StatusUnauthorized, "unauthorized", "authentication_error")
-		return
+		return false
 	}
-	plan, err := planUnifiedOpenAIImage(c.Request.Context(), request, operation)
+	plan, err := planUnifiedOpenAIImage(c.Request.Context(), request, operation, asyncResponse)
 	if err != nil {
 		writeOpenAIImageExecutionError(c, err)
-		return
+		return false
+	}
+	if asyncResponse && request.Stream {
+		openAIError(c, http.StatusBadRequest, "stream is not supported by the asynchronous image endpoint", "invalid_request_error")
+		return false
+	}
+	if asyncResponse && !plan.Asynchronous {
+		openAIError(c, http.StatusBadRequest, "the selected model does not provide asynchronous image tasks", "invalid_request_error")
+		return false
 	}
 	defer clear(plan.Prepared.Body)
 	defer clear(plan.RequestPayload)
 	payloadKEK, err := gatewayKey("PRISM_GATEWAY_PAYLOAD_KEK_B64")
 	if err != nil {
 		writeOpenAIImageExecutionError(c, err)
-		return
+		return false
 	}
 	defer clear(payloadKEK)
 	payloadHMAC, err := gatewayKey("PRISM_GATEWAY_PAYLOAD_HMAC_B64")
 	if err != nil {
 		writeOpenAIImageExecutionError(c, err)
-		return
+		return false
 	}
 	defer clear(payloadHMAC)
 	var keyringID uint64
 	var keyringVersion uint32
 	if err := unifiedVideoStore.DB().QueryRowContext(c.Request.Context(), `SELECT k.id,k.current_version FROM crypto_keyring_state k JOIN crypto_key_versions v ON v.keyring_id=k.id AND v.key_version=k.current_version AND v.status='current' WHERE k.purpose='gateway-payload'`).Scan(&keyringID, &keyringVersion); err != nil {
 		writeOpenAIImageExecutionError(c, err)
-		return
+		return false
 	}
 	publicID := uuid.NewString()
 	idempotency, err := imageIdempotencyWithRequest(c.GetHeader("Idempotency-Key"), uint64(token.ID), uint64(plan.Route.OperationContractID), keyringVersion, payloadHMAC, plan.Policy.IdempotencyMode, plan.RequestPayload)
 	if err != nil {
 		writeOpenAIImageExecutionError(c, err)
-		return
+		return false
 	}
 	runtimeService, err := gatewayruntime.New(unifiedVideoStore)
 	if err != nil {
 		writeOpenAIImageExecutionError(c, err)
-		return
+		return false
 	}
 	summary := imageResourceSummary(request, operation, payloadHMAC)
 	submission, err := runtimeService.SubmitCapability(c.Request.Context(), gatewayruntime.CapabilitySubmitInput{
@@ -521,17 +696,27 @@ func invokeOpenAIImage(
 	})
 	if err != nil {
 		writeOpenAIImageExecutionError(c, err)
-		return
+		return false
 	}
 	publicID = submission.PublicID
 	c.Header(prismCallIDHeader, publicID)
+	if asyncResponse {
+		location := "/v1/images/tasks/" + publicID
+		c.Header("Location", location)
+		c.Header("Retry-After", "3")
+		c.JSON(http.StatusAccepted, gin.H{
+			"code": 0, "message": "success",
+			"data": gin.H{"id": publicID, "status": "queued", "operation": operation, "location": location},
+		})
+		return true
+	}
 	var streamSession *imageSSESession
-	if !submission.Reused {
+	if !submission.Reused && !plan.Asynchronous {
 		credentialKEK, credentialHMAC, keyErr := legacyImageCredentialKeys(c.Request.Context())
 		if keyErr != nil {
 			_ = runtimeService.RejectCapability(imageExecutionContext(c.Request.Context()), submission.AttemptID, "credential_key_unavailable")
 			writeOpenAIImageExecutionError(c, keyErr)
-			return
+			return true
 		}
 		defer clear(credentialKEK)
 		defer clear(credentialHMAC)
@@ -561,11 +746,11 @@ func invokeOpenAIImage(
 		}
 		if dispatchErr != nil {
 			if streamSession != nil {
-				streamSession.Fail(c.Writer)
-				return
+				streamSession.Fail(c.Writer, openAIImageStreamFailureMessage(dispatchErr))
+				return true
 			}
 			writeOpenAIImageExecutionError(c, dispatchErr)
-			return
+			return true
 		}
 	}
 	if request.Stream && streamSession == nil {
@@ -573,24 +758,37 @@ func invokeOpenAIImage(
 	}
 	executionCtx := imageExecutionContext(c.Request.Context())
 	var response OpenAIImageResponse
-	if submission.Reused {
+	if submission.Reused || plan.Asynchronous {
 		response, err = waitUnifiedOpenAIImageResponse(executionCtx, submission.CallID, uint64(token.UserID), uint64(token.ID), request.ResponseFormat, 5*time.Minute)
 	} else {
 		response, err = readUnifiedOpenAIImageResponse(executionCtx, submission.CallID, uint64(token.UserID), uint64(token.ID), request.ResponseFormat)
 	}
 	if err != nil {
 		if streamSession != nil {
-			streamSession.Fail(c.Writer)
-			return
+			streamSession.Fail(c.Writer, openAIImageStreamFailureMessage(err))
+			return true
 		}
 		writeOpenAIImageExecutionError(c, err)
-		return
+		return true
 	}
 	if streamSession != nil {
 		streamSession.Complete(c.Writer, response)
-		return
+		return true
 	}
 	c.JSON(http.StatusOK, response)
+	return true
+}
+
+func openAIImageStreamFailureMessage(err error) string {
+	var providerErr *gatewayruntime.ProviderCapabilityError
+	if !errors.As(err, &providerErr) {
+		return "upstream image generation failed"
+	}
+	message := payloadview.ExtractFailureMessage([]byte(providerErr.Message))
+	if message == "" {
+		return "upstream image generation failed"
+	}
+	return message
 }
 
 func legacyImageCredentialKeys(ctx context.Context) ([]byte, []byte, error) {
@@ -615,9 +813,37 @@ type unifiedOpenAIImagePlan struct {
 	Policy         repository.RoutePolicy
 	RequestPayload []byte
 	Prepared       adapter.PreparedImageRequest
+	Asynchronous   bool
 }
 
-func planUnifiedOpenAIImage(ctx context.Context, request adapter.OpenAIImagesRequest, operation string) (unifiedOpenAIImagePlan, error) {
+type openAIImageRouteSelector interface {
+	SelectTransport(context.Context, string, routing.RouteRequirements, routing.RouteOptions) (*routing.RouteResult, error)
+}
+
+func selectUnifiedOpenAIImageRoute(ctx context.Context, selector openAIImageRouteSelector, modelName, operation string, asyncResponse bool) (*routing.RouteResult, error) {
+	operationPath := "/v1/images/generations"
+	if operation == adapter.ImagesEdit {
+		operationPath = "/v1/images/edits"
+	} else if operation != adapter.ImagesGenerate {
+		return nil, repository.ErrInvalidInput
+	}
+
+	// The public image operation and the declared openai_images transport already
+	// prove image support. Legacy image models may not carry the optional generic
+	// image_generation tag, so requiring it here would reject an otherwise valid
+	// operation-specific route before the provider request is sent.
+	options := routing.RouteOptions{
+		SelectionKey: uuid.NewString(), OperationMethod: http.MethodPost, OperationPath: operationPath,
+		AllowedTransports:   []model.UpstreamTransport{model.UpstreamTransportOpenAIImages},
+		PreferredTransports: []model.UpstreamTransport{model.UpstreamTransportOpenAIImages},
+	}
+	if asyncResponse {
+		options.RequiredTaskScope = "task"
+	}
+	return selector.SelectTransport(ctx, modelName, nil, options)
+}
+
+func planUnifiedOpenAIImage(ctx context.Context, request adapter.OpenAIImagesRequest, operation string, asyncResponse bool) (unifiedOpenAIImagePlan, error) {
 	if unifiedVideoStore == nil || unifiedVideoRouter == nil {
 		return unifiedOpenAIImagePlan{}, gatewayruntime.ErrNotReady
 	}
@@ -627,15 +853,7 @@ func planUnifiedOpenAIImage(ctx context.Context, request adapter.OpenAIImagesReq
 	if err := gatewayruntime.RequireConfiguredReadiness(ctx, unifiedVideoStore.DB()); err != nil {
 		return unifiedOpenAIImagePlan{}, err
 	}
-	operationPath := "/v1/images/generations"
-	if operation == adapter.ImagesEdit {
-		operationPath = "/v1/images/edits"
-	}
-	route, err := unifiedVideoRouter.SelectTransport(ctx, request.Model, routing.RouteRequirements{routing.CapabilityImageGeneration: true}, routing.RouteOptions{
-		SelectionKey: uuid.NewString(), OperationMethod: http.MethodPost, OperationPath: operationPath,
-		AllowedTransports:   []model.UpstreamTransport{model.UpstreamTransportOpenAIImages},
-		PreferredTransports: []model.UpstreamTransport{model.UpstreamTransportOpenAIImages},
-	})
+	route, err := selectUnifiedOpenAIImageRoute(ctx, unifiedVideoRouter, request.Model, operation, asyncResponse)
 	if err != nil {
 		return unifiedOpenAIImagePlan{}, err
 	}
@@ -646,7 +864,7 @@ func planUnifiedOpenAIImage(ctx context.Context, request adapter.OpenAIImagesReq
 	if err != nil {
 		return unifiedOpenAIImagePlan{}, err
 	}
-	if fmt.Sprintf("%s@%d", policy.AdapterCode, policy.AdapterVersion) != adapter.OpenAIImagesAdapter || policy.TaskScope == "task" || policy.CancelMode != "none" {
+	if fmt.Sprintf("%s@%d", policy.AdapterCode, policy.AdapterVersion) != adapter.OpenAIImagesAdapter || policy.CancelMode != "none" {
 		return unifiedOpenAIImagePlan{}, repository.ErrConflict
 	}
 	payload, err := json.Marshal(request)
@@ -654,11 +872,32 @@ func planUnifiedOpenAIImage(ctx context.Context, request adapter.OpenAIImagesReq
 		return unifiedOpenAIImagePlan{}, err
 	}
 	requestPath, _ := route.TransportConfig["request_path"].(string)
-	prepared, err := (adapter.OpenAIImages{}).Prepare(ctx, operation, http.MethodPost, requestPath, route.VendorModel, payload, storedOpenAIImageLoader{})
+	if policy.TaskScope == "task" {
+		err := (adapter.AsyncOpenAIImages{}).ValidateSubmit(repository.AsyncDispatch{
+			Method: routeMethod(route), Path: requestPath, VendorModel: route.VendorModel,
+			AdapterConfig: policy.AdapterConfig,
+		}, payload)
+		if err != nil {
+			return unifiedOpenAIImagePlan{}, fmt.Errorf("%w: %v", repository.ErrInvalidInput, err)
+		}
+		return unifiedOpenAIImagePlan{Route: route, Policy: policy, RequestPayload: payload, Asynchronous: true}, nil
+	}
+	if policy.TaskScope != "none" && policy.TaskScope != "request" {
+		return unifiedOpenAIImagePlan{}, repository.ErrConflict
+	}
+	prepared, err := (adapter.OpenAIImages{}).PrepareWithConfig(ctx, operation, http.MethodPost, requestPath, route.VendorModel, payload, policy.AdapterConfig, storedOpenAIImageLoader{})
 	if err != nil {
 		return unifiedOpenAIImagePlan{}, fmt.Errorf("%w: %v", repository.ErrInvalidInput, err)
 	}
 	return unifiedOpenAIImagePlan{Route: route, Policy: policy, RequestPayload: payload, Prepared: prepared}, nil
+}
+
+func routeMethod(route *routing.RouteResult) string {
+	if route == nil {
+		return ""
+	}
+	method, _ := route.TransportConfig["request_method"].(string)
+	return method
 }
 
 type storedOpenAIImageLoader struct{}
@@ -807,7 +1046,21 @@ func waitUnifiedOpenAIImageResponse(ctx context.Context, callID, userID, tokenID
 		}
 		switch status {
 		case "failed", "cancelled":
-			return OpenAIImageResponse{}, &gatewayruntime.ProviderCapabilityError{HTTPStatus: http.StatusBadGateway, Code: "provider_request_failed"}
+			providerErr := &gatewayruntime.ProviderCapabilityError{
+				HTTPStatus: http.StatusBadGateway,
+				Code:       "provider_request_failed",
+			}
+			failure, failureErr := payloadview.ReadLatestRequestFailure(ctx, unifiedVideoStore, callID)
+			if failureErr == nil {
+				if code := strings.TrimSpace(failure.Code); code != "" {
+					providerErr.Code = code
+				}
+				if failure.HTTPStatus > 0 && failure.HTTPStatus <= 999 {
+					providerErr.HTTPStatus = int(failure.HTTPStatus)
+				}
+				providerErr.Message = failure.Message
+			}
+			return OpenAIImageResponse{}, providerErr
 		case "indeterminate":
 			return OpenAIImageResponse{}, &gatewayruntime.ProviderCapabilityError{HTTPStatus: http.StatusGatewayTimeout, Code: "provider_exchange_unknown"}
 		}
@@ -888,7 +1141,11 @@ func writeOpenAIImageExecutionError(c *gin.Context, err error) {
 		} else if providerErr.Code == "provider_exchange_unknown" {
 			status = http.StatusGatewayTimeout
 		}
-		openAIError(c, status, "upstream image generation failed", "api_error")
+		message := strings.TrimSpace(providerErr.Message)
+		if message == "" {
+			message = "upstream image generation failed"
+		}
+		openAIError(c, status, message, "api_error")
 	default:
 		openAIError(c, http.StatusInternalServerError, "image generation failed", "api_error")
 	}

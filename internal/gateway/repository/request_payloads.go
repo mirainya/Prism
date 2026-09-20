@@ -18,6 +18,19 @@ func (s *Store) PutRequestLogPayload(ctx context.Context, tx *sql.Tx, requestLog
 	if kind == "response" {
 		column = "response_payload_blob_id"
 	}
+	return s.putRequestLogBlob(ctx, tx, requestLogID, column, "gateway-upstream-"+kind, kind, blob)
+}
+
+// PutRequestLogDiagnostic stores a bounded, sanitized summary separately from
+// the immutable raw provider response.
+func (s *Store) PutRequestLogDiagnostic(ctx context.Context, tx *sql.Tx, requestLogID uint64, blob BlobInput) (uint64, error) {
+	if tx == nil || requestLogID == 0 || len(blob.Plaintext) == 0 || len(blob.Plaintext) > 16<<10 || len(blob.KEK) != security.KeySize || len(blob.HMACKey) != security.KeySize {
+		return 0, ErrInvalidInput
+	}
+	return s.putRequestLogBlob(ctx, tx, requestLogID, "diagnostic_blob_id", "gateway-request-diagnostic", "diagnostic", blob)
+}
+
+func (s *Store) putRequestLogBlob(ctx context.Context, tx *sql.Tx, requestLogID uint64, column, purpose, ownerKind string, blob BlobInput) (uint64, error) {
 	var existing sql.NullInt64
 	if err := tx.QueryRowContext(ctx, s.forUpdate("SELECT "+column+" FROM gw_channel_request_logs WHERE id=?"), requestLogID).Scan(&existing); err == sql.ErrNoRows {
 		return 0, ErrNotFound
@@ -26,7 +39,6 @@ func (s *Store) PutRequestLogPayload(ctx context.Context, tx *sql.Tx, requestLog
 	}
 	digest := security.HMACSHA256(blob.HMACKey, blob.Plaintext)
 	contentHMAC := fmt.Sprintf("%x", digest[:])
-	purpose := "gateway-upstream-" + kind
 	if existing.Valid {
 		var storedPurpose, storedHMAC string
 		var storedLength uint64
@@ -40,7 +52,7 @@ func (s *Store) PutRequestLogPayload(ctx context.Context, tx *sql.Tx, requestLog
 	}
 	blob.Purpose = purpose
 	blob.SchemaVersion = 1
-	blob.Owner = []byte(fmt.Sprintf("request-log:%d:%s", requestLogID, kind))
+	blob.Owner = []byte(fmt.Sprintf("request-log:%d:%s", requestLogID, ownerKind))
 	blobID, err := s.PutEncryptedBlob(ctx, tx, blob)
 	if err != nil {
 		return 0, err

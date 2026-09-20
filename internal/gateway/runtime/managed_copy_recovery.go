@@ -2,12 +2,7 @@ package runtime
 
 import (
 	"context"
-	"crypto/sha256"
-	"database/sql"
-	"encoding/hex"
 	"fmt"
-	"net/http"
-	"strings"
 	"time"
 
 	"github.com/mirainya/Prism/internal/gateway/delivery"
@@ -65,95 +60,19 @@ func (s *Service) prepareManagedResultCopyAt(ctx context.Context, attemptID uint
 	if storage.APIKey == "" {
 		return ManagedCopy{}, &PermanentDispatchError{Code: "managed_copy_storage_unconfigured"}
 	}
-	maxBytes := int64(64 << 20)
-	if config.C != nil && config.C.FileStorage.MaxFileSizeMB > 0 {
-		maxBytes = int64(config.C.FileStorage.MaxFileSizeMB) * 1024 * 1024
+	maxBytes := config.FileStorageMaxResultSizeBytes()
+	if source.URL == "" {
+		return ManagedCopy{}, &PermanentDispatchError{Code: "invalid_managed_copy_recovery_source"}
 	}
-	var data []byte
-	var contentType string
-	if source.URL != "" {
-		downloaded, downloadErr := downloadManagedResult(ctx, source.URL, maxBytes)
-		if downloadErr != nil {
-			if ctx.Err() != nil {
-				return ManagedCopy{}, ctx.Err()
-			}
-			return ManagedCopy{}, fmt.Errorf("managed copy download: %w", downloadErr)
-		}
-		data = downloaded.Data
-		contentType = strings.TrimSpace(strings.Split(downloaded.ContentType, ";")[0])
-	} else {
-		if int64(len(source.InlineData)) > maxBytes {
-			return ManagedCopy{}, &PermanentDispatchError{Code: "managed_copy_result_too_large"}
-		}
-		data = source.InlineData
-		contentType = strings.TrimSpace(strings.Split(source.ContentType, ";")[0])
-	}
-	defer clear(data)
-	if len(data) == 0 {
-		return ManagedCopy{}, &PermanentDispatchError{Code: "managed_copy_result_empty"}
-	}
-	if contentType == "" {
-		contentType = http.DetectContentType(data)
-	}
-	contentType = strings.ToLower(contentType)
-	if !validManagedResultMIME(source.Role, contentType, http.DetectContentType(data)) {
-		return ManagedCopy{}, &PermanentDispatchError{Code: "managed_copy_content_type_mismatch"}
-	}
-	hash := sha256.Sum256(data)
-	digest := hex.EncodeToString(hash[:])
-	logicalKey := fmt.Sprintf("gateway-result:%d:%d", attemptID, ordinal)
-	retentionUntil := time.Now().UTC().Add(config.ResourceHistoryRetentionDuration())
-	var asset repository.ManagedCopyAssetRecord
-	err = s.Store.WithTx(ctx, func(tx *sql.Tx) error {
-		var reserveErr error
-		asset, reserveErr = s.Store.ReserveManagedCopyAsset(ctx, tx, attemptID, repository.MediaAssetInput{
-			UserID: storage.UserID, TokenID: storage.TokenID, Purpose: "result", ObjectKey: logicalKey,
-			ContentType: contentType, ContentLength: uint64(len(data)), SHA256: digest, RetentionUntil: &retentionUntil,
-		})
-		return reserveErr
-	})
+	prepared, err := s.prepareManagedURLCopy(ctx, storage, attemptID, ordinal, source, maxBytes)
 	if err != nil {
-		return ManagedCopy{}, fmt.Errorf("reserve managed result: %w", err)
+		return ManagedCopy{}, err
 	}
-	if asset.State == "active" {
-		return ManagedCopy{}, repository.ErrConflict
+	if prepared.FailureReason == "" {
+		return prepared.ManagedCopy, nil
 	}
-	if asset.StorageLocator == "" {
-		uploaded, uploadErr := uploadManagedResult(ctx, storage.APIKey, data, contentType, managedResultStoragePath(asset.ID), managedResultStorageFilename(digest, contentType))
-		if uploadErr != nil {
-			if ctx.Err() != nil {
-				return ManagedCopy{}, ctx.Err()
-			}
-			return ManagedCopy{}, fmt.Errorf("managed copy upload: %w", uploadErr)
-		}
-		locator := uploaded.StorageLocator()
-		if locator == "" || len(locator) > 2048 {
-			deleteManagedResultBestEffort(ctx, storage.APIKey, locator)
-			return ManagedCopy{}, fmt.Errorf("managed copy upload returned an invalid locator")
-		}
-		if verifyErr := verifyManagedResult(ctx, storage.APIKey, locator, int64(len(data)), digest); verifyErr != nil {
-			deleteManagedResultBestEffort(ctx, storage.APIKey, locator)
-			if ctx.Err() != nil {
-				return ManagedCopy{}, ctx.Err()
-			}
-			return ManagedCopy{}, fmt.Errorf("verify managed copy upload: %w", verifyErr)
-		}
-		objectVersion := strings.TrimSpace(uploaded.ObjectID)
-		if objectVersion == "" {
-			objectVersion = strings.TrimSpace(uploaded.ID)
-		}
-		if recordErr := s.Store.WithTx(ctx, func(tx *sql.Tx) error {
-			return s.Store.RecordManagedCopyUpload(ctx, tx, asset.ID, locator, objectVersion)
-		}); recordErr != nil {
-			deleteManagedResultBestEffort(ctx, storage.APIKey, locator)
-			return ManagedCopy{}, fmt.Errorf("record managed result: %w", recordErr)
-		}
-		asset.StorageLocator, asset.ObjectVersion = locator, objectVersion
-	} else if verifyErr := verifyManagedResult(ctx, storage.APIKey, asset.StorageLocator, int64(asset.ContentLength), asset.SHA256); verifyErr != nil {
-		if ctx.Err() != nil {
-			return ManagedCopy{}, ctx.Err()
-		}
-		return ManagedCopy{}, fmt.Errorf("verify existing managed copy: %w", verifyErr)
+	if delivery.RetryableManagedCopyFailure(prepared.FailureReason) {
+		return ManagedCopy{}, fmt.Errorf("managed copy URL import failed: %s", prepared.FailureReason)
 	}
-	return managedCopyFromAsset(asset), nil
+	return ManagedCopy{}, &PermanentDispatchError{Code: prepared.FailureReason}
 }

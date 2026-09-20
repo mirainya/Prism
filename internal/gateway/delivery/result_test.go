@@ -73,7 +73,6 @@ func containsResultSource(value []byte) bool {
 
 func TestRetryableManagedCopyFailure(t *testing.T) {
 	for _, reason := range []string{
-		ManagedCopyDownloadFailed,
 		ManagedCopyUploadFailed,
 		ManagedCopyVerificationFailed,
 	} {

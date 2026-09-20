@@ -16,10 +16,10 @@ func genericVideoConfig() []byte {
 }
 
 func TestValidateCatalogProductUsesRuntimeGenericValidation(t *testing.T) {
-	if err := ValidateCatalogProduct("generic", 1, "https://autodl.example", "POST", "/workflow/h3", "minimax-h3", genericVideoConfig()); err != nil {
+	if err := ValidateCatalogProduct("generic", 1, "https://autodl.example", "POST", "/workflow/h3", "minimax-h3", "task", genericVideoConfig()); err != nil {
 		t.Fatalf("valid generic product rejected: %v", err)
 	}
-	if err := ValidateCatalogProduct("generic", 1, "https://autodl.example", "POST", "/workflow/h3", "minimax-h3", []byte(`{}`)); err == nil {
+	if err := ValidateCatalogProduct("generic", 1, "https://autodl.example", "POST", "/workflow/h3", "minimax-h3", "task", []byte(`{}`)); err == nil {
 		t.Fatal("empty generic mapping was accepted")
 	}
 }
@@ -85,19 +85,20 @@ func TestGenericVideoDecodeInjectsExpressionFacts(t *testing.T) {
 	}
 }
 
-func TestVideoAsyncCodecRegistryIncludesNativeAndGenericProtocols(t *testing.T) {
+func TestAsyncCodecRegistryIncludesVideoAndImageProtocols(t *testing.T) {
 	for _, item := range []struct {
 		code    string
 		version uint32
 	}{
 		{code: "seedance", version: 1},
 		{code: "generic", version: 1},
+		{code: "openai_images", version: 1},
 	} {
-		if _, ok := VideoAsyncCodecFor(item.code, item.version); !ok {
+		if _, ok := AsyncCodecFor(item.code, item.version); !ok {
 			t.Fatalf("missing video codec %s@%d", item.code, item.version)
 		}
 	}
-	if _, ok := VideoAsyncCodecFor("generic", 2); ok {
+	if _, ok := AsyncCodecFor("generic", 2); ok {
 		t.Fatal("unimplemented generic contract version was accepted")
 	}
 }

@@ -23,6 +23,7 @@ import { fetchTaskDetail, fetchTaskLogs, TaskListParams } from '../services/api'
 import { TaskDetail, TaskLog, UserRole } from '../types';
 import { Drawer, Pagination, Select } from '../components/ui';
 import { PageHeader } from '../components/shell';
+import { UnifiedRequestLogs } from './unified_gateway/UnifiedRequestLogs';
 
 const DEFAULT_PAGE_SIZE = 20;
 const INPUT_CLASS = 'w-full min-w-0 rounded-lg border border-[var(--border-soft)] bg-[var(--surface-card)] px-3 py-2 text-sm text-[var(--text-primary)] outline-none transition placeholder:text-[var(--text-tertiary)] focus:border-[var(--primary)] focus:ring-2 focus:ring-[var(--focus-ring)]';
@@ -66,7 +67,7 @@ const DETAIL_TABS: Array<{ key: DetailTab; label: string; icon: LucideIcon; admi
   { key: 'overview', label: '概览', icon: LayoutList },
   { key: 'request', label: '请求参数', icon: Braces },
   { key: 'result', label: '结果', icon: FileJson },
-  { key: 'upstream', label: '上游响应', icon: RouteIcon, adminOnly: true },
+  { key: 'upstream', label: '上游 HTTP', icon: RouteIcon, adminOnly: true },
 ];
 
 const getIsAdmin = () => {
@@ -602,7 +603,7 @@ const Logs: React.FC = () => {
                 })}
               </div>
             )}
-            <div className="flex-1 overflow-y-auto p-5">
+            <div className={activeTab === 'upstream' ? 'flex min-h-0 flex-1' : 'flex-1 overflow-y-auto p-5'}>
               {loadingDetail ? (
                 <TaskDetailSkeleton />
               ) : detailError ? (
@@ -610,11 +611,11 @@ const Logs: React.FC = () => {
               ) : selectedTask && activeTab === 'overview' ? (
                 <TaskOverview task={selectedTask} admin={admin} onOpenCall={openCall} />
               ) : selectedTask && activeTab === 'request' ? (
-                <JsonPanel value={selectedTask.raw_params} emptyText="未保存请求参数" />
+                <JsonPanel value={selectedTask.raw_params} emptyText={selectedTask.request_payload_expired ? '请求正文已按保留策略清理' : '未保存请求参数'} />
               ) : selectedTask && activeTab === 'result' ? (
                 <TaskResult task={selectedTask} />
               ) : selectedTask && activeTab === 'upstream' && admin ? (
-                <JsonPanel value={selectedTask.vendor_response} emptyText="未保存上游响应" />
+                selectedTask.gateway_call_id ? <UnifiedRequestLogs callId={selectedTask.gateway_call_id} /> : <div className="flex flex-1 items-center justify-center text-sm text-[var(--text-secondary)]">暂无上游请求记录</div>
               ) : (
                 <div className="py-16 text-center text-sm text-[var(--text-secondary)]">任务详情不可用</div>
               )}

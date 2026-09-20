@@ -112,7 +112,7 @@ curl "$BASE_URL/v1/files" \
 
 ### POST /v1/images/generations
 
-OpenAI 风格 JSON 接口。必填字段为 `model` 和 `prompt`。支持 `n`、`size`、`aspect_ratio`、`quality`、`response_format`、`output_format`、`stream` 等参数；`image_urls` 非空时按图片编辑操作选路。
+OpenAI 风格 JSON 接口。必填字段为 `model` 和 `prompt`。支持 `n`、`size`、`aspect_ratio`、`quality`、`response_format`、`output_format`、`stream` 等参数。该路径只执行图片生成；图片编辑必须调用 `/v1/images/edits`。
 
 ```bash
 curl "$BASE_URL/v1/images/generations" \
@@ -123,9 +123,21 @@ curl "$BASE_URL/v1/images/generations" \
 
 ### POST /v1/images/edits
 
-OpenAI 风格 `multipart/form-data` 图片编辑接口。输入图片会转为统一媒体资产引用，不把 Base64 请求作为长期任务参数保存。
+图片编辑接口支持两种请求格式：JSON 请求使用 `image_urls` 传入 URL、Base64 或 Data URL；`multipart/form-data` 请求使用可重复的 `image` 文件字段，并可带一张 `mask`。输入图片会转为统一媒体资产引用，不把 Base64 请求作为长期任务参数保存。
 
-图片结果返回 OpenAI `created` 与 `data` 结构；流式请求返回 SSE。
+图片结果返回 OpenAI `created` 与 `data` 结构；流式请求返回 SSE。完整示例与文件限制见 [下游生图接入指南](docs/IMAGE_API_GUIDE.md)。
+
+### 图片异步任务
+
+任务型图片线路可使用异步接口，提交后立即返回 `202`：
+
+| 方法 | 路径 | 说明 |
+|---|---|---|
+| POST | `/v1/images/generations/async` | 异步图片生成 |
+| POST | `/v1/images/edits/async` | 异步图片编辑 |
+| GET | `/v1/images/tasks/:id` | 查询当前 Token 创建的图片任务 |
+
+提交参数与对应同步接口相同，但 `stream` 必须省略或为 `false`，并且必须省略 `partial_images`。编辑接口仍同时支持 JSON `image_urls` 和 multipart `image` 文件。成功提交响应包含任务编号 `X-Prism-Call-ID`、`Location`、`Retry-After` 和 `data.location`；查询状态为 `queued`、`processing`、`completed` 或 `failed`。查询未结束任务和业务失败任务均返回 HTTP `200`，分别通过 `data.status` 和 `data.error` 表达状态；完成时 `data.result` 为 OpenAI 图片结果。任务只能由创建它的同一个 Prism Token 查询。线路策略允许时，异步生成可用 `Idempotency-Key` 在 `24` 小时内去重；异步编辑会先导入素材，不保证重复提交复用原任务。完整请求、轮询代码与响应示例见 [下游生图接入指南](docs/IMAGE_API_GUIDE.md)。
 
 ## Videos API
 

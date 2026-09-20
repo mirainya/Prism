@@ -468,6 +468,9 @@ const Tokens: React.FC = () => {
                 <p className="mt-2 text-sm text-[var(--text-secondary)]">
                   绑定后，此令牌的图片和视频结果会转存到当前 XFileStorage。
                 </p>
+                <p className="mt-2 text-xs text-[var(--text-secondary)]">
+                  未绑定时直接返回上游结果地址；系统全局存储只用于输入素材和文件，不会代替此处的结果转存绑定。
+                </p>
               </div>
               {storageToken?.xfsStorage.configured && (
                 <div className="flex items-center justify-between gap-3 rounded-xl border border-green-200 bg-green-50 p-3 text-sm">

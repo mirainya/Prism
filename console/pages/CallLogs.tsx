@@ -4,6 +4,7 @@ import {
   Activity,
   AlertTriangle,
   Ban,
+  Braces,
   Check,
   CheckCircle2,
   ChevronRight,
@@ -37,6 +38,7 @@ import { fetchUnifiedChannels, type UnifiedChannel } from '../services/unifiedCh
 import { Drawer, Pagination, Select } from '../components/ui';
 import { PageHeader } from '../components/shell';
 import { User, UserRole } from '../types';
+import { UnifiedRequestLogs } from './unified_gateway/UnifiedRequestLogs';
 
 const DEFAULT_PAGE_SIZE = 20;
 const INPUT_CLASS = 'w-full min-w-0 rounded-lg border border-[var(--border-soft)] bg-[var(--surface-card)] px-3 py-2 text-sm text-[var(--text-primary)] outline-none transition placeholder:text-[var(--text-tertiary)] focus:border-[var(--primary)] focus:ring-2 focus:ring-[var(--focus-ring)]';
@@ -63,6 +65,16 @@ const ROUTE_KIND_LABELS: Record<string, string> = {
   capability: '能力任务',
   video: '视频任务',
 };
+
+type DetailTab = 'overview' | 'attempts' | 'billing' | 'payloads' | 'upstream';
+
+const DETAIL_TABS: Array<{ key: DetailTab; label: string; icon: LucideIcon; adminOnly?: boolean }> = [
+  { key: 'overview', label: '概览', icon: LayoutList },
+  { key: 'attempts', label: '上游尝试', icon: RouteIcon },
+  { key: 'billing', label: '计费', icon: ReceiptText },
+  { key: 'payloads', label: '请求与结果', icon: FileJson },
+  { key: 'upstream', label: '上游 HTTP', icon: Braces, adminOnly: true },
+];
 
 const PAYLOAD_KIND_LABELS: Record<string, string> = {
   request: '调用参数',
@@ -207,7 +219,7 @@ const CallLogs: React.FC = () => {
   const [detail, setDetail] = useState<APICallDetail | null>(null);
   const [detailLoading, setDetailLoading] = useState(false);
   const [detailError, setDetailError] = useState('');
-  const [activeTab, setActiveTab] = useState<'overview' | 'attempts' | 'billing' | 'payloads'>('overview');
+  const [activeTab, setActiveTab] = useState<DetailTab>('overview');
   const [copied, setCopied] = useState(false);
   const [channels, setChannels] = useState<UnifiedChannel[]>([]);
   const [users, setUsers] = useState<User[]>([]);
@@ -403,17 +415,21 @@ const CallLogs: React.FC = () => {
         panelClassName="bg-[var(--surface-card)]"
       >
           {detail && <div className="flex overflow-x-auto border-b border-[var(--border-soft)] bg-[var(--surface-muted)] px-4">
-            {([
-                ['overview', '概览', LayoutList], ['attempts', '上游尝试', RouteIcon], ['billing', '计费', ReceiptText], ['payloads', '请求与响应', FileJson],
-            ] as const).map(([key, label, Icon]) => <button key={key} onClick={() => setActiveTab(key)} className={`flex shrink-0 items-center gap-2 border-b-2 px-4 py-3 text-sm font-semibold transition ${activeTab === key ? 'border-[var(--primary)] bg-[var(--surface-tint)] text-[var(--primary)]' : 'border-transparent text-[var(--text-secondary)] hover:text-[var(--text-primary)]'}`}><Icon size={16} />{label}</button>)}
+            {DETAIL_TABS.filter(tab => !tab.adminOnly || isAdmin).map(tab => {
+              const Icon = tab.icon;
+              return <button key={tab.key} onClick={() => setActiveTab(tab.key)} className={`flex shrink-0 items-center gap-2 border-b-2 px-4 py-3 text-sm font-semibold transition ${activeTab === tab.key ? 'border-[var(--primary)] bg-[var(--surface-tint)] text-[var(--primary)]' : 'border-transparent text-[var(--text-secondary)] hover:text-[var(--text-primary)]'}`}><Icon size={16} />{tab.label}</button>;
+            })}
           </div>}
-          <div className="flex-1 overflow-y-auto p-5">
+          <div className={activeTab === 'upstream' ? 'flex min-h-0 flex-1' : 'flex-1 overflow-y-auto p-5'}>
             {detailLoading ? <CallDetailSkeleton /> :
               detailError ? <div className="flex items-center gap-2 rounded-lg border border-red-200 bg-red-50 p-4 text-sm text-red-700"><AlertTriangle size={17} />{detailError}</div> :
               detail && activeTab === 'overview' ? <Overview call={detail.call} isAdmin={isAdmin} copied={copied} onCopy={copyRequestID} /> :
               detail && activeTab === 'attempts' ? <Attempts attempts={detail.attempts || []} isAdmin={isAdmin} channelNames={channelNames} /> :
               detail && activeTab === 'billing' ? <Billing call={detail.call} logs={detail.billing_logs || []} /> :
-              detail && <Payloads payloads={detail.payloads || []} />}
+              detail && activeTab === 'payloads' ? <Payloads payloads={detail.payloads || []} /> :
+              detail && activeTab === 'upstream' && isAdmin ? (
+                detail.gateway_call_id ? <UnifiedRequestLogs callId={detail.gateway_call_id} /> : <div className="flex flex-1 items-center justify-center text-sm text-[var(--text-secondary)]">暂无上游请求记录</div>
+              ) : null}
           </div>
       </Drawer>
     </div>

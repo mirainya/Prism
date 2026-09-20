@@ -11,6 +11,7 @@ import (
 	"github.com/mirainya/Prism/internal/gateway/billing"
 	"github.com/mirainya/Prism/internal/gateway/delivery"
 	"github.com/mirainya/Prism/internal/gateway/execution"
+	"github.com/mirainya/Prism/internal/gateway/payloadview"
 	"github.com/mirainya/Prism/internal/gateway/repository"
 	"github.com/mirainya/Prism/internal/gateway/security"
 )
@@ -24,15 +25,18 @@ var ErrCallbackNeedsQuery = errors.New("gateway callback requires authoritative 
 // callback body. It is committed with the Receipt so callback processing has
 // the same state, delivery and billing guarantees as polling.
 type CallbackObservation struct {
-	AsyncExecutionID uint64
-	ReceiptID        uint64
-	State            execution.AsyncState
-	TaskID           string
-	Result           []byte
-	Facts            billing.Facts
-	Sources          []delivery.RemoteResult
-	SourceURLPolicy  string
-	PayloadHMAC      string
+	AsyncExecutionID     uint64
+	ReceiptID            uint64
+	State                execution.AsyncState
+	TaskID               string
+	Result               []byte
+	Facts                billing.Facts
+	Sources              []delivery.RemoteResult
+	SourceURLPolicy      string
+	PayloadHMAC          string
+	ProviderErrorCode    string
+	ProviderErrorMessage string
+	ProviderHTTPStatus   *uint16
 }
 
 // CallbackReceiptInput is the trusted envelope produced by the HTTP callback
@@ -300,8 +304,11 @@ func (s *Service) ApplyCallbackObservation(ctx context.Context, item repository.
 		if err != nil {
 			return err
 		}
-		statusCode := uint16(200)
-		if err := s.finishRequest(ctx, tx, requestID, "response_recorded", repository.RequestLogResult{ResponseBytesHMAC: in.PayloadHMAC, HTTPStatus: &statusCode, RequestComplete: true, ResponseComplete: true}); err != nil {
+		requestResult, err := callbackRequestLogResult(in, payload)
+		if err != nil {
+			return err
+		}
+		if err := s.finishRequest(ctx, tx, requestID, "response_recorded", requestResult); err != nil {
 			return err
 		}
 		var result *repository.BlobInput
@@ -319,6 +326,29 @@ func (s *Service) ApplyCallbackObservation(ctx context.Context, item repository.
 		}
 		return s.Store.CompleteCallbackOutbox(ctx, tx, item, true, "")
 	})
+}
+
+func callbackRequestLogResult(in CallbackObservation, payload repository.BlobInput) (repository.RequestLogResult, error) {
+	statusCode := uint16(200)
+	result := repository.RequestLogResult{
+		ResponseBytesHMAC: in.PayloadHMAC,
+		HTTPStatus:        &statusCode,
+		RequestComplete:   true,
+		ResponseComplete:  true,
+	}
+	if in.State != execution.AsyncFailed {
+		return result, nil
+	}
+	result.ErrorCode = asyncProviderFailureCode(in.ProviderErrorCode, in.ProviderHTTPStatus)
+	diagnostic, err := payloadview.EncodeFailureDiagnostic(in.ProviderErrorCode, in.ProviderErrorMessage, in.ProviderHTTPStatus)
+	if err != nil {
+		return repository.RequestLogResult{}, err
+	}
+	if len(diagnostic) != 0 {
+		payload.Plaintext = diagnostic
+		result.Diagnostic = &payload
+	}
+	return result, nil
 }
 
 func (s *Service) completeLateCallback(ctx context.Context, item repository.OutboxItem, in CallbackObservation, state execution.AsyncState) error {

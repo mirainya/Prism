@@ -220,7 +220,7 @@ func CreateUnifiedCatalogProduct(c *gin.Context) {
 		unifiedChannelError(c, repository.ErrInvalidInput)
 		return
 	}
-	if err := adapter.ValidateCatalogProduct(descriptor.Code, descriptor.Version, in.BaseURL, in.RequestMethod, in.RequestPath, in.VendorModel, in.CapabilityConstraints); err != nil {
+	if err := adapter.ValidateCatalogProduct(descriptor.Code, descriptor.Version, in.BaseURL, in.RequestMethod, in.RequestPath, in.VendorModel, in.TaskScope, in.CapabilityConstraints); err != nil {
 		unifiedChannelError(c, repository.ErrInvalidInput)
 		return
 	}
@@ -267,7 +267,7 @@ func ListUnifiedCatalogProducts(c *gin.Context) {
 		unifiedChannelError(c, err)
 		return
 	}
-	rows, err := db.QueryContext(ctx, `SELECT p.id,p.product_code,p.vendor_model,COALESCE(p.capability_constraints,JSON_OBJECT()),p.constraints_schema_version,ch.id,ch.display_name,pt.id,ct.id,ct.transport_code,ct.base_url,ct.protocol,ct.request_method,ct.request_path,pt.task_scope,pt.cancel_mode,pt.source_url_policy,a.adapter_code,a.contract_version,o.id,pool.id,pool.pool_code,pool.display_name,cp.id,cp.plan_code,(SELECT COUNT(*) FROM gw_routes r WHERE r.release_id=p.release_id AND r.offering_id=o.id),(SELECT COUNT(*) FROM gw_cost_rates r WHERE r.release_id=p.release_id AND r.cost_plan_id=cp.id),
+	rows, err := db.QueryContext(ctx, `SELECT p.id,p.product_code,p.vendor_model,COALESCE(p.capability_constraints,JSON_OBJECT()),p.constraints_schema_version,ch.id,ch.display_name,pt.id,ct.id,ct.transport_code,ct.base_url,ct.protocol,ct.request_method,ct.request_path,pt.task_scope,pt.cancel_mode,pt.source_url_policy,a.adapter_code,a.contract_version,o.id,ors.state,ors.state_version,pool.id,pool.pool_code,pool.display_name,cp.id,cp.plan_code,(SELECT COUNT(*) FROM gw_routes r WHERE r.release_id=p.release_id AND r.offering_id=o.id),(SELECT COUNT(*) FROM gw_cost_rates r WHERE r.release_id=p.release_id AND r.cost_plan_id=cp.id),
 'not_required',
 (SELECT COUNT(*) FROM gw_credentials c
  JOIN gw_credential_secret_identities si ON si.id=c.secret_identity_id AND si.channel_id=c.channel_id AND si.status='active'
@@ -283,7 +283,9 @@ JOIN gw_credential_versions cv ON cv.id=c.current_version_id AND cv.credential_i
  )))
 FROM gw_products p JOIN gateway_channels ch ON ch.id=p.channel_id JOIN gw_product_transports pt ON pt.product_id=p.id AND pt.release_id=p.release_id
 JOIN gw_channel_transports ct ON ct.id=pt.channel_transport_id AND ct.release_id=pt.release_id JOIN gw_adapter_implementations a ON a.id=ct.adapter_implementation_id
-JOIN gw_offerings o ON o.product_transport_id=pt.id AND o.release_id=pt.release_id JOIN gw_credential_pools pool ON pool.id=o.credential_pool_id
+JOIN gw_offerings o ON o.product_transport_id=pt.id AND o.release_id=pt.release_id
+JOIN gw_offering_runtime_state ors ON ors.release_id=o.release_id AND ors.offering_id=o.id
+JOIN gw_credential_pools pool ON pool.id=o.credential_pool_id
 JOIN gw_cost_plans cp ON cp.offering_id=o.id AND cp.release_id=o.release_id WHERE p.release_id=? ORDER BY p.id DESC LIMIT ? OFFSET ?`, releaseID, size, (page-1)*size)
 	if err != nil {
 		unifiedChannelError(c, err)
@@ -292,14 +294,14 @@ JOIN gw_cost_plans cp ON cp.offering_id=o.id AND cp.release_id=o.release_id WHER
 	defer rows.Close()
 	items := make([]gin.H, 0, size)
 	for rows.Next() {
-		var productID, constraintsVersion, channelID, productTransportID, channelTransportID, adapterVersion, offeringID, poolID, costPlanID, routeCount, rateCount, entitledCredentials uint64
-		var productCode, vendorModel, channelName, transportCode, baseURL, protocol, method, path, taskScope, cancelMode, sourcePolicy, adapterCode, poolCode, poolName, planCode, commercialState string
+		var productID, constraintsVersion, channelID, productTransportID, channelTransportID, adapterVersion, offeringID, offeringStateVersion, poolID, costPlanID, routeCount, rateCount, entitledCredentials uint64
+		var productCode, vendorModel, channelName, transportCode, baseURL, protocol, method, path, taskScope, cancelMode, sourcePolicy, adapterCode, offeringState, poolCode, poolName, planCode, commercialState string
 		var constraints []byte
-		if err := rows.Scan(&productID, &productCode, &vendorModel, &constraints, &constraintsVersion, &channelID, &channelName, &productTransportID, &channelTransportID, &transportCode, &baseURL, &protocol, &method, &path, &taskScope, &cancelMode, &sourcePolicy, &adapterCode, &adapterVersion, &offeringID, &poolID, &poolCode, &poolName, &costPlanID, &planCode, &routeCount, &rateCount, &commercialState, &entitledCredentials); err != nil {
+		if err := rows.Scan(&productID, &productCode, &vendorModel, &constraints, &constraintsVersion, &channelID, &channelName, &productTransportID, &channelTransportID, &transportCode, &baseURL, &protocol, &method, &path, &taskScope, &cancelMode, &sourcePolicy, &adapterCode, &adapterVersion, &offeringID, &offeringState, &offeringStateVersion, &poolID, &poolCode, &poolName, &costPlanID, &planCode, &routeCount, &rateCount, &commercialState, &entitledCredentials); err != nil {
 			unifiedChannelError(c, err)
 			return
 		}
-		items = append(items, gin.H{"id": productID, "product_code": productCode, "vendor_model": vendorModel, "capability_constraints": json.RawMessage(constraints), "constraints_schema_version": constraintsVersion, "channel_id": channelID, "channel_name": channelName, "product_transport_id": productTransportID, "channel_transport_id": channelTransportID, "transport_code": transportCode, "base_url": baseURL, "protocol": protocol, "request_method": method, "request_path": path, "task_scope": taskScope, "cancel_mode": cancelMode, "source_url_policy": sourcePolicy, "adapter_code": adapterCode, "adapter_version": adapterVersion, "offering_id": offeringID, "credential_pool_id": poolID, "pool_code": poolCode, "pool_name": poolName, "cost_plan_id": costPlanID, "cost_plan_code": planCode, "route_count": routeCount, "cost_rate_count": rateCount, "commercial_state": commercialState, "entitled_credential_count": entitledCredentials})
+		items = append(items, gin.H{"id": productID, "product_code": productCode, "vendor_model": vendorModel, "capability_constraints": json.RawMessage(constraints), "constraints_schema_version": constraintsVersion, "channel_id": channelID, "channel_name": channelName, "product_transport_id": productTransportID, "channel_transport_id": channelTransportID, "transport_code": transportCode, "base_url": baseURL, "protocol": protocol, "request_method": method, "request_path": path, "task_scope": taskScope, "cancel_mode": cancelMode, "source_url_policy": sourcePolicy, "adapter_code": adapterCode, "adapter_version": adapterVersion, "offering_id": offeringID, "offering_state": offeringState, "offering_state_version": offeringStateVersion, "credential_pool_id": poolID, "pool_code": poolCode, "pool_name": poolName, "cost_plan_id": costPlanID, "cost_plan_code": planCode, "route_count": routeCount, "cost_rate_count": rateCount, "commercial_state": commercialState, "entitled_credential_count": entitledCredentials})
 	}
 	if err := rows.Err(); err != nil {
 		unifiedChannelError(c, err)

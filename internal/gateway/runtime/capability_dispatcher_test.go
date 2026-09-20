@@ -48,6 +48,70 @@ func TestCapabilityExchangeTreatsObserverFailureAsIncomplete(t *testing.T) {
 	}
 }
 
+func TestCapabilityResponsePayloadCaptureIsBounded(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	store, err := repository.New(db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	service, err := New(store)
+	if err != nil {
+		t.Fatal(err)
+	}
+	key := bytes.Repeat([]byte{1}, 32)
+	dispatcher := &CapabilityDispatcher{network: &AsyncDispatcher{
+		service: service,
+		keys:    AsyncKeys{PayloadKEK: key, PayloadHMAC: key},
+	}}
+	mock.ExpectQuery("SELECT k.id,k.current_version FROM crypto_keyring_state").
+		WillReturnRows(sqlmock.NewRows([]string{"id", "current_version"}).AddRow(7, 3))
+	body := []byte(`{"data":[{"url":"https://cdn.example/image.png"}]}`)
+	var result repository.RequestLogResult
+	if err := dispatcher.attachResponsePayload(context.Background(), body, &result); err != nil {
+		t.Fatal(err)
+	}
+	if result.ResponsePayload == nil || result.ResponsePayload.KeyringID != 7 || result.ResponsePayload.KEKVersion != 3 ||
+		!bytes.Equal(result.ResponsePayload.Plaintext, body) {
+		t.Fatalf("response payload = %+v", result.ResponsePayload)
+	}
+
+	mock.ExpectQuery("SELECT k.id,k.current_version FROM crypto_keyring_state").
+		WillReturnRows(sqlmock.NewRows([]string{"id", "current_version"}).AddRow(7, 3))
+	largeBody := bytes.Repeat([]byte("x"), maxCapturedExchangeBody+1)
+	result.ResponsePayload = nil
+	if err := dispatcher.attachResponsePayload(context.Background(), largeBody, &result); err != nil {
+		t.Fatal(err)
+	}
+	if result.ResponsePayload == nil || !bytes.Equal(result.ResponsePayload.Plaintext, largeBody) {
+		t.Fatal("response body within the exchange limit was not selected for persistence")
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestProviderCapabilityErrorIncludesBoundedProviderMessage(t *testing.T) {
+	status := uint16(http.StatusBadRequest)
+	exchange := repository.RequestLogResult{
+		HTTPStatus:       &status,
+		ResponseComplete: true,
+	}
+	failure := providerCapabilityError(exchange, []byte(`{"error":{"message":"invalid image size"}}`), "provider_http_error")
+	if failure.HTTPStatus != http.StatusBadRequest || failure.Code != "provider_http_error" || failure.Message != "invalid image size" {
+		t.Fatalf("failure = %+v", failure)
+	}
+
+	oversized := bytes.Repeat([]byte("x"), maxCapturedExchangeBody+1)
+	failure = providerCapabilityError(exchange, oversized, "invalid_provider_response")
+	if failure.Message != "" {
+		t.Fatalf("oversized response message = %q", failure.Message)
+	}
+}
+
 func TestCapabilityDispatcherCloseClearsEveryKeyCopy(t *testing.T) {
 	db, _, err := sqlmock.New()
 	if err != nil {

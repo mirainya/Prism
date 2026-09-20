@@ -12,6 +12,7 @@ import (
 
 	"github.com/mirainya/Prism/internal/gateway/billing"
 	"github.com/mirainya/Prism/internal/gateway/execution"
+	"github.com/mirainya/Prism/internal/gateway/payloadview"
 	"github.com/mirainya/Prism/internal/gateway/repository"
 	"github.com/mirainya/Prism/internal/gateway/security"
 	"github.com/mirainya/Prism/pkg/safeurl"
@@ -34,6 +35,7 @@ type CapabilityDispatchInput struct {
 type ProviderCapabilityError struct {
 	HTTPStatus int
 	Code       string
+	Message    string
 }
 
 func (e *ProviderCapabilityError) Error() string {
@@ -150,19 +152,18 @@ func (d *CapabilityDispatcher) Dispatch(ctx context.Context, in CapabilityDispat
 	}
 	body, exchange := d.exchange(request, in.ObserveResponse)
 	defer clear(body)
+	if err := d.attachResponsePayload(context.WithoutCancel(ctx), body, &exchange); err != nil {
+		return d.failAfterAuthorization(ctx, in.AttemptID, requestID, exchange, true, err)
+	}
 	if exchange.ErrorCode != "" {
 		uncertain := exchange.HTTPStatus == nil || !exchange.RequestComplete || !exchange.ResponseComplete
-		status := http.StatusBadGateway
-		if exchange.HTTPStatus != nil {
-			status = int(*exchange.HTTPStatus)
-		}
 		return d.failAfterAuthorization(ctx, in.AttemptID, requestID, exchange, uncertain,
-			&ProviderCapabilityError{HTTPStatus: status, Code: exchange.ErrorCode})
+			providerCapabilityError(exchange, body, exchange.ErrorCode))
 	}
 	observation, err := in.Decode(body)
 	if err != nil || observation.State != execution.AsyncSucceeded || len(observation.Result) == 0 || len(observation.Sources) == 0 {
 		return d.failAfterAuthorization(ctx, in.AttemptID, requestID, exchange, false,
-			&ProviderCapabilityError{HTTPStatus: http.StatusBadGateway, Code: "invalid_provider_response"})
+			providerCapabilityError(exchange, body, "invalid_provider_response"))
 	}
 	// Adapter decoders do not know the exchange duration. Add it only for a
 	// variable already declared by the published adapter manifest.
@@ -183,6 +184,30 @@ func (d *CapabilityDispatcher) Dispatch(ctx context.Context, in CapabilityDispat
 		return d.failAfterAuthorization(ctx, in.AttemptID, requestID, exchange, true, err)
 	}
 	return nil
+}
+
+func (d *CapabilityDispatcher) attachResponsePayload(ctx context.Context, body []byte, result *repository.RequestLogResult) error {
+	if len(body) == 0 {
+		return nil
+	}
+	blob, err := d.network.payloadBlob(ctx, body)
+	if err != nil {
+		return err
+	}
+	result.ResponsePayload = &blob
+	return nil
+}
+
+func providerCapabilityError(exchange repository.RequestLogResult, body []byte, code string) *ProviderCapabilityError {
+	status := http.StatusBadGateway
+	if exchange.HTTPStatus != nil {
+		status = int(*exchange.HTTPStatus)
+	}
+	message := ""
+	if exchange.ResponseComplete && len(body) <= maxCapturedExchangeBody {
+		message = payloadview.ExtractFailureMessage(body)
+	}
+	return &ProviderCapabilityError{HTTPStatus: status, Code: code, Message: message}
 }
 
 func captureCapabilityRequestPayload(contentType string, body []byte) bool {

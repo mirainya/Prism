@@ -25,6 +25,28 @@ func TestValidCatalogRequestMethodRestrictsGenericExtensions(t *testing.T) {
 	}
 }
 
+func TestValidCatalogRequestTargetAllowsProviderQuery(t *testing.T) {
+	for _, target := range []string{
+		"/v1/images/generations",
+		"/v1/images/generations?async=true",
+		"/v1/tasks/{task_id}",
+	} {
+		if !validCatalogRequestTarget(target) {
+			t.Fatalf("valid request target %q was rejected", target)
+		}
+	}
+
+	for _, target := range []string{
+		"", "images/generations", "//provider.example/path",
+		"https://provider.example/path", "/path#fragment", "/path\nnext",
+		"/path?bad=%zz",
+	} {
+		if validCatalogRequestTarget(target) {
+			t.Fatalf("invalid request target %q was accepted", target)
+		}
+	}
+}
+
 func TestValidCatalogTaskPolicyRequiresExecutableVideoSemantics(t *testing.T) {
 	for _, adapterCode := range []string{"generic", "seedance"} {
 		if !validCatalogTaskPolicy(adapterCode, "task", "none") {
@@ -43,6 +65,14 @@ func TestValidCatalogTaskPolicyRequiresExecutableVideoSemantics(t *testing.T) {
 		if validCatalogTaskPolicy("openai_chat", value[0], value[1]) {
 			t.Fatalf("invalid synchronous policy %q/%q was accepted", value[0], value[1])
 		}
+	}
+	for _, scope := range []string{"none", "request", "task"} {
+		if !validCatalogTaskPolicy("openai_images", scope, "none") {
+			t.Fatalf("openai_images %s policy was rejected", scope)
+		}
+	}
+	if validCatalogTaskPolicy("openai_images", "task", "upstream") {
+		t.Fatal("openai_images upstream cancellation was accepted")
 	}
 }
 

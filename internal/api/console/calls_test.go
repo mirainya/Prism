@@ -163,10 +163,11 @@ func TestGetAPICallReturnsDetailsAndEnforcesOwnership(t *testing.T) {
 	var envelope apiCallEnvelope
 	decodeAPICallConsoleResponse(t, response, &envelope)
 	var detail struct {
-		Call        model.APICall          `json:"call"`
-		Attempts    []model.APICallAttempt `json:"attempts"`
-		BillingLogs []model.BillingLog     `json:"billing_logs"`
-		Payloads    []struct {
+		Call          model.APICall          `json:"call"`
+		GatewayCallID uint64                 `json:"gateway_call_id"`
+		Attempts      []model.APICallAttempt `json:"attempts"`
+		BillingLogs   []model.BillingLog     `json:"billing_logs"`
+		Payloads      []struct {
 			Data          string `json:"data"`
 			Encrypted     bool   `json:"encrypted"`
 			OriginalBytes int64  `json:"original_bytes"`
@@ -178,7 +179,7 @@ func TestGetAPICallReturnsDetailsAndEnforcesOwnership(t *testing.T) {
 	if detail.Call.ID != call.ID || len(detail.Attempts) != 1 || len(detail.BillingLogs) != 1 || len(detail.Payloads) != 0 {
 		t.Fatalf("incomplete detail: %+v", detail)
 	}
-	if detail.Call.UserID != 0 || detail.Call.TokenID != 0 || detail.Attempts[0].ChannelID != 0 ||
+	if detail.GatewayCallID != 0 || detail.Call.UserID != 0 || detail.Call.TokenID != 0 || detail.Attempts[0].ChannelID != 0 ||
 		detail.Attempts[0].KeyID != 0 || detail.Attempts[0].VendorModel != "" ||
 		detail.BillingLogs[0].IdempotentKey != "" {
 		t.Fatalf("owner detail exposed internal data: %+v", detail)
@@ -228,7 +229,7 @@ func TestGetAPICallReturnsDetailsAndEnforcesOwnership(t *testing.T) {
 	if err := json.Unmarshal(envelope.Data, &detail); err != nil {
 		t.Fatalf("decode admin detail: %v", err)
 	}
-	if len(detail.Payloads) != 1 || detail.Payloads[0].Data != "" ||
+	if detail.GatewayCallID != internalCallID || len(detail.Payloads) != 1 || detail.Payloads[0].Data != "" ||
 		!detail.Payloads[0].Encrypted || detail.Payloads[0].OriginalBytes != 17 ||
 		detail.Attempts[0].KeyID != 31 {
 		t.Fatalf("admin detail is incomplete: %+v", detail)

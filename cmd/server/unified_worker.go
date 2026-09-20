@@ -133,7 +133,7 @@ func startUnifiedWorker(orm *gorm.DB, executionEngine *engine.Engine, readiness 
 		service.Close()
 		return nil, err
 	}
-	dispatcher, err := gatewayruntime.NewAsyncDispatcher(service, nil, keys, adapter.VideoAsyncCodecs())
+	dispatcher, err := gatewayruntime.NewAsyncDispatcher(service, nil, keys, adapter.AsyncCodecs())
 	if err != nil {
 		readiness.Disable()
 		service.Close()

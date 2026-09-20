@@ -487,7 +487,8 @@ SELECT cm.id,p.id,p.product_code,p.vendor_model,
        COALESCE(p.capability_constraints,JSON_OBJECT()),p.constraints_schema_version,
        ch.id,ch.display_name,pt.id,pt.task_scope,pt.cancel_mode,pt.source_url_policy,
        ct.id,ct.transport_code,ct.base_url,ct.protocol,ct.request_method,ct.request_path,
-       a.adapter_code,a.contract_version,o.id,pool.id,pool.pool_code,pool.display_name,
+       a.adapter_code,a.contract_version,o.id,runtime_state.state,runtime_state.state_version,
+       pool.id,pool.pool_code,pool.display_name,
        COALESCE(cp.id,0),COALESCE(cp.plan_code,''),
        (SELECT COUNT(*) FROM gw_routes rr WHERE rr.release_id=o.release_id AND rr.offering_id=o.id),
        (SELECT COUNT(*) FROM gw_cost_rates cr WHERE cr.release_id=o.release_id AND cr.cost_plan_id=cp.id),
@@ -497,6 +498,7 @@ JOIN gw_skus s ON s.release_id=r.release_id AND s.id=r.sku_id
 JOIN gw_model_operations mo ON mo.release_id=s.release_id AND mo.id=s.model_operation_id
 JOIN gw_catalog_models cm ON cm.release_id=mo.release_id AND cm.id=mo.catalog_model_id
 JOIN gw_offerings o ON o.release_id=r.release_id AND o.id=r.offering_id
+JOIN gw_offering_runtime_state runtime_state ON runtime_state.release_id=o.release_id AND runtime_state.offering_id=o.id
 JOIN gw_product_transports pt ON pt.release_id=o.release_id AND pt.id=o.product_transport_id
 JOIN gw_products p ON p.release_id=pt.release_id AND p.id=pt.product_id
 JOIN gateway_channels ch ON ch.id=p.channel_id
@@ -511,11 +513,11 @@ ORDER BY cm.id,p.id,o.id,r.sku_id`, modelIDs), args...)
 			return
 		}
 		for productRows.Next() {
-			var modelID, productID, constraintsVersion, channelID, productTransportID, channelTransportID, adapterVersion, offeringID, poolID, costPlanID, routeCount, costRateCount, skuID, routePriority, routeWeight uint64
-			var productCode, vendorModel, channelName, taskScope, cancelMode, sourcePolicy, transportCode, baseURL, protocol, method, path, adapterCode, poolCode, poolName string
+			var modelID, productID, constraintsVersion, channelID, productTransportID, channelTransportID, adapterVersion, offeringID, offeringStateVersion, poolID, costPlanID, routeCount, costRateCount, skuID, routePriority, routeWeight uint64
+			var productCode, vendorModel, channelName, taskScope, cancelMode, sourcePolicy, transportCode, baseURL, protocol, method, path, adapterCode, offeringState, poolCode, poolName string
 			var costPlanCode string
 			var constraints []byte
-			if err := productRows.Scan(&modelID, &productID, &productCode, &vendorModel, &constraints, &constraintsVersion, &channelID, &channelName, &productTransportID, &taskScope, &cancelMode, &sourcePolicy, &channelTransportID, &transportCode, &baseURL, &protocol, &method, &path, &adapterCode, &adapterVersion, &offeringID, &poolID, &poolCode, &poolName, &costPlanID, &costPlanCode, &routeCount, &costRateCount, &skuID, &routePriority, &routeWeight); err != nil {
+			if err := productRows.Scan(&modelID, &productID, &productCode, &vendorModel, &constraints, &constraintsVersion, &channelID, &channelName, &productTransportID, &taskScope, &cancelMode, &sourcePolicy, &channelTransportID, &transportCode, &baseURL, &protocol, &method, &path, &adapterCode, &adapterVersion, &offeringID, &offeringState, &offeringStateVersion, &poolID, &poolCode, &poolName, &costPlanID, &costPlanCode, &routeCount, &costRateCount, &skuID, &routePriority, &routeWeight); err != nil {
 				_ = productRows.Close()
 				unifiedChannelError(c, err)
 				return
@@ -537,6 +539,7 @@ ORDER BY cm.id,p.id,o.id,r.sku_id`, modelIDs), args...)
 					"request_path": path, "task_scope": taskScope, "cancel_mode": cancelMode,
 					"source_url_policy": sourcePolicy, "adapter_code": adapterCode,
 					"adapter_version": adapterVersion, "offering_id": offeringID,
+					"offering_state": offeringState, "offering_state_version": offeringStateVersion,
 					"credential_pool_id": poolID, "pool_code": poolCode, "pool_name": poolName,
 					"cost_plan_id": costPlanID, "cost_plan_code": costPlanCode,
 					"route_count": routeCount, "cost_rate_count": costRateCount,

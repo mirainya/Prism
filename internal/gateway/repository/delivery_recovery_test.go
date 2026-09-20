@@ -125,7 +125,7 @@ func TestScheduleDueDeliveryReconciliationsScansManagedCopyFailures(t *testing.T
 	}
 	defer db.Close()
 	store, _ := New(db)
-	mock.ExpectQuery("d.delivery_mode='managed_copy'.*d.reason_code IN.*managed_copy_download_failed").
+	mock.ExpectQuery("d.delivery_mode='managed_copy'.*d.reason_code IN.*managed_copy_upload_failed").
 		WithArgs(100).WillReturnRows(sqlmock.NewRows([]string{"id"}))
 	count, err := store.ScheduleDueDeliveryReconciliations(context.Background(), 100)
 	if err != nil || count != 0 {

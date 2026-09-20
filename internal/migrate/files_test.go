@@ -12,8 +12,8 @@ func TestLoadIncludesImmutableBaseline(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(migrations) != 101 {
-		t.Fatalf("managed migrations=%d, want 101", len(migrations))
+	if len(migrations) != 102 {
+		t.Fatalf("managed migrations=%d, want 102", len(migrations))
 	}
 	baseline := migrations[0]
 	if baseline.Filename != "20260718_150000_schema_baseline.sql" {
@@ -487,10 +487,50 @@ func TestLoadIncludesImmutableBaseline(t *testing.T) {
 		{95, "20260915_100000_gateway_plaintext_credentials.sql", "ffc8c53f11958eb271e15c78d4aab10b1098a0e44bb2766fd75030c8f4e355fd"},
 		{99, "20260917_143154_backfill_llm_downstream_protocols.sql", "3c9b5f704e92ff3f16aa8e6ea2ae816754fa339bee9ad58a748e9396b55df405"},
 		{100, "20260917_160000_token_xfs_api_key.sql", "e3ea20b7a8462a2a0a9336b90aafb5c99fe7b266a2f5a70af459948165c03acb"},
+		{101, "20260919_114500_register_image_edit_operation.sql", "712475b78e2a50a28a4b44368f8c05cab13e94eb107a71857c9694d61ef5033c"},
 	}
 	for _, migration := range newMigrations {
 		if migrations[migration.index].Filename != migration.filename || migrations[migration.index].Checksum != migration.checksum {
 			t.Fatalf("migration[%d]=%s/%s, want %s/%s", migration.index, migrations[migration.index].Filename, migrations[migration.index].Checksum, migration.filename, migration.checksum)
+		}
+	}
+}
+
+func TestImageEditOperationMigrationRegistersCanonicalRouteIdempotently(t *testing.T) {
+	migrations, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var sql string
+	for _, migration := range migrations {
+		if migration.Version == "20260919_114500" {
+			sql = migration.SQL
+			break
+		}
+	}
+	if sql == "" {
+		t.Fatal("image edit operation migration is missing")
+	}
+	for _, fragment := range []string{
+		"INSERT INTO `gw_operation_contracts`",
+		"'images.edit'",
+		"`contract_version` = 1",
+		"`status` = 'active'",
+		"INSERT INTO `gw_operation_routes`",
+		"'POST'",
+		"'/v1/images/edits'",
+		"`operation_contract_id` = @prism_images_edit_contract_id",
+	} {
+		if !strings.Contains(sql, fragment) {
+			t.Errorf("image edit operation migration is missing %q", fragment)
+		}
+	}
+	if strings.Count(sql, "ON DUPLICATE KEY UPDATE") != 2 {
+		t.Fatal("image edit operation migration is not retry-safe")
+	}
+	for _, forbidden := range []string{"DELETE FROM", "DROP TABLE", "DROP COLUMN"} {
+		if strings.Contains(sql, forbidden) {
+			t.Errorf("image edit operation migration contains %q", forbidden)
 		}
 	}
 }

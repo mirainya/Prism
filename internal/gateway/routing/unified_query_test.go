@@ -34,7 +34,7 @@ func TestUnifiedCandidateQueryUsesNormalizedSchema(t *testing.T) {
 		`gw_routes(id INTEGER, release_id INTEGER, sku_id INTEGER, offering_id INTEGER, priority INTEGER, weight INTEGER)`,
 		`gw_offerings(id INTEGER, release_id INTEGER, product_transport_id INTEGER, credential_pool_id INTEGER, cost_plan_code TEXT, entitlement_fingerprint TEXT, commercial_fingerprint TEXT)`,
 		`gw_cost_plans(id INTEGER, release_id INTEGER, offering_id INTEGER, plan_code TEXT)`,
-		`gw_product_transports(id INTEGER, release_id INTEGER, product_id INTEGER, channel_transport_id INTEGER)`,
+		`gw_product_transports(id INTEGER, release_id INTEGER, product_id INTEGER, channel_transport_id INTEGER, task_scope TEXT)`,
 		`gw_products(id INTEGER, release_id INTEGER, channel_id INTEGER, vendor_model TEXT)`,
 		`gw_channel_transports(id INTEGER, release_id INTEGER, protocol TEXT, base_url TEXT, transport_code TEXT, request_method TEXT, request_path TEXT)`,
 		`gateway_channels(id INTEGER, status TEXT)`,
@@ -74,7 +74,7 @@ func TestUnifiedCandidateQueryUsesNormalizedSchema(t *testing.T) {
 		`gw_routes VALUES (1,1,1,1,1,1)`,
 		`gw_offerings VALUES (1,1,1,1,'provider-default','entitlement','commercial')`,
 		`gw_cost_plans VALUES (1,1,1,'provider-default')`,
-		`gw_product_transports VALUES (1,1,1,1)`,
+		`gw_product_transports VALUES (1,1,1,1,'request')`,
 		`gw_products VALUES (1,1,1,'fixture-vendor')`,
 		`gw_channel_transports VALUES (1,1,'openai','https://example.com','openai_chat','POST','/v1/chat/completions')`,
 		`gateway_channels VALUES (1,'active')`,
@@ -199,6 +199,9 @@ func TestUnifiedCandidateQueryUsesNormalizedSchema(t *testing.T) {
 				}
 				if candidate.RequestMethod != "POST" || candidate.RequestPath != "/v1/chat/completions" {
 					t.Fatalf("transport operation = %s %s", candidate.RequestMethod, candidate.RequestPath)
+				}
+				if candidate.TaskScope != "request" {
+					t.Fatalf("task scope = %q", candidate.TaskScope)
 				}
 			}
 			if rows.Next() {

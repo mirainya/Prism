@@ -78,3 +78,15 @@ func TestExecutionMode(t *testing.T) {
 		t.Fatalf("converted mode = %q", got)
 	}
 }
+
+func TestTaskScopeAllowed(t *testing.T) {
+	if !taskScopeAllowed("request", "") {
+		t.Fatal("an unspecified task scope must preserve synchronous route selection")
+	}
+	if !taskScopeAllowed("task", "task") {
+		t.Fatal("a matching task route was rejected")
+	}
+	if taskScopeAllowed("request", "task") {
+		t.Fatal("a synchronous route satisfied an asynchronous route requirement")
+	}
+}

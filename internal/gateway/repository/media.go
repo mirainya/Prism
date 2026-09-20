@@ -100,6 +100,37 @@ type ManagedCopyAssetRecord struct {
 	ContentLength                                         uint64
 }
 
+func (s *Store) ReadManagedCopyAsset(ctx context.Context, attemptID uint64, objectKey string) (ManagedCopyAssetRecord, error) {
+	objectKey = strings.TrimSpace(objectKey)
+	if s == nil || s.db == nil || attemptID == 0 || objectKey == "" || len(objectKey) > 512 {
+		return ManagedCopyAssetRecord{}, ErrInvalidInput
+	}
+	var out ManagedCopyAssetRecord
+	var locator, version sql.NullString
+	err := s.db.QueryRowContext(ctx, `SELECT id,user_id,token_id,COALESCE(attempt_id,0),object_key,storage_locator,object_version,content_type,content_length,sha256,state,state_version
+FROM gw_media_assets
+WHERE attempt_id=? AND object_key=?`, attemptID, objectKey).
+		Scan(&out.ID, &out.UserID, &out.TokenID, &out.AttemptID, &out.ObjectKey, &locator, &version, &out.ContentType, &out.ContentLength, &out.SHA256, &out.State, &out.StateVersion)
+	if err == sql.ErrNoRows {
+		return ManagedCopyAssetRecord{}, ErrNotFound
+	}
+	if err != nil {
+		return ManagedCopyAssetRecord{}, err
+	}
+	if locator.Valid {
+		out.StorageLocator = strings.TrimSpace(locator.String)
+	}
+	if version.Valid {
+		out.ObjectVersion = strings.TrimSpace(version.String)
+	}
+	if out.ID == 0 || out.UserID == 0 || out.TokenID == 0 || out.AttemptID != attemptID || out.ObjectKey != objectKey ||
+		out.ContentType == "" || out.ContentLength == 0 || !validHexDigest(out.SHA256, 32) ||
+		out.State != "staging" && out.State != "active" || len(out.StorageLocator) > 2048 || out.State == "active" && out.StorageLocator == "" {
+		return ManagedCopyAssetRecord{}, ErrConflict
+	}
+	return out, nil
+}
+
 // ReserveManagedCopyAsset creates the durable upload intent before any object
 // storage write. The logical object key is deterministic for one Attempt and
 // result ordinal, so a retry reuses the same staging fact.

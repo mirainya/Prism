@@ -1,12 +1,16 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import {
     playgroundGetConversationTurns,
+    playgroundEditImage,
     playgroundEstimateVideo,
+    playgroundGenerateImage,
     playgroundHydrateCompletedVideoTasks,
     playgroundListConversations,
+    playgroundListImageModels,
     playgroundListModels,
     playgroundListVideoModels,
+    PlaygroundImageRequestError,
 } from './playgroundApi';
 import { request } from './request';
 
@@ -21,6 +25,10 @@ const requestMock = vi.mocked(request);
 describe('playgroundApi', () => {
   beforeEach(() => {
     requestMock.mockReset();
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
   });
 
   it('loads chat models from the dedicated model endpoint', async () => {
@@ -99,6 +107,103 @@ describe('playgroundApi', () => {
       },
     });
     expect(requestMock).toHaveBeenCalledWith('/playground/token-1/videos/models');
+  });
+
+  it('loads image models together with configured image options', async () => {
+    requestMock.mockResolvedValue({
+      models: [{
+        id: 'gpt-image',
+        name: 'GPT Image',
+        supports_generation: true,
+        supports_edit: true,
+        generation_options: {
+          sizes: ['1024x1024'],
+          aspect_ratios: ['1:1'],
+          qualities: ['standard', 'high'],
+        },
+        edit_options: {
+          sizes: ['512x512'],
+          aspect_ratios: [],
+          qualities: ['high'],
+        },
+      }],
+    });
+
+    await expect(playgroundListImageModels('token-1')).resolves.toEqual([{
+      id: 'gpt-image',
+      name: 'GPT Image',
+      supports_generation: true,
+      supports_edit: true,
+      generation_options: {
+        sizes: ['1024x1024'],
+        aspect_ratios: ['1:1'],
+        qualities: ['standard', 'high'],
+      },
+      edit_options: {
+        sizes: ['512x512'],
+        aspect_ratios: [],
+        qualities: ['high'],
+      },
+    }]);
+    expect(requestMock).toHaveBeenCalledWith('/playground/token-1/images/models');
+  });
+
+  it('uses distinct endpoints for image generation and editing', async () => {
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      json: vi.fn().mockResolvedValue({ created: 1, data: [{ url: 'https://media.example/image.png' }] }),
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    await playgroundGenerateImage('token-1', {
+      model: 'ratio-image',
+      prompt: 'ocean',
+      aspect_ratio: '16:9',
+    });
+    await playgroundGenerateImage('token-1', {
+      model: 'pixel-image',
+      prompt: 'mountain',
+      size: '1024x1024',
+    });
+    await playgroundEditImage('token-1', {
+      model: 'edit-image',
+      prompt: 'remove the background',
+      image_urls: ['https://media.example/input.png'],
+    });
+
+    const ratioBody = JSON.parse(fetchMock.mock.calls[0][1].body as string);
+    const sizeBody = JSON.parse(fetchMock.mock.calls[1][1].body as string);
+    const editBody = JSON.parse(fetchMock.mock.calls[2][1].body as string);
+    expect(fetchMock.mock.calls[0][0]).toBe('/api/playground/token-1/images/generations');
+    expect(fetchMock.mock.calls[1][0]).toBe('/api/playground/token-1/images/generations');
+    expect(fetchMock.mock.calls[2][0]).toBe('/api/playground/token-1/images/edits');
+    expect(ratioBody).toMatchObject({ aspect_ratio: '16:9', n: 1, response_format: 'url' });
+    expect(ratioBody).not.toHaveProperty('size');
+    expect(sizeBody).toMatchObject({ size: '1024x1024', n: 1, response_format: 'url' });
+    expect(sizeBody).not.toHaveProperty('aspect_ratio');
+    expect(editBody).toMatchObject({
+      model: 'edit-image',
+      image_urls: ['https://media.example/input.png'],
+      n: 1,
+      response_format: 'url',
+    });
+  });
+
+  it('keeps the image error response for task details', async () => {
+    const payload = { error: { message: 'reference image is invalid', type: 'invalid_request_error' } };
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
+      ok: false,
+      json: vi.fn().mockResolvedValue(payload),
+    }));
+
+    const failure = await playgroundEditImage('token-1', {
+      model: 'edit-image',
+      prompt: 'edit',
+      image_urls: ['https://media.example/input.png'],
+    }).catch(error => error);
+
+    expect(failure).toBeInstanceOf(PlaygroundImageRequestError);
+    expect(failure).toMatchObject({ message: 'reference image is invalid', response: payload });
   });
 
   it('loads result URLs from completed video task details', async () => {

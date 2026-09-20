@@ -127,7 +127,7 @@ type ProductChange struct {
 // CatalogProductValidator validates adapter-owned product configuration while
 // the active catalog transaction is locked. Keeping the callback at this
 // boundary avoids a repository -> adapter import cycle.
-type CatalogProductValidator func(adapterCode string, adapterVersion uint32, baseURL, method, path, vendorModel string, config []byte) error
+type CatalogProductValidator func(adapterCode string, adapterVersion uint32, baseURL, method, path, vendorModel, taskScope string, config []byte) error
 
 func (in *ProductChange) Normalize() error {
 	in.ProductCode = strings.ToLower(strings.TrimSpace(in.ProductCode))
@@ -171,12 +171,7 @@ func (in *CatalogRollbackInput) Normalize() {
 }
 
 func (in CatalogRollbackInput) guard() catalogChangeGuard {
-	return catalogChangeGuard{
-		ExpectedActiveReleaseID: in.ExpectedActiveReleaseID,
-		ExpectedConfigVersion:   in.ExpectedConfigVersion,
-		SemanticVersion:         in.SemanticVersion,
-		SemanticDigest:          in.SemanticDigest,
-	}
+	return catalogChangeGuard(in)
 }
 
 func (in CatalogRollbackInput) Validate() error {
@@ -413,7 +408,7 @@ func (s *Store) ChangeProduct(ctx context.Context, tx *sql.Tx, in ProductChange,
 		return CatalogChangeResult{}, err
 	}
 	transportRows, err := tx.QueryContext(ctx, `
-SELECT a.adapter_code,a.contract_version,ct.base_url,ct.request_method,ct.request_path
+SELECT a.adapter_code,a.contract_version,ct.base_url,ct.request_method,ct.request_path,pt.task_scope
 FROM gw_product_transports pt
 JOIN gw_channel_transports ct ON ct.release_id=pt.release_id AND ct.id=pt.channel_transport_id
 JOIN gw_adapter_implementations a ON a.id=ct.adapter_implementation_id
@@ -422,13 +417,13 @@ WHERE pt.release_id=? AND pt.product_id=?`, active.ID, productID)
 		return CatalogChangeResult{}, err
 	}
 	for transportRows.Next() {
-		var adapterCode, baseURL, method, path string
+		var adapterCode, baseURL, method, path, taskScope string
 		var adapterVersion uint32
-		if err := transportRows.Scan(&adapterCode, &adapterVersion, &baseURL, &method, &path); err != nil {
+		if err := transportRows.Scan(&adapterCode, &adapterVersion, &baseURL, &method, &path, &taskScope); err != nil {
 			_ = transportRows.Close()
 			return CatalogChangeResult{}, err
 		}
-		if err := validate(adapterCode, adapterVersion, baseURL, method, path, in.VendorModel, in.CapabilityConstraints); err != nil {
+		if err := validate(adapterCode, adapterVersion, baseURL, method, path, in.VendorModel, taskScope, in.CapabilityConstraints); err != nil {
 			_ = transportRows.Close()
 			return CatalogChangeResult{}, fmt.Errorf("%w: invalid %s@%d product configuration: %v", ErrInvalidInput, adapterCode, adapterVersion, err)
 		}

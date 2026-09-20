@@ -42,7 +42,9 @@ func TestCORSExposesCallHeaders(t *testing.T) {
 	exposed := response.Header().Get("Access-Control-Expose-Headers")
 	if !strings.Contains(exposed, "X-Prism-Call-ID") ||
 		!strings.Contains(exposed, "X-Request-ID") ||
-		!strings.Contains(exposed, "X-Prism-Conversation-ID") {
+		!strings.Contains(exposed, "X-Prism-Conversation-ID") ||
+		!strings.Contains(exposed, "Location") ||
+		!strings.Contains(exposed, "Retry-After") {
 		t.Fatalf("exposed headers = %q", exposed)
 	}
 }

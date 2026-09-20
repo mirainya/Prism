@@ -143,6 +143,7 @@ export interface CallListResponse {
 
 export interface APICallDetail {
   call: APICall;
+  gateway_call_id?: number;
   attempts: APICallAttempt[];
   billing_logs: APICallBillingLog[];
   payloads: APICallPayload[];

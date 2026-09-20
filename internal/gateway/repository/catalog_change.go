@@ -456,19 +456,6 @@ func (s *Store) ChangeCostRate(ctx context.Context, tx *sql.Tx, in CostRateChang
 	return CatalogChangeResult{ReleaseID: active.ID, ConfigVersion: version, Activated: true, SourceReleaseID: active.ID}, nil
 }
 
-// lockActiveRelease takes the runtime pointer under an exclusive lock and checks
-// it against what the caller believed was live. Locking the singleton for the
-// whole change serializes B-class edits against each other: the second admin
-// waits, then fails the expectation check instead of forking a second branch
-// from the same base.
-func lockActiveRelease(ctx context.Context, tx *sql.Tx, expected uint64) (uint64, error) {
-	lock, err := lockActiveCatalogRelease(ctx, tx, expected, 0)
-	if err != nil {
-		return 0, err
-	}
-	return lock.ID, nil
-}
-
 // sellRateRow is the rate being replaced. Everything except the price is carried
 // forward: the operator is changing what a unit costs, not what is metered.
 type sellRateRow struct {

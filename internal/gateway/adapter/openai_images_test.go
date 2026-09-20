@@ -38,6 +38,25 @@ func TestOpenAIImagesGenerationPinsVendorModel(t *testing.T) {
 	}
 }
 
+func TestOpenAIImagesGenerationCanForceUpstreamBase64(t *testing.T) {
+	payload := []byte(`{"model":"public","prompt":"draw","n":1,"response_format":"url"}`)
+	prepared, err := (OpenAIImages{}).PrepareWithConfig(
+		context.Background(), ImagesGenerate, http.MethodPost, "/v1/images/generations", "vendor",
+		payload, []byte(`{"upstream_response_format":"b64_json"}`), nil,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var body map[string]any
+	if json.Unmarshal(prepared.Body, &body) != nil || body["response_format"] != "b64_json" {
+		t.Fatalf("body=%s", prepared.Body)
+	}
+	var downstream map[string]any
+	if json.Unmarshal(payload, &downstream) != nil || downstream["response_format"] != "url" {
+		t.Fatalf("downstream payload changed: %s", payload)
+	}
+}
+
 func TestOpenAIImagesEditBuildsDeterministicMultipart(t *testing.T) {
 	payload := []byte(`{"model":"public","prompt":"edit","image_urls":["https://assets.example/image.png"],"mask_urls":["https://assets.example/mask.png"],"n":1,"response_format":"b64_json","output_format":"png"}`)
 	loader := imageLoader{
@@ -74,6 +93,137 @@ func TestOpenAIImagesEditBuildsDeterministicMultipart(t *testing.T) {
 	}
 	if fields["image"] != 1 || fields["mask"] != 1 || fields["model"] != 1 || fields["prompt"] != 1 {
 		t.Fatalf("fields=%v", fields)
+	}
+}
+
+func TestOpenAIImagesMultipartEditCanForceUpstreamBase64(t *testing.T) {
+	payload := []byte(`{"model":"public","prompt":"edit","image_urls":["https://assets.example/image.png"],"n":1,"response_format":"url"}`)
+	loader := imageLoader{"https://assets.example/image.png": {Data: onePixelPNG, ContentType: "image/png"}}
+	prepared, err := (OpenAIImages{}).PrepareWithConfig(
+		context.Background(), ImagesEdit, http.MethodPost, "/v1/images/edits", "vendor",
+		payload, []byte(`{"upstream_response_format":"b64_json"}`), loader,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, params, found := strings.Cut(prepared.Header.Get("Content-Type"), "boundary=")
+	if !found {
+		t.Fatal("missing multipart boundary")
+	}
+	reader := multipart.NewReader(bytes.NewReader(prepared.Body), params)
+	for {
+		part, err := reader.NextPart()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
+		body, _ := io.ReadAll(part)
+		if part.FormName() == "response_format" {
+			if string(body) != "b64_json" {
+				t.Fatalf("response_format=%q", body)
+			}
+			return
+		}
+	}
+	t.Fatal("missing response_format field")
+}
+
+func TestOpenAIImagesEditBuildsConfiguredJSONURLRequest(t *testing.T) {
+	payload := []byte(`{
+  "model":"public",
+  "prompt":"edit",
+  "image_urls":["https://assets.example/one.png","https://assets.example/two.png"],
+  "n":1,
+  "size":"1024x1024",
+  "response_format":"url",
+  "stream":true
+}`)
+	config := []byte(`{
+	"upstream_response_format": "b64_json",
+  "image_edit": {
+    "enabled": true,
+    "input_mode": "url",
+    "request": {
+      "fields": {
+        "model": "model",
+        "prompt": "prompt",
+        "image_urls": "image",
+        "n": "n",
+        "size": "size"
+      },
+      "fixed_body": {
+        "model": "legacy-fixed-model",
+        "stream": false,
+        "response_format": "url"
+      }
+    }
+  }
+}`)
+
+	prepared, err := (OpenAIImages{}).PrepareWithConfig(
+		context.Background(), ImagesEdit, http.MethodPost,
+		"/api/v3/images/generations", "doubao-seedream-5-0-260128",
+		payload, config, nil,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if prepared.Path != "/api/v3/images/generations" || prepared.Header.Get("Content-Type") != "application/json" || prepared.Streaming {
+		t.Fatalf("prepared=%+v", prepared)
+	}
+	var body map[string]any
+	if err := json.Unmarshal(prepared.Body, &body); err != nil {
+		t.Fatal(err)
+	}
+	if body["model"] != "doubao-seedream-5-0-260128" || body["prompt"] != "edit" || body["response_format"] != "b64_json" || body["stream"] != false {
+		t.Fatalf("body=%#v", body)
+	}
+	images, ok := body["image"].([]any)
+	if !ok || len(images) != 2 || images[0] != "https://assets.example/one.png" || images[1] != "https://assets.example/two.png" {
+		t.Fatalf("image=%#v", body["image"])
+	}
+}
+
+func TestOpenAIImagesEditAcceptsTopLevelMappingAliases(t *testing.T) {
+	payload := []byte(`{"model":"public","prompt":"edit","image_urls":["https://assets.example/image.png"],"n":1,"response_format":"url"}`)
+	config := []byte(`{
+  "image_edit": {
+    "enabled": true,
+    "input_mode": "url",
+    "field_mapping": {"prompt":"prompt", "image_urls":"image"},
+    "fixed_body": {"model":"old", "stream":false, "response_format":"url"}
+  }
+}`)
+	prepared, err := (OpenAIImages{}).PrepareWithConfig(context.Background(), ImagesEdit, http.MethodPost, "/api/v3/images/generations", "vendor", payload, config, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var body map[string]any
+	if err := json.Unmarshal(prepared.Body, &body); err != nil {
+		t.Fatal(err)
+	}
+	if body["model"] != "vendor" || body["stream"] != false || body["response_format"] != "url" {
+		t.Fatalf("body=%#v", body)
+	}
+}
+
+func TestOpenAIImagesEditRejectsBrokenJSONURLMapping(t *testing.T) {
+	payload := []byte(`{"model":"public","prompt":"edit","image_urls":["https://assets.example/image.png"],"n":1,"response_format":"url"}`)
+	config := []byte(`{"image_edit":{"enabled":true,"input_mode":"url","request":{"fields":{"prompt":"prompt"}}}}`)
+	if _, err := (OpenAIImages{}).PrepareWithConfig(context.Background(), ImagesEdit, http.MethodPost, "/images", "vendor", payload, config, nil); err == nil {
+		t.Fatal("accepted URL edit mapping without image_urls")
+	}
+}
+
+func TestOpenAIImagesRejectsUnknownUpstreamResponseFormat(t *testing.T) {
+	payload := []byte(`{"model":"public","prompt":"draw","n":1,"response_format":"url"}`)
+	if _, err := (OpenAIImages{}).PrepareWithConfig(
+		context.Background(), ImagesGenerate, http.MethodPost, "/v1/images/generations", "vendor",
+		payload, []byte(`{"upstream_response_format":"data_url"}`), nil,
+	); err == nil {
+		t.Fatal("accepted unsupported upstream response format")
 	}
 }
 

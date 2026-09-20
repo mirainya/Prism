@@ -460,8 +460,18 @@ func (s *Service) finishAsyncTx(ctx context.Context, tx *sql.Tx, asyncID uint64,
 			return err
 		}
 	}
-	if execution.AsyncState(fromAsync) != target {
-		if _, err := s.Store.TransitionAsync(ctx, tx, asyncID, execution.AsyncState(fromAsync), target, asyncVersion, reason, ""); err != nil {
+	fromAsyncState := execution.AsyncState(fromAsync)
+	// A terminal submit result proves that the provider accepted the work even
+	// when it completed before the first poll. Preserve that fact in the state
+	// history before recording success or cancellation.
+	if immediateTerminalProvesAcceptance(fromAsyncState, target) {
+		if _, err := s.Store.TransitionAsync(ctx, tx, asyncID, fromAsyncState, execution.AsyncAccepted, asyncVersion, "provider_accepted", ""); err != nil {
+			return err
+		}
+		fromAsyncState, asyncVersion = execution.AsyncAccepted, asyncVersion+1
+	}
+	if fromAsyncState != target {
+		if _, err := s.Store.TransitionAsync(ctx, tx, asyncID, fromAsyncState, target, asyncVersion, reason, ""); err != nil {
 			return err
 		}
 	}
@@ -488,6 +498,10 @@ func (s *Service) finishAsyncTx(ctx context.Context, tx *sql.Tx, asyncID uint64,
 		return s.enqueueTerminalCallbackTx(ctx, tx, callID, reason)
 	}
 	return nil
+}
+
+func immediateTerminalProvesAcceptance(from, target execution.AsyncState) bool {
+	return from == execution.AsyncSubmitting && (target == execution.AsyncSucceeded || target == execution.AsyncCancelled)
 }
 
 func (s *Service) finishBilling(ctx context.Context, tx *sql.Tx, callID, reservationID uint64, state execution.CallState, facts billing.Facts) error {

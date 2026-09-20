@@ -18,7 +18,6 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/mirainya/Prism/pkg/config"
-	"github.com/mirainya/Prism/pkg/safeurl"
 )
 
 type xfsResponse struct {
@@ -27,21 +26,36 @@ type xfsResponse struct {
 	Data    json.RawMessage `json:"data"`
 }
 
+const (
+	maxImportURLBytes       = 8192
+	maxStoragePathBytes     = 1024
+	maxStorageFilenameBytes = 255
+	maxXFSResponseBytes     = int64(1 << 20)
+)
+
+type importURLRequest struct {
+	URL              string `json:"url"`
+	Path             string `json:"path,omitempty"`
+	OriginalFilename string `json:"originalFilename,omitempty"`
+}
+
+type UploadHashInfo map[string]string
+
 type UploadResult struct {
-	ID           string `json:"id"`
-	URL          string `json:"url"`
-	RawURL       string `json:"rawUrl"`
-	Size         int64  `json:"size"`
-	Filename     string `json:"filename"`
-	OriginalName string `json:"originalFilename"`
-	Path         string `json:"path"`
-	ContentType  string `json:"contentType"`
-	Platform     string `json:"platform"`
-	ObjectID     string `json:"objectId"`
-	ObjectType   string `json:"objectType"`
-	HashInfo     string `json:"hashInfo"`
-	UploadID     string `json:"uploadId"`
-	UploadStatus int    `json:"uploadStatus"`
+	ID           string         `json:"id"`
+	URL          string         `json:"url"`
+	RawURL       string         `json:"rawUrl"`
+	Size         int64          `json:"size"`
+	Filename     string         `json:"filename"`
+	OriginalName string         `json:"originalFilename"`
+	Path         string         `json:"path"`
+	ContentType  string         `json:"contentType"`
+	Platform     string         `json:"platform"`
+	ObjectID     string         `json:"objectId"`
+	ObjectType   string         `json:"objectType"`
+	HashInfo     UploadHashInfo `json:"hashInfo"`
+	UploadID     string         `json:"uploadId"`
+	UploadStatus int            `json:"uploadStatus"`
 }
 
 // StorageLocator returns the durable XFS object locator. URL remains the
@@ -51,6 +65,24 @@ func (r UploadResult) StorageLocator() string {
 		return locator
 	}
 	return strings.TrimSpace(r.URL)
+}
+
+func (r UploadResult) SHA256() string {
+	for name, value := range r.HashInfo {
+		normalizedName := strings.NewReplacer("-", "", "_", "", " ", "").Replace(strings.ToLower(strings.TrimSpace(name)))
+		if normalizedName != "sha256" {
+			continue
+		}
+		digest := strings.ToLower(strings.TrimSpace(value))
+		if len(digest) != sha256.Size*2 {
+			return ""
+		}
+		if _, err := hex.DecodeString(digest); err != nil {
+			return ""
+		}
+		return digest
+	}
+	return ""
 }
 
 // WithAPIKey returns a storage client view that keeps the global endpoint and
@@ -117,41 +149,6 @@ func IsBase64Data(s string) bool {
 		}
 	}
 	return false
-}
-
-// TransferURL 从 URL 下载文件并上传到 xfilestorage，返回最终 URL
-func TransferURL(ctx context.Context, originURL string, capabilityCode string) (string, error) {
-	return transferURL(ctx, originURL, capabilityCode, nil)
-}
-
-// TransferURLTrusted is used for provider result URLs whose hosts are
-// explicitly configured by the channel. Normal user-provided URLs must use
-// TransferURL so SSRF validation remains strict.
-func TransferURLTrusted(ctx context.Context, originURL string, capabilityCode string, trustedHosts []string) (string, error) {
-	return transferURL(ctx, originURL, capabilityCode, trustedHosts)
-}
-
-func transferURL(ctx context.Context, originURL string, capabilityCode string, trustedHosts []string) (string, error) {
-	cfg := config.C.FileStorage
-	if cfg.BaseURL == "" {
-		return originURL, nil
-	}
-
-	maxBytes := int64(cfg.MaxFileSizeMB) * 1024 * 1024
-	if maxBytes <= 0 {
-		maxBytes = 64 * 1024 * 1024 // 默认 64MiB 兜底
-	}
-	var result *safeurl.Result
-	var err error
-	if len(trustedHosts) > 0 {
-		result, err = safeurl.DownloadTrusted(ctx, originURL, maxBytes, trustedHosts)
-	} else {
-		result, err = safeurl.Download(ctx, originURL, maxBytes)
-	}
-	if err != nil {
-		return "", fmt.Errorf("download: %w", err)
-	}
-	return upload(ctx, bytes.NewReader(result.Data), result.ContentType, capabilityCode)
 }
 
 // TransferBase64 解码 base64 数据并上传到 xfilestorage，返回最终 URL
@@ -246,6 +243,94 @@ func (c Client) uploadReaderAtPath(ctx context.Context, data io.Reader, contentT
 	return uploadResultWithConfig(ctx, cfg, data, contentType, storagePath, filename)
 }
 
+// ImportURLAtPath asks x-file-storage to fetch a public HTTP(S) object and
+// write it directly to the storage platform bound to this client's API key.
+func ImportURLAtPath(ctx context.Context, originURL, storagePath, originalFilename string) (UploadResult, error) {
+	return DefaultClient().ImportURLAtPath(ctx, originURL, storagePath, originalFilename)
+}
+
+func (c Client) ImportURLAtPath(ctx context.Context, originURL, storagePath, originalFilename string) (UploadResult, error) {
+	if !c.Configured() {
+		return UploadResult{}, fmt.Errorf("file storage not configured")
+	}
+
+	if strings.ContainsAny(originURL, "\r\n\x00") {
+		return UploadResult{}, fmt.Errorf("invalid import URL")
+	}
+	originURL = strings.TrimSpace(originURL)
+	parsed, err := url.Parse(originURL)
+	scheme := ""
+	if parsed != nil {
+		scheme = strings.ToLower(parsed.Scheme)
+	}
+	if err != nil || originURL == "" || len(originURL) > maxImportURLBytes || strings.ContainsRune(originURL, '\x00') ||
+		parsed == nil || parsed.Opaque != "" || parsed.Hostname() == "" || parsed.User != nil || parsed.Fragment != "" ||
+		(scheme != "http" && scheme != "https") {
+		return UploadResult{}, fmt.Errorf("invalid import URL")
+	}
+
+	if strings.ContainsAny(storagePath, "\\\r\n\x00") {
+		return UploadResult{}, fmt.Errorf("invalid storage path")
+	}
+	storagePath = strings.TrimLeft(strings.TrimSpace(storagePath), "/")
+	if storagePath == "" {
+		return UploadResult{}, fmt.Errorf("invalid storage path")
+	}
+	for _, segment := range strings.Split(storagePath, "/") {
+		if segment == "." || segment == ".." {
+			return UploadResult{}, fmt.Errorf("invalid storage path")
+		}
+	}
+	if !strings.HasSuffix(storagePath, "/") {
+		storagePath += "/"
+	}
+	if len(storagePath) > maxStoragePathBytes {
+		return UploadResult{}, fmt.Errorf("invalid storage path")
+	}
+
+	if strings.ContainsAny(originalFilename, "/\\\r\n\x00") {
+		return UploadResult{}, fmt.Errorf("invalid storage filename")
+	}
+	originalFilename = strings.TrimSpace(originalFilename)
+	if len(originalFilename) > maxStorageFilenameBytes || originalFilename == "." || originalFilename == ".." ||
+		strings.ContainsAny(originalFilename, "/\\") {
+		return UploadResult{}, fmt.Errorf("invalid storage filename")
+	}
+
+	body, err := json.Marshal(importURLRequest{
+		URL:              originURL,
+		Path:             storagePath,
+		OriginalFilename: originalFilename,
+	})
+	if err != nil {
+		return UploadResult{}, fmt.Errorf("encode import request: %w", err)
+	}
+	endpoint := strings.TrimRight(c.config.BaseURL, "/") + "/api/v1/upload-url"
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(body))
+	if err != nil {
+		return UploadResult{}, fmt.Errorf("create import request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-Api-Key", c.config.APIKey)
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return UploadResult{}, fmt.Errorf("import request: %w", err)
+	}
+	defer resp.Body.Close()
+	responseBody, err := io.ReadAll(io.LimitReader(resp.Body, maxXFSResponseBytes+1))
+	if err != nil {
+		return UploadResult{}, fmt.Errorf("read import response: %w", err)
+	}
+	if int64(len(responseBody)) > maxXFSResponseBytes {
+		return UploadResult{}, fmt.Errorf("xfilestorage import response exceeds size limit")
+	}
+	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
+		return UploadResult{}, fmt.Errorf("xfilestorage import returned HTTP %d", resp.StatusCode)
+	}
+	return parseUploadResult(responseBody)
+}
+
 func upload(ctx context.Context, data io.Reader, contentType string, capabilityCode string) (string, error) {
 	cfg := config.C.FileStorage
 	storagePath := fmt.Sprintf("%s%s/%s/", cfg.UploadPath, capabilityCode, time.Now().Format("2006/01/02"))
@@ -303,10 +388,14 @@ func uploadResultWithConfig(ctx context.Context, cfg config.FileStorageConfig, d
 	}
 	defer resp.Body.Close()
 
-	body, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	body, _ := io.ReadAll(io.LimitReader(resp.Body, maxXFSResponseBytes))
 	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
 		return UploadResult{}, fmt.Errorf("xfilestorage upload returned HTTP %d", resp.StatusCode)
 	}
+	return parseUploadResult(body)
+}
+
+func parseUploadResult(body []byte) (UploadResult, error) {
 	var xfsResp xfsResponse
 	if err := json.Unmarshal(body, &xfsResp); err != nil {
 		return UploadResult{}, fmt.Errorf("parse response: %w", err)

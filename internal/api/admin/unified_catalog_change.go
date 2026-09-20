@@ -171,7 +171,7 @@ func CreateUnifiedActiveCatalogProduct(c *gin.Context) {
 		unifiedChannelError(c, err)
 		return
 	}
-	if err := adapter.ValidateCatalogProduct(descriptor.Code, descriptor.Version, in.BaseURL, in.RequestMethod, in.RequestPath, in.VendorModel, in.CapabilityConstraints); err != nil {
+	if err := adapter.ValidateCatalogProduct(descriptor.Code, descriptor.Version, in.BaseURL, in.RequestMethod, in.RequestPath, in.VendorModel, in.TaskScope, in.CapabilityConstraints); err != nil {
 		unifiedChannelError(c, repository.ErrInvalidInput)
 		return
 	}
@@ -205,8 +205,8 @@ func ChangeUnifiedProduct(c *gin.Context) {
 	var result repository.CatalogChangeResult
 	if !unifiedGatewayWrite(c, func(store *repository.Store, tx *sql.Tx, actor uint64) error {
 		var err error
-		result, err = store.ChangeProduct(c.Request.Context(), tx, in, func(code string, version uint32, baseURL, method, path, vendorModel string, config []byte) error {
-			return adapter.ValidateCatalogProduct(code, version, baseURL, method, path, vendorModel, config)
+		result, err = store.ChangeProduct(c.Request.Context(), tx, in, func(code string, version uint32, baseURL, method, path, vendorModel, taskScope string, config []byte) error {
+			return adapter.ValidateCatalogProduct(code, version, baseURL, method, path, vendorModel, taskScope, config)
 		}, actor)
 		return err
 	}) {

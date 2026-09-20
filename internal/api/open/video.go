@@ -290,6 +290,9 @@ func readUnifiedVideoResult(ctx context.Context, payloadID, callID uint64, userI
 		return nil, sourceErr
 	} else {
 		publicResult["delivery_status"] = "unavailable"
+		if reason := unifiedDeliveryUnavailableReason(sourceErr); reason != "" {
+			publicResult["delivery_error_code"] = reason
+		}
 	}
 	if result.ThumbnailDeliveryID != 0 {
 		publicResult["thumbnail_delivery_id"] = fmt.Sprintf("%d", result.ThumbnailDeliveryID)
@@ -301,6 +304,29 @@ func readUnifiedVideoResult(ctx context.Context, payloadID, callID uint64, userI
 		}
 	}
 	return publicResult, nil
+}
+
+type unifiedDeliveryUnavailableError struct {
+	reason string
+}
+
+func (e *unifiedDeliveryUnavailableError) Error() string {
+	if e.reason == "" {
+		return "result delivery unavailable"
+	}
+	return "result delivery unavailable: " + e.reason
+}
+
+func (e *unifiedDeliveryUnavailableError) Unwrap() error {
+	return repository.ErrConflict
+}
+
+func unifiedDeliveryUnavailableReason(err error) string {
+	var unavailable *unifiedDeliveryUnavailableError
+	if errors.As(err, &unavailable) {
+		return unavailable.reason
+	}
+	return ""
 }
 
 func unifiedVideoPublicStatus(callStatus, taskStatus string) string {
@@ -390,7 +416,7 @@ func readUnifiedDeliveryURL(ctx context.Context, deliveryID, callID uint64, user
 		return "", err
 	}
 	if record.State != "ready" {
-		return "", repository.ErrConflict
+		return "", &unifiedDeliveryUnavailableError{reason: record.ReasonCode}
 	}
 	if record.Mode == "managed_copy" {
 		if record.MediaLocator == "" {

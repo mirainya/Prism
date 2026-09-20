@@ -9,6 +9,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/mirainya/Prism/pkg/config"
@@ -133,6 +134,127 @@ func TestUploadReaderAtPathWithFilenameSendsRecoveryIdentity(t *testing.T) {
 		if _, err := UploadReaderAtPathWithFilename(context.Background(), bytes.NewReader([]byte("video")), "video/mp4", "prism/gateway-results/17/", invalid); err == nil {
 			t.Fatalf("invalid filename %q accepted", invalid)
 		}
+	}
+}
+
+func TestClientImportURLAtPathUsesBoundAPIKey(t *testing.T) {
+	const (
+		originURL   = "https://provider.example/generated/video.mp4?token=temporary"
+		storagePath = "prism/gateway-results/17/"
+		filename    = "generated-video.mp4"
+	)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost || r.URL.Path != "/api/v1/upload-url" {
+			t.Fatalf("unexpected import request %s %s", r.Method, r.URL.Path)
+		}
+		if r.Header.Get("X-Api-Key") != "bound-key" || r.Header.Get("Content-Type") != "application/json" {
+			t.Fatalf("key=%q content-type=%q", r.Header.Get("X-Api-Key"), r.Header.Get("Content-Type"))
+		}
+		var request importURLRequest
+		decoder := json.NewDecoder(io.LimitReader(r.Body, 16<<10))
+		decoder.DisallowUnknownFields()
+		if err := decoder.Decode(&request); err != nil {
+			t.Fatalf("decode request: %v", err)
+		}
+		if request.URL != originURL || request.Path != storagePath || request.OriginalFilename != filename {
+			t.Fatalf("request=%+v", request)
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"code": 200,
+			"data": map[string]any{
+				"id": "storage-row-1", "objectId": "object-1", "objectType": "gateway-result",
+				"url": "http://temporary.example/video.mp4?signature=short", "rawUrl": "prism/gateway-results/17/video.mp4",
+				"size": 42, "filename": "video.mp4", "originalFilename": filename,
+				"path": storagePath, "contentType": "video/mp4", "platform": "r2-main",
+				"hashInfo": map[string]string{"SHA-256": strings.Repeat("a", 64)}, "uploadId": "upload-1", "uploadStatus": 1,
+			},
+		})
+	}))
+	defer server.Close()
+	previous := config.C
+	config.C = &config.Config{FileStorage: config.FileStorageConfig{BaseURL: server.URL, APIKey: "global-key"}}
+	t.Cleanup(func() { config.C = previous })
+
+	result, err := WithAPIKey("bound-key").ImportURLAtPath(context.Background(), originURL, "/"+storagePath, filename)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.ID != "storage-row-1" || result.ObjectID != "object-1" || result.ObjectType != "gateway-result" ||
+		result.URL != "https://temporary.example/video.mp4?signature=short" || result.RawURL != "prism/gateway-results/17/video.mp4" ||
+		result.Size != 42 || result.Filename != "video.mp4" || result.OriginalName != filename ||
+		result.Path != storagePath || result.ContentType != "video/mp4" || result.Platform != "r2-main" ||
+		result.SHA256() != strings.Repeat("a", 64) || result.UploadID != "upload-1" || result.UploadStatus != 1 {
+		t.Fatalf("result=%+v", result)
+	}
+}
+
+func TestClientImportURLAtPathRejectsInvalidRequests(t *testing.T) {
+	if _, err := (Client{}).ImportURLAtPath(context.Background(), "https://example.com/video.mp4", "prism/results/", "video.mp4"); err == nil {
+		t.Fatal("expected unconfigured client error")
+	}
+
+	requests := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		requests++
+		_ = json.NewEncoder(w).Encode(map[string]any{"code": 200, "data": map[string]any{"url": "https://cdn.example/video.mp4"}})
+	}))
+	defer server.Close()
+	client := Client{config: config.FileStorageConfig{BaseURL: server.URL, APIKey: "bound-key"}}
+	tests := []struct {
+		name     string
+		url      string
+		path     string
+		filename string
+	}{
+		{name: "empty URL", path: "prism/results/"},
+		{name: "unsupported scheme", url: "file:///etc/passwd", path: "prism/results/"},
+		{name: "URL credentials", url: "https://user:secret@example.com/video.mp4", path: "prism/results/"},
+		{name: "URL fragment", url: "https://example.com/video.mp4#fragment", path: "prism/results/"},
+		{name: "oversized URL", url: "https://example.com/" + strings.Repeat("a", maxImportURLBytes), path: "prism/results/"},
+		{name: "empty path", url: "https://example.com/video.mp4"},
+		{name: "path traversal", url: "https://example.com/video.mp4", path: "prism/../results/"},
+		{name: "path control character", url: "https://example.com/video.mp4", path: "prism/results/\n"},
+		{name: "oversized normalized path", url: "https://example.com/video.mp4", path: strings.Repeat("a", maxStoragePathBytes)},
+		{name: "filename path", url: "https://example.com/video.mp4", path: "prism/results/", filename: "nested/video.mp4"},
+		{name: "oversized filename", url: "https://example.com/video.mp4", path: "prism/results/", filename: strings.Repeat("a", maxStorageFilenameBytes+1)},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			before := requests
+			if _, err := client.ImportURLAtPath(context.Background(), tt.url, tt.path, tt.filename); err == nil {
+				t.Fatal("expected request validation error")
+			}
+			if requests != before {
+				t.Fatal("invalid input reached x-file-storage")
+			}
+		})
+	}
+}
+
+func TestClientImportURLAtPathLimitsAndValidatesResponse(t *testing.T) {
+	tests := []struct {
+		name   string
+		status int
+		body   string
+	}{
+		{name: "HTTP error", status: http.StatusBadGateway, body: `{}`},
+		{name: "API error", status: http.StatusOK, body: `{"code":400,"message":"invalid source","data":null}`},
+		{name: "invalid JSON", status: http.StatusOK, body: `{`},
+		{name: "empty locator", status: http.StatusOK, body: `{"code":200,"data":{}}`},
+		{name: "oversized response", status: http.StatusOK, body: strings.Repeat(" ", int(maxXFSResponseBytes)+1)},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.WriteHeader(tt.status)
+				_, _ = io.WriteString(w, tt.body)
+			}))
+			defer server.Close()
+			client := Client{config: config.FileStorageConfig{BaseURL: server.URL, APIKey: "bound-key"}}
+			if _, err := client.ImportURLAtPath(context.Background(), "https://provider.example/video.mp4", "prism/results/", "video.mp4"); err == nil {
+				t.Fatal("expected response validation error")
+			}
+		})
 	}
 }
 

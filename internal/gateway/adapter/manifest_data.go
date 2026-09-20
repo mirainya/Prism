@@ -114,6 +114,54 @@ func seedance25Variant() Variant {
 	}
 }
 
+// imageBillingVars are the result counters emitted by OpenAIImages. Token
+// counters are optional at runtime because not every compatible provider
+// returns usage, but their finite domains let token-priced variants prove a
+// reservation bound before a request is sent.
+func imageBillingVars() []BillingVar {
+	return []BillingVar{
+		{Name: "count", Desc: "生成图片数量", Domain: &VarDomainSpec{Kind: HintInt, Min: "1", Max: "10"}},
+		{Name: "input_tokens", Desc: "输入 token 数", Domain: &VarDomainSpec{Kind: HintInt, Min: "0", Max: "2000000"}},
+		{Name: "output_tokens", Desc: "输出 token 数", Domain: &VarDomainSpec{Kind: HintInt, Min: "0", Max: "2000000"}},
+	}
+}
+
+// openAIImagesManifest covers the synchronous OpenAI-compatible generation
+// and edit paths served by OpenAIImages. Operation-specific requirements such
+// as an edit needing at least one image remain enforced by the request codec.
+func openAIImagesManifest() Manifest {
+	return Manifest{
+		Adapter:         "openai_images",
+		AdapterVersion:  1,
+		Capability:      "image",
+		DownstreamPaths: []string{"/v1/images/generations", "/v1/images/edits"},
+		BillingFuncs:    []string{"tier", "param", "in"},
+		BillingVars: map[varLayer][]BillingVar{
+			LayerCommon:     commonBillingVars(),
+			LayerCapability: imageBillingVars(),
+		},
+		Variants: []Variant{{
+			Code: DefaultVariant, Display: "OpenAI Images 兼容格式",
+			Models: []string{
+				"doubao-seedream-5-0", "gemini-3-pro-image-preview", "grok-imagine-image", "gpt-image-2",
+				"gpt-image-2-adobe", "gpt-image-2-auto", "gpt-image-2-c", "gpt-image-2-high", "gpt-image-2.5",
+				"gpt-image-2.5-flare", "gpt-image-2.5-sunburst",
+			},
+			ParamHints: map[string]ParamHint{
+				"n":                  {Kind: HintInt, Min: "1", Max: "10", Default: "1"},
+				"response_format":    {Kind: HintEnum, Options: []string{"url", "b64_json"}, Default: "url"},
+				"output_compression": {Kind: HintInt, Min: "0", Max: "100"},
+				"stream":             {Kind: HintBool, Default: "false"},
+				"partial_images":     {Kind: HintInt, Min: "0", Max: "3"},
+			},
+			RefMedia: map[string]RefMediaLimit{
+				"image": {Max: maxImageInputs},
+				"mask":  {Max: 1},
+			},
+		}},
+	}
+}
+
 // chatBillingVars are the token counters every conversational adapter reports.
 // The maxima are domain ceilings for the bound proof, not request limits: a
 // price expression must be boundable even though the real cap is per-model.
@@ -171,6 +219,7 @@ func chatManifest(code, capability string, models []string) Manifest {
 func processManifests() []Manifest {
 	return []Manifest{
 		seedanceManifest(),
+		openAIImagesManifest(),
 		chatManifest("openai_chat", "chat",
 			[]string{"gpt-4.1", "gpt-4.1-mini", "gpt-4o"}),
 		chatManifest("openai_responses", "chat",

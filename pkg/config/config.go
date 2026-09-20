@@ -13,7 +13,10 @@ import (
 	"github.com/spf13/viper"
 )
 
-const DefaultFileStorageMaxTotalSizeMB = 1024
+const (
+	DefaultFileStorageMaxTotalSizeMB  = 1024
+	DefaultFileStorageMaxResultSizeMB = 1024
+)
 
 // MinJWTSecretBytes is the minimum entropy budget accepted for the console
 // signing key. The configuration loader keeps parsing examples usable for
@@ -207,12 +210,21 @@ type RateLimitConfig struct {
 }
 
 type FileStorageConfig struct {
-	BaseURL        string   `mapstructure:"base_url"`
-	APIKey         string   `mapstructure:"api_key"`
-	UploadPath     string   `mapstructure:"upload_path"`
-	MaxFileSizeMB  int      `mapstructure:"max_file_size_mb"`
-	MaxTotalSizeMB int      `mapstructure:"max_total_size_mb"`
-	AllowedTypes   []string `mapstructure:"allowed_types"`
+	BaseURL             string   `mapstructure:"base_url"`
+	APIKey              string   `mapstructure:"api_key"`
+	UploadPath          string   `mapstructure:"upload_path"`
+	MaxFileSizeMB       int      `mapstructure:"max_file_size_mb"`
+	MaxResultFileSizeMB int      `mapstructure:"max_result_file_size_mb"`
+	MaxTotalSizeMB      int      `mapstructure:"max_total_size_mb"`
+	AllowedTypes        []string `mapstructure:"allowed_types"`
+}
+
+func FileStorageMaxResultSizeBytes() int64 {
+	maximumMB := DefaultFileStorageMaxResultSizeMB
+	if cfg := Get(); cfg != nil && cfg.FileStorage.MaxResultFileSizeMB > 0 {
+		maximumMB = cfg.FileStorage.MaxResultFileSizeMB
+	}
+	return int64(maximumMB) * 1024 * 1024
 }
 
 type ObservabilityConfig struct {
@@ -290,6 +302,9 @@ func Watch() {
 }
 
 func applyDefaults(cfg *Config) {
+	if cfg.FileStorage.MaxResultFileSizeMB <= 0 {
+		cfg.FileStorage.MaxResultFileSizeMB = DefaultFileStorageMaxResultSizeMB
+	}
 	if cfg.FileStorage.MaxTotalSizeMB <= 0 {
 		cfg.FileStorage.MaxTotalSizeMB = DefaultFileStorageMaxTotalSizeMB
 	}

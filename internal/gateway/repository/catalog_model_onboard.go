@@ -261,7 +261,10 @@ func modelOnboardDownstreamPaths(adapterCode string, adapterVersion uint32, oper
 	}
 	for _, path := range paths {
 		if path == operationPath {
-			return paths, nil
+			// The manifest is an allowlist, not a grant. A SKU only exposes the
+			// operation selected by its route template; additional operations must
+			// be configured explicitly for models that actually support them.
+			return []string{operationPath}, nil
 		}
 	}
 	return nil, ErrInvalidInput

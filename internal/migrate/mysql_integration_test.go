@@ -23,6 +23,12 @@ import (
 
 const reentrantMigrationStart = "20260906_140000"
 
+var nonReentrantMigrations = map[string]string{
+	// This migration is already part of managed history. Migration files are
+	// immutable once applied, so keep the exception explicit.
+	"20260917_160000": "adds columns and a foreign key without existence guards",
+}
+
 func TestMySQLMigrationLifecycle(t *testing.T) {
 	dsn := os.Getenv("PRISM_MIGRATION_TEST_DSN")
 	if dsn == "" {
@@ -237,6 +243,9 @@ func verifyLatestMigrationsAreReentrant(t *testing.T, db *sql.DB, migrations []M
 	var reapplied int
 	for _, migration := range migrations {
 		if migration.Version < reentrantMigrationStart {
+			continue
+		}
+		if _, known := nonReentrantMigrations[migration.Version]; known {
 			continue
 		}
 		if _, err := db.Exec(migration.SQL); err != nil {

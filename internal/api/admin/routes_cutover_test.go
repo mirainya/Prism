@@ -111,20 +111,22 @@ func TestRegisterRoutesIncludesDirectConfigurationEndpoints(t *testing.T) {
 	router := gin.New()
 	RegisterRoutes(router.Group("/api/admin"))
 	want := map[string]bool{
-		http.MethodPatch + " /api/admin/unified-gateway/pools/:id":                              false,
-		http.MethodPatch + " /api/admin/unified-gateway/credential-pools/:id":                   false,
-		http.MethodPatch + " /api/admin/unified-gateway/credentials/:id":                        false,
-		http.MethodPatch + " /api/admin/unified-gateway/offerings/:offering_id/runtime-state":   false,
-		http.MethodPatch + " /api/admin/unified-gateway/model-meta/:model_name":                 false,
-		http.MethodPost + " /api/admin/unified-gateway/catalog-changes/sell-rate":               false,
-		http.MethodPost + " /api/admin/unified-gateway/catalog-changes/cost-rate":               false,
-		http.MethodPost + " /api/admin/unified-gateway/catalog-changes/route-weight":            false,
-		http.MethodPost + " /api/admin/unified-gateway/catalog-changes/sku-variant":             false,
-		http.MethodPost + " /api/admin/unified-gateway/catalog-changes/sku-downstream-paths":    false,
-		http.MethodPost + " /api/admin/unified-gateway/catalog-changes/product":                 false,
-		http.MethodPost + " /api/admin/unified-gateway/catalog-changes/product-create":          false,
-		http.MethodPost + " /api/admin/unified-gateway/catalog-changes/model-onboard":           false,
-		http.MethodPost + " /api/admin/unified-gateway/catalog-changes/public-model-identities": false,
+		http.MethodPatch + " /api/admin/unified-gateway/pools/:id":                                        false,
+		http.MethodPatch + " /api/admin/unified-gateway/credential-pools/:id":                             false,
+		http.MethodPatch + " /api/admin/unified-gateway/credentials/:id":                                  false,
+		http.MethodPatch + " /api/admin/unified-gateway/offerings/:offering_id/runtime-state":             false,
+		http.MethodPatch + " /api/admin/unified-gateway/model-meta/:model_name":                           false,
+		http.MethodPost + " /api/admin/unified-gateway/catalog-changes/sell-rate":                         false,
+		http.MethodPost + " /api/admin/unified-gateway/catalog-changes/cost-rate":                         false,
+		http.MethodPost + " /api/admin/unified-gateway/catalog-changes/route-weight":                      false,
+		http.MethodPost + " /api/admin/unified-gateway/catalog-changes/sku-variant":                       false,
+		http.MethodPost + " /api/admin/unified-gateway/catalog-changes/sku-downstream-paths":              false,
+		http.MethodPost + " /api/admin/unified-gateway/catalog-changes/product":                           false,
+		http.MethodPost + " /api/admin/unified-gateway/catalog-changes/product-create":                    false,
+		http.MethodPost + " /api/admin/unified-gateway/catalog-changes/model-onboard":                     false,
+		http.MethodPost + " /api/admin/unified-gateway/catalog-changes/public-model-identities":           false,
+		http.MethodPost + " /api/admin/unified-gateway/catalog-changes/transport-allowed-hosts":           false,
+		http.MethodGet + " /api/admin/unified-gateway/catalog/:id/transports/:transport_id/allowed-hosts": false,
 	}
 	for _, route := range router.Routes() {
 		key := route.Method + " " + route.Path

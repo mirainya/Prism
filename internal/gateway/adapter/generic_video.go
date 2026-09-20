@@ -24,7 +24,7 @@ func ValidateGenericVideoCatalog(baseURL, method, path, vendorModel string, conf
 // ValidateCatalogProduct applies the same adapter-specific checks to edits as
 // product creation. Generic mappings are executable configuration, so merely
 // accepting syntactically valid JSON would defer a broken mapping to runtime.
-func ValidateCatalogProduct(code string, version uint32, baseURL, method, path, vendorModel string, config []byte) error {
+func ValidateCatalogProduct(code string, version uint32, baseURL, method, path, vendorModel, taskScope string, config []byte) error {
 	descriptor, ok := DescriptorFor(strings.ToLower(strings.TrimSpace(code)), version)
 	if !ok {
 		return repository.ErrInvalidInput
@@ -32,6 +32,8 @@ func ValidateCatalogProduct(code string, version uint32, baseURL, method, path, 
 	switch descriptor.Code {
 	case "generic":
 		return ValidateGenericVideoCatalog(baseURL, method, path, vendorModel, config)
+	case "openai_images":
+		return ValidateOpenAIImagesCatalog(method, path, vendorModel, taskScope, config)
 	case "seedance":
 		return ValidateSeedanceVideoCatalog(method, path)
 	default:

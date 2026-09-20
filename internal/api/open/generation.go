@@ -313,7 +313,7 @@ func planUnifiedVideoGeneration(ctx context.Context, req *video.CreateTaskReques
 	if err != nil {
 		return unifiedVideoPlan{}, true, err
 	}
-	codec, supported := adapter.VideoAsyncCodecFor(policy.AdapterCode, policy.AdapterVersion)
+	codec, supported := adapter.AsyncCodecFor(policy.AdapterCode, policy.AdapterVersion)
 	if !supported {
 		return unifiedVideoPlan{}, true, repository.ErrConflict
 	}

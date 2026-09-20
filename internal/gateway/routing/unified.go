@@ -31,7 +31,7 @@ type unifiedSelector struct{}
 type unifiedCandidate struct {
 	ReleaseID, OperationContractID, ModelOperationID, SKUID, RouteID, ProductTransportID          uint64
 	AbilityID, CredentialID, ChannelID, PoolID, VersionID, OfferingID, CostPlanID, PurposeGrantID uint64
-	VendorModel, Protocol, BaseURL, TransportCode, DeliveryMode                                   string
+	VendorModel, Protocol, BaseURL, TransportCode, DeliveryMode, TaskScope                        string
 	Priority                                                                                      int64
 	RouteWeight, CredentialWeight                                                                 uint64
 	RequestMethod, RequestPath                                                                    string
@@ -50,7 +50,7 @@ func scanUnifiedCandidate(row unifiedCandidateScanner) (unifiedCandidate, error)
 	err := row.Scan(
 		&candidate.ReleaseID, &candidate.OperationContractID, &candidate.ModelOperationID, &candidate.SKUID, &candidate.RouteID, &candidate.ProductTransportID, &candidate.AbilityID,
 		&candidate.ChannelID, &candidate.PoolID, &candidate.CredentialID, &candidate.VersionID, &candidate.OfferingID, &candidate.CostPlanID, &candidate.PurposeGrantID, &candidate.BlobID,
-		&candidate.VendorModel, &candidate.Protocol, &candidate.BaseURL, &candidate.TransportCode, &candidate.DeliveryMode, &candidate.Priority, &candidate.RouteWeight, &candidate.CredentialWeight,
+		&candidate.VendorModel, &candidate.Protocol, &candidate.BaseURL, &candidate.TransportCode, &candidate.DeliveryMode, &candidate.TaskScope, &candidate.Priority, &candidate.RouteWeight, &candidate.CredentialWeight,
 		&candidate.RequestMethod, &candidate.RequestPath, &candidate.Nonce, &candidate.Ciphertext, &candidate.WrapNonce, &candidate.WrappedDEK, &candidate.KEKVersion, &candidate.Capabilities,
 	)
 	return candidate, err
@@ -91,7 +91,7 @@ const CircuitKeyMask = unifiedKeyStateMask
 const unifiedCandidatesSQL = `
 SELECT rel.id, mo.operation_contract_id, mo.id, sku.id, r.id, pt.id, mo.id,
        ch.id, o.credential_pool_id, c.id, cv.id, o.id, cost.id, g.id, COALESCE(eb.id,0),
-       p.vendor_model, ct.protocol, ct.base_url, ct.transport_code, sku.delivery_mode,
+	       p.vendor_model, ct.protocol, ct.base_url, ct.transport_code, sku.delivery_mode, pt.task_scope,
 	       r.priority, r.weight, c.weight, ct.request_method, ct.request_path,
        eb.nonce, eb.ciphertext, w.wrap_nonce, w.wrapped_dek, COALESCE(w.kek_version,0),
 	       cm.capability_tags
@@ -244,6 +244,9 @@ JOIN gw_model_names mn ON mn.id=cmn.model_name_id AND mn.model_id=cm.model_id
 			continue
 		}
 		transportMatch = true
+		if !taskScopeAllowed(c.TaskScope, options.RequiredTaskScope) {
+			continue
+		}
 		if containsUint(options.ExcludeChannels, uint(c.ChannelID)) || containsUint(options.ExcludeKeys, uint(c.CredentialID)) || excludedUnifiedAttempt(options.ExcludeAttempts, c.CredentialID, transport) {
 			continue
 		}

@@ -42,8 +42,9 @@ type PublicCatalogRoute struct {
 }
 
 // activePublicCatalogRoutesSQL mirrors the eligibility joins used by the data
-// plane. The credential EXISTS clause prevents eligible credentials from
-// multiplying public routes; sell-rate components are loaded separately.
+// plane. The UNION materializes one row per eligible credential pool before
+// joining routes, avoiding both route multiplication and a nested correlated
+// subquery that is prohibitively expensive for MySQL to optimize.
 const activePublicCatalogRoutesSQL = `
 SELECT rel.id,cm.id,cm.model_id,cm.sort_order,m.model_code,mn.api_name,cmn.is_primary,
 	       cm.display_name,cm.description,cm.visibility,COALESCE(cm.capability_tags,'[]'),
@@ -72,6 +73,27 @@ JOIN gw_product_transports pt ON pt.release_id=offering.release_id AND pt.id=off
 JOIN gw_products p ON p.release_id=pt.release_id AND p.id=pt.product_id
 JOIN gw_channel_transports ct ON ct.release_id=pt.release_id AND ct.id=pt.channel_transport_id AND ct.channel_id=p.channel_id
 JOIN gateway_channels ch ON ch.id=p.channel_id AND ch.status='active'
+JOIN (
+	SELECT pool.id AS pool_id,pool.channel_id
+	FROM gw_credential_pools pool
+	JOIN gw_credentials credential ON credential.credential_pool_id=pool.id AND credential.channel_id=pool.channel_id AND credential.status='active'
+	JOIN gw_credential_secret_identities secret_identity ON secret_identity.id=credential.secret_identity_id AND secret_identity.channel_id=credential.channel_id AND secret_identity.status='active'
+	JOIN gw_credential_purpose_grants purpose_grant ON purpose_grant.credential_id=credential.id AND purpose_grant.purpose='execution' AND purpose_grant.status='active'
+	JOIN gw_credential_versions credential_version ON credential_version.id=credential.current_version_id AND credential_version.credential_id=credential.id AND credential_version.secret_identity_id=credential.secret_identity_id AND credential_version.status='active' AND (credential_version.valid_until IS NULL OR credential_version.valid_until>CURRENT_TIMESTAMP)
+	WHERE pool.status='active' AND credential.secret IS NOT NULL AND credential.secret<>''
+	UNION
+	SELECT pool.id AS pool_id,pool.channel_id
+	FROM gw_credential_pools pool
+	JOIN gw_credentials credential ON credential.credential_pool_id=pool.id AND credential.channel_id=pool.channel_id AND credential.status='active'
+	JOIN gw_credential_secret_identities secret_identity ON secret_identity.id=credential.secret_identity_id AND secret_identity.channel_id=credential.channel_id AND secret_identity.status='active'
+	JOIN gw_credential_purpose_grants purpose_grant ON purpose_grant.credential_id=credential.id AND purpose_grant.purpose='execution' AND purpose_grant.status='active'
+	JOIN gw_credential_versions credential_version ON credential_version.id=credential.current_version_id AND credential_version.credential_id=credential.id AND credential_version.secret_identity_id=credential.secret_identity_id AND credential_version.status='active' AND (credential_version.valid_until IS NULL OR credential_version.valid_until>CURRENT_TIMESTAMP)
+	JOIN encrypted_blobs encrypted_blob ON encrypted_blob.id=credential_version.encrypted_blob_id AND encrypted_blob.purged_at IS NULL
+	JOIN crypto_keyring_state keyring ON keyring.id=encrypted_blob.keyring_id
+	JOIN crypto_key_versions key_version ON key_version.keyring_id=keyring.id AND key_version.key_version=keyring.current_version AND key_version.status='current'
+	JOIN encrypted_blob_key_wraps key_wrap ON key_wrap.encrypted_blob_id=encrypted_blob.id AND key_wrap.keyring_id=encrypted_blob.keyring_id AND key_wrap.kek_version=keyring.current_version
+	WHERE pool.status='active'
+) eligible_pool ON eligible_pool.pool_id=offering.credential_pool_id AND eligible_pool.channel_id=ch.id
 WHERE state.id=1
 AND (
 	downstream_oc.operation_code=oc.operation_code
@@ -92,26 +114,6 @@ AND (
 		WHERE native_mo.release_id=mo.release_id
 		  AND native_mo.catalog_model_id=mo.catalog_model_id
 	)
-)
-AND EXISTS (
-	SELECT 1
-	FROM gw_credential_pools pool
-	JOIN gw_credentials credential ON credential.channel_id=ch.id AND credential.credential_pool_id=pool.id AND credential.status='active'
-	JOIN gw_credential_secret_identities secret_identity ON secret_identity.id=credential.secret_identity_id AND secret_identity.channel_id=credential.channel_id AND secret_identity.status='active'
-	JOIN gw_credential_purpose_grants purpose_grant ON purpose_grant.credential_id=credential.id AND purpose_grant.purpose='execution' AND purpose_grant.status='active'
-	JOIN gw_credential_versions credential_version ON credential_version.id=credential.current_version_id AND credential_version.credential_id=credential.id AND credential_version.secret_identity_id=credential.secret_identity_id AND credential_version.status='active' AND (credential_version.valid_until IS NULL OR credential_version.valid_until>CURRENT_TIMESTAMP)
-	WHERE pool.id=offering.credential_pool_id AND pool.channel_id=ch.id AND pool.status='active'
-	  AND (
-		credential.secret IS NOT NULL AND credential.secret<>''
-		OR EXISTS (
-			SELECT 1
-			FROM encrypted_blobs encrypted_blob
-			JOIN crypto_keyring_state keyring ON keyring.id=encrypted_blob.keyring_id
-			JOIN crypto_key_versions key_version ON key_version.keyring_id=keyring.id AND key_version.key_version=keyring.current_version AND key_version.status='current'
-			JOIN encrypted_blob_key_wraps key_wrap ON key_wrap.encrypted_blob_id=encrypted_blob.id AND key_wrap.keyring_id=encrypted_blob.keyring_id AND key_wrap.kek_version=keyring.current_version
-			WHERE encrypted_blob.id=credential_version.encrypted_blob_id AND encrypted_blob.purged_at IS NULL
-		)
-	  )
 )
 ORDER BY cm.sort_order,mn.api_name,downstream_oc.operation_code,downstream_route.http_method,downstream.path,sku.id,ch.channel_code,p.vendor_model`
 

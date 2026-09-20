@@ -61,6 +61,11 @@ func RegisterRoutes(group *gin.RouterGroup) {
 	group.POST("/playground/:token_id/messages", PlaygroundAnthropicMessages)
 	group.POST("/playground/:token_id/upload", PlaygroundUploadFile)
 
+	// Image playground
+	group.GET("/playground/:token_id/images/models", PlaygroundListImageModels)
+	group.POST("/playground/:token_id/images/generations", PlaygroundCreateImageGeneration)
+	group.POST("/playground/:token_id/images/edits", PlaygroundCreateImageEdit)
+
 	// Video playground
 	group.GET("/playground/:token_id/videos/models", PlaygroundListVideoModels)
 	group.POST("/playground/:token_id/videos/assets", PlaygroundCreateVideoAsset)

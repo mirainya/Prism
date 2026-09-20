@@ -1,12 +1,16 @@
 package console
 
 import (
+	"database/sql"
 	"encoding/json"
+	"errors"
 	"strconv"
 
 	"github.com/gin-gonic/gin"
 	"github.com/mirainya/Prism/internal/api/middleware"
 	"github.com/mirainya/Prism/internal/api/resp"
+	"github.com/mirainya/Prism/internal/gateway/payloadview"
+	"github.com/mirainya/Prism/internal/gateway/repository"
 	"github.com/mirainya/Prism/internal/model"
 	"github.com/mirainya/Prism/internal/service"
 )
@@ -70,39 +74,65 @@ func GetTaskDetail(c *gin.Context) {
 		return
 	}
 
-	var resultMap map[string]any
-	if len(task.Result) > 0 {
-		json.Unmarshal(task.Result, &resultMap)
+	db, err := model.DB().DB()
+	if err != nil {
+		resp.ErrorMsg(c, 500, 500, "failed to load task detail")
+		return
 	}
-
-	var rawParams map[string]any
-	if len(task.RequestParams) > 0 {
-		json.Unmarshal(task.RequestParams, &rawParams)
+	var gatewayCallID uint64
+	var requestPayloadID, resultPayloadID sql.NullInt64
+	if err := db.QueryRowContext(c.Request.Context(), `SELECT id,request_payload_id,result_payload_id FROM gw_api_calls WHERE public_id=?`, task.CallID).Scan(&gatewayCallID, &requestPayloadID, &resultPayloadID); err != nil {
+		resp.ErrorMsg(c, 500, 500, "failed to load task detail")
+		return
 	}
-
-	var vendorResponse map[string]any
-	if isAdmin && len(task.VendorResponse) > 0 {
-		json.Unmarshal(task.VendorResponse, &vendorResponse)
+	store, err := repository.New(db)
+	if err != nil {
+		resp.ErrorMsg(c, 500, 500, "failed to load task detail")
+		return
+	}
+	rawParams, requestExpired, err := readConsoleCallPayload(c, store, gatewayCallID, requestPayloadID, "request")
+	if err != nil {
+		resp.ErrorMsg(c, 500, 500, "failed to load task detail")
+		return
+	}
+	result, resultExpired, err := readConsoleCallPayload(c, store, gatewayCallID, resultPayloadID, "result")
+	if err != nil {
+		resp.ErrorMsg(c, 500, 500, "failed to load task detail")
+		return
+	}
+	errorMessage := task.ErrorMessage
+	if errorMessage == "" && task.Status == model.TaskStatusFailed {
+		failure, readErr := payloadview.ReadLatestRequestFailure(c.Request.Context(), store, gatewayCallID)
+		if readErr != nil {
+			resp.ErrorMsg(c, 500, 500, "failed to load task detail")
+			return
+		}
+		errorMessage = failure.Message
+		if errorMessage == "" {
+			errorMessage = failure.Code
+		}
 	}
 
 	detail := gin.H{
-		"task_no":           task.TaskNo,
-		"call_id":           task.CallID,
-		"capability":        task.ModelCode,
-		"status":            task.Status.Public(),
-		"progress":          task.Progress,
-		"cost":              task.Cost,
-		"refunded":          task.Refunded,
-		"callback_status":   task.CallbackStatus,
-		"callback_attempts": task.CallbackAttempts,
-		"error":             task.ErrorMessage,
-		"result":            resultMap,
-		"raw_params":        rawParams,
-		"created_at":        task.CreatedAt.Format("2006-01-02 15:04:05"),
+		"task_no":                 task.TaskNo,
+		"call_id":                 task.CallID,
+		"capability":              task.ModelCode,
+		"status":                  task.Status.Public(),
+		"progress":                task.Progress,
+		"cost":                    task.Cost,
+		"refunded":                task.Refunded,
+		"callback_status":         task.CallbackStatus,
+		"callback_attempts":       task.CallbackAttempts,
+		"error":                   errorMessage,
+		"result":                  result,
+		"raw_params":              rawParams,
+		"request_payload_expired": requestExpired,
+		"result_payload_expired":  resultExpired,
+		"created_at":              task.CreatedAt.Format("2006-01-02 15:04:05"),
 	}
 
 	if isAdmin {
-		detail["vendor_response"] = vendorResponse
+		detail["gateway_call_id"] = gatewayCallID
 		detail["vendor_task_id"] = task.VendorTaskID
 		if task.Channel != nil {
 			detail["channel"] = task.Channel.Type
@@ -119,6 +149,25 @@ func GetTaskDetail(c *gin.Context) {
 	}
 
 	resp.Success(c, detail)
+}
+
+func readConsoleCallPayload(c *gin.Context, store *repository.Store, callID uint64, payloadID sql.NullInt64, kind string) (any, bool, error) {
+	if !payloadID.Valid || payloadID.Int64 <= 0 {
+		return nil, false, nil
+	}
+	plain, err := payloadview.ReadCallPayload(c.Request.Context(), store, callID, uint64(payloadID.Int64), kind)
+	if errors.Is(err, repository.ErrNotFound) {
+		return nil, true, nil
+	}
+	if err != nil {
+		return nil, false, err
+	}
+	defer clear(plain)
+	var value any
+	if err := json.Unmarshal(plain, &value); err != nil {
+		return nil, false, err
+	}
+	return value, false, nil
 }
 
 // ChatStats Chat 增强统计

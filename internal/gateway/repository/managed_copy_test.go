@@ -54,6 +54,27 @@ func TestReserveManagedCopyAssetReusesMatchingStagingIntent(t *testing.T) {
 	}
 }
 
+func TestReadManagedCopyAssetReturnsRecordedIntent(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	store, _ := New(db)
+	digest := strings.Repeat("a", 64)
+	mock.ExpectQuery("SELECT id,user_id,token_id,COALESCE\\(attempt_id,0\\),object_key,storage_locator").
+		WithArgs(uint64(7), "gateway-result:7:0").
+		WillReturnRows(sqlmock.NewRows([]string{"id", "user_id", "token_id", "attempt_id", "object_key", "storage_locator", "object_version", "content_type", "content_length", "sha256", "state", "state_version"}).
+			AddRow(17, 11, 13, 7, "gateway-result:7:0", "private/result.mp4", "v1", "video/mp4", 128, digest, "staging", 1))
+	asset, err := store.ReadManagedCopyAsset(context.Background(), 7, "gateway-result:7:0")
+	if err != nil || asset.ID != 17 || asset.StorageLocator != "private/result.mp4" || asset.SHA256 != digest {
+		t.Fatalf("asset=%+v err=%v", asset, err)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestReserveManagedCopyAssetRejectsCrossOwnerReuse(t *testing.T) {
 	db, mock, err := sqlmock.New()
 	if err != nil {

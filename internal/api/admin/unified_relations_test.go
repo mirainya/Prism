@@ -70,7 +70,7 @@ func TestListUnifiedChannelRelationsReturnsTransportMappingAndActions(t *testing
 			"capability_tags", "operation_code",
 			"sku_id", "sku_code", "delivery_mode",
 			"route_id", "priority", "route_weight",
-			"offering_id", "offering_state",
+			"offering_id", "offering_state", "offering_state_version",
 			"credential_id", "credential_code", "credential_status", "credential_version", "credential_weight", "request_limit", "task_limit",
 			"pool_id", "pool_code", "pool_name", "pool_status",
 			"channel_id", "channel_name", "channel_status", "transport_code", "product_code", "vendor_model",
@@ -82,7 +82,7 @@ func TestListUnifiedChannelRelationsReturnsTransportMappingAndActions(t *testing
 			[]byte(`["llm"]`), "chat.completions",
 			101, "gpt4o-default", "sync",
 			201, 10, 100,
-			301, "active",
+			301, "active", 5,
 			401, "key-a", "active", 2, 50, nil, nil,
 			501, "pool-a", "Pool A", "active",
 			42, "Provider A", "active", "openai-chat", "upstream-gpt-4o", "gpt-4o-2026-08-06",
@@ -105,6 +105,7 @@ func TestListUnifiedChannelRelationsReturnsTransportMappingAndActions(t *testing
 		`"active_release_id":7`, `"channel_id":42`, `"product_id":701`,
 		`"product_transport_id":601`, `"channel_transport_id":801`,
 		`"adapter_code":"openai_chat"`, `"adapter_version":1`,
+		`"offering_state":"active"`, `"offering_state_version":5`,
 		`"model_type":"llm"`,
 		`"base_url":"https://api.example.com"`, `"request_path":"/v1/chat/completions"`,
 		`"capability_constraints":{"temperature":{"max":2}}`,
@@ -130,6 +131,12 @@ func TestUnifiedRelationSQLDoesNotReadLegacyValidations(t *testing.T) {
 		if strings.Contains(unifiedRelationSQL, table) {
 			t.Fatalf("relation SQL still reads legacy validation table %q", table)
 		}
+	}
+}
+
+func TestUnifiedRelationSQLReadsOfferingRuntimeVersion(t *testing.T) {
+	if !strings.Contains(unifiedRelationSQL, "COALESCE(ors.state_version,0)") {
+		t.Fatal("relation SQL does not read offering runtime state_version")
 	}
 }
 

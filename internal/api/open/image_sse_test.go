@@ -3,9 +3,12 @@ package open
 import (
 	"bytes"
 	"context"
+	"errors"
 	"strings"
 	"testing"
 	"time"
+
+	gatewayruntime "github.com/mirainya/Prism/internal/gateway/runtime"
 )
 
 type imageSSEFlushRecorder struct {
@@ -28,7 +31,7 @@ func TestForwardImageSSEEventsFlushesClientVisibleFrames(t *testing.T) {
 	events := make(chan []byte, 3)
 	events <- []byte(`{"type":"image_generation.partial_image","b64_json":"cGFydGlhbA=="}`)
 	events <- []byte(`{"type":"image_generation.completed","b64_json":"ZmluYWw="}`)
-	events <- []byte(`{"type":"error","error":{"message":"upstream failed"}}`)
+	events <- []byte(`{"type":"error","error":{"message":"upstream failed at https://internal.example/result with api_key=sk-secretvalue123"}}`)
 	close(events)
 
 	recorder := &imageSSEFlushRecorder{}
@@ -41,8 +44,11 @@ func TestForwardImageSSEEventsFlushesClientVisibleFrames(t *testing.T) {
 		t.Fatalf("flush count = %d, want 2", recorder.flushCount)
 	}
 	body := recorder.String()
-	if !strings.Contains(body, "image_generation.partial_image") || !strings.Contains(body, "upstream failed") {
+	if !strings.Contains(body, "image_generation.partial_image") || !strings.Contains(body, "upstream failed at [URL]") {
 		t.Fatalf("SSE body = %s", body)
+	}
+	if strings.Contains(body, "internal.example") || strings.Contains(body, "sk-secretvalue123") {
+		t.Fatalf("SSE body exposed provider details: %s", body)
 	}
 	if !strings.Contains(body, `"type":"image_generation.failed"`) {
 		t.Fatalf("SSE error frame has no failure type: %s", body)
@@ -79,6 +85,36 @@ func TestForwardImageSSEEventsRecognizesUntypedAPIError(t *testing.T) {
 	if !strings.Contains(body, `"type":"image_generation.failed"`) ||
 		!strings.Contains(body, "no available account") {
 		t.Fatalf("SSE body = %s", body)
+	}
+}
+
+func TestImageSSESessionFailUsesSanitizedProviderMessage(t *testing.T) {
+	recorder := &imageSSEFlushRecorder{}
+	session := startImageSSESession(recorder)
+	session.Fail(recorder, "provider rejected image at https://private.example/task token=secret-value")
+
+	body := recorder.String()
+	if !strings.Contains(body, "provider rejected image at [URL]") {
+		t.Fatalf("SSE body = %s", body)
+	}
+	if strings.Contains(body, "private.example") || strings.Contains(body, "secret-value") {
+		t.Fatalf("SSE body exposed provider details: %s", body)
+	}
+	if !strings.HasSuffix(body, "data: [DONE]\n\n") {
+		t.Fatalf("SSE stream did not terminate: %s", body)
+	}
+}
+
+func TestOpenAIImageStreamFailureMessageRejectsInternalErrors(t *testing.T) {
+	providerErr := &gatewayruntime.ProviderCapabilityError{
+		Message: "content rejected by https://private.example/task with Bearer secret-value",
+	}
+	message := openAIImageStreamFailureMessage(providerErr)
+	if message != "content rejected by [URL] with [REDACTED]" {
+		t.Fatalf("message = %q", message)
+	}
+	if message := openAIImageStreamFailureMessage(errors.New("database password leaked")); message != "upstream image generation failed" {
+		t.Fatalf("internal error message = %q", message)
 	}
 }
 

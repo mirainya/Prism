@@ -6,6 +6,8 @@ import (
 	"errors"
 	"time"
 
+	"github.com/mirainya/Prism/internal/gateway/billing"
+	"github.com/mirainya/Prism/internal/gateway/execution"
 	"github.com/mirainya/Prism/internal/gateway/repository"
 )
 
@@ -68,7 +70,7 @@ func (s *Service) ProcessOne(ctx context.Context, owner string, lease time.Durat
 		markErr := s.Store.WithTx(markCtx, func(tx *sql.Tx) error {
 			var permanent *PermanentDispatchError
 			if errors.As(workErr, &permanent) && permanent.Code != "" {
-				return s.Store.DeadLetterAsyncOutbox(markCtx, tx, item, permanent.Code)
+				return s.finishPermanentAsyncDispatchTx(markCtx, tx, item, permanent.Code)
 			}
 			return s.Store.RetryAsyncOutbox(markCtx, tx, item, "worker_error", time.Now().UTC().Add(outboxRetryDelay(retryDelay, item.Attempts)))
 		})
@@ -87,6 +89,35 @@ func (s *Service) ProcessOne(ctx context.Context, owner string, lease time.Durat
 		return s.Store.CompleteAsyncOutbox(markCtx, tx, item, true, "")
 	})
 	return true, err
+}
+
+func (s *Service) finishPermanentAsyncDispatchTx(ctx context.Context, tx *sql.Tx, item repository.OutboxItem, errorCode string) error {
+	target, ok := permanentAsyncDispatchTarget(item.Action)
+	if !ok {
+		return s.Store.DeadLetterAsyncOutbox(ctx, tx, item, errorCode)
+	}
+	return s.finishAsyncTx(ctx, tx, item.AsyncExecutionID, target, errorCode, billing.Facts{}, func(ctx context.Context, tx *sql.Tx) error {
+		var state execution.AsyncState
+		var version, sequence uint64
+		if err := tx.QueryRowContext(ctx, `SELECT state,state_version,action_seq FROM gw_async_executions WHERE id=?`, item.AsyncExecutionID).Scan(&state, &version, &sequence); err != nil {
+			return err
+		}
+		if version != item.StateVersion || sequence != item.ActionSeq || !asyncRequestAllowed(state, item.Action) {
+			return repository.ErrConflict
+		}
+		return s.Store.DeadLetterAsyncOutbox(ctx, tx, item, errorCode)
+	})
+}
+
+func permanentAsyncDispatchTarget(action string) (execution.AsyncState, bool) {
+	switch action {
+	case "submit", "query", "cancel":
+		return execution.AsyncFailed, true
+	case "recover":
+		return execution.AsyncTerminatedUnknown, true
+	default:
+		return "", false
+	}
 }
 
 func outboxRetryDelay(base time.Duration, attempts uint64) time.Duration {

@@ -23,20 +23,25 @@ func TestPrepareManagedResultCopyAtPreservesOriginalOrdinal(t *testing.T) {
 	store, _ := repository.New(db)
 	service, _ := New(store)
 	expectManagedOwner(mock, 2, 10, 20)
+	expectManagedMissing(mock, 2, "gateway-result:2:3")
 	expectManagedAllocation(mock, 2, 1, 10, 20, "gateway-result:2:3", 31)
 	expectManagedUploadRecord(mock, 31)
 	restore := stubManagedStorage(t)
 	defer restore()
-	uploadManagedResult = func(_ context.Context, apiKey string, data []byte, contentType, path, filename string) (filestorage.UploadResult, error) {
+	importManagedResult = func(_ context.Context, apiKey, sourceURL, path, filename string) (filestorage.UploadResult, error) {
 		digest := sha256.Sum256(testPNG)
-		if apiKey != testStorageAPIKey || string(data) != string(testPNG) || contentType != "image/png" || !strings.HasSuffix(path, "gateway-results/31/") || filename != hex.EncodeToString(digest[:])+".png" {
-			t.Fatalf("upload = key:%q %x %q %q %q", apiKey, data, contentType, path, filename)
+		if apiKey != testStorageAPIKey || sourceURL != "https://provider.example/result.png" || !strings.HasSuffix(path, "gateway-results/2/3/") || filename != "result.png" {
+			t.Fatalf("import = key:%q source:%q path:%q filename:%q", apiKey, sourceURL, path, filename)
 		}
-		return filestorage.UploadResult{URL: "https://storage.example/result.png", RawURL: "private/result.png", ObjectID: "object-v1"}, nil
+		return filestorage.UploadResult{
+			URL: "https://storage.example/result.png", RawURL: "private/result.png", ObjectID: "object-v1",
+			Size: int64(len(testPNG)), ContentType: "image/png",
+			HashInfo: filestorage.UploadHashInfo{"SHA-256": hex.EncodeToString(digest[:])},
+		}, nil
 	}
 
 	copy, err := service.prepareManagedResultCopyAt(context.Background(), 2, 3, delivery.RemoteResult{
-		Role: "image", InlineData: append([]byte(nil), testPNG...), ContentType: "image/png",
+		Role: "image", URL: "https://provider.example/result.png",
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -60,7 +65,7 @@ func TestPrepareManagedResultCopyAtRejectsMissingCallStorageKey(t *testing.T) {
 	mock.ExpectQuery("SELECT c.user_id,c.token_id,COALESCE\\(c.xfs_api_key,''\\)").WithArgs(uint64(2)).
 		WillReturnRows(sqlmock.NewRows([]string{"user_id", "token_id", "xfs_api_key"}).AddRow(10, 20, ""))
 	_, err = service.prepareManagedResultCopyAt(context.Background(), 2, 0, delivery.RemoteResult{
-		Role: "image", InlineData: append([]byte(nil), testPNG...), ContentType: "image/png",
+		Role: "image", URL: "https://provider.example/result.png",
 	})
 	var permanent *PermanentDispatchError
 	if !errors.As(err, &permanent) || permanent.Code != "managed_copy_storage_unconfigured" {

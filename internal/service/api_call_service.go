@@ -60,10 +60,11 @@ type APICallPayloadDetail struct {
 }
 
 type APICallDetail struct {
-	Call        model.APICall          `json:"call"`
-	Attempts    []model.APICallAttempt `json:"attempts"`
-	BillingLogs []model.BillingLog     `json:"billing_logs"`
-	Payloads    []APICallPayloadDetail `json:"payloads"`
+	Call          model.APICall          `json:"call"`
+	GatewayCallID uint64                 `json:"gateway_call_id,omitempty"`
+	Attempts      []model.APICallAttempt `json:"attempts"`
+	BillingLogs   []model.BillingLog     `json:"billing_logs"`
+	Payloads      []APICallPayloadDetail `json:"payloads"`
 }
 
 func (s *APICallService) ListCalls(req *ListCallsRequest) (*ListCallsResponse, error) {
@@ -191,6 +192,9 @@ func (s *APICallService) GetCallDetail(callID string, actorUserID uint, isAdmin 
 	}
 
 	detail := &APICallDetail{Call: call}
+	if isAdmin {
+		detail.GatewayCallID = gatewayCallID
+	}
 	var err error
 	if detail.Attempts, err = loadUnifiedCallAttempts(model.DB(), gatewayCallID, call.ID); err != nil {
 		return nil, err

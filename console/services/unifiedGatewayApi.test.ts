@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { request } from './request';
-import { createUnifiedActiveProduct, fetchUnifiedCallDetail, fetchUnifiedCalls, fetchUnifiedCatalog, fetchUnifiedCatalogDiscoveries, fetchUnifiedCatalogDiscoveryItems, fetchUnifiedCatalogModelEntries, fetchUnifiedCatalogPriceCandidates, fetchUnifiedCatalogSources, fetchUnifiedChannelRelations, fetchUnifiedCredentials, fetchUnifiedRequestLogPayloads, fetchUnifiedRequestLogs, type UnifiedActiveProductCreate } from './unifiedGatewayApi';
+import { createUnifiedActiveProduct, fetchUnifiedCallDetail, fetchUnifiedCalls, fetchUnifiedCatalog, fetchUnifiedCatalogDiscoveries, fetchUnifiedCatalogDiscoveryItems, fetchUnifiedCatalogModelEntries, fetchUnifiedCatalogPriceCandidates, fetchUnifiedCatalogSources, fetchUnifiedChannelRelations, fetchUnifiedCredentials, fetchUnifiedRequestLogPayloads, fetchUnifiedRequestLogs, setUnifiedOfferingRuntimeState, type UnifiedActiveProductCreate } from './unifiedGatewayApi';
 
 vi.mock('./request', () => ({ request: vi.fn() }));
 beforeEach(() => vi.mocked(request).mockResolvedValue({ items: [], total: 0, page: 1, page_size: 20 }));
@@ -50,6 +50,14 @@ describe('unified gateway pagination', () => {
     await createUnifiedActiveProduct(payload);
     expect(request).toHaveBeenCalledWith('/admin/unified-gateway/catalog-changes/product-create', {
       method: 'POST',
+      body: JSON.stringify(payload),
+    });
+  });
+  it('changes an offering runtime state with optimistic concurrency', async () => {
+    const payload = { state: 'disabled' as const, reason_code: 'console_offering_disable', expected_version: 4 };
+    await setUnifiedOfferingRuntimeState(301, payload);
+    expect(request).toHaveBeenCalledWith('/admin/unified-gateway/offerings/301/runtime-state', {
+      method: 'PATCH',
       body: JSON.stringify(payload),
     });
   });

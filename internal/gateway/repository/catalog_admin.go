@@ -363,8 +363,36 @@ func ensureCatalogModel(ctx context.Context, tx *sql.Tx, releaseID, modelID, mod
 		return 0, err
 	} else {
 		var existingTags []string
-		if json.Unmarshal(rawTags, &existingTags) != nil || displayName != in.DisplayName || description != in.Description || visibility != in.Visibility || !slices.Equal(existingTags, in.CapabilityTags) {
-			return 0, ErrConflict
+		matches := json.Unmarshal(rawTags, &existingTags) == nil &&
+			displayName == in.DisplayName && description == in.Description &&
+			visibility == in.Visibility && slices.Equal(existingTags, in.CapabilityTags)
+		if !matches {
+			if visibility != "hidden" {
+				return 0, ErrConflict
+			}
+			var operationCount, skuCount uint64
+			if err := tx.QueryRowContext(ctx, `SELECT COUNT(DISTINCT mo.id),COUNT(DISTINCT s.id)
+FROM gw_model_operations mo
+LEFT JOIN gw_skus s ON s.release_id=mo.release_id AND s.model_operation_id=mo.id
+WHERE mo.release_id=? AND mo.catalog_model_id=?`, releaseID, catalogModelID).Scan(&operationCount, &skuCount); err != nil {
+				return 0, err
+			}
+			if operationCount != 0 || skuCount != 0 {
+				return 0, ErrConflict
+			}
+			tags, _ := json.Marshal(in.CapabilityTags)
+			result, err := tx.ExecContext(ctx, `UPDATE gw_catalog_models SET display_name=?,description=?,capability_tags=?,visibility=? WHERE release_id=? AND id=? AND visibility='hidden'`,
+				in.DisplayName, in.Description, tags, in.Visibility, releaseID, catalogModelID)
+			if err != nil {
+				return 0, err
+			}
+			updated, err := affected(result)
+			if err != nil {
+				return 0, err
+			}
+			if !updated {
+				return 0, ErrConflict
+			}
 		}
 	}
 

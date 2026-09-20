@@ -35,7 +35,7 @@ func OnboardUnifiedCatalogModel(c *gin.Context) {
 		unifiedChannelError(c, err)
 		return
 	}
-	if err := adapter.ValidateCatalogProduct(descriptor.Code, descriptor.Version, in.Product.BaseURL, in.Product.RequestMethod, in.Product.RequestPath, in.Product.VendorModel, in.Product.CapabilityConstraints); err != nil {
+	if err := adapter.ValidateCatalogProduct(descriptor.Code, descriptor.Version, in.Product.BaseURL, in.Product.RequestMethod, in.Product.RequestPath, in.Product.VendorModel, in.Product.TaskScope, in.Product.CapabilityConstraints); err != nil {
 		unifiedChannelError(c, repository.ErrInvalidInput)
 		return
 	}

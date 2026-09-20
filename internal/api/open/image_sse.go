@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/mirainya/Prism/internal/gateway/payloadview"
 	"github.com/tidwall/gjson"
 )
 
@@ -138,10 +139,14 @@ func (s *imageSSESession) Complete(w io.Writer, response OpenAIImageResponse) {
 	flushImageSSE(w)
 }
 
-func (s *imageSSESession) Fail(w io.Writer) {
+func (s *imageSSESession) Fail(w io.Writer, message string) {
 	errorForwarded, _ := s.finish()
 	if !errorForwarded {
-		writeImageSSEError(w, "upstream image generation failed", "api_error")
+		message = payloadview.ExtractFailureMessage([]byte(message))
+		if message == "" {
+			message = "upstream image generation failed"
+		}
+		writeImageSSEError(w, message, "api_error")
 	}
 	writeImageSSEDone(w)
 	flushImageSSE(w)
@@ -242,10 +247,7 @@ func forwardImageSSEEventsWithHeartbeat(
 		case typ == "error" || typ == "api_error" || strings.HasSuffix(typ, "_error") ||
 			strings.HasSuffix(typ, "failed") || obj == "error" || gjson.Get(payload, "error").Exists() ||
 			(gjson.Get(payload, "message").Exists() && !gjson.Get(payload, "data").Exists()):
-			msg := gjson.Get(payload, "error.message").String()
-			if msg == "" {
-				msg = gjson.Get(payload, "message").String()
-			}
+			msg := payloadview.ExtractFailureMessage(raw)
 			if msg == "" {
 				msg = "upstream stream error"
 			}

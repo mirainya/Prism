@@ -13,6 +13,7 @@ import {
   LoaderCircle,
   Pencil,
   Plus,
+  Power,
   RefreshCw,
   Search,
   Save,
@@ -22,7 +23,7 @@ import {
   X,
 } from 'lucide-react';
 import { PageHeader } from '../components/shell';
-import { Badge, Button, Drawer, Modal, Pagination, Select } from '../components/ui';
+import { Badge, Button, Drawer, Modal, Pagination, Select, useAppDialog } from '../components/ui';
 import {
   fetchUnifiedCalls,
   fetchUnifiedCallDetail,
@@ -35,6 +36,7 @@ import {
   fetchUnifiedRouteStates,
   changeUnifiedProduct,
   changeUnifiedSellRate,
+  setUnifiedOfferingRuntimeState,
   type UnifiedCall,
   type UnifiedCatalogProduct,
   type UnifiedCatalogRelease,
@@ -87,6 +89,7 @@ import {
 } from './ops_console/presentation';
 import { CostRateEditor, RoutingEditor, type CatalogChangeContext } from './ops_console/CatalogChangeForms';
 import { AddUpstreamModelDialog } from './ops_console/AddUpstreamModelDialog';
+import { AllowedHostsDialog } from './ops_console/AllowedHostsDialog';
 import {
   filterGatewayModels,
   gatewayProductKey,
@@ -239,6 +242,10 @@ const productsFromRelations = (relations: UnifiedRelationLink[]): UnifiedCatalog
           adapter_code: relation.adapter_code || '',
           adapter_version: relation.adapter_version || 1,
           offering_id: relation.offering_id,
+          offering_state: ['active', 'draining', 'disabled'].includes(relation.offering_state)
+            ? relation.offering_state as UnifiedCatalogProduct['offering_state']
+            : undefined,
+          offering_state_version: relation.offering_state_version,
           credential_pool_id: relation.credential_pool_id,
           pool_code: relation.pool_code,
           pool_name: relation.pool_name,
@@ -1133,6 +1140,7 @@ const UpstreamSidebar: React.FC<{
   canEdit: boolean;
   onChanged: () => void;
 }> = ({ entity, pools, products, relations, release, canEdit, onChanged }) => {
+  const { askConfirmation } = useAppDialog();
   const [editingPool, setEditingPool] = useState<UnifiedPool | null>(null);
   const [ratio, setRatio] = useState('1');
   const [saving, setSaving] = useState(false);
@@ -1151,10 +1159,13 @@ const UpstreamSidebar: React.FC<{
   const [selectedModelKey, setSelectedModelKey] = useState('');
   const [selectedProductKey, setSelectedProductKey] = useState('');
   const [mappingProduct, setMappingProduct] = useState<UnifiedCatalogProduct | null>(null);
+  const [hostsProduct, setHostsProduct] = useState<UnifiedCatalogProduct | null>(null);
   const [mappingVendor, setMappingVendor] = useState('');
   const [mappingText, setMappingText] = useState('{}');
   const [mappingSaving, setMappingSaving] = useState(false);
   const [mappingError, setMappingError] = useState('');
+  const [runtimeSaving, setRuntimeSaving] = useState(false);
+  const [runtimeError, setRuntimeError] = useState('');
 
   useEffect(() => {
     setMappingProduct(null);
@@ -1166,6 +1177,7 @@ const UpstreamSidebar: React.FC<{
     setSelectedProductKey('');
     setNotice('');
     setError('');
+    setRuntimeError('');
   }, [entity.id]);
 
   useEffect(() => {
@@ -1220,6 +1232,8 @@ const UpstreamSidebar: React.FC<{
       : selectedProducts[0] ? gatewayProductKey(selectedProducts[0]) : '');
   }, [selectedModel]);
 
+  useEffect(() => setRuntimeError(''), [selectedProductKey]);
+
   const selectedProduct = selectedModel?.products.find(product => gatewayProductKey(product) === selectedProductKey)
     || selectedModel?.products[0]
     || null;
@@ -1234,6 +1248,8 @@ const UpstreamSidebar: React.FC<{
   const selectedCredentialCount = new Set(selectedScopedRelations.map(relation => relation.credential_id)).size;
   const selectedServingCredentialCount = new Set(selectedScopedRelations.filter(relation => relation.serving).map(relation => relation.credential_id)).size;
   const selectedMappingSections = selectedProduct ? mappingSections(selectedProduct.capability_constraints) : [];
+  const selectedRuntimeState = selectedProduct?.offering_state || selectedProductRelations[0]?.offering_state || '';
+  const selectedRuntimeVersion = selectedProduct?.offering_state_version || selectedProductRelations[0]?.offering_state_version || 0;
 
   const credentialsChanged = () => {
     setCredentialRevision((value) => value + 1);
@@ -1317,6 +1333,38 @@ const UpstreamSidebar: React.FC<{
     }
   };
 
+  const changeOfferingRuntimeState = async (state: 'active' | 'disabled') => {
+    if (!selectedProduct || !canEdit || runtimeSaving) return;
+    if (!selectedRuntimeVersion) {
+      setRuntimeError('线路状态版本不可用，请刷新页面后重试');
+      return;
+    }
+    if (state === 'disabled') {
+      const confirmed = await askConfirmation({
+        title: '停用这条上游线路？',
+        description: '保存后新请求不会再选择此线路，正在执行的请求不受影响。',
+        confirmLabel: '停用线路',
+        tone: 'danger',
+      });
+      if (!confirmed) return;
+    }
+    setRuntimeSaving(true);
+    setRuntimeError('');
+    try {
+      await setUnifiedOfferingRuntimeState(selectedProduct.offering_id, {
+        state,
+        expected_version: selectedRuntimeVersion,
+        reason_code: state === 'active' ? 'console_offering_restore' : 'console_offering_disable',
+      });
+      setNotice(state === 'active' ? '上游线路已恢复' : '上游线路已停用');
+      onChanged();
+    } catch (reason: unknown) {
+      setRuntimeError(errorMessage(reason));
+    } finally {
+      setRuntimeSaving(false);
+    }
+  };
+
   const gatewayTypes = entity.model_types.length > 0
     ? entity.model_types
     : uniqueValues(products.map(productGatewayType)) as ModelType[];
@@ -1372,10 +1420,27 @@ const UpstreamSidebar: React.FC<{
                   ? productRelations.filter(relation => relation.credential_id === selectedCredentialID)
                   : productRelations;
                 const available = scopedRelations.some(relation => relation.serving);
+                const runtimeState = product.offering_state || productRelations[0]?.offering_state || '';
+                const runtimeAvailable = (!runtimeState || runtimeState === 'active') && available;
+                const availabilityLabel = runtimeState && runtimeState !== 'active' ? opsStatusLabel(runtimeState) : runtimeAvailable ? '可调用' : '未就绪';
                 const active = gatewayProductKey(product) === gatewayProductKey(selectedProduct!);
-                return <button key={gatewayProductKey(product)} type="button" role="option" aria-selected={active} className={active ? 'ops-gateway-interface-row-active' : ''} onClick={() => setSelectedProductKey(gatewayProductKey(product))}><span className="ops-gateway-interface-main"><strong>{product.protocol || product.adapter_code}</strong><code>{product.request_method} {product.request_path}</code></span><span className="ops-gateway-interface-side"><small>{product.adapter_code}@{product.adapter_version}</small><em className={available ? 'ops-interface-ready' : ''}>{available ? '可调用' : '未就绪'}</em></span></button>;
+                return <button key={gatewayProductKey(product)} type="button" role="option" aria-selected={active} className={active ? 'ops-gateway-interface-row-active' : ''} onClick={() => setSelectedProductKey(gatewayProductKey(product))}><span className="ops-gateway-interface-main"><strong>{product.protocol || product.adapter_code}</strong><code>{product.request_method} {product.request_path}</code></span><span className="ops-gateway-interface-side"><small>{product.adapter_code}@{product.adapter_version}</small><em className={runtimeAvailable ? 'ops-interface-ready' : ''}>{availabilityLabel}</em></span></button>;
               })}</div>
-              {selectedProduct && <div className="ops-gateway-interface-detail"><div className="ops-gateway-interface-heading"><div><h4>接口配置</h4><p>{selectedProduct.product_code}</p></div>{canEdit && <Button type="button" size="sm" variant="secondary" onClick={() => openMapping(selectedProduct)}><Pencil size={13} />编辑配置</Button>}</div><dl className="ops-gateway-connection-grid"><DetailRow label="完整端点" value={`${selectedProduct.base_url}${selectedProduct.request_path}`} mono /><DetailRow label="协议" value={selectedProduct.protocol || '-'} mono /><DetailRow label="Adapter" value={`${selectedProduct.adapter_code}@${selectedProduct.adapter_version}`} mono /><DetailRow label="Key 分组" value={selectedProduct.pool_name || '未绑定'} /><DetailRow label="执行方式" value={selectedProduct.task_scope === 'task' ? selectedActions.includes('query') ? '异步提交 + 轮询' : '异步提交' : '同步请求'} /><DetailRow label="可用 Key" value={`${selectedServingCredentialCount} / ${selectedCredentialCount}`} /></dl><div className="ops-gateway-public-names"><span>对外调用名</span><div>{selectedPublicNames.length ? selectedPublicNames.map(name => <code key={name}>{name}</code>) : <small>尚未关联</small>}</div></div><div className="ops-gateway-json"><div><Braces size={14} /><strong>{productGatewayType(selectedProduct) === 'video' ? '上下游 JSON 映射' : '参数与能力配置'}</strong>{selectedMappingSections.length > 0 && <span>{selectedMappingSections.join(' / ')}</span>}</div><pre>{formatMappingJSON(selectedProduct.capability_constraints)}</pre></div></div>}
+              {selectedProduct && <div className="ops-gateway-interface-detail">
+                <div className="ops-gateway-interface-heading">
+                  <div><div className="flex items-center gap-2"><h4>接口配置</h4>{selectedRuntimeState && <StatusBadge status={selectedRuntimeState} />}</div><p>{selectedProduct.product_code}</p></div>
+                  {canEdit && <div className="flex flex-wrap justify-end gap-2">
+                    {selectedRuntimeState && selectedRuntimeState !== 'disabled' && <Button type="button" size="sm" variant="danger" onClick={() => void changeOfferingRuntimeState('disabled')} loading={runtimeSaving}><Power size={13} />停用线路</Button>}
+                    {selectedRuntimeState && selectedRuntimeState !== 'active' && <Button type="button" size="sm" variant="secondary" onClick={() => void changeOfferingRuntimeState('active')} loading={runtimeSaving}><RefreshCw size={13} />恢复线路</Button>}
+                    <Button type="button" size="sm" variant="secondary" onClick={() => setHostsProduct(selectedProduct)} disabled={runtimeSaving}><ShieldCheck size={13} />结果域名</Button>
+                    <Button type="button" size="sm" variant="secondary" onClick={() => openMapping(selectedProduct)} disabled={runtimeSaving}><Pencil size={13} />编辑配置</Button>
+                  </div>}
+                </div>
+                {runtimeError && <ErrorNotice message={runtimeError} />}
+                <dl className="ops-gateway-connection-grid"><DetailRow label="完整端点" value={`${selectedProduct.base_url}${selectedProduct.request_path}`} mono /><DetailRow label="协议" value={selectedProduct.protocol || '-'} mono /><DetailRow label="Adapter" value={`${selectedProduct.adapter_code}@${selectedProduct.adapter_version}`} mono /><DetailRow label="Key 分组" value={selectedProduct.pool_name || '未绑定'} /><DetailRow label="执行方式" value={selectedProduct.task_scope === 'task' ? selectedActions.includes('query') ? '异步提交 + 轮询' : '异步提交' : '同步请求'} /><DetailRow label="可用 Key" value={`${selectedServingCredentialCount} / ${selectedCredentialCount}`} /></dl>
+                <div className="ops-gateway-public-names"><span>对外调用名</span><div>{selectedPublicNames.length ? selectedPublicNames.map(name => <code key={name}>{name}</code>) : <small>尚未关联</small>}</div></div>
+                <div className="ops-gateway-json"><div><Braces size={14} /><strong>{productGatewayType(selectedProduct) === 'video' ? '上下游 JSON 映射' : '参数与能力配置'}</strong>{selectedMappingSections.length > 0 && <span>{selectedMappingSections.join(' / ')}</span>}</div><pre>{formatMappingJSON(selectedProduct.capability_constraints)}</pre></div>
+              </div>}
             </div>}
           </div>}
         </section>
@@ -1385,6 +1450,7 @@ const UpstreamSidebar: React.FC<{
     {creatingPool && <CreatePoolDialog channelId={entity.id} onClose={() => setCreatingPool(false)} onSaved={() => { setCreatingPool(false); credentialsChanged(); }} />}
     {creatingProduct && release && <AddUpstreamModelDialog channel={entity} release={release} pools={pools} onClose={() => setCreatingProduct(false)} onSaved={() => { setCreatingProduct(false); setNotice('上游模型已接入并生效'); onChanged(); }} />}
     {credentialEditor && <CredentialDialog item={credentialEditor.item} poolId={credentialEditor.poolId} readOnly={!canEdit} onClose={() => setCredentialEditor(null)} onSaved={() => { setCredentialEditor(null); credentialsChanged(); }} />}
+    {hostsProduct && release && <AllowedHostsDialog release={release} product={hostsProduct} onClose={() => setHostsProduct(null)} onSaved={() => { setHostsProduct(null); setNotice('结果域名已保存并生效'); onChanged(); }} />}
     {mappingProduct && <Modal open title={`编辑 ${mappingProduct.vendor_model || mappingProduct.product_code}`} onClose={() => { if (!mappingSaving) setMappingProduct(null); }} width="max-w-3xl"><div className="space-y-4">{mappingError && <ErrorNotice message={mappingError} />}<label className="block text-sm font-semibold">上游模型名<input value={mappingVendor} onChange={(event) => setMappingVendor(event.target.value)} spellCheck={false} className={`${configurationInputClass} font-mono`} /></label><label className="block text-sm font-semibold">{productGatewayType(mappingProduct) === 'video' ? '上下游 JSON 映射' : '参数与能力配置'}<div className="mt-1"><React.Suspense fallback={<div className="grid h-64 place-items-center rounded-lg border border-[var(--border-soft)] text-xs text-[var(--text-secondary)]">正在加载编辑器</div>}><JsonEditor value={mappingText} onChange={setMappingText} height="24rem" /></React.Suspense></div></label><div className="flex justify-end gap-2 border-t border-[var(--border-soft)] pt-4"><Button type="button" variant="ghost" onClick={() => setMappingProduct(null)} disabled={mappingSaving}>取消</Button><Button type="button" onClick={() => void saveMapping()} loading={mappingSaving}><Save size={14} />保存并生效</Button></div></div></Modal>}
   </>;
 };

@@ -69,12 +69,30 @@ export interface UnifiedCatalogProduct {
   product_transport_id: number; channel_transport_id: number; transport_code: string; base_url: string;
   protocol: string; request_method: string; request_path: string; task_scope: string; cancel_mode: string;
   source_url_policy: string; adapter_code: string; adapter_version: number; offering_id: number;
+  offering_state?: UnifiedOfferingRuntimeState; offering_state_version?: number;
   credential_pool_id: number; pool_code?: string; pool_name: string; cost_plan_id: number; cost_plan_code: string;
   route_count: number; cost_rate_count: number; commercial_state: string; entitled_credential_count: number;
     capability_constraints?: unknown; constraints_schema_version?: number;
     model_type?: UnifiedCatalogModelType;
   // 只有模型条目接口会带；route-weight 改动要用它回填当前优先级与权重。
   sku_ids?: number[]; routes?: UnifiedCatalogRoute[];
+}
+
+export type UnifiedOfferingRuntimeState = 'active' | 'draining' | 'disabled';
+
+export interface UnifiedAllowedHost {
+  protocol: 'http' | 'https';
+  host: string;
+  port: number;
+}
+
+export interface UnifiedTransportAllowedHosts {
+  release_id: number;
+  config_version: number;
+  transport_id: number;
+  transport_code: string;
+  base_url: string;
+  allowed_hosts: UnifiedAllowedHost[];
 }
 
 export interface UnifiedCatalogModelEntry {
@@ -172,6 +190,7 @@ export const createUnifiedCatalogSKU = (releaseId: number, data: Record<string, 
 export const updateUnifiedCatalogSKU = (releaseId: number, id: number, data: Record<string, unknown>) => request<{ id: number }>(`/admin/unified-gateway/catalog/${releaseId}/skus/${id}`, { method: 'PATCH', body: JSON.stringify(data) });
 export const deleteUnifiedCatalogSKU = (releaseId: number, id: number, expectedVersion: number) => request(`/admin/unified-gateway/catalog/${releaseId}/skus/${id}`, { method: 'DELETE', body: JSON.stringify({ expected_version: expectedVersion }) });
 export const fetchUnifiedCatalogProducts = (releaseId: number, page = 1, pageSize = 20, signal?: AbortSignal) => request<UnifiedGatewayPage<UnifiedCatalogProduct>>(`/admin/unified-gateway/catalog/${releaseId}/products${pageQuery(page, pageSize)}`, { signal });
+export const fetchUnifiedTransportAllowedHosts = (releaseId: number, transportId: number, signal?: AbortSignal) => request<UnifiedTransportAllowedHosts>(`/admin/unified-gateway/catalog/${releaseId}/transports/${transportId}/allowed-hosts`, { signal });
 const isAbortSignal = (value: UnifiedCatalogModelFilters | AbortSignal | undefined): value is AbortSignal =>
   Boolean(value && 'aborted' in value && typeof value.addEventListener === 'function');
 
@@ -190,6 +209,7 @@ export function fetchUnifiedCatalogModelEntries(releaseId: number, page = 1, pag
 export const createUnifiedCatalogProduct = (releaseId: number, data: Record<string, unknown>) => request<{ id: number }>(`/admin/unified-gateway/catalog/${releaseId}/products`, { method: 'POST', body: JSON.stringify(data) });
 export const deleteUnifiedCatalogProduct = (releaseId: number, id: number, expectedVersion: number) => request(`/admin/unified-gateway/catalog/${releaseId}/products/${id}`, { method: 'DELETE', body: JSON.stringify({ expected_version: expectedVersion }) });
 export const changeUnifiedProduct = (data: { expected_active_release_id: number; expected_config_version: number; semantic_version: string; product_code: string; vendor_model: string; capability_constraints: unknown }) => request<UnifiedCatalogChangeResult>('/admin/unified-gateway/catalog-changes/product', { method: 'POST', body: JSON.stringify(data) });
+export const changeUnifiedTransportAllowedHosts = (data: { expected_active_release_id: number; expected_config_version: number; semantic_version: string; transport_code: string; allowed_hosts: UnifiedAllowedHost[] }) => request<UnifiedCatalogChangeResult>('/admin/unified-gateway/catalog-changes/transport-allowed-hosts', { method: 'POST', body: JSON.stringify(data) });
 export interface UnifiedActiveProductCreate {
   expected_active_release_id: number; expected_config_version: number;
   channel_id: number; credential_pool_id: number;
@@ -203,6 +223,47 @@ export interface UnifiedActiveProductCreate {
   cost_plan_code: string; routes: { sku_id: number; priority: number; weight: number }[];
 }
 export const createUnifiedActiveProduct = (data: UnifiedActiveProductCreate) => request<UnifiedCatalogChangeResult>('/admin/unified-gateway/catalog-changes/product-create', { method: 'POST', body: JSON.stringify(data) });
+
+export interface UnifiedCatalogModelOnboardRate {
+  unit_code: string; unit_price: string; component_code: string;
+  quantity_source: string; charge_event: string; unit_scale: number;
+  quantity_step: string; max_quantity: string; pricing_mode: 'flat' | 'expression';
+  pricing_expr: string; reason_code?: string;
+}
+
+export interface UnifiedCatalogModelOnboardInput {
+  expected_active_release_id: number;
+  expected_config_version: number;
+  sku: {
+    model_code: string; api_name: string; display_name: string; description: string;
+    visibility: string; capability_tags: string[]; operation_code: string;
+    contract_version: number; http_method: string; route_template: string;
+    normalization_version: number; sku_code: string; variant_code: string;
+    delivery_mode: string; max_results: number; idempotency_mode: string;
+    service_tiers: string[];
+  };
+  product: {
+    channel_id: number; credential_pool_id: number; product_code: string;
+    vendor_model: string; capability_constraints: unknown; constraints_schema_version: number;
+    adapter_code: string; adapter_version: number; transport_code: string;
+    base_url: string; request_method: string; request_path: string; auth_scheme: string;
+    transport_timeout_ms: number; task_timeout_ms: number; task_scope: string;
+    cancel_mode: string; source_url_policy: string; upstream_scope_kind: string;
+    upstream_scope_key: string; allowed_hosts: UnifiedAllowedHost[];
+    actions: UnifiedProductTransportAction[]; cost_plan_code: string;
+  };
+  route: { priority: number; weight: number };
+  sell_rate: UnifiedCatalogModelOnboardRate;
+  cost_rate: UnifiedCatalogModelOnboardRate;
+}
+
+export interface UnifiedCatalogModelOnboardResult extends UnifiedCatalogChangeResult {
+  sku_id: number; product_id: number; offering_id: number; cost_plan_id: number;
+  sell_rate_id: number; cost_rate_id: number;
+}
+
+export const onboardUnifiedCatalogModel = (data: UnifiedCatalogModelOnboardInput) =>
+  request<UnifiedCatalogModelOnboardResult>('/admin/unified-gateway/catalog-changes/model-onboard', { method: 'POST', body: JSON.stringify(data) });
 export const changeUnifiedSellRate = (data: { expected_active_release_id: number; expected_config_version: number; semantic_version: string; sku_code: string; component_code: string; unit_price: string; pricing_mode: 'flat' | 'expression'; pricing_expr?: string; reason_code?: string }) => request<UnifiedCatalogChangeResult>('/admin/unified-gateway/catalog-changes/sell-rate', { method: 'POST', body: JSON.stringify(data) });
 // 配置更新使用业务码寻址，避免把目录内部行 id 暴露为编辑契约。
 export const changeUnifiedCostRate = (data: { expected_active_release_id: number; expected_config_version: number; semantic_version: string; product_code: string; plan_code: string; component_code: string; pool_code?: string; unit_price: string; pricing_mode: 'flat' | 'expression'; pricing_expr?: string; reason_code?: string }) => request<UnifiedCatalogChangeResult>('/admin/unified-gateway/catalog-changes/cost-rate', { method: 'POST', body: JSON.stringify(data) });
@@ -210,6 +271,7 @@ export const changeUnifiedRouteWeight = (data: { expected_active_release_id: num
 export const changeUnifiedSKUVariant = (data: { expected_active_release_id: number; expected_config_version: number; semantic_version: string; sku_code: string; variant_code: string }) => request<UnifiedCatalogChangeResult>('/admin/unified-gateway/catalog-changes/sku-variant', { method: 'POST', body: JSON.stringify(data) });
 export const changeUnifiedSKUDownstreamPaths = (data: { expected_active_release_id: number; expected_config_version: number; semantic_version: string; sku_code: string; downstream_paths: string[] }) => request<UnifiedCatalogChangeResult>('/admin/unified-gateway/catalog-changes/sku-downstream-paths', { method: 'POST', body: JSON.stringify(data) });
 export const recordUnifiedOfferingValidation = (offeringId: number, credentialId: number, data: { state: string; valid_until?: string; evidence: Record<string, unknown> }) => request<{ id: number }>(`/admin/unified-gateway/offerings/${offeringId}/credentials/${credentialId}/validations/all`, { method: 'POST', body: JSON.stringify(data) });
+export const setUnifiedOfferingRuntimeState = (offeringId: number, data: { state: UnifiedOfferingRuntimeState; reason_code: string; expected_version: number }) => request<{ id: number }>(`/admin/unified-gateway/offerings/${offeringId}/runtime-state`, { method: 'PATCH', body: JSON.stringify(data) });
 export const fetchUnifiedCatalogRates = (releaseId: number, kind: 'sell' | 'cost', page = 1, pageSize = 20, signal?: AbortSignal) => request<UnifiedGatewayPage<UnifiedCatalogRate>>(`/admin/unified-gateway/catalog/${releaseId}/rates${pageQuery(page, pageSize)}&kind=${kind}`, { signal });
 export const createUnifiedCatalogRate = (releaseId: number, kind: 'sell' | 'cost', data: Record<string, unknown>) => request<{ id: number }>(`/admin/unified-gateway/catalog/${releaseId}/rates/${kind}`, { method: 'POST', body: JSON.stringify(data) });
 export const deleteUnifiedCatalogRate = (releaseId: number, kind: 'sell' | 'cost', id: number, expectedVersion: number) => request(`/admin/unified-gateway/catalog/${releaseId}/rates/${kind}/${id}`, { method: 'DELETE', body: JSON.stringify({ expected_version: expectedVersion }) });
@@ -292,7 +354,7 @@ export interface UnifiedRelationLink {
     model_type?: UnifiedCatalogModelType;
   sku_id: number; sku_code: string; delivery_mode: string;
   route_id: number; priority: number; route_weight: number;
-  offering_id: number; offering_state: string;
+  offering_id: number; offering_state: string; offering_state_version?: number;
   credential_id: number; credential_code: string; credential_status: string; credential_config_version: number; credential_weight: number;
   request_limit: number | null; task_limit: number | null;
   credential_pool_id: number; pool_code: string; pool_name: string; pool_status: string;

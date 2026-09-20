@@ -476,6 +476,42 @@ func TestReadUnifiedVideoResultReturnsOwnedManagedCopy(t *testing.T) {
 	}
 }
 
+func TestReadUnifiedVideoResultExposesDeliveryFailureReason(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	store, err := repository.New(db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	previous := unifiedVideoStore
+	unifiedVideoStore = store
+	t.Cleanup(func() { unifiedVideoStore = previous })
+	kek, hmacKey := configureUnifiedPayloadKeys(t)
+	resultPayload, err := json.Marshal(delivery.VideoResult{SchemaVersion: 1, VideoDeliveryID: 17})
+	if err != nil {
+		t.Fatal(err)
+	}
+	expectUnifiedPayload(t, mock, 22, 32, 10, "result", resultPayload, kek, hmacKey)
+	mock.ExpectQuery("SELECT d.id,d.call_id,d.attempt_id,d.user_id,d.token_id").
+		WithArgs(uint64(17), uint64(10), uint64(41), uint64(7)).
+		WillReturnRows(sqlmock.NewRows([]string{"id", "call_id", "attempt_id", "user_id", "token_id", "delivery_mode", "source_kind", "state", "content_type", "reason_code", "expires_at", "source_url_policy", "source_seq", "encrypted_url_blob_id", "media_asset_ref_id", "media_asset_id", "object_key"}).
+			AddRow(uint64(17), uint64(10), uint64(11), uint64(41), uint64(7), "managed_copy", "remote_url", "delivery_failed", nil, "managed_copy_size_exceeded", nil, "fixed", nil, nil, nil, nil, nil))
+
+	result, err := readUnifiedVideoResult(context.Background(), 22, 10, 41, 7)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result["delivery_status"] != "unavailable" || result["delivery_error_code"] != "managed_copy_size_exceeded" {
+		t.Fatalf("unexpected result: %#v", result)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatal(err)
+	}
+}
+
 const testManagedResultAPIKey = "xfs_0123456789abcdef0123456789abcdef"
 
 func configureUnifiedPayloadKeys(t *testing.T) ([]byte, []byte) {

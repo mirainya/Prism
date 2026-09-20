@@ -309,6 +309,113 @@ export const playgroundGetDebug = async (
     };
 };
 
+// --- Image Playground API ---
+
+export interface PlaygroundImageModel {
+    id: string;
+    name: string;
+    description?: string;
+    supports_generation: boolean;
+    supports_edit: boolean;
+    generation_options?: PlaygroundImageModelOptions;
+    edit_options?: PlaygroundImageModelOptions;
+}
+
+export interface PlaygroundImageModelOptions {
+    sizes?: string[];
+    aspect_ratios?: string[];
+    qualities?: string[];
+}
+
+export interface PlaygroundImageGenerationParams {
+    model: string;
+    prompt: string;
+    size?: string;
+    aspect_ratio?: string;
+    quality?: string;
+}
+
+export interface PlaygroundImageEditParams extends PlaygroundImageGenerationParams {
+    image_urls: string[];
+}
+
+export interface PlaygroundImageOutput {
+    url?: string;
+    b64_json?: string;
+    revised_prompt?: string;
+}
+
+export interface PlaygroundImageGenerationResponse {
+    created: number;
+    data: PlaygroundImageOutput[];
+}
+
+export class PlaygroundImageRequestError extends Error {
+    readonly response: unknown;
+
+    constructor(message: string, response: unknown) {
+        super(message);
+        this.name = 'PlaygroundImageRequestError';
+        this.response = response;
+    }
+}
+
+export const playgroundListImageModels = async (tokenId: string): Promise<PlaygroundImageModel[]> => {
+    const response = await request<{ models?: PlaygroundImageModel[] }>(`/playground/${tokenId}/images/models`);
+    const normalizeOptions = (options?: PlaygroundImageModelOptions): PlaygroundImageModelOptions | undefined => options ? {
+        sizes: Array.isArray(options.sizes) ? options.sizes.filter(Boolean) : [],
+        aspect_ratios: Array.isArray(options.aspect_ratios) ? options.aspect_ratios.filter(Boolean) : [],
+        qualities: Array.isArray(options.qualities) ? options.qualities.filter(Boolean) : [],
+    } : undefined;
+    return (response.models || []).map(model => ({
+        ...model,
+        generation_options: normalizeOptions(model.generation_options),
+        edit_options: normalizeOptions(model.edit_options),
+    }));
+};
+
+const playgroundRequestImage = async (
+    tokenId: string,
+    operation: 'generations' | 'edits',
+    params: PlaygroundImageGenerationParams | PlaygroundImageEditParams,
+    signal?: AbortSignal,
+): Promise<PlaygroundImageGenerationResponse> => {
+    const response = await fetch(`${API_BASE}/playground/${tokenId}/images/${operation}`, {
+        method: 'POST',
+        headers: {
+            'Content-Type': 'application/json',
+            ...getAuthHeader(),
+        },
+        body: JSON.stringify({
+            ...params,
+            n: 1,
+            response_format: 'url',
+        }),
+        signal,
+    });
+    const payload = await response.json().catch(() => null);
+    if (!response.ok) {
+        const message = payload?.error?.message || payload?.message || (operation === 'edits' ? '图片编辑失败' : '图片生成失败');
+        throw new PlaygroundImageRequestError(message, payload);
+    }
+    if (!payload || !Array.isArray(payload.data)) {
+        throw new PlaygroundImageRequestError('图片响应格式无效', payload);
+    }
+    return payload as PlaygroundImageGenerationResponse;
+};
+
+export const playgroundGenerateImage = (
+    tokenId: string,
+    params: PlaygroundImageGenerationParams,
+    signal?: AbortSignal,
+): Promise<PlaygroundImageGenerationResponse> => playgroundRequestImage(tokenId, 'generations', params, signal);
+
+export const playgroundEditImage = (
+    tokenId: string,
+    params: PlaygroundImageEditParams,
+    signal?: AbortSignal,
+): Promise<PlaygroundImageGenerationResponse> => playgroundRequestImage(tokenId, 'edits', params, signal);
+
 // --- Video Playground API ---
 
 export interface VideoCreateParams {
@@ -437,6 +544,7 @@ export interface VideoTask {
         thumbnail_url?: string;
         duration?: number | string;
         delivery_status?: string;
+        delivery_error_code?: string;
     };
     error_message?: string;
     created_at: string;

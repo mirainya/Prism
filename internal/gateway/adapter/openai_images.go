@@ -99,6 +99,20 @@ type OpenAIImagesObservation struct {
 
 type OpenAIImages struct{}
 
+type synchronousImageEditConfig struct {
+	Enabled      bool                    `json:"enabled"`
+	InputMode    string                  `json:"input_mode"`
+	Request      imageJSONRequestMapping `json:"request"`
+	Fields       map[string]string       `json:"fields"`
+	FieldMapping map[string]string       `json:"field_mapping"`
+	FixedBody    map[string]any          `json:"fixed_body"`
+}
+
+type synchronousImageAdapterConfig struct {
+	UpstreamResponseFormat string                      `json:"upstream_response_format"`
+	ImageEdit              *synchronousImageEditConfig `json:"image_edit"`
+}
+
 // DecodeObservation converts an OpenAI Images response into the runtime
 // observation contract. The persisted result contains only delivery metadata;
 // URLs and inline bytes remain in Sources until the runtime creates protected
@@ -145,7 +159,11 @@ func (OpenAIImages) DecodeObservation(body []byte, streaming bool, outputFormat 
 	return runtime.AsyncObservation{State: execution.AsyncSucceeded, Result: result, Sources: sources, Facts: facts}, nil
 }
 
-func (OpenAIImages) Prepare(ctx context.Context, operation, method, path, vendorModel string, payload []byte, loader ImageAssetLoader) (PreparedImageRequest, error) {
+func (adapter OpenAIImages) Prepare(ctx context.Context, operation, method, path, vendorModel string, payload []byte, loader ImageAssetLoader) (PreparedImageRequest, error) {
+	return adapter.PrepareWithConfig(ctx, operation, method, path, vendorModel, payload, nil, loader)
+}
+
+func (OpenAIImages) PrepareWithConfig(ctx context.Context, operation, method, path, vendorModel string, payload, adapterConfig []byte, loader ImageAssetLoader) (PreparedImageRequest, error) {
 	if ctx == nil || method != http.MethodPost || !validImageRequestPath(path) || strings.TrimSpace(vendorModel) == "" {
 		return PreparedImageRequest{}, ErrInvalidImageRequest
 	}
@@ -153,7 +171,12 @@ func (OpenAIImages) Prepare(ctx context.Context, operation, method, path, vendor
 	if err != nil || validateOpenAIImagesRequest(operation, request) != nil {
 		return PreparedImageRequest{}, ErrInvalidImageRequest
 	}
+	upstreamResponseFormat, err := parseSynchronousImageResponseFormat(adapterConfig)
+	if err != nil {
+		return PreparedImageRequest{}, ErrInvalidImageRequest
+	}
 	request.Model = vendorModel
+	request.ResponseFormat = upstreamResponseFormat
 	if operation == ImagesGenerate {
 		body, err := marshalImageGeneration(request)
 		if err != nil {
@@ -165,6 +188,21 @@ func (OpenAIImages) Prepare(ctx context.Context, operation, method, path, vendor
 		}
 		return PreparedImageRequest{Method: method, Path: path, Body: body, Header: header, Streaming: request.Stream}, nil
 	}
+	jsonEdit, configured, err := parseSynchronousImageEditConfig(adapterConfig)
+	if err != nil {
+		return PreparedImageRequest{}, ErrInvalidImageRequest
+	}
+	if configured && jsonEdit.InputMode == "url" {
+		body, streaming, err := marshalMappedImageEdit(request, jsonEdit.Request)
+		if err != nil {
+			return PreparedImageRequest{}, err
+		}
+		header := http.Header{"Content-Type": []string{"application/json"}}
+		if streaming {
+			header.Set("Accept", "text/event-stream")
+		}
+		return PreparedImageRequest{Method: method, Path: path, Body: body, Header: header, Streaming: streaming}, nil
+	}
 	if loader == nil {
 		return PreparedImageRequest{}, ErrInvalidImageRequest
 	}
@@ -173,6 +211,119 @@ func (OpenAIImages) Prepare(ctx context.Context, operation, method, path, vendor
 		return PreparedImageRequest{}, err
 	}
 	return PreparedImageRequest{Method: method, Path: path, Body: body, Header: http.Header{"Content-Type": []string{contentType}}, Streaming: request.Stream}, nil
+}
+
+func parseSynchronousImageResponseFormat(raw []byte) (string, error) {
+	if len(raw) == 0 {
+		return "url", nil
+	}
+	var envelope synchronousImageAdapterConfig
+	if err := json.Unmarshal(raw, &envelope); err != nil {
+		return "", err
+	}
+	format := strings.ToLower(strings.TrimSpace(envelope.UpstreamResponseFormat))
+	if format == "" {
+		return "url", nil
+	}
+	if format != "url" && format != "b64_json" {
+		return "", ErrInvalidImageRequest
+	}
+	return format, nil
+}
+
+func parseSynchronousImageEditConfig(raw []byte) (synchronousImageEditConfig, bool, error) {
+	if len(raw) == 0 {
+		return synchronousImageEditConfig{}, false, nil
+	}
+	if _, err := parseSynchronousImageResponseFormat(raw); err != nil {
+		return synchronousImageEditConfig{}, false, err
+	}
+	var envelope synchronousImageAdapterConfig
+	if err := json.Unmarshal(raw, &envelope); err != nil {
+		return synchronousImageEditConfig{}, false, err
+	}
+	if envelope.ImageEdit == nil || !envelope.ImageEdit.Enabled {
+		return synchronousImageEditConfig{}, false, nil
+	}
+	config := *envelope.ImageEdit
+	config.InputMode = strings.ToLower(strings.TrimSpace(config.InputMode))
+	if config.InputMode == "" {
+		config.InputMode = "multipart"
+	}
+	if config.InputMode == "multipart" {
+		return config, true, nil
+	}
+	if len(config.Request.Fields) == 0 {
+		config.Request.Fields = config.Fields
+	}
+	if len(config.Request.Fields) == 0 {
+		config.Request.Fields = config.FieldMapping
+	}
+	if len(config.Request.FixedBody) == 0 {
+		config.Request.FixedBody = config.FixedBody
+	}
+	if config.InputMode != "url" || validateSynchronousImageJSONMapping(config.Request) != nil {
+		return synchronousImageEditConfig{}, false, ErrInvalidImageRequest
+	}
+	return config, true, nil
+}
+
+func validateSynchronousImageJSONMapping(mapping imageJSONRequestMapping) error {
+	if mapping.Fields["prompt"] == "" || mapping.Fields["image_urls"] == "" {
+		return ErrInvalidImageRequest
+	}
+	targets := make([][]string, 0, len(mapping.Fields))
+	for source, target := range mapping.Fields {
+		if _, ok := imageJSONRequestFields[source]; !ok || !imageJSONPath.MatchString(target) {
+			return ErrInvalidImageRequest
+		}
+		if source == "model" && target != "model" {
+			return ErrInvalidImageRequest
+		}
+		segments := strings.Split(target, ".")
+		for _, existing := range targets {
+			if imageJSONPathsConflict(existing, segments) {
+				return ErrInvalidImageRequest
+			}
+		}
+		targets = append(targets, segments)
+	}
+	for _, fixedPath := range imageJSONFixedLeafPaths(mapping.FixedBody) {
+		for source, target := range mapping.Fields {
+			if source == "model" && target == "model" && len(fixedPath) == 1 && fixedPath[0] == "model" {
+				continue
+			}
+			if imageJSONPathsConflict(fixedPath, strings.Split(target, ".")) {
+				return ErrInvalidImageRequest
+			}
+		}
+	}
+	encoded, err := json.Marshal(mapping.FixedBody)
+	if err != nil || len(encoded) > 16<<10 {
+		return ErrInvalidImageRequest
+	}
+	return nil
+}
+
+func marshalMappedImageEdit(request OpenAIImagesRequest, mapping imageJSONRequestMapping) ([]byte, bool, error) {
+	body, err := buildMappedImageJSONRequest(request, mapping)
+	if err != nil {
+		return nil, false, ErrInvalidImageRequest
+	}
+	var object map[string]any
+	if json.Unmarshal(body, &object) != nil {
+		return nil, false, ErrInvalidImageRequest
+	}
+	// Catalog configuration may retain the legacy fixed model for readability,
+	// but route selection is authoritative and always pins the vendor model.
+	object["model"] = request.Model
+	object["response_format"] = request.ResponseFormat
+	streaming, _ := object["stream"].(bool)
+	body, err = json.Marshal(object)
+	if err != nil || len(body) > maxImageRequestBytes {
+		return nil, false, ErrInvalidImageRequest
+	}
+	return body, streaming, nil
 }
 
 func decodeOpenAIImagesRequest(payload []byte) (OpenAIImagesRequest, error) {
@@ -192,10 +343,30 @@ func decodeOpenAIImagesRequest(payload []byte) (OpenAIImagesRequest, error) {
 }
 
 func validateOpenAIImagesRequest(operation string, request OpenAIImagesRequest) error {
+	if err := ValidateOpenAIImagesRequestShape(operation, request); err != nil {
+		return err
+	}
+	for _, values := range [][]string{request.ImageURLs, request.MaskURLs} {
+		for _, value := range values {
+			if !validRemoteImageURL(value) {
+				return ErrInvalidImageRequest
+			}
+		}
+	}
+	return nil
+}
+
+// ValidateOpenAIImagesRequestShape validates request fields that do not depend
+// on resolving stored image URLs. Callers can reject invalid edits before
+// downloading or persisting their inputs.
+func ValidateOpenAIImagesRequestShape(operation string, request OpenAIImagesRequest) error {
 	if operation != ImagesGenerate && operation != ImagesEdit || strings.TrimSpace(request.Model) == "" || strings.TrimSpace(request.Prompt) == "" || utf8.RuneCountInString(request.Prompt) > 32000 {
 		return ErrInvalidImageRequest
 	}
 	if request.N < 1 || request.N > 10 || len(request.Size) > 32 || len(request.AspectRatio) > 16 || len(request.User) > 256 {
+		return ErrInvalidImageRequest
+	}
+	if strings.TrimSpace(request.Size) != "" && strings.TrimSpace(request.AspectRatio) != "" {
 		return ErrInvalidImageRequest
 	}
 	if request.ResponseFormat != "url" && request.ResponseFormat != "b64_json" {
@@ -212,13 +383,6 @@ func validateOpenAIImagesRequest(operation string, request OpenAIImagesRequest) 
 	}
 	if operation == ImagesGenerate && (len(request.ImageURLs) != 0 || len(request.MaskURLs) != 0) || operation == ImagesEdit && len(request.ImageURLs) == 0 {
 		return ErrInvalidImageRequest
-	}
-	for _, values := range [][]string{request.ImageURLs, request.MaskURLs} {
-		for _, value := range values {
-			if !validRemoteImageURL(value) {
-				return ErrInvalidImageRequest
-			}
-		}
 	}
 	return nil
 }
@@ -257,7 +421,7 @@ type imageGenerationPayload struct {
 func marshalImageGeneration(request OpenAIImagesRequest) ([]byte, error) {
 	return json.Marshal(imageGenerationPayload{
 		Model: request.Model, Prompt: request.Prompt, N: request.N, Size: request.Size,
-		AspectRatio: request.AspectRatio, Quality: request.Quality, ResponseFormat: "url",
+		AspectRatio: request.AspectRatio, Quality: request.Quality, ResponseFormat: request.ResponseFormat,
 		OutputFormat: request.OutputFormat, OutputCompression: request.OutputCompression,
 		Moderation: request.Moderation, Style: request.Style, Background: request.Background,
 		User: request.User, Stream: request.Stream, PartialImages: request.PartialImages,
@@ -279,7 +443,7 @@ func marshalImageEdit(ctx context.Context, request OpenAIImagesRequest, loader I
 	if err := writer.SetBoundary(boundary); err != nil {
 		return nil, "", err
 	}
-	fields := [][2]string{{"model", request.Model}, {"prompt", request.Prompt}, {"n", strconv.Itoa(request.N)}, {"size", request.Size}, {"aspect_ratio", request.AspectRatio}, {"quality", request.Quality}, {"response_format", "url"}, {"output_format", request.OutputFormat}, {"moderation", request.Moderation}, {"style", request.Style}, {"background", request.Background}, {"input_fidelity", request.InputFidelity}, {"user", request.User}}
+	fields := [][2]string{{"model", request.Model}, {"prompt", request.Prompt}, {"n", strconv.Itoa(request.N)}, {"size", request.Size}, {"aspect_ratio", request.AspectRatio}, {"quality", request.Quality}, {"response_format", request.ResponseFormat}, {"output_format", request.OutputFormat}, {"moderation", request.Moderation}, {"style", request.Style}, {"background", request.Background}, {"input_fidelity", request.InputFidelity}, {"user", request.User}}
 	if request.OutputCompression != nil {
 		fields = append(fields, [2]string{"output_compression", strconv.Itoa(*request.OutputCompression)})
 	}
@@ -320,7 +484,13 @@ func loadImageAssets(ctx context.Context, locations []string, mask bool, loader 
 	var total int
 	for _, location := range locations {
 		asset, err := loader.LoadImage(ctx, location)
-		if err != nil || len(asset.Data) == 0 || len(asset.Data) > maxImageOutputBytes {
+		if err != nil {
+			if errors.Is(err, runtime.ErrAsyncAssetUnavailable) {
+				return nil, err
+			}
+			return nil, ErrInvalidImageRequest
+		}
+		if len(asset.Data) == 0 || len(asset.Data) > maxImageOutputBytes {
 			return nil, ErrInvalidImageRequest
 		}
 		asset.ContentType = strings.TrimSpace(strings.Split(asset.ContentType, ";")[0])
