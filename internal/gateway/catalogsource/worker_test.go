@@ -1,7 +1,9 @@
 package catalogsource
 
 import (
+	"context"
 	"errors"
+	"net/http"
 	"testing"
 
 	"github.com/mirainya/Prism/internal/gateway/security"
@@ -39,5 +41,27 @@ func TestDiscoveryFailureCodeIsStable(t *testing.T) {
 	}
 	if got := discoveryFailureCode(ErrProviderRequest); got != "provider_request_failed" {
 		t.Fatalf("provider request code=%q", got)
+	}
+	if got := discoveryFailureCode(ErrProviderRequestLimit); got != "provider_request_limit" {
+		t.Fatalf("provider request limit code=%q", got)
+	}
+}
+
+func TestLimitProviderExchangeRejectsExcessRequests(t *testing.T) {
+	requests := 0
+	exchange := limitProviderExchange(2, func(context.Context, string, string, []byte, http.Header) ([]byte, error) {
+		requests++
+		return []byte(`{"ok":true}`), nil
+	})
+	for index := 0; index < 2; index++ {
+		if _, err := exchange(context.Background(), http.MethodGet, "https://example.test", nil, nil); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := exchange(context.Background(), http.MethodGet, "https://example.test", nil, nil); err != ErrProviderRequestLimit {
+		t.Fatalf("limit error=%v", err)
+	}
+	if requests != 2 {
+		t.Fatalf("requests=%d", requests)
 	}
 }

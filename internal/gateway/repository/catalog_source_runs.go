@@ -119,6 +119,7 @@ type CatalogDiscoveryItem struct {
 	ModelPrice, ModelRatio, CompletionRatio          *string
 	Groups, EndpointTypes                            []string
 	SelectedGroupEnabled                             bool
+	PriceCandidate                                   bool
 }
 
 type CatalogDiscoverySnapshotInput struct {
@@ -197,7 +198,7 @@ WHERE r.id=? FOR UPDATE`, in.Run.ID).Scan(&releaseID, &releaseSourceID, &sourceI
 					return err
 				}
 			}
-			if in.Run.ContractCode == CatalogSourceAICostPricingV1 && item.SelectedGroupEnabled && item.ModelPrice != nil {
+			if item.PriceCandidate {
 				if _, err := tx.ExecContext(ctx, `INSERT INTO gw_catalog_price_candidates(snapshot_item_id,created_at) VALUES (?,?)`, itemID, now); err != nil {
 					return err
 				}
@@ -406,11 +407,9 @@ func validateCatalogDiscoveryItem(run CatalogDiscoveryRun, item CatalogDiscovery
 		}
 		endpoints[endpoint] = struct{}{}
 	}
-	wantSelected := run.ContractCode == CatalogSourceAICostModelsV1
-	if run.ContractCode == CatalogSourceAICostPricingV1 {
-		_, wantSelected = groups[run.ExternalGroup]
-	}
-	if item.SelectedGroupEnabled != wantSelected {
+	_, selectedGroupPresent := groups[run.ExternalGroup]
+	if (item.SelectedGroupEnabled && !selectedGroupPresent) ||
+		(item.PriceCandidate && (!item.SelectedGroupEnabled || item.ModelPrice == nil)) {
 		return ErrInvalidInput
 	}
 	return nil

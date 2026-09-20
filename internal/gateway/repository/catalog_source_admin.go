@@ -10,11 +10,6 @@ import (
 	"unicode/utf8"
 )
 
-const (
-	CatalogSourceAICostModelsV1  = "aicost_models_v1"
-	CatalogSourceAICostPricingV1 = "aicost_pricing_v1"
-)
-
 type CatalogSourceInput struct {
 	ChannelID        uint64              `json:"channel_id"`
 	CredentialID     uint64              `json:"credential_id"`
@@ -48,7 +43,7 @@ func (in CatalogSourceInput) Validate() error {
 }
 
 func validCatalogSourceContract(value string) bool {
-	return value == CatalogSourceAICostModelsV1 || value == CatalogSourceAICostPricingV1
+	return utf8.RuneCountInString(value) <= 64 && catalogIdentityPattern.MatchString(value)
 }
 
 func validCatalogSourceText(value string, maxRunes int) bool {

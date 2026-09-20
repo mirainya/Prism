@@ -8,6 +8,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/mirainya/Prism/internal/api/resp"
 	"github.com/mirainya/Prism/internal/gateway/adapter"
+	"github.com/mirainya/Prism/internal/gateway/catalogsource"
 	"github.com/mirainya/Prism/internal/gateway/repository"
 	"github.com/mirainya/Prism/internal/model"
 )
@@ -70,12 +71,18 @@ WHERE c.status='active' ORDER BY c.channel_id,c.credential_code,c.id`)
 		unifiedChannelError(c, err)
 		return
 	}
+	providers, err := catalogsource.DefaultProviderRegistry()
+	if err != nil {
+		unifiedChannelError(c, err)
+		return
+	}
+	contracts := make([]gin.H, 0)
+	for _, contract := range providers.Contracts() {
+		contracts = append(contracts, gin.H{"code": contract.Code, "name": contract.Name})
+	}
 	resp.Success(c, gin.H{
 		"channels": channels, "credentials": credentials,
-		"contracts": []gin.H{
-			{"code": repository.CatalogSourceAICostModelsV1, "name": "AICost 模型清单"},
-			{"code": repository.CatalogSourceAICostPricingV1, "name": "AICost 价格清单"},
-		},
+		"contracts": contracts,
 	})
 }
 
@@ -155,8 +162,14 @@ func CreateUnifiedCatalogSource(c *gin.Context) {
 		return
 	}
 	in.Normalize()
+	providers, registryErr := catalogsource.DefaultProviderRegistry()
+	if registryErr != nil {
+		unifiedChannelError(c, registryErr)
+		return
+	}
+	_, _, providerFound := providers.Provider(in.ContractCode)
 	descriptor, found := adapter.DescriptorFor(in.ContractCode, 1)
-	if !found || descriptor.Protocol != "catalog_discovery" {
+	if !providerFound || !found || descriptor.Protocol != "catalog_discovery" {
 		unifiedChannelError(c, repository.ErrInvalidInput)
 		return
 	}

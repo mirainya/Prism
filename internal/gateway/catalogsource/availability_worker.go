@@ -8,9 +8,6 @@ import (
 	"io"
 	"net/http"
 	"net/http/cookiejar"
-	"net/url"
-	"strconv"
-	"strings"
 	"time"
 
 	"github.com/mirainya/Prism/internal/gateway/repository"
@@ -25,13 +22,7 @@ const (
 	// A first refresh runs on startup; this bounds one whole cycle including
 	// login, so a wedged provider cannot hold the worker forever.
 	availabilityCycleTimeout = 2 * time.Minute
-	availabilityRowLimit     = "2000"
 )
-
-// The provider separates observations by product family. Prism exposes all
-// executable catalog models through one model directory, so every family must
-// be refreshed in the same cycle.
-var availabilityCategories = []string{"language", "image", "video"}
 
 // RunAvailability keeps the cached upstream success rates fresh. It is separate
 // from the discovery loop on purpose: discovery produces reviewable evidence
@@ -65,32 +56,34 @@ func (w *Worker) RefreshAvailability(ctx context.Context) error {
 	if w == nil {
 		return repository.ErrInvalidInput
 	}
-	sources, err := w.store.ListAvailabilitySources(ctx, AICostPricingV1)
-	if err != nil || len(sources) == 0 {
-		return err
-	}
 	var failures []error
-	for _, source := range sources {
-		if ctx.Err() != nil {
-			return ctx.Err()
+	for _, binding := range w.providers.AvailabilityBindings() {
+		sources, err := w.store.ListAvailabilitySources(ctx, binding.Contract)
+		if err != nil {
+			failures = append(failures, fmt.Errorf("contract %s: %w", binding.Contract, err))
+			continue
 		}
-		if err := w.refreshSource(ctx, source); err != nil {
-			failures = append(failures, fmt.Errorf("catalog source %d: %w", source.SourceID, err))
+		for _, source := range sources {
+			if ctx.Err() != nil {
+				return ctx.Err()
+			}
+			if err := w.refreshSource(ctx, binding.Contract, binding.MaxRequests, binding.Provider, source); err != nil {
+				failures = append(failures, fmt.Errorf("catalog source %d: %w", source.SourceID, err))
+			}
 		}
 	}
 	return errors.Join(failures...)
 }
 
-func (w *Worker) refreshSource(ctx context.Context, source repository.AvailabilitySource) error {
+func (w *Worker) refreshSource(ctx context.Context, contract string, maxRequests int, provider CatalogAvailabilityProvider, source repository.AvailabilitySource) error {
+	if provider == nil || maxRequests < 1 {
+		return ErrProviderNotRegistered
+	}
 	secret, err := w.credentialSecret(ctx, source.CredentialID, source.CredentialSecret, source.CredentialBlobID)
 	if err != nil {
 		return err
 	}
 	defer clear(secret)
-	account, err := ParseAICostAccountSecret(secret)
-	if err != nil {
-		return err
-	}
 	base, err := catalogBaseURL(source.BaseURL)
 	if err != nil {
 		return err
@@ -105,75 +98,25 @@ func (w *Worker) refreshSource(ctx context.Context, source repository.Availabili
 	}
 	client.Jar = jar
 	timeout := time.Duration(source.RequestTimeoutMS) * time.Millisecond
+	exchange := limitProviderExchange(maxRequests, func(exchangeCtx context.Context, method, target string, body []byte, header http.Header) ([]byte, error) {
+		return w.availabilityExchange(exchangeCtx, &client, timeout, method, target, body, header)
+	})
 
-	body, err := account.LoginBody()
+	observations, err := provider.RefreshAvailability(workCtx, AvailabilityProviderRequest{
+		Contract: contract, Secret: secret, BaseURL: base, Exchange: exchange,
+	})
 	if err != nil {
 		return err
 	}
-	header := http.Header{}
-	header.Set("Content-Type", "application/json")
-	loginResponse, err := w.availabilityExchange(workCtx, &client, timeout, http.MethodPost,
-		resolveCatalogPath(base, "/api/user/login"), body, header)
-	if err != nil {
-		return err
-	}
-	login, err := ParseAICostLogin(loginResponse)
-	if err != nil {
-		return err
-	}
-	header = http.Header{}
-	header.Set("New-Api-User", strconv.FormatUint(login.UserID, 10))
-
-	var failures []error
-	itemsByModel := make(map[string]UpstreamAvailability)
-	for _, category := range availabilityCategories {
-		target := availabilityURL(base, category)
-		response, err := w.availabilityExchange(workCtx, &client, timeout, http.MethodGet, target, nil, header)
-		if err != nil {
-			failures = append(failures, fmt.Errorf("%s: %w", category, err))
-			continue
-		}
-		items, err := ParseAICostAvailability(response, category)
-		if err != nil {
-			failures = append(failures, fmt.Errorf("%s: %w", category, err))
-			continue
-		}
-		for _, item := range items {
-			key := strings.ToLower(strings.TrimSpace(item.ModelCode))
-			current, exists := itemsByModel[key]
-			if !exists || item.HasData && !current.HasData || item.HasData == current.HasData && item.ObservedAt.After(current.ObservedAt) {
-				itemsByModel[key] = item
-			}
-		}
-	}
-	if len(failures) != 0 {
-		return errors.Join(failures...)
-	}
-	rows := make([]repository.UpstreamAvailabilityRow, 0, len(itemsByModel))
-	for _, item := range itemsByModel {
-		if !item.HasData {
-			continue
-		}
+	rows := make([]repository.UpstreamAvailabilityRow, 0, len(observations))
+	for _, observation := range observations {
 		rows = append(rows, repository.UpstreamAvailabilityRow{
-			ModelCode: item.ModelCode, Category: item.Category, SuccessRate: item.SuccessRate,
-			AverageCompletionSeconds: item.AverageCompletionSeconds,
-			WindowMinutes:            item.WindowMinutes, ObservedAt: item.ObservedAt,
+			ModelCode: observation.ModelCode, Category: observation.Category,
+			SuccessRate: observation.SuccessRate, AverageCompletionSeconds: observation.AverageCompletionSeconds,
+			WindowMinutes: observation.WindowMinutes, ObservedAt: observation.ObservedAt,
 		})
 	}
-	if err := w.store.ReplaceUpstreamAvailability(workCtx, source.SourceID, rows); err != nil {
-		return err
-	}
-	return errors.Join(failures...)
-}
-
-func availabilityURL(base *url.URL, category string) string {
-	target := *base
-	target.Path, target.RawPath, target.Fragment = AICostAvailabilityPath, "", ""
-	query := url.Values{}
-	query.Set("category", category)
-	query.Set("limit", availabilityRowLimit)
-	target.RawQuery = query.Encode()
-	return target.String()
+	return w.store.ReplaceUpstreamAvailability(workCtx, source.SourceID, rows)
 }
 
 // availabilityExchange performs one provider call. Unlike the discovery path it

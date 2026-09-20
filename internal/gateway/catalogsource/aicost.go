@@ -6,7 +6,6 @@ package catalogsource
 import (
 	"bytes"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"io"
 	"regexp"
@@ -23,10 +22,7 @@ const (
 	AICostPricingV1 = "aicost_pricing_v1"
 )
 
-var (
-	ErrInvalidSnapshot = errors.New("catalog source: invalid provider snapshot")
-	endpointPattern    = regexp.MustCompile(`^[a-z][a-z0-9._-]{0,63}$`)
-)
+var endpointPattern = regexp.MustCompile(`^[a-z][a-z0-9._-]{0,63}$`)
 
 type AICostAccountSecret struct {
 	Username string `json:"username"`
@@ -65,21 +61,6 @@ func ParseAICostLogin(value []byte) (AICostLogin, error) {
 		return AICostLogin{}, ErrInvalidSnapshot
 	}
 	return AICostLogin{UserID: response.Data.ID}, nil
-}
-
-type DiscoveredModel struct {
-	Code              string
-	Description       string
-	Tags              string
-	VendorID          *uint64
-	ProviderQuotaType *uint8
-	ModelPrice        *string
-	ModelRatio        *string
-	CompletionRatio   *string
-	OwnerBy           string
-	PricingVersion    string
-	Groups            []string
-	EndpointTypes     []string
 }
 
 func ParseAICostModels(value []byte, group string) ([]DiscoveredModel, error) {

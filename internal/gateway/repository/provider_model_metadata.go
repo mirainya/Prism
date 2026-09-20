@@ -24,17 +24,16 @@ func NewProviderModelMetadataKey(channelID uint64, modelCode string) ProviderMod
 	return ProviderModelMetadataKey{ChannelID: channelID, ModelCode: strings.ToLower(strings.TrimSpace(modelCode))}
 }
 
-// LoadProviderModelMetadata returns the latest validated discovery snapshot
-// for every active AiCost source. This metadata is advisory and may change
-// independently from an immutable release; manually maintained catalog text
-// remains authoritative at the service layer.
+// LoadProviderModelMetadata returns non-empty metadata from the latest
+// validated snapshot of every active catalog source. The metadata is advisory
+// and manually maintained catalog text remains authoritative at the service
+// layer.
 func (s *Store) LoadProviderModelMetadata(ctx context.Context) (map[ProviderModelMetadataKey]ProviderModelMetadata, error) {
 	if s == nil || s.db == nil || ctx == nil {
 		return nil, ErrInvalidInput
 	}
 	rows, err := s.db.QueryContext(ctx, `SELECT src.channel_id,item.model_code,item.description,item.tags,snapshot.observed_at
 FROM gw_catalog_sources src
-JOIN gw_catalog_source_profiles profile ON profile.catalog_source_id=src.id AND profile.contract_code=?
 JOIN gw_catalog_release_sources release_source ON release_source.catalog_source_id=src.id
 JOIN gw_catalog_discovery_snapshots snapshot ON snapshot.release_source_id=release_source.id
 JOIN (
@@ -44,8 +43,9 @@ JOIN (
 	GROUP BY release_source.catalog_source_id
 ) latest ON latest.catalog_source_id=src.id AND latest.snapshot_id=snapshot.id
 JOIN gw_catalog_discovery_items item ON item.snapshot_id=snapshot.id
-WHERE src.status='active'
-ORDER BY snapshot.observed_at DESC,snapshot.id DESC,item.ordinal`, "aicost_pricing_v1")
+WHERE src.status='active' AND item.selected_group_enabled=1
+	AND (TRIM(item.description)<>'' OR TRIM(item.tags)<>'')
+ORDER BY snapshot.observed_at DESC,snapshot.id DESC,item.ordinal`)
 	if err != nil {
 		return nil, err
 	}

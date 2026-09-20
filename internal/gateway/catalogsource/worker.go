@@ -10,7 +10,7 @@ import (
 	"net/http"
 	"net/http/cookiejar"
 	"net/url"
-	"strconv"
+	"sync"
 	"time"
 
 	"github.com/mirainya/Prism/internal/gateway/repository"
@@ -25,11 +25,6 @@ const (
 	discoveryFinalize    = 5 * time.Second
 )
 
-var (
-	ErrProviderRequest  = errors.New("catalog source: provider request failed")
-	ErrProviderResponse = errors.New("catalog source: provider response invalid")
-)
-
 type WorkerKeys struct {
 	CredentialKEK  []byte
 	CredentialHMAC []byte
@@ -37,16 +32,26 @@ type WorkerKeys struct {
 }
 
 type Worker struct {
-	store   *repository.Store
-	runtime *gatewayruntime.Service
-	client  *http.Client
-	keys    WorkerKeys
+	store     *repository.Store
+	runtime   *gatewayruntime.Service
+	client    *http.Client
+	keys      WorkerKeys
+	providers ProviderRegistry
 }
 
 func NewWorker(store *repository.Store, client *http.Client, keys WorkerKeys) (*Worker, error) {
+	providers, err := DefaultProviderRegistry()
+	if err != nil {
+		return nil, err
+	}
+	return NewWorkerWithRegistry(store, client, keys, providers)
+}
+
+func NewWorkerWithRegistry(store *repository.Store, client *http.Client, keys WorkerKeys, providers ProviderRegistry) (*Worker, error) {
 	if store == nil || len(keys.EvidenceHMAC) != security.KeySize ||
 		(len(keys.CredentialKEK) == 0) != (len(keys.CredentialHMAC) == 0) ||
-		len(keys.CredentialKEK) != 0 && (len(keys.CredentialKEK) != security.KeySize || len(keys.CredentialHMAC) != security.KeySize) {
+		len(keys.CredentialKEK) != 0 && (len(keys.CredentialKEK) != security.KeySize || len(keys.CredentialHMAC) != security.KeySize) ||
+		len(providers.byContract) == 0 {
 		return nil, repository.ErrInvalidInput
 	}
 	service, err := gatewayruntime.New(store)
@@ -63,7 +68,7 @@ func NewWorker(store *repository.Store, client *http.Client, keys WorkerKeys) (*
 	configured.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
 	return &Worker{store: store, runtime: service, client: &configured, keys: WorkerKeys{
 		CredentialKEK: bytes.Clone(keys.CredentialKEK), CredentialHMAC: bytes.Clone(keys.CredentialHMAC), EvidenceHMAC: bytes.Clone(keys.EvidenceHMAC),
-	}}, nil
+	}, providers: providers}, nil
 }
 
 func (w *Worker) Close() {
@@ -118,16 +123,16 @@ func (w *Worker) ProcessOne(ctx context.Context, owner string) (bool, error) {
 }
 
 func (w *Worker) process(ctx context.Context, run repository.CatalogDiscoveryRun) error {
+	provider, requestCount, ok := w.providers.Provider(run.ContractCode)
+	if !ok {
+		return ErrProviderNotRegistered
+	}
 	secret, err := w.credentialSecret(ctx, run.CredentialID, run.CredentialSecret, run.CredentialBlobID)
 	if err != nil {
 		return err
 	}
 	defer clear(secret)
 	timeout := time.Duration(run.RequestTimeoutMS) * time.Millisecond
-	requestCount := 1
-	if run.ContractCode == AICostPricingV1 {
-		requestCount = 2
-	}
 	workCtx, cancel := context.WithTimeout(ctx, timeout*time.Duration(requestCount)+5*time.Second)
 	defer cancel()
 	client := *w.client
@@ -144,56 +149,32 @@ func (w *Worker) process(ctx context.Context, run repository.CatalogDiscoveryRun
 	if err != nil {
 		return err
 	}
-	var response []byte
-	switch run.ContractCode {
-	case AICostModelsV1:
-		header := make(http.Header)
-		header.Set("Authorization", "Bearer "+string(secret))
-		response, err = w.exchange(workCtx, &client, run, sequence, http.MethodGet, resolveCatalogPath(base, "/v1/models"), nil, header)
-	case AICostPricingV1:
-		account, parseErr := ParseAICostAccountSecret(secret)
-		if parseErr != nil {
-			return parseErr
-		}
-		body, bodyErr := account.LoginBody()
-		if bodyErr != nil {
-			return bodyErr
-		}
-		defer clear(body)
-		header := make(http.Header)
-		header.Set("Content-Type", "application/json")
-		loginBody, requestErr := w.exchange(workCtx, &client, run, sequence, http.MethodPost, resolveCatalogPath(base, "/api/user/login"), body, header)
-		if requestErr != nil {
-			return requestErr
-		}
-		login, parseErr := ParseAICostLogin(loginBody)
-		clear(loginBody)
-		if parseErr != nil {
-			return parseErr
-		}
-		header = make(http.Header)
-		header.Set("New-Api-User", strconv.FormatUint(login.UserID, 10))
-		response, err = w.exchange(workCtx, &client, run, sequence+1, http.MethodGet, resolveCatalogPath(base, "/api/pricing"), nil, header)
-	default:
-		return repository.ErrInvalidInput
-	}
+	nextSequence := sequence
+	providerExchange := limitProviderExchange(requestCount, func(exchangeCtx context.Context, method, target string, body []byte, header http.Header) ([]byte, error) {
+		current := nextSequence
+		nextSequence++
+		return w.exchange(exchangeCtx, &client, run, current, method, target, body, header)
+	})
+	result, err := provider.Discover(workCtx, DiscoveryProviderRequest{
+		Contract: run.ContractCode, ExternalGroup: run.ExternalGroup,
+		Secret: secret, BaseURL: base, Exchange: providerExchange,
+	})
 	if err != nil {
 		return err
 	}
-	defer clear(response)
-	models, err := parseRunResponse(run, response)
-	if err != nil {
-		return err
+	if len(result.Response) == 0 {
+		return ErrProviderResponse
 	}
-	digest := security.HMACSHA256(w.keys.EvidenceHMAC, response)
-	items := make([]repository.CatalogDiscoveryItem, 0, len(models))
-	for _, model := range models {
-		selected := run.ContractCode == AICostModelsV1 || contains(model.Groups, run.ExternalGroup)
+	defer clear(result.Response)
+	digest := security.HMACSHA256(w.keys.EvidenceHMAC, result.Response)
+	items := make([]repository.CatalogDiscoveryItem, 0, len(result.Models))
+	for _, model := range result.Models {
 		items = append(items, repository.CatalogDiscoveryItem{
 			Code: model.Code, Description: model.Description, Tags: model.Tags, VendorID: model.VendorID,
 			ProviderQuotaType: model.ProviderQuotaType, ModelPrice: model.ModelPrice, ModelRatio: model.ModelRatio,
 			CompletionRatio: model.CompletionRatio, OwnerBy: model.OwnerBy, PricingVersion: model.PricingVersion,
-			Groups: model.Groups, EndpointTypes: model.EndpointTypes, SelectedGroupEnabled: selected,
+			Groups: model.Groups, EndpointTypes: model.EndpointTypes,
+			SelectedGroupEnabled: model.SelectedGroupEnabled, PriceCandidate: model.PriceCandidate,
 		})
 	}
 	_, err = w.store.SaveCatalogDiscoverySnapshot(workCtx, repository.CatalogDiscoverySnapshotInput{
@@ -220,17 +201,6 @@ func (w *Worker) credentialSecret(ctx context.Context, credentialID uint64, dire
 		return nil, repository.ErrConflict
 	}
 	return repository.OpenBlob(envelope, blobID, []byte(fmt.Sprintf("credential:%d", credentialID)), w.keys.CredentialKEK, w.keys.CredentialHMAC)
-}
-
-func parseRunResponse(run repository.CatalogDiscoveryRun, response []byte) ([]DiscoveredModel, error) {
-	switch run.ContractCode {
-	case AICostModelsV1:
-		return ParseAICostModels(response, run.ExternalGroup)
-	case AICostPricingV1:
-		return ParseAICostPricing(response)
-	default:
-		return nil, repository.ErrInvalidInput
-	}
 }
 
 func (w *Worker) nextSequence(ctx context.Context, runID uint64) (uint64, error) {
@@ -325,13 +295,18 @@ func resolveCatalogPath(base *url.URL, path string) string {
 	return copy.String()
 }
 
-func contains(values []string, target string) bool {
-	for _, value := range values {
-		if value == target {
-			return true
+func limitProviderExchange(maxRequests int, exchange ProviderExchange) ProviderExchange {
+	var mu sync.Mutex
+	requestCount := 0
+	return func(ctx context.Context, method, target string, body []byte, header http.Header) ([]byte, error) {
+		mu.Lock()
+		defer mu.Unlock()
+		if exchange == nil || requestCount >= maxRequests {
+			return nil, ErrProviderRequestLimit
 		}
+		requestCount++
+		return exchange(ctx, method, target, body, header)
 	}
-	return false
 }
 
 func discoveryFailureCode(err error) string {
@@ -342,6 +317,8 @@ func discoveryFailureCode(err error) string {
 		return "provider_timeout"
 	case errors.Is(err, ErrProviderRequest):
 		return "provider_request_failed"
+	case errors.Is(err, ErrProviderRequestLimit):
+		return "provider_request_limit"
 	default:
 		return "discovery_failed"
 	}

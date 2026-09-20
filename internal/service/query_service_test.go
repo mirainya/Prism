@@ -252,7 +252,7 @@ func TestListAvailableCapabilitiesUsesProviderDescriptionWhenCatalogDescriptionI
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(items) != 1 || items[0].Description != "AiCost model description" {
+	if len(items) != 1 || items[0].Description != "Provider model description" {
 		t.Fatalf("provider description was not projected: %#v", items)
 	}
 }
@@ -303,7 +303,7 @@ func TestPricingUsesProviderDescriptionWhenCatalogDescriptionIsEmpty(t *testing.
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(items) != 1 || items[0].Description != "AiCost model description" {
+	if len(items) != 1 || items[0].Description != "Provider model description" {
 		t.Fatalf("provider description was not projected: %#v", items)
 	}
 }
@@ -398,10 +398,10 @@ func setupPublicCatalogQueryDB(t *testing.T) *sql.DB {
 		`INSERT INTO gw_rate_evidence_review_state VALUES (401,301,201,'accepted')`,
 		`INSERT INTO gw_catalog_sources VALUES (601,50,'active')`,
 		`INSERT INTO gw_upstream_availability VALUES (601,'  GPT-4.1  ','98.7',120,datetime('now'))`,
-		`INSERT INTO gw_catalog_source_profiles VALUES (601,'aicost_pricing_v1')`,
+		`INSERT INTO gw_catalog_source_profiles VALUES (601,'example_pricing_v1')`,
 		`INSERT INTO gw_catalog_release_sources VALUES (602,1,601)`,
 		`INSERT INTO gw_catalog_discovery_snapshots VALUES (603,602,datetime('now'))`,
-		`INSERT INTO gw_catalog_discovery_items VALUES (603,0,'gpt-4.1','AiCost model description','chat',1)`,
+		`INSERT INTO gw_catalog_discovery_items VALUES (603,0,'gpt-4.1','Provider model description','chat',1)`,
 		`INSERT INTO gw_sell_rates VALUES (501,1,30,201,'input','token','usage.input_tokens','call.succeeded','0.000003',0,'0','1000000','USD',1,'flat',NULL,NULL)`,
 		`INSERT INTO gw_sell_rates VALUES (502,1,30,201,'output','token','usage.output_tokens','call.succeeded','0.000012',0,'0','1000000','USD',1,'flat',NULL,NULL)`,
 		`INSERT INTO gw_sell_rates VALUES (503,1,31,201,'request','request','one','call.succeeded','0.02',0,'0','1','USD',1,'flat',NULL,NULL)`,
