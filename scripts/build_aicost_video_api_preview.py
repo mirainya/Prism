@@ -225,7 +225,17 @@ def build_preview(proposal, snapshot):
                 "body": {"state": "active", "reason_code": "aicost_video_catalog_20260924",
                          "expected_version": old["offering_state_version"]},
             })
-    if (len(steps) != 38 or len(activations) != 4 or version != release["config_version"] + 38):
+    expected_product_steps = sum(
+        row["old_product"]["capability_constraints"] !=
+        row["proposed_product"]["capability_constraints"]
+        for row in changes)
+    expected_cost_steps = sum(
+        rate["changed"] for row in changes for rate in row["cost_rates"])
+    expected_sell_steps = sum(
+        rate["changed"] for row in changes for rate in row["sell_rates"])
+    expected_steps = expected_product_steps + expected_cost_steps + expected_sell_steps + 1
+    if (len(steps) != expected_steps or len(activations) != 4 or
+            version != release["config_version"] + expected_steps):
         raise ValueError("unexpected existing-model change counts")
     return {
         "mode": "offline_preview_only", "network_or_database_writes": False,

@@ -17,13 +17,13 @@ class AICostVideoAPIPreviewTests(unittest.TestCase):
         result = build_preview(self.proposal, self.snapshot)
         steps = result["existing_change_steps"]
         self.assertEqual(Counter(step["kind"] for step in steps), {
-            "product": 23, "cost_rate": 7, "sell_rate": 7, "public_identities": 1,
+            "product": 31, "cost_rate": 7, "sell_rate": 7, "public_identities": 1,
         })
-        self.assertEqual(result["expected_config_version_after_existing_changes"], 148)
+        self.assertEqual(result["expected_config_version_after_existing_changes"], 156)
         self.assertEqual([step["body"]["expected_config_version"] for step in steps],
-                         list(range(110, 148)))
+                         list(range(110, 156)))
         self.assertEqual([step["config_version_after"] for step in steps],
-                         list(range(111, 149)))
+                         list(range(111, 157)))
         self.assertEqual(steps[-1]["kind"], "public_identities")
         self.assertEqual(len(steps[-1]["body"]["renames"]), 31)
         self.assertTrue(all(step["body"]["expected_active_release_id"] == 2
@@ -58,7 +58,7 @@ class AICostVideoAPIPreviewTests(unittest.TestCase):
         template = result["incomplete_onboard_template"]
         body = template["body_template"]
         self.assertFalse(template["ready"])
-        self.assertEqual(body["expected_config_version"], 148)
+        self.assertEqual(body["expected_config_version"], 156)
         self.assertEqual(body["sku"]["api_name"], "seedance2.0-900-fast")
         self.assertEqual(body["product"]["vendor_model"], "seedance2.0-900-fast")
         self.assertEqual(body["sell_rate"]["unit_price"], "1.8")
