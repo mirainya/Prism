@@ -899,7 +899,7 @@ const OpsDetailSidebar: React.FC<{
         {error && <div className="p-4"><ErrorNotice message={error} /></div>}
         {loading && <div role="status" className="flex items-center gap-2 px-4 py-3 text-xs text-[var(--text-secondary)]"><LoaderCircle size={15} className="animate-spin" />正在读取关联数据</div>}
         {selected.kind === 'model' && <ModelSidebar entity={selected.item} details={modelDetails} activeReleaseId={activeReleaseId} canEdit={canEdit && activeReleaseId === selected.item.id} onChanged={onChanged} />}
-        {selected.kind === 'upstream' && <UpstreamSidebar entity={selected.item} pools={pools} products={upstreamProducts} relations={upstreamRelations} release={activeRelease || null} canEdit={canEdit && activeReleaseId === activeRelease?.id} onChanged={onChanged} />}
+        {selected.kind === 'upstream' && <UpstreamSidebar entity={selected.item} pools={pools} products={upstreamProducts} relations={upstreamRelations} release={activeRelease || null} canEdit={canEdit && (activeReleaseId == null ? activeRelease == null : activeReleaseId === activeRelease?.id)} onChanged={onChanged} />}
         {selected.kind === 'call' && <CallSidebar entity={selected.item} details={callDetails} />}
       </div>
     )}
