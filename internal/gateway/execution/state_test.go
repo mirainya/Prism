@@ -28,6 +28,14 @@ func TestExecutionStateGraphs(t *testing.T) {
 }
 
 func TestTerminatedUnknownCanResolveFromLateEvidence(t *testing.T) {
+	for _, state := range []AsyncState{AsyncAccepted, AsyncRunning} {
+		t.Run("unreachable_from_"+string(state), func(t *testing.T) {
+			if err := TransitionAsync(state, AsyncTerminatedUnknown); err != nil {
+				t.Fatal(err)
+			}
+		})
+	}
+
 	attemptTargets := []AttemptState{AttemptCompleted, AttemptFailed, AttemptCancelled, AttemptNotCreated}
 	for _, target := range attemptTargets {
 		t.Run("attempt_to_"+string(target), func(t *testing.T) {
