@@ -6,6 +6,7 @@ deliberately incomplete where the redacted catalog snapshot lacks required data.
 
 import copy
 import json
+import argparse
 from pathlib import Path
 
 
@@ -240,8 +241,15 @@ def build_preview(proposal, snapshot):
 
 
 def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--output", type=Path, help="write preview JSON locally")
+    args = parser.parse_args()
     preview = build_preview(load_json(PROPOSAL), load_json(SNAPSHOT))
-    print(json.dumps(preview, ensure_ascii=False, indent=2))
+    encoded = json.dumps(preview, ensure_ascii=False, indent=2) + "\n"
+    if args.output is None:
+        print(encoded, end="")
+    else:
+        args.output.write_text(encoded, encoding="utf-8")
 
 
 if __name__ == "__main__":

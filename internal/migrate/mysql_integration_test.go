@@ -27,6 +27,7 @@ var nonReentrantMigrations = map[string]string{
 	// This migration is already part of managed history. Migration files are
 	// immutable once applied, so keep the exception explicit.
 	"20260917_160000": "adds columns and a foreign key without existence guards",
+	"20260922_090000": "adds the API access log error column without an existence guard",
 }
 
 func TestMySQLMigrationLifecycle(t *testing.T) {

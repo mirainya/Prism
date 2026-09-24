@@ -55,6 +55,8 @@ class BuildAICostVideoPlanTests(unittest.TestCase):
         self.assertEqual(row["proposed_product"]["offering_state"], "active")
         updated = row["proposed_product"]["capability_constraints"]
         rule = updated["adapter"]["validation"]["models"]["seedance2.5-9图"]
+        self.assertEqual(updated["task_types"], ["text", "multimodal"])
+        self.assertEqual(rule["task_modes"], ["text", "references"])
         for configured in (updated, rule):
             self.assertEqual([configured[f"max_{kind}"] for kind in
                               ("images", "videos", "audios")], [9, 0, 0])

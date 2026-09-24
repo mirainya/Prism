@@ -132,7 +132,7 @@ func validatePublishedVideoCapabilities(model string, raw []byte, rule validatio
 		return fmt.Errorf("generic product %q task_types must match validation task_modes", model)
 	}
 	for mode := range published {
-		if !validated[mode] {
+		if !validated[mode] && !(isReferenceTaskMode(mode) && validated["references"]) {
 			return fmt.Errorf("generic product %q task_types must match validation task_modes", model)
 		}
 	}
