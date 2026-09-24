@@ -40,22 +40,23 @@ func (BalanceEntry) TableName() string { return "balance_entries" }
 
 // APIAccessLog stores request metadata for every API request without bodies or credentials.
 type APIAccessLog struct {
-	ID         uint64    `gorm:"primaryKey" json:"id"`
-	RequestID  string    `gorm:"type:varchar(128);not null;default:'';index" json:"request_id"`
-	CallID     string    `gorm:"type:varchar(64);not null;default:'';index" json:"call_id"`
-	UserID     uint      `gorm:"not null;default:0;index:idx_api_access_user_created,priority:1" json:"user_id"`
-	TokenID    uint      `gorm:"not null;default:0;index:idx_api_access_token_created,priority:1" json:"token_id"`
-	ActorType  string    `gorm:"type:varchar(16);not null;default:'anonymous';index" json:"actor_type"`
-	Method     string    `gorm:"type:varchar(10);not null;index" json:"method"`
-	Path       string    `gorm:"type:varchar(500);not null" json:"path"`
-	Route      string    `gorm:"type:varchar(500);not null;default:'';index" json:"route"`
-	Query      string    `gorm:"type:text" json:"query"`
-	StatusCode int       `gorm:"not null;default:0;index" json:"status_code"`
-	DurationMs int64     `gorm:"not null;default:0" json:"duration_ms"`
-	IP         string    `gorm:"type:varchar(64);not null;default:''" json:"ip"`
-	UserAgent  string    `gorm:"type:varchar(512);not null;default:''" json:"user_agent"`
-	ErrorCode  string    `gorm:"type:varchar(128);not null;default:'';index" json:"error_code"`
-	CreatedAt  time.Time `gorm:"not null;index;index:idx_api_access_user_created,priority:2;index:idx_api_access_token_created,priority:2" json:"created_at"`
+	ID           uint64    `gorm:"primaryKey" json:"id"`
+	RequestID    string    `gorm:"type:varchar(128);not null;default:'';index" json:"request_id"`
+	CallID       string    `gorm:"type:varchar(64);not null;default:'';index" json:"call_id"`
+	UserID       uint      `gorm:"not null;default:0;index:idx_api_access_user_created,priority:1" json:"user_id"`
+	TokenID      uint      `gorm:"not null;default:0;index:idx_api_access_token_created,priority:1" json:"token_id"`
+	ActorType    string    `gorm:"type:varchar(16);not null;default:'anonymous';index" json:"actor_type"`
+	Method       string    `gorm:"type:varchar(10);not null;index" json:"method"`
+	Path         string    `gorm:"type:varchar(500);not null" json:"path"`
+	Route        string    `gorm:"type:varchar(500);not null;default:'';index" json:"route"`
+	Query        string    `gorm:"type:text" json:"query"`
+	StatusCode   int       `gorm:"not null;default:0;index" json:"status_code"`
+	DurationMs   int64     `gorm:"not null;default:0" json:"duration_ms"`
+	IP           string    `gorm:"type:varchar(64);not null;default:''" json:"ip"`
+	UserAgent    string    `gorm:"type:varchar(512);not null;default:''" json:"user_agent"`
+	ErrorCode    string    `gorm:"type:varchar(128);not null;default:'';index" json:"error_code"`
+	ErrorMessage string    `gorm:"type:varchar(512);not null;default:''" json:"error_message"`
+	CreatedAt    time.Time `gorm:"not null;index;index:idx_api_access_user_created,priority:2;index:idx_api_access_token_created,priority:2" json:"created_at"`
 }
 
 func (APIAccessLog) TableName() string { return "api_access_logs" }

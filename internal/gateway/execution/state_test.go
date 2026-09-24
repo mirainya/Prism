@@ -27,6 +27,33 @@ func TestExecutionStateGraphs(t *testing.T) {
 	}
 }
 
+func TestTerminatedUnknownCanResolveFromLateEvidence(t *testing.T) {
+	attemptTargets := []AttemptState{AttemptCompleted, AttemptFailed, AttemptCancelled, AttemptNotCreated}
+	for _, target := range attemptTargets {
+		t.Run("attempt_to_"+string(target), func(t *testing.T) {
+			if err := TransitionAttempt(AttemptTerminatedUnknown, target); err != nil {
+				t.Fatal(err)
+			}
+		})
+	}
+
+	asyncTargets := []AsyncState{AsyncSucceeded, AsyncFailed, AsyncCancelled, AsyncNotCreated}
+	for _, target := range asyncTargets {
+		t.Run("async_to_"+string(target), func(t *testing.T) {
+			if err := TransitionAsync(AsyncTerminatedUnknown, target); err != nil {
+				t.Fatal(err)
+			}
+		})
+	}
+
+	if err := TransitionAttempt(AttemptTerminatedUnknown, AttemptRecoveryPending); err == nil {
+		t.Fatal("terminated attempt was reactivated")
+	}
+	if err := TransitionAsync(AsyncTerminatedUnknown, AsyncRunning); err == nil {
+		t.Fatal("terminated async execution was reactivated")
+	}
+}
+
 func TestAttemptTrackerAllowsOnlyOneActiveAttempt(t *testing.T) {
 	tracker := AttemptTracker{CallState: CallReceived, StateVersion: 1}
 	if err := tracker.BeginAttempt(10); err != nil {

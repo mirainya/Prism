@@ -210,6 +210,7 @@ export const createUnifiedCatalogProduct = (releaseId: number, data: Record<stri
 export const deleteUnifiedCatalogProduct = (releaseId: number, id: number, expectedVersion: number) => request(`/admin/unified-gateway/catalog/${releaseId}/products/${id}`, { method: 'DELETE', body: JSON.stringify({ expected_version: expectedVersion }) });
 export const changeUnifiedProduct = (data: { expected_active_release_id: number; expected_config_version: number; semantic_version: string; product_code: string; vendor_model: string; capability_constraints: unknown }) => request<UnifiedCatalogChangeResult>('/admin/unified-gateway/catalog-changes/product', { method: 'POST', body: JSON.stringify(data) });
 export const changeUnifiedTransportAllowedHosts = (data: { expected_active_release_id: number; expected_config_version: number; semantic_version: string; transport_code: string; allowed_hosts: UnifiedAllowedHost[] }) => request<UnifiedCatalogChangeResult>('/admin/unified-gateway/catalog-changes/transport-allowed-hosts', { method: 'POST', body: JSON.stringify(data) });
+export const changeUnifiedTransportTimeout = (data: { expected_active_release_id: number; expected_config_version: number; transport_code: string; timeout_ms: number }) => request<UnifiedCatalogChangeResult>('/admin/unified-gateway/catalog-changes/transport-timeout', { method: 'POST', body: JSON.stringify(data) });
 export interface UnifiedActiveProductCreate {
   expected_active_release_id: number; expected_config_version: number;
   channel_id: number; credential_pool_id: number;

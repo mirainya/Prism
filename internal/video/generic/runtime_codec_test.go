@@ -110,3 +110,62 @@ func TestRuntimeCodecRejectsCredentialInBodyOrQuery(t *testing.T) {
 		}
 	}
 }
+
+func TestValidateRuntimeCatalogPublishedModesAndContent(t *testing.T) {
+	base := map[string]any{}
+	if err := json.Unmarshal(runtimeH3Config(), &base); err != nil {
+		t.Fatal(err)
+	}
+	adapter := base["adapter"].(map[string]any)
+	request := adapter["request"].(map[string]any)
+	models := adapter["validation"].(map[string]any)["models"].(map[string]any)
+	modelRule := models["minimax-h3"].(map[string]any)
+	base["task_types"] = []string{"multimodal"}
+	request["content_projections"] = []any{
+		map[string]any{"source": "url", "target": "images", "output": "array", "types": []string{"image_url"}},
+		map[string]any{"source": "url", "target": "audios", "output": "array", "types": []string{"audio_url"}},
+	}
+	encode := func() []byte {
+		t.Helper()
+		out, err := json.Marshal(base)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return out
+	}
+	validate := func() error {
+		return ValidatePublishedRuntimeCatalog("https://autodl.example", "POST", "/api/v1/workflows/h3", "minimax-h3", encode())
+	}
+	if err := validate(); err != nil {
+		t.Fatalf("valid model rejected: %v", err)
+	}
+	base["task_types"] = []string{"text"}
+	if err := validate(); err == nil {
+		t.Fatal("published mode absent from validation was accepted")
+	}
+	base["task_types"] = []string{"multimodal"}
+	modelRule["task_modes"] = []string{"text", "multimodal"}
+	if err := validate(); err == nil {
+		t.Fatal("validation-only mode was accepted")
+	}
+	modelRule["task_modes"] = []string{"multimodal"}
+	request["content_projections"] = []any{map[string]any{
+		"source": "url", "target": "ref_image_0", "types": []string{"image_url"}, "index": 0,
+	}}
+	if err := validate(); err == nil {
+		t.Fatal("unmapped audio was accepted")
+	}
+	request["include_content"] = true
+	request["content_fields"] = map[string]string{"url": "url"}
+	if err := validate(); err != nil {
+		t.Fatalf("content passthrough rejected: %v", err)
+	}
+	request["include_content"] = false
+	request["content_projections"] = []any{
+		map[string]any{"source": "url", "target": "ref_image_0", "types": []string{"image_url"}},
+		map[string]any{"source": "url", "target": "ref_audio_0", "types": []string{"audio_url"}, "models": []string{"other-model"}},
+	}
+	if err := validate(); err == nil {
+		t.Fatal("another model's audio mapping was accepted")
+	}
+}

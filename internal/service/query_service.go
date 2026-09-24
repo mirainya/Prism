@@ -85,11 +85,13 @@ type AvailableModelCapability struct {
 	Group                  string                    `json:"group,omitempty"`
 	Thinking               *ThinkingInfo             `json:"thinking,omitempty"`
 	Availability           *PricingAvailability      `json:"availability,omitempty"`
+	VideoOptions           map[string]any            `json:"video_options,omitempty"`
 	Sort                   int                       `json:"-"`
 	operationKeys          map[string]int
 	channelKeys            map[string]struct{}
 	typeSet                map[string]struct{}
 	transportSet           map[string]struct{}
+	videoVariants          []map[string]any
 }
 
 func NewQueryService() *QueryService {
@@ -192,6 +194,11 @@ func (s *QueryService) ListAvailableCapabilities(ctx context.Context, channelCod
 		item.addType(operationType)
 		item.applyFeatures(features)
 		item.addRoute(row, tiers)
+		if row.DownstreamHTTPMethod == "POST" && row.DownstreamPath == "/v1/videos/generations" {
+			if err := item.addVideoOptions(row.CapabilityConstraints, tiers); err != nil {
+				return nil, fmt.Errorf("active catalog product %s has invalid video constraints: %w", row.VendorModel, err)
+			}
+		}
 		item.applyAvailability(availability[row.SKUID])
 		if item.Description == "" {
 			metadata := providerMetadata[repository.NewProviderModelMetadataKey(row.ChannelID, row.VendorModel)]
@@ -224,6 +231,7 @@ func (s *QueryService) ListAvailableCapabilities(ctx context.Context, channelCod
 		item.channelKeys = nil
 		item.typeSet = nil
 		item.transportSet = nil
+		item.videoVariants = nil
 		result = append(result, *item)
 	}
 	sort.SliceStable(result, func(i, j int) bool {
@@ -235,6 +243,54 @@ func (s *QueryService) ListAvailableCapabilities(ctx context.Context, channelCod
 	return result, nil
 }
 
+// addVideoOptions projects the same active product constraints and SKU tiers used
+// by /api/docs/videos. Distinct executable routes remain separate variants: a
+// union of limits could advertise a combination accepted by no upstream route.
+func (item *AvailableModelCapability) addVideoOptions(raw []byte, tiers []string) error {
+	options, err := publicVideoConstraints(raw)
+	if err != nil {
+		return err
+	}
+	options["service_tiers"] = append([]string(nil), tiers...)
+	for _, previous := range item.videoVariants {
+		previousWithoutTiers := make(map[string]any, len(previous))
+		for key, value := range previous {
+			if key != "service_tiers" {
+				previousWithoutTiers[key] = value
+			}
+		}
+		nextWithoutTiers := make(map[string]any, len(options))
+		for key, value := range options {
+			if key != "service_tiers" {
+				nextWithoutTiers[key] = value
+			}
+		}
+		oldJSON, _ := json.Marshal(previousWithoutTiers)
+		nextJSON, _ := json.Marshal(nextWithoutTiers)
+		if string(oldJSON) == string(nextJSON) {
+			oldTiers, _ := previous["service_tiers"].([]string)
+			for _, tier := range tiers {
+				if !containsCatalogString(oldTiers, tier) {
+					oldTiers = append(oldTiers, tier)
+				}
+			}
+			previous["service_tiers"] = oldTiers
+			item.projectVideoOptions()
+			return nil
+		}
+	}
+	item.videoVariants = append(item.videoVariants, options)
+	item.projectVideoOptions()
+	return nil
+}
+
+func (item *AvailableModelCapability) projectVideoOptions() {
+	if len(item.videoVariants) == 1 {
+		item.VideoOptions = item.videoVariants[0]
+	} else {
+		item.VideoOptions = map[string]any{"variants": item.videoVariants}
+	}
+}
 func (item *AvailableModelCapability) applyAvailability(value repository.SKUAvailability) {
 	if value.SKUID == 0 {
 		return

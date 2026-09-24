@@ -1140,7 +1140,7 @@ func (p *catalogPlan) addProduct(value catalogPlanProduct) *catalogPlanProduct {
 	if !catalogValidCode(value.Code) || !catalogValidCode(value.TransportCode) || !catalogValidCode(value.VendorModel) ||
 		value.Adapter.Code == "" || value.Adapter.Version == 0 || value.Adapter.Protocol != value.Protocol ||
 		value.Method == "" || !strings.HasPrefix(value.Path, "/") || strings.HasPrefix(value.Path, "//") || value.AuthScheme != "bearer" ||
-		value.TimeoutMS < 100 || value.TimeoutMS > 300000 || value.Weight == 0 || value.Weight > 1000000 || len(value.SKUKeys) == 0 {
+		value.TimeoutMS < 100 || value.TimeoutMS > 900000 || value.Weight == 0 || value.Weight > 1000000 || len(value.SKUKeys) == 0 {
 		p.issue(value.Row, "invalid_product_contract", "catalog product cannot satisfy the executable transport contract")
 		return nil
 	}
@@ -1323,7 +1323,7 @@ func catalogTimeoutMS(value string, fallback uint64, row runtimeSourceRow, p *ca
 		return fallback
 	}
 	seconds, err := strconv.ParseUint(value, 10, 64)
-	if err != nil || seconds == 0 || seconds > 300 || seconds > ^uint64(0)/1000 {
+	if err != nil || seconds == 0 || seconds > 900 || seconds > ^uint64(0)/1000 {
 		p.issue(row, "invalid_transport_timeout", "legacy timeout is outside the unified range")
 		return fallback
 	}

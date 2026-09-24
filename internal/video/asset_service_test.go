@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"testing"
 	"time"
@@ -82,6 +83,17 @@ func TestAssetServiceRejectsMismatchedKind(t *testing.T) {
 	})
 	if !errors.Is(err, ErrInvalidAsset) {
 		t.Fatalf("error = %v, want ErrInvalidAsset", err)
+	}
+}
+
+func TestAssetErrorDetailKeepsValidationReasonWithoutSourceURL(t *testing.T) {
+	err := fmt.Errorf("%w: content item 2 type does not match stored asset", ErrInvalidAsset)
+	if got := AssetErrorDetail(err); got != "content item does not match the stored asset" {
+		t.Fatalf("detail = %q", got)
+	}
+	unsafeErr := fmt.Errorf("%w: unsafe url: https://user:secret@example.test/file", ErrInvalidAsset)
+	if got := AssetErrorDetail(unsafeErr); got != "asset URL is not allowed" {
+		t.Fatalf("unsafe detail = %q", got)
 	}
 }
 

@@ -26,6 +26,7 @@ export interface APIAccessLog {
   ip: string;
   user_agent: string;
   error_code: string;
+  error_message: string;
   created_at: string;
 }
 

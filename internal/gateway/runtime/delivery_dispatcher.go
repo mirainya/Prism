@@ -73,7 +73,7 @@ func (d *AsyncDispatcher) ReconcileDelivery(ctx context.Context, item repository
 	if err != nil {
 		return err
 	}
-	timeout := min(time.Duration(min(fixed.TimeoutMS, uint64(120000)))*time.Millisecond, time.Until(item.LeaseExpiresAt)-5*time.Second)
+	timeout := min(time.Duration(min(fixed.TransportTimeoutMS, uint64(120000)))*time.Millisecond, time.Until(item.LeaseExpiresAt)-5*time.Second)
 	if timeout <= 0 {
 		return context.DeadlineExceeded
 	}

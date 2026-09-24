@@ -1,7 +1,9 @@
 import { describe, expect, it } from 'vitest';
 import type { UnifiedCatalogProduct, UnifiedRelationLink } from '../../services/unifiedGatewayApi';
 import {
+  filterGatewayModelRecords,
   filterGatewayModels,
+  gatewayModelRuntimeStatus,
   gatewayProductKey,
   groupGatewayModels,
 } from './gatewayView';
@@ -73,6 +75,52 @@ describe('gateway model presentation', () => {
     const second = product({ offering_id: 31, credential_pool_id: 41 });
     expect(gatewayProductKey(first)).not.toBe(gatewayProductKey(second));
     expect(groupGatewayModels([first, second], [])[0].products).toHaveLength(2);
+  });
+
+  it('hides disabled offerings and their relations in the current-model view', () => {
+    const currentProduct = product({ offering_state: 'active' });
+    const disabledProduct = product({
+      id: 2,
+      product_transport_id: 11,
+      offering_id: 31,
+      offering_state: 'disabled',
+    });
+    const currentRelation = relation({ offering_state: 'active' });
+    const disabledRelation = relation({
+      product_id: 2,
+      product_transport_id: 11,
+      offering_id: 31,
+      offering_state: 'disabled',
+    });
+
+    const current = filterGatewayModelRecords(
+      [currentProduct, disabledProduct],
+      [currentRelation, disabledRelation],
+      false,
+    );
+    expect(current.products).toEqual([currentProduct]);
+    expect(current.relations).toEqual([currentRelation]);
+
+    const all = filterGatewayModelRecords(
+      [currentProduct, disabledProduct],
+      [currentRelation, disabledRelation],
+      true,
+    );
+    expect(all.products).toHaveLength(2);
+    expect(all.relations).toHaveLength(2);
+  });
+
+  it('marks fully and partially disabled model groups', () => {
+    const currentProduct = product({ offering_state: 'active' });
+    const disabledProduct = product({
+      id: 2,
+      product_transport_id: 11,
+      offering_id: 31,
+      offering_state: 'disabled',
+    });
+    expect(gatewayModelRuntimeStatus(groupGatewayModels([currentProduct], [])[0])).toBe('current');
+    expect(gatewayModelRuntimeStatus(groupGatewayModels([disabledProduct], [])[0])).toBe('disabled');
+    expect(gatewayModelRuntimeStatus(groupGatewayModels([currentProduct, disabledProduct], [])[0])).toBe('mixed');
   });
 
   it('filters by search and selected credential without changing groups', () => {

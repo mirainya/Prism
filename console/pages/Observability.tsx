@@ -244,12 +244,12 @@ const Observability: React.FC = () => {
   };
 
   const renderAccessLogs = () => (
-    <table className="w-full min-w-[960px] table-fixed">
+    <table className="w-full min-w-[1040px] table-fixed">
       <thead className="border-b border-[var(--border-soft)] bg-[var(--surface)]">
         <tr>
           <th className={`${TH_CLASS} w-[170px]`}>时间</th>
           <th className={`${TH_CLASS} w-[350px]`}>请求</th>
-          <th className={`${TH_CLASS} w-[120px]`}>状态</th>
+          <th className={`${TH_CLASS} w-[220px]`}>状态与原因</th>
           <th className={`${TH_CLASS} w-[140px]`}>身份</th>
           <th className={TH_CLASS}>客户端</th>
         </tr>
@@ -272,6 +272,7 @@ const Observability: React.FC = () => {
               <HTTPStatus status={item.status_code} />
               <div className="mt-1 text-xs text-[var(--text-secondary)]">{item.duration_ms} ms</div>
               {item.error_code && <div className="mt-1 break-words text-xs text-red-600">{item.error_code}</div>}
+              {item.error_message && <div className="mt-1 break-words text-xs text-red-700" title={item.error_message}>{item.error_message}</div>}
             </td>
             <td className={TD_CLASS}>
               <div>用户 #{item.user_id || '-'}</div>

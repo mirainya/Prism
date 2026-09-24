@@ -88,6 +88,7 @@ func EstimateVideoGeneration(c *gin.Context) {
 	}
 	req, err := prismv1.ToTaskRequest(spec, token.UserID, token.ID)
 	if err != nil {
+		setVideoAccessErrorDetail(c, err)
 		resp.BadRequest(c, perrors.WithMessage(perrors.ErrInvalidParams, err.Error()))
 		return
 	}
@@ -100,6 +101,7 @@ func EstimateVideoGeneration(c *gin.Context) {
 }
 
 func writeVideoEstimateError(c *gin.Context, err error) {
+	setVideoAccessErrorDetail(c, err)
 	switch {
 	case errors.Is(err, video.ErrInvalidTaskRequest), errors.Is(err, video.ErrInvalidAsset), errors.Is(err, video.ErrAssetNotReady):
 		resp.BadRequest(c, perrors.WithMessage(perrors.ErrInvalidParams, err.Error()))
@@ -127,6 +129,7 @@ func CreateVideoGeneration(c *gin.Context) {
 
 	req, buildErr := prismv1.ToTaskRequest(spec, token.UserID, token.ID)
 	if buildErr != nil {
+		setVideoAccessErrorDetail(c, buildErr)
 		resp.BadRequest(c, perrors.WithMessage(perrors.ErrInvalidParams, buildErr.Error()))
 		return
 	}
@@ -136,11 +139,11 @@ func CreateVideoGeneration(c *gin.Context) {
 	req.RequestID = middleware.GetRequestID(c.Request.Context())
 	req.Endpoint = c.FullPath()
 	req.Operation = "videos.generate"
-	c.Header(prismCallIDHeader, req.CallID)
 	signingSecret, _, err := createUnifiedVideoGeneration(c.Request.Context(), req, c.GetHeader("Idempotency-Key"))
-	// An idempotent replay replaces CallID with the original public resource ID.
-	c.Header(prismCallIDHeader, req.CallID)
 	if err == nil {
+		// An idempotent replay replaces CallID with the original public resource ID.
+		// Do not emit a call ID for validation failures that never create a call.
+		c.Header(prismCallIDHeader, req.CallID)
 		resp.Success(c, GenerationResponse{ID: req.CallID, Status: "queued", ServiceTier: req.ServiceTier, CallbackSigningSecret: signingSecret})
 		return
 	}
@@ -151,6 +154,7 @@ func CreateVideoGeneration(c *gin.Context) {
 }
 
 func writeVideoCreateError(c *gin.Context, status int, err error) {
+	setVideoAccessErrorDetail(c, err)
 	switch status {
 	case http.StatusBadRequest:
 		if errors.Is(err, service.ErrInsufficientTokenBalance) || errors.Is(err, service.ErrInsufficientUserBalance) || errors.Is(err, repository.ErrInsufficient) {
@@ -175,6 +179,7 @@ func decodeVideoRequest(c *gin.Context) (*canonical.VideoSpec, error) {
 }
 
 func writeVideoDecodeError(c *gin.Context, err error) {
+	setVideoAccessErrorDetail(c, err)
 	var maxErr *http.MaxBytesError
 	if errors.As(err, &maxErr) {
 		resp.ErrorMsg(c, http.StatusRequestEntityTooLarge, 413, "video request body is too large")
@@ -294,67 +299,83 @@ func planUnifiedVideoGeneration(ctx context.Context, req *video.CreateTaskReques
 	if selectionKey == "" {
 		selectionKey = service.GenerateUnifiedCallID()
 	}
-	route, err := unifiedVideoRouter.SelectTransport(ctx, req.Model, routing.RouteRequirements{routing.CapabilityVideo: true}, routing.RouteOptions{
-		SelectionKey:    selectionKey,
-		OperationMethod: "POST", OperationPath: "/v1/videos/generations",
-		AllowedTransports:   []model.UpstreamTransport{model.UpstreamTransportVideoGeneration},
-		PreferredTransports: []model.UpstreamTransport{model.UpstreamTransportVideoGeneration},
-	})
+	// Resolve media once; route-specific validation below uses the exact payload
+	// that will be persisted and later submitted to the provider.
+	mediaAssetIDs, err := resolveUnifiedVideoAssets(ctx, req)
 	if err != nil {
 		return unifiedVideoPlan{}, true, err
-	}
-	if route == nil || route.ReleaseID == 0 || route.Transport != model.UpstreamTransportVideoGeneration {
-		return unifiedVideoPlan{}, true, routing.ErrNoRoute
-	}
-	if route.SellSchedule == nil {
-		return unifiedVideoPlan{}, true, repository.ErrConflict
-	}
-	policy, err := unifiedVideoStore.ReadVideoRoutePolicy(ctx, uint64(route.ReleaseID), uint64(route.SKUID), uint64(route.ProductTransportID))
-	if err != nil {
-		return unifiedVideoPlan{}, true, err
-	}
-	codec, supported := adapter.AsyncCodecFor(policy.AdapterCode, policy.AdapterVersion)
-	if !supported {
-		return unifiedVideoPlan{}, true, repository.ErrConflict
 	}
 	serviceTier := strings.TrimSpace(req.ServiceTier)
 	if serviceTier == "" {
 		serviceTier = "standard"
 	}
-	allowedTier := false
-	for _, configured := range policy.ServiceTiers {
-		if configured == serviceTier {
-			allowedTier = true
-			break
-		}
-	}
-	if !allowedTier {
-		return unifiedVideoPlan{}, true, repository.ErrInvalidInput
-	}
 	req.ServiceTier = serviceTier
-	mediaAssetIDs, err := resolveUnifiedVideoAssets(ctx, req)
+	body, err := json.Marshal(gatewayruntime.VideoRequestPayload{Model: req.Model, Prompt: req.Prompt, TaskMode: req.TaskMode, Resolution: req.Resolution, Ratio: req.Ratio, Duration: req.Duration, GenerateAudio: req.Audio, ServiceTier: serviceTier, Content: req.Content, Params: req.Params})
 	if err != nil {
 		return unifiedVideoPlan{}, true, err
 	}
-	body, err := json.Marshal(gatewayruntime.VideoRequestPayload{Model: req.Model, Prompt: req.Prompt, TaskMode: req.TaskMode, Resolution: req.Resolution, Ratio: req.Ratio, Duration: req.Duration, GenerateAudio: req.Audio, ServiceTier: req.ServiceTier, Content: req.Content, Params: req.Params})
-	if err != nil {
-		return unifiedVideoPlan{}, true, err
+	var excluded []uint
+	var validationErr error
+	for {
+		route, selectErr := unifiedVideoRouter.SelectTransport(ctx, req.Model, routing.RouteRequirements{routing.CapabilityVideo: true}, routing.RouteOptions{
+			SelectionKey:    selectionKey,
+			OperationMethod: "POST", OperationPath: "/v1/videos/generations",
+			AllowedTransports:   []model.UpstreamTransport{model.UpstreamTransportVideoGeneration},
+			PreferredTransports: []model.UpstreamTransport{model.UpstreamTransportVideoGeneration},
+			ExcludeOfferings:    excluded,
+		})
+		if selectErr != nil {
+			if validationErr != nil && (errors.Is(selectErr, routing.ErrNoRoute) || errors.Is(selectErr, routing.ErrCapabilityUnavailable)) {
+				return unifiedVideoPlan{}, true, validationErr
+			}
+			return unifiedVideoPlan{}, true, selectErr
+		}
+		if route == nil || route.ReleaseID == 0 || route.OfferingID == 0 || route.Transport != model.UpstreamTransportVideoGeneration {
+			return unifiedVideoPlan{}, true, routing.ErrNoRoute
+		}
+		if route.SellSchedule == nil {
+			return unifiedVideoPlan{}, true, repository.ErrConflict
+		}
+		policy, err := unifiedVideoStore.ReadVideoRoutePolicy(ctx, uint64(route.ReleaseID), uint64(route.SKUID), uint64(route.ProductTransportID))
+		if err != nil {
+			return unifiedVideoPlan{}, true, err
+		}
+		codec, supported := adapter.AsyncCodecFor(policy.AdapterCode, policy.AdapterVersion)
+		if !supported {
+			return unifiedVideoPlan{}, true, repository.ErrConflict
+		}
+		allowedTier := false
+		for _, configured := range policy.ServiceTiers {
+			if configured == serviceTier {
+				allowedTier = true
+				break
+			}
+		}
+		if !allowedTier {
+			validationErr = repository.ErrInvalidInput
+			excluded = append(excluded, route.OfferingID)
+			continue
+		}
+		requestMethod, _ := route.TransportConfig["request_method"].(string)
+		requestMethod = strings.ToUpper(strings.TrimSpace(requestMethod))
+		requestPath, _ := route.TransportConfig["request_path"].(string)
+		if requestMethod == "" || strings.TrimSpace(requestPath) == "" {
+			return unifiedVideoPlan{}, true, repository.ErrConflict
+		}
+		fixed := repository.AsyncDispatch{
+			AdapterCode: policy.AdapterCode, AdapterVersion: policy.AdapterVersion,
+			Protocol: string(route.Protocol), BaseURL: route.BaseURL, Method: requestMethod, Path: requestPath,
+			VendorModel: route.VendorModel, PublicID: req.CallID, AdapterConfig: policy.AdapterConfig,
+		}
+		if _, err := codec.Prepare(ctx, "submit", fixed, body, ""); err != nil {
+			if validationErr == nil {
+				validationErr = fmt.Errorf("%w: %v", repository.ErrInvalidInput, err)
+			}
+			excluded = append(excluded, route.OfferingID)
+			continue
+		}
+		return unifiedVideoPlan{Route: route, Policy: policy, RequestPayload: body, MediaAssetIDs: mediaAssetIDs}, true, nil
 	}
-	requestMethod, _ := route.TransportConfig["request_method"].(string)
-	requestMethod = strings.ToUpper(strings.TrimSpace(requestMethod))
-	requestPath, _ := route.TransportConfig["request_path"].(string)
-	if requestMethod == "" || strings.TrimSpace(requestPath) == "" {
-		return unifiedVideoPlan{}, true, repository.ErrConflict
-	}
-	fixed := repository.AsyncDispatch{
-		AdapterCode: policy.AdapterCode, AdapterVersion: policy.AdapterVersion,
-		Protocol: string(route.Protocol), BaseURL: route.BaseURL, Method: requestMethod, Path: requestPath,
-		VendorModel: route.VendorModel, PublicID: req.CallID, AdapterConfig: policy.AdapterConfig,
-	}
-	if _, err := codec.Prepare(ctx, "submit", fixed, body, ""); err != nil {
-		return unifiedVideoPlan{}, true, fmt.Errorf("%w: %v", repository.ErrInvalidInput, err)
-	}
-	return unifiedVideoPlan{Route: route, Policy: policy, RequestPayload: body, MediaAssetIDs: mediaAssetIDs}, true, nil
 }
 
 func estimateUnifiedVideoGeneration(ctx context.Context, req *video.CreateTaskRequest) (videoEstimateResponse, bool, error) {
@@ -385,7 +406,7 @@ func resolveUnifiedVideoAssets(ctx context.Context, req *video.CreateTaskRequest
 	for index := range req.Content {
 		item := &req.Content[index]
 		if item.StorageObjectID != "" {
-			return nil, fmt.Errorf("content item %d uses an unsupported provider object reference", index)
+			return nil, fmt.Errorf("%w: content item %d uses an unsupported provider object reference", video.ErrInvalidAsset, index)
 		}
 		if item.AssetID == "" {
 			continue
@@ -453,5 +474,35 @@ func classifyVideoCreateError(err error) (int, string, string) {
 		return http.StatusServiceUnavailable, "service_unavailable_error", "video_channel_unavailable"
 	default:
 		return http.StatusInternalServerError, "video_error", "video_create_failed"
+	}
+}
+
+func setVideoAccessErrorDetail(c *gin.Context, err error) {
+	if c == nil || err == nil {
+		return
+	}
+	if detail := video.AssetErrorDetail(err); detail != "" {
+		middleware.SetAccessErrorDetail(c, detail)
+		return
+	}
+	if detail, ok := routing.NoRouteDetailFrom(err); ok {
+		// NoRouteDetail contains only route counts and retry timing; it does not
+		// expose channel names, credentials, or upstream response bodies.
+		middleware.SetAccessErrorDetail(c, detail.Error())
+		return
+	}
+	switch {
+	case errors.Is(err, video.ErrInvalidTaskRequest):
+		middleware.SetAccessErrorDetail(c, "invalid video request")
+	case errors.Is(err, service.ErrInsufficientTokenBalance), errors.Is(err, service.ErrInsufficientUserBalance), errors.Is(err, repository.ErrInsufficient):
+		middleware.SetAccessErrorDetail(c, "insufficient quota")
+	case errors.Is(err, routing.ErrNoRoute), errors.Is(err, routing.ErrNoCompatibleTransport), errors.Is(err, routing.ErrCapabilityUnavailable), errors.Is(err, gatewayruntime.ErrNotReady):
+		middleware.SetAccessErrorDetail(c, "video channel is unavailable")
+	case errors.Is(err, repository.ErrIdempotencyConflict):
+		middleware.SetAccessErrorDetail(c, "idempotency key conflicts with an existing request")
+	case errors.Is(err, repository.ErrInvalidInput):
+		middleware.SetAccessErrorDetail(c, "invalid video request")
+	case errors.Is(err, repository.ErrConflict):
+		middleware.SetAccessErrorDetail(c, "video channel configuration is incomplete")
 	}
 }

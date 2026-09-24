@@ -50,11 +50,9 @@ func (s *Service) ProcessCallbackOne(ctx context.Context, owner string, lease ti
 			// losing its lease. Acknowledge the stale outbox safely.
 			return s.Store.CompleteCallbackOutbox(markCtx, tx, item, true, "")
 		}
-		if locked.State == execution.AsyncAccepted || locked.State == execution.AsyncRunning {
-			if err := s.Store.ScheduleCallbackQuery(markCtx, tx, item, locked.AsyncID, time.Now().UTC()); err != nil {
-				return err
-			}
-			if err := s.updateAsyncResourceProjection(markCtx, tx, locked.AsyncID, locked.State); err != nil {
+		if callbackQueryState(locked.State) {
+			handled, err := s.scheduleCallbackQuery(markCtx, tx, item, locked)
+			if err != nil || handled {
 				return err
 			}
 		} else {
@@ -134,18 +132,16 @@ func (s *Service) RunCallbackOutboxWithHandler(ctx context.Context, owner string
 					return s.Store.CompleteCallbackOutbox(markCtx, tx, item, true, "")
 				}
 				switch locked.State {
-				case execution.AsyncAccepted, execution.AsyncRunning:
-					if err := s.Store.ScheduleCallbackQuery(markCtx, tx, item, locked.AsyncID, time.Now().UTC()); err != nil {
-						return err
-					}
-					if err := s.updateAsyncResourceProjection(markCtx, tx, locked.AsyncID, locked.State); err != nil {
+				case execution.AsyncAccepted, execution.AsyncRunning, execution.AsyncTerminatedUnknown:
+					handled, err := s.scheduleCallbackQuery(markCtx, tx, item, locked)
+					if err != nil || handled {
 						return err
 					}
 				case execution.AsyncSucceeded, execution.AsyncFailed, execution.AsyncCancelled:
 					if err := s.Store.TransitionCallbackReceipt(markCtx, tx, item.CallbackReceiptID, "received", "processed", "late_callback"); err != nil {
 						return err
 					}
-				case execution.AsyncNotCreated, execution.AsyncTerminatedUnknown:
+				case execution.AsyncNotCreated:
 					const code = "callback_conflicts_with_terminal_execution"
 					if err := s.Store.TransitionCallbackReceipt(markCtx, tx, item.CallbackReceiptID, "received", "manual_review", code); err != nil {
 						return err
@@ -191,4 +187,30 @@ func (s *Service) RunCallbackOutboxWithHandler(ctx context.Context, owner string
 		}
 	}
 	return nil
+}
+
+const callbackTaskIdentityUnavailable = "callback_recovery_task_identity_missing"
+
+func callbackQueryState(state execution.AsyncState) bool {
+	return state == execution.AsyncAccepted || state == execution.AsyncRunning || state == execution.AsyncTerminatedUnknown
+}
+
+// scheduleCallbackQuery creates a query only when the execution can still be
+// queried safely. A terminated unknown execution without a live identity is
+// retained for operator review rather than retried or resubmitted.
+func (s *Service) scheduleCallbackQuery(ctx context.Context, tx *sql.Tx, item repository.OutboxItem, locked callbackProcessingRows) (handled bool, err error) {
+	err = s.Store.ScheduleCallbackQuery(ctx, tx, item, locked.AsyncID, time.Now().UTC())
+	if !errors.Is(err, repository.ErrTaskIdentityUnavailable) {
+		if err != nil {
+			return false, err
+		}
+		return false, s.updateAsyncResourceProjection(ctx, tx, locked.AsyncID, locked.State)
+	}
+	if err = s.Store.TransitionCallbackReceipt(ctx, tx, item.CallbackReceiptID, "received", "manual_review", callbackTaskIdentityUnavailable); err != nil {
+		return false, err
+	}
+	if err = s.Store.DeadLetterAsyncOutbox(ctx, tx, item, callbackTaskIdentityUnavailable); err != nil {
+		return false, err
+	}
+	return true, nil
 }

@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/gin-gonic/gin"
+	"github.com/mirainya/Prism/internal/api/middleware"
 	"github.com/mirainya/Prism/internal/api/resp"
 	"github.com/mirainya/Prism/internal/model"
 	"github.com/mirainya/Prism/internal/video"
@@ -64,6 +65,7 @@ func PlaygroundCreateVideoAsset(c *gin.Context) {
 }
 
 func writePlaygroundVideoAssetError(c *gin.Context, err error) {
+	middleware.SetAccessErrorDetail(c, video.AssetErrorDetail(err))
 	switch {
 	case stderrors.Is(err, video.ErrFileTooLarge):
 		resp.ErrorMsg(c, http.StatusRequestEntityTooLarge, 413, "video asset is too large")

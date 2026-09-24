@@ -12,8 +12,8 @@ func TestLoadIncludesImmutableBaseline(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(migrations) != 102 {
-		t.Fatalf("managed migrations=%d, want 102", len(migrations))
+	if len(migrations) != 104 {
+		t.Fatalf("managed migrations=%d, want 104", len(migrations))
 	}
 	baseline := migrations[0]
 	if baseline.Filename != "20260718_150000_schema_baseline.sql" {
@@ -488,6 +488,8 @@ func TestLoadIncludesImmutableBaseline(t *testing.T) {
 		{99, "20260917_143154_backfill_llm_downstream_protocols.sql", "3c9b5f704e92ff3f16aa8e6ea2ae816754fa339bee9ad58a748e9396b55df405"},
 		{100, "20260917_160000_token_xfs_api_key.sql", "e3ea20b7a8462a2a0a9336b90aafb5c99fe7b266a2f5a70af459948165c03acb"},
 		{101, "20260919_114500_register_image_edit_operation.sql", "712475b78e2a50a28a4b44368f8c05cab13e94eb107a71857c9694d61ef5033c"},
+		{102, "20260922_090000_api_access_error_message.sql", "ed9b172628c96b0123cfcbb9f6647e6164fda7c6da79cee5f9af159e255dc67e"},
+		{103, "20260923_203432_disable_aicost_models_absent_from_doc.sql", "6553b851fd6eee82e0b2e31713907e98e0953b20ac937692b93e41e5647673ab"},
 	}
 	for _, migration := range newMigrations {
 		if migrations[migration.index].Filename != migration.filename || migrations[migration.index].Checksum != migration.checksum {

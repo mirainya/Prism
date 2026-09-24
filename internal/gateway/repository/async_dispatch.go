@@ -17,7 +17,10 @@ type AsyncDispatch struct {
 	PublicID, Protocol, BaseURL, Method, Path                     string
 	AuthScheme, VendorModel, DeliveryMode, SourceURLPolicy        string
 	AdapterConfig                                                 []byte
-	TimeoutMS                                                     uint64
+	// TransportTimeoutMS is the timeout for one HTTP exchange with the
+	// provider. It deliberately does not represent the lifetime of the async
+	// task; each later poll gets its own transport timeout.
+	TransportTimeoutMS uint64
 }
 
 func (s *Store) ReadAsyncDispatch(ctx context.Context, asyncID uint64) (AsyncDispatch, error) {
@@ -29,7 +32,7 @@ func (s *Store) ReadAsyncDispatch(ctx context.Context, asyncID uint64) (AsyncDis
 	err := s.db.QueryRowContext(ctx, `SELECT c.id,a.id,a.credential_id,credential.secret,COALESCE(v.encrypted_blob_id,0),p.encrypted_blob_id,i.encrypted_blob_id,
 	(SELECT ba.encrypted_blob_id FROM gw_callback_binding_token_aliases ba WHERE ba.async_execution_id=x.id ORDER BY ba.hmac_key_version DESC LIMIT 1),
 ct.id,a.catalog_release_id,c.public_id,ct.protocol,ct.base_url,ct.request_method,ct.request_path,ct.auth_scheme,
-product.vendor_model,c.delivery_mode,pt.source_url_policy,COALESCE(product.capability_constraints,'{}'),LEAST(ct.timeout_ms,pt.timeout_ms),adapter.adapter_code,adapter.contract_version
+product.vendor_model,c.delivery_mode,pt.source_url_policy,COALESCE(product.capability_constraints,'{}'),ct.timeout_ms,adapter.adapter_code,adapter.contract_version
 FROM gw_async_executions x
 JOIN gw_api_call_attempts a ON a.id=x.attempt_id
 JOIN gw_api_calls c ON c.id=a.call_id
@@ -43,7 +46,7 @@ JOIN gw_adapter_implementations adapter ON adapter.id=ct.adapter_implementation_
 LEFT JOIN gw_upstream_task_identities i ON i.async_execution_id=x.id AND i.status='bound'
 	WHERE x.id=?`, asyncID).Scan(&out.CallID, &out.AttemptID, &out.CredentialID, &out.CredentialSecret, &out.CredentialBlobID, &out.RequestBlobID, &identity,
 		&callbackToken, &out.ChannelTransportID, &out.ReleaseID, &out.PublicID, &out.Protocol, &out.BaseURL, &out.Method, &out.Path, &out.AuthScheme,
-		&out.VendorModel, &out.DeliveryMode, &out.SourceURLPolicy, &out.AdapterConfig, &out.TimeoutMS, &out.AdapterCode, &out.AdapterVersion)
+		&out.VendorModel, &out.DeliveryMode, &out.SourceURLPolicy, &out.AdapterConfig, &out.TransportTimeoutMS, &out.AdapterCode, &out.AdapterVersion)
 	if err == sql.ErrNoRows {
 		return AsyncDispatch{}, ErrNotFound
 	}

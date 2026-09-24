@@ -73,7 +73,7 @@ func TestFindCallbackBindingReturnsBlobWithoutCallbackVerifyGrant(t *testing.T) 
 	defer db.Close()
 	store, _ := New(db)
 	digest := CallbackBindingTokenHMAC(bytes.Repeat([]byte{3}, 32), "token")
-	mock.ExpectQuery("SELECT a.async_execution_id,ca.credential_version_id,a.encrypted_blob_id").
+	mock.ExpectQuery("x\\.state NOT IN \\('succeeded','failed','cancelled','not_created'\\)").
 		WithArgs(uint32(2), digest).
 		WillReturnRows(sqlmock.NewRows([]string{"async_execution_id", "credential_version_id", "encrypted_blob_id"}).AddRow(uint64(8), uint64(12), uint64(21)))
 	got, err := store.FindCallbackBinding(context.Background(), 2, digest)

@@ -57,6 +57,45 @@ func testDispatcher(t *testing.T, client *http.Client) (*AsyncDispatcher, sqlmoc
 	return dispatcher, mock
 }
 
+func TestAsyncDispatcherEndsUnknownSubmissionWhenProviderRecoveryIsUnavailable(t *testing.T) {
+	dispatcher, mock := testDispatcher(t, nil)
+	item := repository.OutboxItem{
+		ID: 31, AsyncExecutionID: 9, ActionSeq: 4, StateVersion: 3,
+		Action: "recover", Attempts: 1, LeaseOwner: "worker",
+	}
+
+	mock.ExpectBegin()
+	mock.ExpectQuery("SELECT attempt_id FROM gw_async_executions").
+		WithArgs(item.AsyncExecutionID).
+		WillReturnRows(sqlmock.NewRows([]string{"attempt_id"}).AddRow(uint64(12)))
+	mock.ExpectQuery("SELECT id FROM gw_api_call_attempts").
+		WithArgs(uint64(12)).
+		WillReturnRows(sqlmock.NewRows([]string{"id"}).AddRow(uint64(12)))
+	mock.ExpectQuery("SELECT state,state_version,action_seq FROM gw_async_executions").
+		WithArgs(item.AsyncExecutionID).
+		WillReturnRows(sqlmock.NewRows([]string{"state", "state_version", "action_seq"}).
+			AddRow("submission_unknown", item.StateVersion, item.ActionSeq))
+	mock.ExpectQuery("SELECT id FROM gw_async_outbox WHERE id=\\? AND status='succeeded'").
+		WithArgs(item.ID, item.Attempts, item.ActionSeq, item.StateVersion, item.Action, nil, nil, item.AsyncExecutionID, nil, nil).
+		WillReturnRows(sqlmock.NewRows([]string{"id"}))
+	mock.ExpectQuery("SELECT 1 FROM gw_async_outbox").
+		WithArgs(item.ID, item.LeaseOwner, item.Attempts, item.ActionSeq, item.StateVersion, item.Action, nil, nil, item.AsyncExecutionID, nil, nil).
+		WillReturnRows(sqlmock.NewRows([]string{"valid"}).AddRow(1))
+	mock.ExpectQuery("SELECT id,status FROM gw_channel_request_logs").
+		WithArgs(item.ID, item.Attempts, item.Action).
+		WillReturnRows(sqlmock.NewRows([]string{"id", "status"}))
+	mock.ExpectCommit()
+
+	err := dispatcher.Dispatch(context.Background(), item)
+	var permanent *PermanentDispatchError
+	if !errors.As(err, &permanent) || permanent.Code != "provider_recovery_unavailable" {
+		t.Fatalf("Dispatch() error = %v, want permanent provider_recovery_unavailable", err)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestAsyncDispatcherDoesNotFollowRedirectsOrExposeResponseBodies(t *testing.T) {
 	var redirected atomic.Int64
 	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -294,6 +333,16 @@ func TestAsyncDispatcherDefaultClientRejectsPrivateDestinations(t *testing.T) {
 	}
 	if response.ErrorCode != "provider_exchange_unknown" {
 		t.Fatalf("response error code = %q, want provider_exchange_unknown", response.ErrorCode)
+	}
+	if response.DiagnosticMessage == "" {
+		t.Fatal("transport failure did not retain diagnostic evidence")
+	}
+	encoded, err := json.Marshal(response)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(encoded), response.DiagnosticMessage) {
+		t.Fatal("raw transport diagnostic was serialized")
 	}
 }
 

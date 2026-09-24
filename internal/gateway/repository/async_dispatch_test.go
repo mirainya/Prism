@@ -19,7 +19,7 @@ func TestReadAsyncDispatchIncludesCallbackBindingToken(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	mock.ExpectQuery(regexp.QuoteMeta("SELECT c.id,a.id,a.credential_id,credential.secret")).
+	mock.ExpectQuery(regexp.QuoteMeta("COALESCE(product.capability_constraints,'{}'),ct.timeout_ms,adapter.adapter_code")).
 		WithArgs(uint64(19)).
 		WillReturnRows(sqlmock.NewRows([]string{
 			"call_id", "attempt_id", "credential_id", "credential_secret", "credential_blob_id", "request_blob_id", "task_identity_blob_id",
@@ -29,17 +29,32 @@ func TestReadAsyncDispatchIncludesCallbackBindingToken(t *testing.T) {
 		}).AddRow(
 			1, 2, 3, nil, 4, 5, 6, 7, 8, 9, "call-1", "json_task_v1", "https://provider.example",
 			"POST", "/tasks", "bearer", "vendor-model", "managed_copy", "fixed", []byte(`{"schema_version":1}`),
-			30000, "generic", 1,
+			120000, "generic", 1,
 		))
 
 	dispatch, err := store.ReadAsyncDispatch(context.Background(), 19)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if dispatch.TaskIdentityBlobID != 6 || dispatch.CallbackBindingTokenBlobID != 7 || dispatch.ChannelTransportID != 8 || dispatch.AdapterCode != "generic" {
+	if dispatch.TaskIdentityBlobID != 6 || dispatch.CallbackBindingTokenBlobID != 7 || dispatch.ChannelTransportID != 8 || dispatch.TransportTimeoutMS != 120000 || dispatch.AdapterCode != "generic" {
 		t.Fatalf("dispatch fields shifted or omitted: %+v", dispatch)
 	}
 	if err := mock.ExpectationsWereMet(); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestReadAsyncDispatchRejectsZeroID(t *testing.T) {
+	db, _, err := sqlmock.New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	store, err := New(db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.ReadAsyncDispatch(context.Background(), 0); err != ErrInvalidInput {
+		t.Fatalf("ReadAsyncDispatch(0) error = %v, want %v", err, ErrInvalidInput)
 	}
 }

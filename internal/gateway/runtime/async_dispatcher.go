@@ -272,8 +272,11 @@ func (d *AsyncDispatcher) Dispatch(ctx context.Context, item repository.OutboxIt
 	}
 	if item.Action == "recover" {
 		// No configured provider lookup can prove a task without its ID. Do not
-		// turn an X-Request-ID header into an invented idempotency guarantee.
-		return d.service.RequireAsyncManualReview(ctx, item)
+		// turn an X-Request-ID header into an invented idempotency guarantee or
+		// leave the public call active forever. The worker finalizes this as an
+		// indeterminate outcome while retaining its billing and slot holds for
+		// later reconciliation.
+		return &PermanentDispatchError{Code: "provider_recovery_unavailable"}
 	}
 	fixed, err := d.service.Store.ReadAsyncDispatch(ctx, item.AsyncExecutionID)
 	if err != nil {
@@ -343,8 +346,9 @@ func (d *AsyncDispatcher) Dispatch(ctx context.Context, item repository.OutboxIt
 	if err != nil {
 		return err
 	}
-	// Leave time to durably record the HTTP outcome before the lease expires.
-	timeout := asyncExchangeTimeout(time.Duration(min(fixed.TimeoutMS, uint64(300000)))*time.Millisecond, item.LeaseExpiresAt, time.Now())
+	// Bound this individual HTTP exchange by the channel transport setting.
+	// The async task itself has no deadline; a later poll gets a fresh timeout.
+	timeout := asyncExchangeTimeout(time.Duration(fixed.TransportTimeoutMS)*time.Millisecond, item.LeaseExpiresAt, time.Now())
 	if timeout <= 0 {
 		return context.DeadlineExceeded
 	}
@@ -373,6 +377,21 @@ func (d *AsyncDispatcher) Dispatch(ctx context.Context, item repository.OutboxIt
 	// the remaining lease instead of imposing a short database-only timeout.
 	markCtx, markCancel := asyncResultCommitContext(ctx, item.LeaseExpiresAt)
 	defer markCancel()
+	if response.DiagnosticMessage != "" {
+		diagnostic, diagnosticErr := payloadview.EncodeFailureDiagnostic(response.ErrorCode, response.DiagnosticMessage, response.HTTPStatus)
+		response.DiagnosticMessage = ""
+		if diagnosticErr != nil {
+			return diagnosticErr
+		}
+		if len(diagnostic) != 0 {
+			blob, blobErr := d.payloadBlob(markCtx, diagnostic)
+			clear(diagnostic)
+			if blobErr != nil {
+				return blobErr
+			}
+			response.Diagnostic = &blob
+		}
+	}
 	if len(responseBody) != 0 {
 		blob, blobErr := d.payloadBlob(markCtx, responseBody)
 		if blobErr != nil {
@@ -496,7 +515,7 @@ func (d *AsyncDispatcher) exchange(request *http.Request) ([]byte, repository.Re
 	response, err := d.client.Do(request)
 	if err != nil {
 		duration := uint64(time.Since(started).Milliseconds())
-		result.DurationMS, result.ErrorCode = &duration, "provider_exchange_unknown"
+		result.DurationMS, result.ErrorCode, result.DiagnosticMessage = &duration, "provider_exchange_unknown", err.Error()
 		return nil, result
 	}
 	defer response.Body.Close()
@@ -537,7 +556,7 @@ func (d *AsyncDispatcher) exchangeFailure(ctx context.Context, item repository.O
 	if item.Action == "query" && definitiveQueryFailure(response) {
 		return &PermanentDispatchError{Code: response.ErrorCode}
 	}
-	return errors.New(response.ErrorCode)
+	return &RetryableDispatchError{Code: response.ErrorCode}
 }
 
 func definitiveSubmissionRejection(response repository.RequestLogResult) bool {

@@ -31,7 +31,7 @@ func ValidateCatalogProduct(code string, version uint32, baseURL, method, path, 
 	}
 	switch descriptor.Code {
 	case "generic":
-		return ValidateGenericVideoCatalog(baseURL, method, path, vendorModel, config)
+		return generic.ValidatePublishedRuntimeCatalog(baseURL, method, path, vendorModel, config)
 	case "openai_images":
 		return ValidateOpenAIImagesCatalog(method, path, vendorModel, taskScope, config)
 	case "seedance":

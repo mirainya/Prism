@@ -22,13 +22,14 @@ func validHexDigest(value string, bytesLen int) bool {
 }
 
 var (
-	ErrNotFound            = errors.New("gateway repository: row not found")
-	ErrConflict            = errors.New("gateway repository: optimistic concurrency conflict")
-	ErrIdempotencyConflict = errors.New("gateway repository: idempotency key was reused with a different request")
-	ErrIdempotencyExpired  = errors.New("gateway repository: idempotency replay window has expired")
-	ErrInvalidInput        = errors.New("gateway repository: invalid input")
-	ErrAlreadyExists       = errors.New("gateway repository: row already exists")
-	ErrInsufficient        = errors.New("gateway repository: insufficient balance or budget")
+	ErrNotFound                = errors.New("gateway repository: row not found")
+	ErrConflict                = errors.New("gateway repository: optimistic concurrency conflict")
+	ErrIdempotencyConflict     = errors.New("gateway repository: idempotency key was reused with a different request")
+	ErrIdempotencyExpired      = errors.New("gateway repository: idempotency replay window has expired")
+	ErrInvalidInput            = errors.New("gateway repository: invalid input")
+	ErrAlreadyExists           = errors.New("gateway repository: row already exists")
+	ErrInsufficient            = errors.New("gateway repository: insufficient balance or budget")
+	ErrTaskIdentityUnavailable = errors.New("gateway repository: live upstream task identity is unavailable")
 )
 
 // DB is implemented by *sql.DB and *sql.Tx. It makes every repository method

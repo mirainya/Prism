@@ -91,7 +91,9 @@ import { CostRateEditor, RoutingEditor, type CatalogChangeContext } from './ops_
 import { AddUpstreamModelDialog } from './ops_console/AddUpstreamModelDialog';
 import { AllowedHostsDialog } from './ops_console/AllowedHostsDialog';
 import {
+  filterGatewayModelRecords,
   filterGatewayModels,
+  gatewayModelRuntimeStatus,
   gatewayProductKey,
   gatewayRelationProductKey,
   groupGatewayModels,
@@ -1156,6 +1158,7 @@ const UpstreamSidebar: React.FC<{
   const [creatingPool, setCreatingPool] = useState(false);
   const [creatingProduct, setCreatingProduct] = useState(false);
   const [modelQuery, setModelQuery] = useState('');
+  const [modelDisplayMode, setModelDisplayMode] = useState<'current' | 'all'>('current');
   const [selectedModelKey, setSelectedModelKey] = useState('');
   const [selectedProductKey, setSelectedProductKey] = useState('');
   const [mappingProduct, setMappingProduct] = useState<UnifiedCatalogProduct | null>(null);
@@ -1173,6 +1176,7 @@ const UpstreamSidebar: React.FC<{
     setEditingPool(null);
     setSelectedCredentialID(null);
     setModelQuery('');
+    setModelDisplayMode('current');
     setSelectedModelKey('');
     setSelectedProductKey('');
     setNotice('');
@@ -1213,10 +1217,22 @@ const UpstreamSidebar: React.FC<{
   }, [credentialPoolID, credentialRevision]);
 
   const selectedCredentialPool = pools.find((pool) => String(pool.id) === credentialPoolID);
-  const modelGroups = useMemo(() => groupGatewayModels(products, relations), [products, relations]);
+  const allModelGroups = useMemo(() => groupGatewayModels(products, relations), [products, relations]);
+  const modelRecords = useMemo(
+    () => filterGatewayModelRecords(products, relations, modelDisplayMode === 'all'),
+    [products, relations, modelDisplayMode],
+  );
+  const modelGroups = useMemo(
+    () => groupGatewayModels(modelRecords.products, modelRecords.relations),
+    [modelRecords],
+  );
+  const credentialModels = useMemo(
+    () => filterGatewayModels(modelGroups, '', selectedCredentialID),
+    [modelGroups, selectedCredentialID],
+  );
   const visibleModels = useMemo(
-    () => filterGatewayModels(modelGroups, modelQuery, selectedCredentialID),
-    [modelGroups, modelQuery, selectedCredentialID],
+    () => filterGatewayModels(credentialModels, modelQuery, null),
+    [credentialModels, modelQuery],
   );
 
   useEffect(() => {
@@ -1238,7 +1254,7 @@ const UpstreamSidebar: React.FC<{
     || selectedModel?.products[0]
     || null;
   const selectedProductRelations = selectedProduct
-    ? relations.filter(relation => relationBelongsToProduct(relation, selectedProduct))
+    ? modelRecords.relations.filter(relation => relationBelongsToProduct(relation, selectedProduct))
     : [];
   const selectedScopedRelations = selectedCredentialID
     ? selectedProductRelations.filter(relation => relation.credential_id === selectedCredentialID)
@@ -1382,7 +1398,7 @@ const UpstreamSidebar: React.FC<{
     <div className="ops-gateway-shell">
       <div className="ops-gateway-summary">
         <div className="min-w-0"><div className="flex flex-wrap items-center gap-1.5"><StatusBadge status={entity.status} />{gatewayTypes.map((type) => <span key={type} className="rounded-md bg-[var(--primary-lighter)] px-1.5 py-0.5 text-[10px] font-bold text-[var(--primary)]">{modelTypeLabel[type]}</span>)}</div><code className="mt-2 block truncate text-[10px] text-[var(--text-secondary)]">{entity.channel_code}</code></div>
-        <dl><div><dt>上游模型</dt><dd>{modelGroups.length}</dd></div><div><dt>协议配置</dt><dd>{products.length}</dd></div><div><dt>API Key</dt><dd>{entity.credential_count}</dd></div></dl>
+        <dl><div><dt>上游模型</dt><dd>{modelGroups.length}</dd></div><div><dt>协议配置</dt><dd>{modelRecords.products.length}</dd></div><div><dt>API Key</dt><dd>{entity.credential_count}</dd></div></dl>
       </div>
       {notice && <div role="status" className="mx-4 mt-3 rounded-lg border border-emerald-300/40 bg-emerald-500/5 px-3 py-2 text-xs font-semibold text-emerald-600">{notice}</div>}
       <div className="ops-gateway-workbench">
@@ -1394,7 +1410,7 @@ const UpstreamSidebar: React.FC<{
             <button type="button" className={`ops-gateway-key-filter ${selectedCredentialID === null ? 'ops-gateway-key-filter-active' : ''}`} aria-pressed={selectedCredentialID === null} onClick={() => setSelectedCredentialID(null)}><span className="ops-gateway-key-mark"><Layers3 size={14} /></span><span><strong>全部模型</strong><small>{modelGroups.length} 个上游模型</small></span></button>
             <div className="ops-gateway-key-list" aria-busy={credentialsLoading}>
               {credentialsLoading ? <p className="py-4 text-xs text-[var(--text-secondary)]">正在读取 API Key</p> : credentials.length === 0 ? <div className="ops-gateway-empty"><KeyRound size={20} /><span>当前分组没有 Key</span></div> : credentials.map((credential, index) => {
-                const servedModels = new Set(relations.filter(relation => relation.credential_id === credential.id).map(relation => (relation.vendor_model || relation.product_code).trim().toLocaleLowerCase())).size;
+                const servedModels = new Set(modelRecords.relations.filter(relation => relation.credential_id === credential.id).map(relation => (relation.vendor_model || relation.product_code).trim().toLocaleLowerCase())).size;
                 const active = selectedCredentialID === credential.id;
                 return <div key={credential.id} className={`ops-gateway-key-item ${active ? 'ops-gateway-key-item-active' : ''}`}><button type="button" className="ops-gateway-key-filter" aria-pressed={active} onClick={() => setSelectedCredentialID(credential.id)}><span className="ops-gateway-key-mark"><KeyRound size={14} /></span><span><strong>{formatCredentialDisplayName(credential.credential_code, selectedCredentialPool?.display_name, index)}</strong><small>{opsStatusLabel(credential.status)} · {servedModels} 个关联模型 · 权重 {credential.weight}</small></span></button>{canEdit && (credential.status === 'active' || credential.status === 'draining') && <button type="button" className="ops-gateway-item-edit" title="管理 API Key" aria-label={`管理 ${credential.credential_code}`} onClick={() => setCredentialEditor({ item: credential, poolId: selectedCredentialPool!.id })}><Pencil size={13} /></button>}</div>;
               })}
@@ -1406,16 +1422,17 @@ const UpstreamSidebar: React.FC<{
         </aside>
 
         <section className="ops-gateway-model-pane" aria-label="上游模型">
-          <div className="ops-gateway-model-toolbar"><div><h3>上游模型</h3><p>{selectedCredentialID ? `当前 Key 关联 ${visibleModels.length} / ${modelGroups.length}` : `${modelGroups.length} 个模型 · ${products.length} 条协议配置`}</p></div><label className="ops-gateway-model-search"><Search size={14} aria-hidden="true" /><span className="sr-only">搜索上游模型</span><input value={modelQuery} onChange={event => setModelQuery(event.target.value)} placeholder="搜索模型、协议或端点" />{modelQuery && <button type="button" title="清除搜索" aria-label="清除搜索" onClick={() => setModelQuery('')}><X size={13} /></button>}</label><Button type="button" size="sm" onClick={startCreateProduct} disabled={!release || !canEdit || entity.status !== 'active'}><Plus size={14} />接入模型</Button></div>
-          {products.length === 0 ? <div className="ops-gateway-empty"><Layers3 size={20} /><span>此渠道尚未接入上游模型</span></div> : visibleModels.length === 0 ? <div className="ops-gateway-empty"><Search size={20} /><span>{selectedCredentialID ? '此 Key 暂无可访问模型' : '没有匹配的上游模型'}</span></div> : <div className="ops-gateway-model-browser">
+          <div className="ops-gateway-model-toolbar"><div><h3>上游模型</h3><p>{selectedCredentialID ? `当前 Key 关联 ${credentialModels.length} / ${modelGroups.length}` : `${modelGroups.length} / ${allModelGroups.length} 个模型 · ${modelRecords.products.length} 条协议配置`}</p></div><Select value={modelDisplayMode} onChange={value => setModelDisplayMode(value as 'current' | 'all')} options={[{ value: 'current', label: '当前模型' }, { value: 'all', label: '全部（含停用）' }]} className="w-[150px] shrink-0" /><label className="ops-gateway-model-search"><Search size={14} aria-hidden="true" /><span className="sr-only">搜索上游模型</span><input value={modelQuery} onChange={event => setModelQuery(event.target.value)} placeholder="搜索模型、协议或端点" />{modelQuery && <button type="button" title="清除搜索" aria-label="清除搜索" onClick={() => setModelQuery('')}><X size={13} /></button>}</label><Button type="button" size="sm" onClick={startCreateProduct} disabled={!release || !canEdit || entity.status !== 'active'}><Plus size={14} />接入模型</Button></div>
+          {products.length === 0 ? <div className="ops-gateway-empty"><Layers3 size={20} /><span>此渠道尚未接入上游模型</span></div> : modelRecords.products.length === 0 ? <div className="ops-gateway-empty"><Layers3 size={20} /><span>当前没有启用模型</span></div> : visibleModels.length === 0 ? <div className="ops-gateway-empty"><Search size={20} /><span>{modelQuery.trim() ? '没有匹配的上游模型' : selectedCredentialID ? '此 Key 暂无可访问模型' : '没有匹配的上游模型'}</span></div> : <div className="ops-gateway-model-browser">
             <div className="ops-gateway-model-list" role="listbox" aria-label="上游模型列表">{visibleModels.map(group => {
               const active = group.key === selectedModel?.key;
-              return <button key={group.key} type="button" role="option" aria-selected={active} className={active ? 'ops-gateway-model-row-active' : ''} onClick={() => setSelectedModelKey(group.key)}><span><strong title={group.vendorModel}>{group.vendorModel}</strong><small>{group.products.length} 条协议配置 · {group.publicNames.length} 个调用名</small></span><ChevronDown size={14} aria-hidden="true" /></button>;
+              const runtimeStatus = gatewayModelRuntimeStatus(group);
+              return <button key={group.key} type="button" role="option" aria-selected={active} className={active ? 'ops-gateway-model-row-active' : ''} onClick={() => setSelectedModelKey(group.key)}><span><span className="flex min-w-0 items-center gap-1.5"><strong title={group.vendorModel}>{group.vendorModel}</strong>{modelDisplayMode === 'all' && runtimeStatus !== 'current' && <Badge variant={runtimeStatus === 'disabled' ? 'error' : 'warning'}>{runtimeStatus === 'disabled' ? '已停用' : '含停用'}</Badge>}</span><small>{group.products.length} 条协议配置 · {group.publicNames.length} 个调用名</small></span><ChevronDown size={14} aria-hidden="true" /></button>;
             })}</div>
             {selectedModel && <div className="ops-gateway-model-detail">
               <div className="ops-gateway-model-title"><div className="min-w-0"><div className="flex min-w-0 items-center gap-2"><h3 className="truncate">{selectedModel.vendorModel}</h3><span>{modelTypeLabel[productGatewayType(selectedModel.products[0])]}</span></div><div className="ops-model-tags">{selectedModel.publicNames.length ? selectedModel.publicNames.map(name => <span key={name}>{name}</span>) : <span>尚未关联对外调用名</span>}</div></div></div>
               <div className="ops-gateway-interface-list" role="listbox" aria-label={`${selectedModel.vendorModel} 的协议配置`}>{selectedModel.products.map(product => {
-                const productRelations = relations.filter(relation => relationBelongsToProduct(relation, product));
+                const productRelations = modelRecords.relations.filter(relation => relationBelongsToProduct(relation, product));
                 const scopedRelations = selectedCredentialID
                   ? productRelations.filter(relation => relation.credential_id === selectedCredentialID)
                   : productRelations;

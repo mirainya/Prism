@@ -56,6 +56,7 @@ func RegisterRoutes(group *gin.RouterGroup) {
 	group.POST("/unified-gateway/catalog-changes/model-onboard", OnboardUnifiedCatalogModel)
 	group.POST("/unified-gateway/catalog-changes/public-model-identities", ChangeUnifiedPublicModelIdentities)
 	group.POST("/unified-gateway/catalog-changes/transport-allowed-hosts", ChangeUnifiedTransportAllowedHosts)
+	group.POST("/unified-gateway/catalog-changes/transport-timeout", ChangeUnifiedTransportTimeout)
 	group.GET("/unified-gateway/credentials", UnifiedGatewayCredentials)
 	group.GET("/unified-gateway/currencies", ListUnifiedCurrencies)
 	group.POST("/unified-gateway/currencies", CreateUnifiedCurrency)
@@ -101,6 +102,7 @@ func RegisterRoutes(group *gin.RouterGroup) {
 	{
 		vid.GET("/tasks", ListUnifiedVideoTasks)
 		vid.GET("/tasks/:id", GetUnifiedVideoTask)
+		vid.POST("/tasks/:id/resolve", ResolveUnifiedVideoTask)
 		vid.GET("/stats", GetUnifiedVideoStats)
 	}
 }

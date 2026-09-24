@@ -83,6 +83,9 @@ func (s *Store) UpdateAsyncResourceProjection(ctx context.Context, tx *sql.Tx, a
 	// vocabulary.  Once a domain projection is terminal it may only receive
 	// the same terminal state again; an older or different observation must
 	// never reopen it.
+	if current == "terminated_unknown" && current != status && !resolvedUnknownProjectionStatus(status) {
+		return ErrConflict
+	}
 	if isProjectionTerminal(current) {
 		if current != status {
 			return ErrConflict
@@ -123,7 +126,16 @@ func validProjectionStatus(status string) bool {
 
 func isProjectionTerminal(status string) bool {
 	switch status {
-	case "succeeded", "completed", "failed", "cancelled", "not_created", "terminated_unknown":
+	case "succeeded", "completed", "failed", "cancelled", "not_created":
+		return true
+	default:
+		return false
+	}
+}
+
+func resolvedUnknownProjectionStatus(status string) bool {
+	switch status {
+	case "completed", "failed", "cancelled", "not_created":
 		return true
 	default:
 		return false

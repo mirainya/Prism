@@ -13,6 +13,8 @@ export interface GatewayModelGroup {
   adapters: string[];
 }
 
+export type GatewayModelRuntimeStatus = 'current' | 'mixed' | 'disabled';
+
 const unique = (values: string[]) => [...new Set(values.map(value => value.trim()).filter(Boolean))];
 
 const normalizedModelKey = (value: string) => value.trim().toLocaleLowerCase();
@@ -42,6 +44,26 @@ export const relationBelongsToProduct = (
   relation: UnifiedRelationLink,
   product: UnifiedCatalogProduct,
 ) => gatewayRelationProductKey(relation) === gatewayProductKey(product);
+
+export const filterGatewayModelRecords = (
+  products: UnifiedCatalogProduct[],
+  relations: UnifiedRelationLink[],
+  showDisabled: boolean,
+) => {
+  if (showDisabled) return { products, relations };
+  const visibleProducts = products.filter(product => product.offering_state !== 'disabled');
+  const visibleProductKeys = new Set(visibleProducts.map(gatewayProductKey));
+  return {
+    products: visibleProducts,
+    relations: relations.filter(relation => visibleProductKeys.has(gatewayRelationProductKey(relation))),
+  };
+};
+
+export const gatewayModelRuntimeStatus = (group: GatewayModelGroup): GatewayModelRuntimeStatus => {
+  const disabledCount = group.products.filter(product => product.offering_state === 'disabled').length;
+  if (disabledCount === 0) return 'current';
+  return disabledCount === group.products.length ? 'disabled' : 'mixed';
+};
 
 export const groupGatewayModels = (
   products: UnifiedCatalogProduct[],

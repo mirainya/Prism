@@ -108,6 +108,7 @@ func DeleteVideoAsset(c *gin.Context) {
 }
 
 func writeVideoAssetError(c *gin.Context, err error) {
+	middleware.SetAccessErrorDetail(c, video.AssetErrorDetail(err))
 	var maxErr *http.MaxBytesError
 	if errors.As(err, &maxErr) {
 		resp.ErrorMsg(c, http.StatusRequestEntityTooLarge, 413, "video asset request body is too large")

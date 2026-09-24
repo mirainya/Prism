@@ -20,6 +20,26 @@ var (
 	semanticVersionPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._+-]{0,63}$`)
 )
 
+func validPublicModelIdentity(value string) bool {
+	if value == "" || len(value) > 128 || !utf8.ValidString(value) {
+		return false
+	}
+	for index, character := range value {
+		if index == 0 {
+			if character >= 'A' && character <= 'Z' || character >= 'a' && character <= 'z' || character >= '0' && character <= '9' {
+				continue
+			}
+			return false
+		}
+		if character >= 'A' && character <= 'Z' || character >= 'a' && character <= 'z' ||
+			character >= '0' && character <= '9' || strings.ContainsRune("._:/-%图", character) {
+			continue
+		}
+		return false
+	}
+	return true
+}
+
 type CatalogDraftInput struct {
 	SemanticVersion string `json:"semantic_version"`
 	SemanticDigest  string `json:"-"`
@@ -114,7 +134,7 @@ func (in *CatalogSKUInput) Normalize() {
 }
 
 func (in CatalogSKUInput) Validate() error {
-	if in.ExpectedVersion == 0 || !catalogIdentityPattern.MatchString(in.ModelCode) || !catalogIdentityPattern.MatchString(in.APIName) ||
+	if in.ExpectedVersion == 0 || !validPublicModelIdentity(in.ModelCode) || !validPublicModelIdentity(in.APIName) ||
 		!validDisplayName(in.DisplayName) || !utf8.ValidString(in.Description) || utf8.RuneCountInString(in.Description) > 1000 ||
 		(in.Visibility != "visible" && in.Visibility != "deprecated" && in.Visibility != "hidden") ||
 		!catalogIdentityPattern.MatchString(in.OperationCode) || in.ContractVersion == 0 || in.NormalizationVersion == 0 ||

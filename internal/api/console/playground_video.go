@@ -124,9 +124,6 @@ func listVideoModels(ctx context.Context) (*playgroundVideoModelsResponse, error
 	}
 	for modelName, options := range modelOptions {
 		options.TaskTypes = orderVideoTaskTypes(options.TaskTypes)
-		if len(options.TaskTypes) == 0 {
-			options.TaskTypes = []string{"text", "first_frame", "first_last_frame", "multimodal", "video_edit", "video_extension"}
-		}
 		modelOptions[modelName] = options
 	}
 	return &playgroundVideoModelsResponse{Models: models, ModelOptions: modelOptions}, nil

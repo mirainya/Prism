@@ -140,6 +140,7 @@ type taskModeValidationRule struct {
 }
 
 type validationRule struct {
+	DurationOptions               []int                             `json:"duration_options"`
 	DurationMin                   int                               `json:"duration_min"`
 	DurationMax                   int                               `json:"duration_max"`
 	DurationMaxWithVideoReference int                               `json:"duration_max_with_video_reference"`
@@ -162,6 +163,31 @@ type validationRule struct {
 	ForbiddenParameters           []string                          `json:"forbidden_parameters"`
 	TaskModeRules                 map[string]taskModeValidationRule `json:"task_mode_rules"`
 	AvailableUntil                string                            `json:"available_until"`
+	maxImagesDeclared             bool
+	maxVideosDeclared             bool
+	maxAudiosDeclared             bool
+}
+
+func (r *validationRule) UnmarshalJSON(data []byte) error {
+	type plainRule validationRule
+	var decoded plainRule
+	if err := json.Unmarshal(data, &decoded); err != nil {
+		return err
+	}
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(data, &fields); err != nil {
+		return err
+	}
+	*r = validationRule(decoded)
+	r.maxImagesDeclared = jsonNumberDeclared(fields, "max_images")
+	r.maxVideosDeclared = jsonNumberDeclared(fields, "max_videos")
+	r.maxAudiosDeclared = jsonNumberDeclared(fields, "max_audios")
+	return nil
+}
+
+func jsonNumberDeclared(fields map[string]json.RawMessage, name string) bool {
+	value, exists := fields[name]
+	return exists && string(value) != "null"
 }
 
 type validationConfig struct {
@@ -827,6 +853,18 @@ func validateRule(model string, rule validationRule) error {
 		rule.DurationMaxWithVideoReference < 0 || rule.DurationMaxWithVideoReference > 3600 ||
 		(rule.DurationMax > 0 && rule.DurationMin > rule.DurationMax) {
 		return fmt.Errorf("generic adapter validation for %s has invalid duration bounds", model)
+	}
+	seenDurations := make(map[int]struct{}, len(rule.DurationOptions))
+	for _, duration := range rule.DurationOptions {
+		if duration <= 0 || duration > 3600 ||
+			(rule.DurationMin > 0 && duration < rule.DurationMin) ||
+			(rule.DurationMax > 0 && duration > rule.DurationMax) {
+			return fmt.Errorf("generic adapter validation for %s has invalid duration option %d", model, duration)
+		}
+		if _, exists := seenDurations[duration]; exists {
+			return fmt.Errorf("generic adapter validation for %s has duplicate duration option %d", model, duration)
+		}
+		seenDurations[duration] = struct{}{}
 	}
 	for _, value := range []int{rule.MaxImages, rule.MaxVideos, rule.MaxAudios, rule.MaxMedia} {
 		if value < 0 || value > 1000 {

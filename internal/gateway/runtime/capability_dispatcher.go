@@ -110,7 +110,7 @@ func (d *CapabilityDispatcher) Dispatch(ctx context.Context, in CapabilityDispat
 		PublicID: fixed.PublicID, Protocol: fixed.Protocol, BaseURL: fixed.BaseURL,
 		Method: fixed.Method, Path: fixed.Path, AuthScheme: fixed.AuthScheme,
 		VendorModel: fixed.VendorModel, DeliveryMode: fixed.DeliveryMode,
-		SourceURLPolicy: fixed.SourceURLPolicy, TimeoutMS: uint64(fixed.TimeoutMS),
+		SourceURLPolicy: fixed.SourceURLPolicy, TransportTimeoutMS: uint64(fixed.TimeoutMS),
 	}
 	secret, err := d.network.openCredential(ctx, fixed.CredentialID, fixed.CredentialSecret, fixed.CredentialBlobID)
 	if err != nil {

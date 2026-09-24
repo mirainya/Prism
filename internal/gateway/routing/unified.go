@@ -247,7 +247,7 @@ JOIN gw_model_names mn ON mn.id=cmn.model_name_id AND mn.model_id=cm.model_id
 		if !taskScopeAllowed(c.TaskScope, options.RequiredTaskScope) {
 			continue
 		}
-		if containsUint(options.ExcludeChannels, uint(c.ChannelID)) || containsUint(options.ExcludeKeys, uint(c.CredentialID)) || excludedUnifiedAttempt(options.ExcludeAttempts, c.CredentialID, transport) {
+		if excludedUnifiedCandidate(c, transport, options) {
 			continue
 		}
 		candidates = append(candidates, c)
@@ -314,6 +314,13 @@ JOIN gw_model_names mn ON mn.id=cmn.model_name_id AND mn.model_id=cm.model_id
 		Transport: unifiedTransport(chosen.Protocol), TransportConfig: map[string]any{"request_method": chosen.RequestMethod, "request_path": chosen.RequestPath},
 		SellSchedule: &schedule, Currency: schedule.Currency.Code, CurrencyVersion: uint(schedule.Currency.Version), DeliveryMode: chosen.DeliveryMode,
 	}, nil
+}
+
+func excludedUnifiedCandidate(candidate unifiedCandidate, transport model.UpstreamTransport, options RouteOptions) bool {
+	return containsUint(options.ExcludeChannels, uint(candidate.ChannelID)) ||
+		containsUint(options.ExcludeKeys, uint(candidate.CredentialID)) ||
+		containsUint(options.ExcludeOfferings, uint(candidate.OfferingID)) ||
+		excludedUnifiedAttempt(options.ExcludeAttempts, candidate.CredentialID, transport)
 }
 
 func excludedUnifiedAttempt(attempts []TransportAttempt, credentialID uint64, transport model.UpstreamTransport) bool {

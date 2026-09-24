@@ -225,6 +225,18 @@ func TestResolveUnifiedVideoAssetsRejectsMismatchedMediaType(t *testing.T) {
 	}
 }
 
+func TestResolveUnifiedVideoAssetsRejectsProviderObjectReference(t *testing.T) {
+	_, err := resolveUnifiedVideoAssets(context.Background(), &video.CreateTaskRequest{
+		Content: []video.ContentItem{{StorageObjectID: "object-1"}},
+	})
+	if !errors.Is(err, video.ErrInvalidAsset) {
+		t.Fatalf("err=%v, want invalid asset", err)
+	}
+	if got := video.AssetErrorDetail(err); got != "provider object references are not supported for video assets" {
+		t.Fatalf("detail=%q", got)
+	}
+}
+
 func TestClassifyVideoCreateErrorTreatsMissingRouteAsUnavailable(t *testing.T) {
 	for _, err := range []error{gatewayruntime.ErrNotReady, routing.ErrNoRoute, routing.ErrNoCompatibleTransport, routing.ErrCapabilityUnavailable} {
 		status, errorType, errorCode := classifyVideoCreateError(errors.Join(err, errors.New("route unavailable")))

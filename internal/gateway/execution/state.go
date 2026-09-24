@@ -55,8 +55,9 @@ var callTransitions = map[CallState]map[CallState]struct{}{
 }
 
 var attemptTransitions = map[AttemptState]map[AttemptState]struct{}{
-	AttemptStarted:         {AttemptRecoveryPending: {}, AttemptCompleted: {}, AttemptFailed: {}, AttemptCancelled: {}, AttemptNotCreated: {}, AttemptTerminatedUnknown: {}},
-	AttemptRecoveryPending: {AttemptCompleted: {}, AttemptFailed: {}, AttemptCancelled: {}, AttemptTerminatedUnknown: {}},
+	AttemptStarted:           {AttemptRecoveryPending: {}, AttemptCompleted: {}, AttemptFailed: {}, AttemptCancelled: {}, AttemptNotCreated: {}, AttemptTerminatedUnknown: {}},
+	AttemptRecoveryPending:   {AttemptCompleted: {}, AttemptFailed: {}, AttemptCancelled: {}, AttemptTerminatedUnknown: {}},
+	AttemptTerminatedUnknown: {AttemptCompleted: {}, AttemptFailed: {}, AttemptCancelled: {}, AttemptNotCreated: {}},
 }
 
 var asyncTransitions = map[AsyncState]map[AsyncState]struct{}{
@@ -68,6 +69,7 @@ var asyncTransitions = map[AsyncState]map[AsyncState]struct{}{
 	AsyncManualReview:      {AsyncAccepted: {}, AsyncSucceeded: {}, AsyncFailed: {}, AsyncTerminatedUnknown: {}},
 	AsyncCancelRequested:   {AsyncCancelled: {}, AsyncCancelUnknown: {}, AsyncSucceeded: {}, AsyncFailed: {}},
 	AsyncCancelUnknown:     {AsyncCancelled: {}, AsyncSucceeded: {}, AsyncFailed: {}, AsyncTerminatedUnknown: {}},
+	AsyncTerminatedUnknown: {AsyncSucceeded: {}, AsyncFailed: {}, AsyncCancelled: {}, AsyncNotCreated: {}},
 }
 
 func TransitionCall(from, to CallState) error { return transition("call", callTransitions, from, to) }

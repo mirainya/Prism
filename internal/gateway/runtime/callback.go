@@ -275,10 +275,10 @@ func (s *Service) ApplyCallbackObservation(ctx context.Context, item repository.
 	if callbackTerminalState(current) {
 		return s.completeLateCallback(ctx, item, in, current)
 	}
-	if current == execution.AsyncNotCreated || current == execution.AsyncTerminatedUnknown {
+	if current == execution.AsyncNotCreated {
 		return &PermanentDispatchError{Code: "callback_conflicts_with_terminal_execution"}
 	}
-	if current != execution.AsyncAccepted && current != execution.AsyncRunning && current != execution.AsyncManualReview {
+	if !callbackObservationApplicableState(current) {
 		return repository.ErrConflict
 	}
 	return s.finishAsync(ctx, in.AsyncExecutionID, in.State, "provider_callback", in.Facts, func(ctx context.Context, tx *sql.Tx) error {
@@ -289,7 +289,7 @@ func (s *Service) ApplyCallbackObservation(ctx context.Context, item repository.
 		if locked.AsyncID != in.AsyncExecutionID || locked.ReceiptStatus != "received" {
 			return repository.ErrConflict
 		}
-		if locked.State != execution.AsyncAccepted && locked.State != execution.AsyncRunning && locked.State != execution.AsyncManualReview {
+		if !callbackObservationApplicableState(locked.State) {
 			return repository.ErrConflict
 		}
 		attemptID := dispatch.AttemptID
@@ -326,6 +326,15 @@ func (s *Service) ApplyCallbackObservation(ctx context.Context, item repository.
 		}
 		return s.Store.CompleteCallbackOutbox(ctx, tx, item, true, "")
 	})
+}
+
+func callbackObservationApplicableState(state execution.AsyncState) bool {
+	switch state {
+	case execution.AsyncAccepted, execution.AsyncRunning, execution.AsyncManualReview, execution.AsyncTerminatedUnknown:
+		return true
+	default:
+		return false
+	}
 }
 
 func callbackRequestLogResult(in CallbackObservation, payload repository.BlobInput) (repository.RequestLogResult, error) {

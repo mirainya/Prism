@@ -226,17 +226,17 @@ func verifyAsyncHTTPDispatch(t *testing.T, db *sql.DB, store *repository.Store, 
 				t.Fatal(err)
 			}
 			assertState(created, "submission_unknown")
-			if err := process(created); err != nil {
-				t.Fatal(err)
+			if err := process(created); err == nil || err.Error() != "provider_recovery_unavailable" {
+				t.Fatalf("recovery error=%v", err)
 			}
-			assertState(created, "manual_review")
+			assertState(created, "terminated_unknown")
 			if submits.Load() != before+1 {
 				t.Fatal("uncertain submission was repeated")
 			}
-			var requestSlots, taskSlots int
-			var reservation string
-			if err := db.QueryRow(`SELECT (SELECT COUNT(*) FROM gw_credential_slots s JOIN gw_channel_request_logs l ON l.id=s.request_log_id WHERE l.attempt_id=? AND s.state='active'),(SELECT COUNT(*) FROM gw_credential_slots WHERE attempt_id=? AND state='active'),(SELECT state FROM billing_reservations WHERE id=?)`, created.AttemptID, created.AttemptID, created.ReservationID).Scan(&requestSlots, &taskSlots, &reservation); err != nil || requestSlots != 0 || taskSlots != 1 || reservation != "active" {
-				t.Fatalf("requests=%d tasks=%d reservation=%s err=%v", requestSlots, taskSlots, reservation, err)
+			var requestSlots, recoverySlots int
+			var reservation, callState string
+			if err := db.QueryRow(`SELECT (SELECT COUNT(*) FROM gw_credential_slots s JOIN gw_channel_request_logs l ON l.id=s.request_log_id WHERE l.attempt_id=? AND s.state='active'),(SELECT COUNT(*) FROM gw_credential_slots WHERE attempt_id=? AND state='recovery_required'),(SELECT state FROM billing_reservations WHERE id=?),(SELECT status FROM gw_api_calls WHERE id=?)`, created.AttemptID, created.AttemptID, created.ReservationID, created.CallID).Scan(&requestSlots, &recoverySlots, &reservation, &callState); err != nil || requestSlots != 0 || recoverySlots != 1 || reservation != "unknown_hold" || callState != "indeterminate" {
+				t.Fatalf("requests=%d recovery_slots=%d reservation=%s call=%s err=%v", requestSlots, recoverySlots, reservation, callState, err)
 			}
 		})
 	}
@@ -276,15 +276,15 @@ func verifyAsyncHTTPDispatch(t *testing.T, db *sql.DB, store *repository.Store, 
 		if err := dispatcher.Dispatch(ctx, item); err == nil {
 			t.Fatal("stale worker obtained another send authorization")
 		}
-		if err := process(created); err != nil {
-			t.Fatal(err)
+		if err := process(created); err == nil || err.Error() != "provider_recovery_unavailable" {
+			t.Fatalf("recovery error=%v", err)
 		}
-		assertState(created, "manual_review")
+		assertState(created, "terminated_unknown")
 		if submits.Load() != before {
 			t.Fatal("crashed submit was sent again")
 		}
 	})
-	t.Run("query_outage_beyond_ten_attempts_keeps_recovering", func(t *testing.T) {
+	t.Run("query_outage_after_three_attempts_becomes_unknown", func(t *testing.T) {
 		mode.Store("normal")
 		created := create("query-outage")
 		if err := process(created); err != nil {
@@ -292,25 +292,24 @@ func verifyAsyncHTTPDispatch(t *testing.T, db *sql.DB, store *repository.Store, 
 		}
 		before := submits.Load()
 		mode.Store("query_error")
-		for range 12 {
+		for attempt := 1; attempt <= 3; attempt++ {
 			if err := process(created); err == nil {
 				t.Fatal("provider outage was not reported")
 			}
-			assertState(created, "accepted")
+			if attempt < 3 {
+				assertState(created, "accepted")
+			} else {
+				assertState(created, "terminated_unknown")
+			}
 		}
 		var status string
 		var attempts, requestSlots int
-		if err := db.QueryRow(`SELECT status,attempt_count FROM gw_async_outbox WHERE async_execution_id=? AND action='query'`, created.AsyncExecutionID).Scan(&status, &attempts); err != nil || status != "pending" || attempts != 12 {
+		if err := db.QueryRow(`SELECT status,attempt_count FROM gw_async_outbox WHERE async_execution_id=? AND action='query'`, created.AsyncExecutionID).Scan(&status, &attempts); err != nil || status != "dead_letter" || attempts != 3 {
 			t.Fatalf("status=%s attempts=%d err=%v", status, attempts, err)
 		}
 		if err := db.QueryRow(`SELECT COUNT(*) FROM gw_credential_slots s JOIN gw_channel_request_logs l ON l.id=s.request_log_id WHERE l.attempt_id=? AND s.state='active'`, created.AttemptID).Scan(&requestSlots); err != nil || requestSlots != 0 {
 			t.Fatalf("request slots leaked after retry: %d %v", requestSlots, err)
 		}
-		mode.Store("normal")
-		if err := process(created); err != nil {
-			t.Fatal(err)
-		}
-		assertState(created, "succeeded")
 		if submits.Load() != before {
 			t.Fatal("poll retries caused another submit")
 		}
@@ -326,10 +325,10 @@ func verifyAsyncHTTPDispatch(t *testing.T, db *sql.DB, store *repository.Store, 
 			t.Fatal(err)
 		}
 		assertState(created, "submission_unknown")
-		if err := process(created); err != nil {
-			t.Fatal(err)
+		if err := process(created); err == nil || err.Error() != "provider_recovery_unavailable" {
+			t.Fatalf("recovery error=%v", err)
 		}
-		assertState(created, "manual_review")
+		assertState(created, "terminated_unknown")
 		if submits.Load() != before+1 {
 			t.Fatal("identity conflict caused another generation")
 		}

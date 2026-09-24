@@ -87,3 +87,70 @@ func TestCreateActiveCatalogProductRejectsStaleConfigBeforeContentWrites(t *test
 		t.Fatal(err)
 	}
 }
+
+func TestEnsureCatalogAdapterReusesContractAcrossBuildDigests(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	mock.ExpectBegin()
+	tx, err := db.Begin()
+	if err != nil {
+		t.Fatal(err)
+	}
+	mock.ExpectQuery(regexp.QuoteMeta(`SELECT id,implementation_digest,minimum_semantic_version FROM gw_adapter_implementations WHERE adapter_code=? AND contract_version=?`)).
+		WithArgs("generic", uint32(1)).
+		WillReturnRows(sqlmock.NewRows([]string{"id", "implementation_digest", "minimum_semantic_version"}).
+			AddRow(17, strings.Repeat("a", 64), "1.0.0"))
+
+	id, err := ensureCatalogAdapter(context.Background(), tx, CatalogAdapterInput{
+		Code: "generic", Version: 1, Protocol: "video_generation",
+		ImplementationDigest: strings.Repeat("b", 64), MinimumSemanticVersion: "1.0.0",
+	})
+	if err != nil {
+		t.Fatalf("reuse adapter contract: %v", err)
+	}
+	if id != 17 {
+		t.Fatalf("adapter id=%d, want 17", id)
+	}
+	mock.ExpectRollback()
+	if err := tx.Rollback(); err != nil {
+		t.Fatal(err)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestEnsureCatalogAdapterRejectsMinimumSemanticVersionMismatch(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	mock.ExpectBegin()
+	tx, err := db.Begin()
+	if err != nil {
+		t.Fatal(err)
+	}
+	mock.ExpectQuery(regexp.QuoteMeta(`SELECT id,implementation_digest,minimum_semantic_version FROM gw_adapter_implementations WHERE adapter_code=? AND contract_version=?`)).
+		WithArgs("generic", uint32(1)).
+		WillReturnRows(sqlmock.NewRows([]string{"id", "implementation_digest", "minimum_semantic_version"}).
+			AddRow(17, strings.Repeat("a", 64), "1.0.0"))
+
+	_, err = ensureCatalogAdapter(context.Background(), tx, CatalogAdapterInput{
+		Code: "generic", Version: 1, Protocol: "video_generation",
+		ImplementationDigest: strings.Repeat("b", 64), MinimumSemanticVersion: "2.0.0",
+	})
+	if !errors.Is(err, ErrConflict) {
+		t.Fatalf("err=%v, want ErrConflict", err)
+	}
+	mock.ExpectRollback()
+	if err := tx.Rollback(); err != nil {
+		t.Fatal(err)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatal(err)
+	}
+}

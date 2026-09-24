@@ -173,6 +173,42 @@ func TestGenericAdapterProjectsContentCollections(t *testing.T) {
 	}
 }
 
+func TestGenericAdapterProjectsAICostMixedMediaArrays(t *testing.T) {
+	config := testAdapterConfig()
+	config.Request.IncludeContent = boolPointer(false)
+	config.Request.ContentProjections = []contentProjection{
+		{Source: "url", Target: "images", Output: "array", Types: []string{"image_url"}},
+		{Source: "url", Target: "videos", Output: "array", Types: []string{"video_url"}},
+		{Source: "url", Target: "audios", Output: "array", Types: []string{"audio_url"}},
+	}
+	adapter := newTestAdapter("https://www.aicost.me", "secret", http.DefaultClient, config)
+
+	request, err := adapter.BuildRequest(context.Background(), &video.GenerateRequest{
+		Model: "seedance-2.0-lec-720p",
+		Content: []video.ContentItem{
+			{Type: "image_url", URL: "https://cdn.example/one.png"},
+			{Type: "video_url", URL: "https://cdn.example/motion.mp4"},
+			{Type: "image_url", URL: "https://cdn.example/two.png"},
+			{Type: "audio_url", URL: "https://cdn.example/music.mp3"},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for field, want := range map[string][]any{
+		"images": {"https://cdn.example/one.png", "https://cdn.example/two.png"},
+		"videos": {"https://cdn.example/motion.mp4"},
+		"audios": {"https://cdn.example/music.mp3"},
+	} {
+		if !reflect.DeepEqual(request.Body[field], want) {
+			t.Fatalf("%s=%#v, want %#v", field, request.Body[field], want)
+		}
+	}
+	if _, exists := request.Body["content"]; exists {
+		t.Fatal("unmapped content was sent upstream")
+	}
+}
+
 func TestGenericAdapterRequiresProjectedContent(t *testing.T) {
 	config := testAdapterConfig()
 	config.Request.ContentProjections = []contentProjection{{
@@ -679,3 +715,79 @@ func testAdapterConfig() adapterConfig {
 }
 
 func boolPointer(value bool) *bool { return &value }
+
+func TestGenericAdapterValidatesDiscreteDurationOptions(t *testing.T) {
+	config := testAdapterConfig()
+	config.Validation.Models = map[string]validationRule{
+		"discrete-video": {DurationMin: 6, DurationMax: 15, DurationOptions: []int{6, 15}},
+	}
+	adapter := newTestAdapter("https://provider.example", "secret", http.DefaultClient, config)
+	for _, duration := range []int{6, 15} {
+		if err := adapter.ValidateRequest(context.Background(), &video.GenerateRequest{Model: "discrete-video", Duration: duration}); err != nil {
+			t.Fatalf("duration %d: %v", duration, err)
+		}
+	}
+	if err := adapter.ValidateRequest(context.Background(), &video.GenerateRequest{Model: "discrete-video", Duration: 10}); err == nil || !strings.Contains(err.Error(), "not supported") {
+		t.Fatalf("unexpected duration error = %v", err)
+	}
+}
+
+func TestGenericAdapterRejectsInvalidDiscreteDurationOptions(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		options []int
+	}{
+		{"zero", []int{0}},
+		{"negative", []int{-1}},
+		{"too_large", []int{3601}},
+		{"below_min", []int{5}},
+		{"above_max", []int{16}},
+		{"duplicate", []int{6, 6}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			rule := validationRule{DurationMin: 6, DurationMax: 15, DurationOptions: tc.options}
+			if err := validateRule("discrete-video", rule); err == nil {
+				t.Fatal("invalid duration option was accepted")
+			}
+		})
+	}
+	if err := validateRule("discrete-video", validationRule{DurationMin: 6, DurationMax: 15, DurationOptions: []int{6, 15}}); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestGenericAdapterExplicitZeroMediaLimits(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		rawRule string
+		kind    string
+		allowed bool
+	}{
+		{"zero_images", `{"max_images":0}`, "image_url", false},
+		{"zero_videos", `{"max_videos":0}`, "video_url", false},
+		{"zero_audios", `{"max_audios":0}`, "audio_url", false},
+		{"omitted_videos", `{}`, "video_url", true},
+		{"null_videos", `{"max_videos":null}`, "video_url", true},
+		{"positive_limit", `{"max_videos":1}`, "video_url", true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var rule validationRule
+			if err := json.Unmarshal([]byte(tc.rawRule), &rule); err != nil {
+				t.Fatal(err)
+			}
+			err := validateRequestRule(&video.GenerateRequest{
+				Content: []video.ContentItem{{Type: tc.kind}},
+			}, rule)
+			if tc.allowed && err != nil || !tc.allowed && (err == nil || !strings.Contains(err.Error(), "reference media limit exceeded")) {
+				t.Fatalf("validation error = %v, allowed = %t", err, tc.allowed)
+			}
+		})
+	}
+	var rule validationRule
+	if err := json.Unmarshal([]byte(`{"max_videos":1}`), &rule); err != nil {
+		t.Fatal(err)
+	}
+	if err := validateRequestRule(&video.GenerateRequest{Content: []video.ContentItem{{Type: "video_url"}, {Type: "video_url"}}}, rule); err == nil {
+		t.Fatal("positive video limit was not enforced")
+	}
+}

@@ -249,4 +249,38 @@ func TestPersistentAccessLoggerExtractsStructuredErrorCode(t *testing.T) {
 	if access.ErrorCode != "invalid_value" {
 		t.Fatalf("error code = %q", access.ErrorCode)
 	}
+	if access.ErrorMessage != "bad" {
+		t.Fatalf("error message = %q", access.ErrorMessage)
+	}
+}
+
+func TestPersistentAccessLoggerStoresExplicitValidationDetail(t *testing.T) {
+	db, err := gorm.Open(sqlite.Open("file:access-log-detail?mode=memory&cache=shared"), &gorm.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := db.AutoMigrate(&model.APIAccessLog{}, &model.AuditEvent{}); err != nil {
+		t.Fatal(err)
+	}
+	model.SetDB(db)
+	previousLogger := logger.L
+	logger.L = zap.NewNop()
+	t.Cleanup(func() { logger.L = previousLogger })
+
+	gin.SetMode(gin.TestMode)
+	router := gin.New()
+	router.Use(RequestID(), RequestLogger(), PersistentAccessLogger())
+	router.POST("/v1/videos/generations", func(c *gin.Context) {
+		SetAccessErrorDetail(c, "content item does not match the stored asset")
+		c.JSON(http.StatusBadRequest, gin.H{"code": 40003, "message": "invalid video asset"})
+	})
+	router.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodPost, "/v1/videos/generations", nil))
+
+	var access model.APIAccessLog
+	if err := db.First(&access).Error; err != nil {
+		t.Fatal(err)
+	}
+	if access.ErrorCode != "40003" || access.ErrorMessage != "content item does not match the stored asset" {
+		t.Fatalf("access diagnostic = %#v", access)
+	}
 }

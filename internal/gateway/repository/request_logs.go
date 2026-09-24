@@ -36,6 +36,9 @@ type RequestLogResult struct {
 	RequestComplete, ResponseComplete bool
 	ResponsePayload                   *BlobInput `json:"-"`
 	Diagnostic                        *BlobInput `json:"-"`
+	// DiagnosticMessage is transient transport evidence. Callers must encode it
+	// into Diagnostic before persistence; it is never serialized or stored raw.
+	DiagnosticMessage string `json:"-"`
 }
 
 func (s *Store) CompleteRequestLog(ctx context.Context, tx *sql.Tx, id uint64, status string, result RequestLogResult) error {

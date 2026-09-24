@@ -21,12 +21,13 @@ import {
 import {
   fetchVideoTasks,
   getVideoTask,
+  resolveVideoTask,
   type VideoCallPayload,
   type VideoTask,
   type VideoTaskListParams,
 } from '../services/videoApi';
 import { fetchUnifiedChannels, type UnifiedChannel } from '../services/unifiedChannelApi';
-import { Drawer, Pagination, Select } from '../components/ui';
+import { Drawer, Pagination, Select, useAppDialog } from '../components/ui';
 import { PageHeader } from '../components/shell';
 import { UnifiedRequestLogs } from './unified_gateway/UnifiedRequestLogs';
 
@@ -68,7 +69,18 @@ const STATUS_CONFIG: Record<string, { label: string; className: string; icon: Lu
   completed: { label: '已完成', className: 'bg-green-100 text-green-700', icon: CheckCircle2 },
   failed: { label: '失败', className: 'bg-red-100 text-red-700', icon: XCircle },
   cancelled: { label: '已取消', className: 'bg-yellow-100 text-yellow-700', icon: Ban },
+  submission_unknown: { label: '提交结果未知', className: 'bg-amber-100 text-amber-800', icon: AlertTriangle },
+  manual_review: { label: '待人工核对', className: 'bg-amber-100 text-amber-800', icon: AlertTriangle },
+  terminated_unknown: { label: '已停止，待核对', className: 'bg-gray-200 text-gray-800', icon: Ban },
 };
+
+const STATUS_FILTERS = ['queued', 'submitted', 'tracking', 'completed', 'failed', 'cancelled', 'submission_unknown'] as const;
+
+const displayTaskStatus = (task: VideoTask) => (
+  task.execution_state && ['submission_unknown', 'manual_review', 'terminated_unknown'].includes(task.execution_state)
+    ? task.execution_state
+    : task.status
+);
 
 const TASK_MODE_LABELS: Record<string, string> = {
   text: '文生视频',
@@ -258,20 +270,35 @@ const VideoTaskDetailSkeleton: React.FC = () => (
   </div>
 );
 
-const TaskOverview: React.FC<{ task: VideoTask; channelName: string }> = ({ task, channelName }) => {
+const TaskOverview: React.FC<{ task: VideoTask; channelName: string; resolving: boolean; onResolve: () => void }> = ({ task, channelName, resolving, onResolve }) => {
   const progress = clampProgress(task.progress);
   const chargedCost = Number(task.final_cost || 0) > 0 ? task.final_cost : task.estimated_cost;
   return (
     <div className="space-y-6">
       <section>
         <div className="flex flex-wrap items-center justify-between gap-3">
-          <StatusBadge status={task.status} />
+          <StatusBadge status={displayTaskStatus(task)} />
           <span className="text-sm font-semibold text-[var(--text-primary)]">{progress}%</span>
         </div>
         <div className="mt-3 h-2 overflow-hidden rounded-full bg-[var(--border-soft)]">
           <div className="h-full bg-[var(--primary)] transition-all" style={{ width: `${progress}%` }} />
         </div>
       </section>
+
+      {task.can_resolve && (
+        <section className="rounded-lg border border-amber-200 bg-amber-50 p-4">
+          <div className="flex flex-wrap items-start justify-between gap-3">
+            <div className="min-w-0">
+              <div className="flex items-center gap-2 text-sm font-bold text-amber-800"><AlertTriangle size={16} />上游提交结果无法确认</div>
+              <p className="mt-2 text-sm leading-6 text-amber-800">可停止本地处理。该操作不会向上游发送取消请求，预扣仍保留为待核对。</p>
+            </div>
+            <button type="button" disabled={resolving} onClick={onResolve} className="inline-flex h-9 shrink-0 items-center gap-2 rounded-lg border border-amber-300 bg-white px-3 text-sm font-semibold text-amber-800 transition hover:bg-amber-100 disabled:cursor-not-allowed disabled:opacity-60">
+              {resolving ? <LoaderCircle size={16} className="animate-spin" /> : <Ban size={16} />}
+              {resolving ? '正在处理' : '结束本地处理'}
+            </button>
+          </div>
+        </section>
+      )}
 
       {task.error_message && (
         <section className="rounded-lg border border-red-200 bg-red-50 p-4">
@@ -367,6 +394,7 @@ const TaskRequest: React.FC<{ task: VideoTask }> = ({ task }) => {
 };
 
 const VideoTasks: React.FC = () => {
+  const { askConfirmation, showAlert } = useAppDialog();
   const [tasks, setTasks] = useState<VideoTask[]>([]);
   const [channels, setChannels] = useState<UnifiedChannel[]>([]);
   const [total, setTotal] = useState(0);
@@ -382,6 +410,7 @@ const VideoTasks: React.FC = () => {
   const [detailLoading, setDetailLoading] = useState(false);
   const [detailError, setDetailError] = useState('');
   const [activeTab, setActiveTab] = useState<DetailTab>('overview');
+  const [resolving, setResolving] = useState(false);
   const listRequest = useRef(0);
   const detailRequest = useRef(0);
   const snapshotAt = useRef('');
@@ -489,6 +518,31 @@ const VideoTasks: React.FC = () => {
     setSelectedTask(null);
     setDetailLoading(false);
     setDetailError('');
+    setResolving(false);
+  };
+
+  const resolveSelectedTask = async () => {
+    if (!selectedTask?.can_resolve || resolving) return;
+    const confirmed = await askConfirmation({
+      title: '结束本地处理',
+      description: 'Prism 将停止追踪并把调用标记为“结果未知”。这不会向上游发送取消请求。',
+      confirmLabel: '结束处理',
+      tone: 'danger',
+    });
+    if (!confirmed) return;
+    setResolving(true);
+    try {
+      await resolveVideoTask(selectedTask.id);
+      const detail = await getVideoTask(selectedTask.id);
+      setSelectedTask(detail);
+      snapshotAt.current = '';
+      setRefreshKey(value => value + 1);
+      await showAlert({ title: '处理已停止', description: '任务已标记为结果未知，不会继续占用普通处理流程。' });
+    } catch (error) {
+      setDetailError(error instanceof Error ? error.message : '结束任务处理失败');
+    } finally {
+      setResolving(false);
+    }
   };
 
   return (
@@ -520,7 +574,7 @@ const VideoTasks: React.FC = () => {
               <input value={draft.model} onChange={event => updateDraft('model', event.target.value)} placeholder="模型关键字" className={INPUT_CLASS} />
             </label>
             <div className="text-xs font-semibold text-[var(--text-secondary)]">状态
-              <Select value={draft.status} onChange={value => updateDraft('status', value)} className="mt-1" options={[{ label: '全部状态', value: '' }, ...Object.entries(STATUS_CONFIG).map(([value, meta]) => ({ label: meta.label, value }))]} />
+              <Select value={draft.status} onChange={value => updateDraft('status', value)} className="mt-1" options={[{ label: '全部状态', value: '' }, ...STATUS_FILTERS.map(value => ({ label: STATUS_CONFIG[value].label, value }))]} />
             </div>
             <div className="text-xs font-semibold text-[var(--text-secondary)]">任务类型
               <Select value={draft.task_mode} onChange={value => updateDraft('task_mode', value)} className="mt-1" options={[{ label: '全部类型', value: '' }, ...Object.entries(TASK_MODE_LABELS).map(([value, label]) => ({ label, value }))]} />
@@ -595,7 +649,7 @@ const VideoTasks: React.FC = () => {
                       <div className="mt-1 whitespace-nowrap text-xs text-[var(--text-secondary)]">{task.duration ? `${task.duration} 秒` : '-'} · {task.generate_audio ? '含音频' : '无音频'}</div>
                     </td>
                     <td className="px-4 py-3">
-                      <StatusBadge status={task.status} />
+                      <StatusBadge status={displayTaskStatus(task)} />
                       <div className="mt-2 flex w-36 items-center gap-2">
                         <div className="h-1.5 min-w-0 flex-1 overflow-hidden rounded-full bg-[var(--border-soft)]"><div className="h-full [background:var(--brand-gradient)]" style={{ width: `${progress}%` }} /></div>
                         <span className="w-9 text-right text-xs text-[var(--text-secondary)]">{progress}%</span>
@@ -642,7 +696,7 @@ const VideoTasks: React.FC = () => {
           ) : detailError ? (
             <div className="flex items-center gap-2 rounded-lg border border-red-200 bg-red-50 p-4 text-sm text-red-700"><AlertTriangle size={17} />{detailError}</div>
           ) : selectedTask && activeTab === 'overview' ? (
-            <TaskOverview task={selectedTask} channelName={channelNames.get(selectedTask.channel_id) || ''} />
+            <TaskOverview task={selectedTask} channelName={channelNames.get(selectedTask.channel_id) || ''} resolving={resolving} onResolve={resolveSelectedTask} />
           ) : selectedTask && activeTab === 'request' ? (
             <TaskRequest task={selectedTask} />
           ) : selectedTask && activeTab === 'result' ? (

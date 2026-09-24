@@ -487,25 +487,3 @@ func (s *Service) PrepareAsyncDispatch(ctx context.Context, item repository.Outb
 	})
 	return handled, err
 }
-
-func (s *Service) RequireAsyncManualReview(ctx context.Context, item repository.OutboxItem) error {
-	if item.Action != "recover" {
-		return repository.ErrInvalidInput
-	}
-	return s.Store.WithTx(ctx, func(tx *sql.Tx) error {
-		action, err := s.lockAsyncAction(ctx, tx, item, true)
-		if err != nil || action.completed {
-			return err
-		}
-		if action.version != item.StateVersion || action.sequence != item.ActionSeq || action.state != execution.AsyncSubmissionUnknown {
-			return repository.ErrConflict
-		}
-		if _, err := s.Store.TransitionAsync(ctx, tx, item.AsyncExecutionID, action.state, execution.AsyncManualReview, action.version, "provider_recovery_unavailable", ""); err != nil {
-			return err
-		}
-		if err := s.updateAsyncResourceProjection(ctx, tx, item.AsyncExecutionID, execution.AsyncManualReview); err != nil {
-			return err
-		}
-		return s.Store.CompleteAsyncOutbox(ctx, tx, item, true, "")
-	})
-}

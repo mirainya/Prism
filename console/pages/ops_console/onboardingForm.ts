@@ -6,6 +6,7 @@ import type {
 } from '../../services/unifiedGatewayApi';
 
 const identityPattern = /^[A-Za-z0-9][A-Za-z0-9._:/-]{0,127}$/;
+const publicModelNamePattern = /^[A-Za-z0-9][A-Za-z0-9._:/%\-图]*$/u;
 const pricePattern = /^(?:0|[1-9]\d{0,17})(?:\.\d{1,18})?$/;
 
 const downstreamOperations: Record<string, { operationCode: string; maxResults: number }> = {
@@ -85,7 +86,7 @@ export const validateNewModelOnboarding = (values: NewModelOnboardingValues): st
   const vendorModel = values.vendorModel.trim();
   const requestPath = values.requestPath.trim();
   if (!values.releaseId || !values.configVersion || !values.channelId || !values.poolId || !values.poolCode) return '请选择有效的 Key 池';
-  if (!identityPattern.test(apiName)) return '公开调用名须为 1-128 位字母、数字或 . _ : / -';
+  if (!publicModelNamePattern.test(apiName) || new TextEncoder().encode(apiName).length > 128) return '公开调用名须以字母或数字开头，最多 128 字节，仅支持字母、数字、图或 . _ : / - %';
   if (!displayName || [...displayName].length > 128 || /[\x00\r\n\t]/.test(displayName)) return '显示名须为 1-128 个字符';
   if (!vendorModel || vendorModel.length > 255 || /[\x00\r\n\t]/.test(vendorModel)) return '请填写有效的上游模型';
   try {
@@ -191,8 +192,8 @@ export const buildModelOnboardInput = (values: NewModelOnboardingValues): Unifie
       request_method: 'POST',
       request_path: values.requestPath.trim(),
       auth_scheme: 'bearer',
-      transport_timeout_ms: 30000,
-      task_timeout_ms: 30000,
+      transport_timeout_ms: taskBased ? 600000 : 30000,
+      task_timeout_ms: taskBased ? 600000 : 30000,
       task_scope: taskBased ? 'task' : 'request',
       cancel_mode: 'none',
       source_url_policy: 'fixed',

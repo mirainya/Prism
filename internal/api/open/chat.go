@@ -74,6 +74,9 @@ func publicChatModel(model service.AvailableModelCapability) gin.H {
 		"supported_operations": operations,
 		"supported_endpoints":  endpoints,
 	}
+	if model.VideoOptions != nil {
+		item["video_options"] = model.VideoOptions
+	}
 	if model.Availability != nil {
 		item["availability"] = model.Availability
 	}

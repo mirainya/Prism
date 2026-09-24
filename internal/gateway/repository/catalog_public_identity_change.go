@@ -5,16 +5,18 @@ import (
 	"database/sql"
 	"fmt"
 	"strings"
+	"unicode/utf8"
 )
 
 const maxPublicModelIdentityRenames = 32
 
-// PublicModelIdentityRename directly replaces the public API name, model code,
-// matching SKU-code prefix, and display name of one model.
+// PublicModelIdentityRename changes a model's public identity and presentation.
+// Description is optional so existing identity-only callers keep their text.
 type PublicModelIdentityRename struct {
-	FromAPIName string `json:"from_api_name"`
-	ToAPIName   string `json:"to_api_name"`
-	DisplayName string `json:"display_name"`
+	FromAPIName string  `json:"from_api_name"`
+	ToAPIName   string  `json:"to_api_name"`
+	DisplayName string  `json:"display_name"`
+	Description *string `json:"description,omitempty"`
 }
 
 // PublicModelIdentityChange applies a set of public model identity changes to
@@ -36,6 +38,9 @@ func (in *PublicModelIdentityChange) Normalize() {
 		in.Renames[index].FromAPIName = strings.TrimSpace(in.Renames[index].FromAPIName)
 		in.Renames[index].ToAPIName = strings.TrimSpace(in.Renames[index].ToAPIName)
 		in.Renames[index].DisplayName = strings.TrimSpace(in.Renames[index].DisplayName)
+		if in.Renames[index].Description != nil {
+			*in.Renames[index].Description = strings.TrimSpace(*in.Renames[index].Description)
+		}
 	}
 }
 
@@ -51,9 +56,10 @@ func (in PublicModelIdentityChange) Validate() error {
 	fromNames := make(map[string]struct{}, len(in.Renames))
 	toNames := make(map[string]struct{}, len(in.Renames))
 	for _, rename := range in.Renames {
-		if !catalogIdentityPattern.MatchString(rename.FromAPIName) ||
-			!catalogIdentityPattern.MatchString(rename.ToAPIName) ||
-			!validDisplayName(rename.DisplayName) {
+		if !validPublicModelIdentity(rename.FromAPIName) ||
+			!validPublicModelIdentity(rename.ToAPIName) ||
+			!validDisplayName(rename.DisplayName) ||
+			rename.Description != nil && (!utf8.ValidString(*rename.Description) || utf8.RuneCountInString(*rename.Description) > 1000) {
 			return ErrInvalidInput
 		}
 		if _, duplicate := fromNames[rename.FromAPIName]; duplicate {
@@ -78,6 +84,8 @@ type publicModelIdentityPlan struct {
 	NewModelCode   string
 	OldDisplayName string
 	NewDisplayName string
+	OldDescription string
+	NewDescription *string
 	SKUs           []publicSKUIdentityRename
 }
 
@@ -87,9 +95,9 @@ type publicSKUIdentityRename struct {
 	NewCode string
 }
 
-// ChangePublicModelIdentities applies every direct rename under the same
-// active catalog lock and advances the catalog exactly once. All API-name,
-// model-code, and SKU-code targets are checked before the first write.
+// ChangePublicModelIdentities applies every change under the same active catalog
+// lock and advances the catalog exactly once. Internal SKU codes are renamed
+// only when the new public name is also a valid SKU-code prefix.
 func (s *Store) ChangePublicModelIdentities(ctx context.Context, tx *sql.Tx, in PublicModelIdentityChange, actorID uint64) (CatalogChangeResult, error) {
 	if tx == nil || actorID == 0 {
 		return CatalogChangeResult{}, ErrInvalidInput
@@ -127,11 +135,13 @@ func (s *Store) ChangePublicModelIdentities(ctx context.Context, tx *sql.Tx, in 
 	auditChanges := make([]ginSafeMetadata, 0, len(plans))
 	for index := range plans {
 		plan := &plans[index]
-		if err := requireOneRow(tx.ExecContext(ctx, `UPDATE gw_model_names SET api_name=? WHERE id=? AND model_id=? AND api_name=?`, plan.NewAPIName, plan.ModelNameID, plan.ModelID, plan.OldAPIName)); err != nil {
-			return CatalogChangeResult{}, err
-		}
-		if err := requireOneRow(tx.ExecContext(ctx, `UPDATE gw_models SET model_code=? WHERE id=? AND model_code=?`, plan.NewModelCode, plan.ModelID, plan.OldModelCode)); err != nil {
-			return CatalogChangeResult{}, err
+		if plan.OldAPIName != plan.NewAPIName {
+			if err := requireOneRow(tx.ExecContext(ctx, `UPDATE gw_model_names SET api_name=? WHERE id=? AND model_id=? AND api_name=?`, plan.NewAPIName, plan.ModelNameID, plan.ModelID, plan.OldAPIName)); err != nil {
+				return CatalogChangeResult{}, err
+			}
+			if err := requireOneRow(tx.ExecContext(ctx, `UPDATE gw_models SET model_code=? WHERE id=? AND model_code=?`, plan.NewModelCode, plan.ModelID, plan.OldModelCode)); err != nil {
+				return CatalogChangeResult{}, err
+			}
 		}
 		oldSKUCodes := make([]string, 0, len(plan.SKUs))
 		newSKUCodes := make([]string, 0, len(plan.SKUs))
@@ -142,10 +152,14 @@ func (s *Store) ChangePublicModelIdentities(ctx context.Context, tx *sql.Tx, in 
 			oldSKUCodes = append(oldSKUCodes, sku.OldCode)
 			newSKUCodes = append(newSKUCodes, sku.NewCode)
 		}
-		if err := requireOneRow(tx.ExecContext(ctx, `UPDATE gw_catalog_models SET display_name=? WHERE release_id=? AND id=?`, plan.NewDisplayName, active.ID, plan.CatalogModelID)); err != nil {
+		if plan.NewDescription == nil {
+			if err := requireOneRow(tx.ExecContext(ctx, `UPDATE gw_catalog_models SET display_name=? WHERE release_id=? AND id=?`, plan.NewDisplayName, active.ID, plan.CatalogModelID)); err != nil {
+				return CatalogChangeResult{}, err
+			}
+		} else if err := requireOneRow(tx.ExecContext(ctx, `UPDATE gw_catalog_models SET display_name=?,description=? WHERE release_id=? AND id=?`, plan.NewDisplayName, *plan.NewDescription, active.ID, plan.CatalogModelID)); err != nil {
 			return CatalogChangeResult{}, err
 		}
-		auditChanges = append(auditChanges, ginSafeMetadata{
+		change := ginSafeMetadata{
 			"catalog_model_id": plan.CatalogModelID,
 			"model_id":         plan.ModelID,
 			"before": ginSafeMetadata{
@@ -156,7 +170,12 @@ func (s *Store) ChangePublicModelIdentities(ctx context.Context, tx *sql.Tx, in 
 				"api_name": plan.NewAPIName, "model_code": plan.NewModelCode,
 				"display_name": plan.NewDisplayName, "sku_codes": newSKUCodes,
 			},
-		})
+		}
+		if plan.NewDescription != nil {
+			change["before"].(ginSafeMetadata)["description"] = plan.OldDescription
+			change["after"].(ginSafeMetadata)["description"] = *plan.NewDescription
+		}
+		auditChanges = append(auditChanges, change)
 	}
 
 	version, err := advanceActiveCatalog(ctx, tx, active, "catalog_change.public_model_identities", actorID, ginSafeMetadata{
@@ -175,6 +194,7 @@ func loadPublicModelIdentityPlan(ctx context.Context, tx *sql.Tx, releaseID uint
 	plan := publicModelIdentityPlan{
 		OldAPIName: rename.FromAPIName, NewAPIName: rename.ToAPIName,
 		NewModelCode: rename.ToAPIName, NewDisplayName: rename.DisplayName,
+		NewDescription: rename.Description,
 	}
 	err := tx.QueryRowContext(ctx, `SELECT cm.id,cm.model_id,mn.id,m.model_code,cm.display_name
 FROM gw_catalog_models cm
@@ -193,6 +213,14 @@ WHERE cm.release_id=? AND mn.api_name=? FOR UPDATE`, releaseID, rename.FromAPINa
 	if plan.OldModelCode != rename.FromAPIName {
 		return publicModelIdentityPlan{}, fmt.Errorf("%w: API name and model code do not share the requested source identity", ErrConflict)
 	}
+	if rename.Description != nil {
+		if err := tx.QueryRowContext(ctx, `SELECT description FROM gw_catalog_models WHERE release_id=? AND id=? FOR UPDATE`, releaseID, plan.CatalogModelID).Scan(&plan.OldDescription); err != nil {
+			return publicModelIdentityPlan{}, err
+		}
+	}
+	if rename.FromAPIName == rename.ToAPIName {
+		return plan, nil
+	}
 	var conflictID uint64
 	err = tx.QueryRowContext(ctx, `SELECT id FROM gw_model_names WHERE api_name=? FOR UPDATE`, rename.ToAPIName).Scan(&conflictID)
 	if err == nil {
@@ -207,6 +235,11 @@ WHERE cm.release_id=? AND mn.api_name=? FOR UPDATE`, releaseID, rename.FromAPINa
 	}
 	if err != sql.ErrNoRows {
 		return publicModelIdentityPlan{}, err
+	}
+	// Internal SKU codes retain their ASCII identity when the public upstream
+	// model name contains characters that are not valid SKU-code characters.
+	if !catalogIdentityPattern.MatchString(rename.ToAPIName) {
+		return plan, nil
 	}
 
 	rows, err := tx.QueryContext(ctx, `SELECT s.id,s.sku_code

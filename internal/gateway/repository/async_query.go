@@ -11,7 +11,15 @@ import (
 // A repeated queued/running observation still consumes a unique action and
 // advances the execution revision; an already-dispatched event is immutable.
 func (s *Store) ScheduleAsyncQuery(ctx context.Context, tx *sql.Tx, asyncID uint64, from, to execution.AsyncState, version uint64, at time.Time) error {
-	if tx == nil || asyncID == 0 || version == 0 || at.IsZero() || from != execution.AsyncAccepted && from != execution.AsyncRunning || to != execution.AsyncAccepted && to != execution.AsyncRunning || from == execution.AsyncRunning && to == execution.AsyncAccepted {
+	if tx == nil || asyncID == 0 || version == 0 || at.IsZero() {
+		return ErrInvalidInput
+	}
+	// A terminated-unknown execution may be resolved only by terminal evidence.
+	// Never let a late non-terminal query reopen it as accepted/running.
+	if from == execution.AsyncTerminatedUnknown {
+		return ErrConflict
+	}
+	if from != execution.AsyncAccepted && from != execution.AsyncRunning || to != execution.AsyncAccepted && to != execution.AsyncRunning || from == execution.AsyncRunning && to == execution.AsyncAccepted {
 		return ErrInvalidInput
 	}
 	if err := requireOneRow(tx.ExecContext(ctx, `UPDATE gw_async_executions SET state=?,state_version=state_version+1,action_seq=action_seq+1,updated_at=? WHERE id=? AND state=? AND state_version=?`, to, nowUTC(), asyncID, from, version)); err != nil {

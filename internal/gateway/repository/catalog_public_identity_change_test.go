@@ -39,6 +39,39 @@ func TestPublicModelIdentityChangeNormalizesAndValidatesBatch(t *testing.T) {
 	}
 }
 
+func TestPublicModelIdentityAcceptsActualAICostNames(t *testing.T) {
+	for _, name := range []string{"seedance2.0-480p-100%", "seedance2.5-9图", "seedance2.5-10图"} {
+		if !validPublicModelIdentity(name) {
+			t.Fatalf("actual model name %q rejected", name)
+		}
+		in := validCatalogModelOnboardInput().SKU
+		in.ExpectedVersion = 1
+		in.ModelCode, in.APIName = name, name
+		if err := in.Validate(); err != nil {
+			t.Fatalf("SKU with actual model name %q rejected: %v", name, err)
+		}
+	}
+	for _, name := range []string{"", "-model", "bad model", "bad?model", "bad\nmodel", "bad" + string([]byte{0xff}), strings.Repeat("a", 129)} {
+		if validPublicModelIdentity(name) {
+			t.Fatalf("invalid model name %q accepted", name)
+		}
+	}
+}
+
+func TestPublicModelIdentityDescriptionValidation(t *testing.T) {
+	in := validPublicModelIdentityChange()
+	description := " 9图视频 "
+	in.Renames[0].Description = &description
+	in.Normalize()
+	if description != "9图视频" || in.Validate() != nil {
+		t.Fatalf("description normalization failed: %#v", in.Renames[0])
+	}
+	description = strings.Repeat("a", 1001)
+	if !errors.Is(in.Validate(), ErrInvalidInput) {
+		t.Fatal("overlong description accepted")
+	}
+}
+
 func TestPublicModelIdentityChangeRejectsInvalidAndAmbiguousBatches(t *testing.T) {
 	for name, mutate := range map[string]func(*PublicModelIdentityChange){
 		"missing config version": func(in *PublicModelIdentityChange) { in.ExpectedConfigVersion = 0 },
@@ -194,6 +227,99 @@ func TestChangePublicModelIdentitiesDirectlyRenamesBatchAndAdvancesOnce(t *testi
 	if err := mock.ExpectationsWereMet(); err != nil {
 		t.Fatal(err)
 	}
+}
+
+func TestChangePublicModelIdentitiesPreservesSKUCodeForActualUpstreamName(t *testing.T) {
+	for _, target := range []string{"seedance2.5-9图", "seedance2.0-480p-100%"} {
+		t.Run(target, func(t *testing.T) {
+			db, mock, store, tx := publicIdentityTestTx(t)
+			defer db.Close()
+			description := "9图；0视频；0音频；30秒。"
+			expectPublicIdentityActiveLock(mock, 7, 9)
+			expectPublicIdentitySource(mock, 7, "aicost-model-a", 101, 11, 21, "aicost-model-a", "AiCost Model A")
+			mock.ExpectQuery(regexp.QuoteMeta(`SELECT description FROM gw_catalog_models WHERE release_id=? AND id=? FOR UPDATE`)).
+				WithArgs(uint64(7), uint64(101)).WillReturnRows(sqlmock.NewRows([]string{"description"}).AddRow("old description"))
+			mock.ExpectQuery(regexp.QuoteMeta(`SELECT id FROM gw_model_names WHERE api_name=? FOR UPDATE`)).
+				WithArgs(target).WillReturnRows(sqlmock.NewRows([]string{"id"}))
+			mock.ExpectQuery(regexp.QuoteMeta(`SELECT id FROM gw_models WHERE model_code=? FOR UPDATE`)).
+				WithArgs(target).WillReturnRows(sqlmock.NewRows([]string{"id"}))
+			mock.ExpectExec(regexp.QuoteMeta(`UPDATE gw_model_names SET api_name=? WHERE id=? AND model_id=? AND api_name=?`)).
+				WithArgs(target, uint64(21), uint64(11), "aicost-model-a").WillReturnResult(sqlmock.NewResult(0, 1))
+			mock.ExpectExec(regexp.QuoteMeta(`UPDATE gw_models SET model_code=? WHERE id=? AND model_code=?`)).
+				WithArgs(target, uint64(11), "aicost-model-a").WillReturnResult(sqlmock.NewResult(0, 1))
+			mock.ExpectExec(regexp.QuoteMeta(`UPDATE gw_catalog_models SET display_name=?,description=? WHERE release_id=? AND id=?`)).
+				WithArgs("Seedance", description, uint64(7), uint64(101)).WillReturnResult(sqlmock.NewResult(0, 1))
+			expectPublicIdentityAdvance(mock, publicIdentityAuditContains{`"api_name":"` + target + `"`, `"description":"old description"`, `"description":"9图；0视频；0音频；30秒。"`})
+			in := validPublicModelIdentityChange()
+			in.Renames = []PublicModelIdentityRename{{FromAPIName: "aicost-model-a", ToAPIName: target, DisplayName: "Seedance", Description: &description}}
+			if _, err := store.ChangePublicModelIdentities(context.Background(), tx, in, 42); err != nil {
+				t.Fatal(err)
+			}
+			mock.ExpectCommit()
+			if err := tx.Commit(); err != nil {
+				t.Fatal(err)
+			}
+			if err := mock.ExpectationsWereMet(); err != nil {
+				t.Fatal(err)
+			}
+		})
+	}
+}
+
+func TestChangePublicModelIdentitiesUpdatesDescriptionWithoutRename(t *testing.T) {
+	db, mock, store, tx := publicIdentityTestTx(t)
+	defer db.Close()
+	description := "9图；0视频；0音频；30秒。"
+	expectPublicIdentityActiveLock(mock, 7, 9)
+	expectPublicIdentitySource(mock, 7, "seedance-2-5-9img", 101, 11, 21, "seedance-2-5-9img", "Seedance 9图")
+	mock.ExpectQuery(regexp.QuoteMeta(`SELECT description FROM gw_catalog_models WHERE release_id=? AND id=? FOR UPDATE`)).
+		WithArgs(uint64(7), uint64(101)).WillReturnRows(sqlmock.NewRows([]string{"description"}).AddRow("old description"))
+	mock.ExpectExec(regexp.QuoteMeta(`UPDATE gw_catalog_models SET display_name=?,description=? WHERE release_id=? AND id=?`)).
+		WithArgs("Seedance 9图", description, uint64(7), uint64(101)).WillReturnResult(sqlmock.NewResult(0, 1))
+	expectPublicIdentityAdvance(mock, publicIdentityAuditContains{`"api_name":"seedance-2-5-9img"`, `"description":"old description"`, `"description":"9图；0视频；0音频；30秒。"`})
+	in := validPublicModelIdentityChange()
+	in.Renames = []PublicModelIdentityRename{{FromAPIName: "seedance-2-5-9img", ToAPIName: "seedance-2-5-9img", DisplayName: "Seedance 9图", Description: &description}}
+	if _, err := store.ChangePublicModelIdentities(context.Background(), tx, in, 42); err != nil {
+		t.Fatal(err)
+	}
+	mock.ExpectCommit()
+	if err := tx.Commit(); err != nil {
+		t.Fatal(err)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+type publicIdentityAuditContains []string
+
+func (fragments publicIdentityAuditContains) Match(value driver.Value) bool {
+	metadata, ok := value.(string)
+	if !ok {
+		return false
+	}
+	for _, fragment := range fragments {
+		if !strings.Contains(metadata, fragment) {
+			return false
+		}
+	}
+	return true
+}
+
+func expectPublicIdentityAdvance(mock sqlmock.Sqlmock, audit driver.Value) {
+	for _, query := range catalogDigestQueries {
+		mock.ExpectQuery(regexp.QuoteMeta(query)).WithArgs(uint64(7)).
+			WillReturnRows(sqlmock.NewRows([]string{"empty"}))
+	}
+	mock.ExpectQuery(regexp.QuoteMeta(`SELECT COUNT(*) FROM gw_catalog_releases WHERE content_hash=? AND id<>?`)).
+		WithArgs(sqlmock.AnyArg(), uint64(7)).WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(0))
+	mock.ExpectExec(regexp.QuoteMeta(`UPDATE gw_catalog_readiness SET content_hash=?,heartbeat_at=? WHERE release_id=?`)).
+		WithArgs(sqlmock.AnyArg(), sqlmock.AnyArg(), uint64(7)).WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectExec(regexp.QuoteMeta(`UPDATE gw_catalog_releases SET config_version=?,content_hash=?,updated_at=? WHERE id=? AND status='published' AND config_version=?`)).
+		WithArgs(uint64(10), sqlmock.AnyArg(), sqlmock.AnyArg(), uint64(7), uint64(9)).WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectExec(regexp.QuoteMeta(`INSERT INTO audit_events(actor_type,actor_user_id,action,resource_type,resource_id,outcome,http_status,metadata,created_at) VALUES ('user',?,?,?,?,'success',200,?,?)`)).
+		WithArgs(uint64(42), "catalog_change.public_model_identities", "catalog_release", "7", audit, sqlmock.AnyArg()).
+		WillReturnResult(sqlmock.NewResult(1, 1))
 }
 
 func publicIdentityTestTx(t *testing.T) (*sql.DB, sqlmock.Sqlmock, *Store, *sql.Tx) {

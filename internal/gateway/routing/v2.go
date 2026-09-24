@@ -26,8 +26,10 @@ type RouteOptions struct {
 	PreferredTransports []model.UpstreamTransport
 	ExcludeChannels     []uint
 	ExcludeKeys         []uint
-	ExcludeAttempts     []TransportAttempt
-	ResponsesRequest    bool
+	// ExcludeOfferings skips offerings whose request-specific video validation failed.
+	ExcludeOfferings []uint
+	ExcludeAttempts  []TransportAttempt
+	ResponsesRequest bool
 }
 
 // TransportAttempt identifies one concrete credential and endpoint dialect.

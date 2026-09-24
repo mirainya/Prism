@@ -3,12 +3,90 @@ package service
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"strings"
 	"testing"
 
 	_ "github.com/glebarez/go-sqlite"
 )
 
+func TestVideoOptionsNeverExposeAdapterOrVendorFields(t *testing.T) {
+	item := &AvailableModelCapability{}
+	raw := []byte(`{"task_types":["text"],"max_images":9,"ratios":{"adapter":"nested-private"},"adapter":{"secret":"internal"},"vendor_model":"private-vendor","upstream_url":"https://private.invalid","parameters":[{"name":"mode","options":[{"label":"fast","value":"fast","secret":"nested"}],"internal":"hidden"}],"service_tier_options":[{"value":"standard","label":"Standard","host":"private.invalid"}]}`)
+	if err := item.addVideoOptions(raw, []string{"standard"}); err != nil {
+		t.Fatal(err)
+	}
+	encoded, err := json.Marshal(item.VideoOptions)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, secret := range []string{"adapter", "private-vendor", "private.invalid", "nested", "hidden", "internal"} {
+		if strings.Contains(string(encoded), secret) {
+			t.Fatalf("private configuration leaked: %s", encoded)
+		}
+	}
+	if item.VideoOptions["max_images"] != float64(9) {
+		t.Fatalf("public max_images missing: %#v", item.VideoOptions)
+	}
+}
+func TestListAvailableCapabilitiesProjectsActiveVideoConstraints(t *testing.T) {
+	db := setupPublicCatalogQueryDB(t)
+	for _, statement := range []string{
+		`UPDATE gw_operation_routes SET route_template='/v1/videos/generations' WHERE operation_contract_id=100`,
+		`UPDATE gw_sku_downstream_paths SET path='/v1/videos/generations' WHERE sku_id=30`,
+		`UPDATE gw_products SET capability_constraints='{"task_types":["text","multimodal"],"max_images":9,"max_videos":3,"max_audios":3,"duration_max":15}' WHERE id IN (70,71)`,
+	} {
+		if _, err := db.Exec(statement); err != nil {
+			t.Fatal(err)
+		}
+	}
+	models, err := newQueryServiceWithDB(db).ListAvailableCapabilities(context.Background(), "", "video")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(models) != 1 {
+		t.Fatalf("video models = %#v", models)
+	}
+	options := models[0].VideoOptions
+	if options["max_images"] != float64(9) || options["max_videos"] != float64(3) || options["max_audios"] != float64(3) {
+		t.Fatalf("constraints did not come from the active product: %#v", options)
+	}
+	if _, exists := options["variants"]; exists {
+		t.Fatalf("identical routes should merge: %#v", options)
+	}
+	if _, exists := options["task_modes"]; exists {
+		t.Fatalf("invented mode: %#v", options)
+	}
+}
+func TestVideoOptionsPreserveConfiguredTaskModesAndRouteVariants(t *testing.T) {
+	item := &AvailableModelCapability{}
+	if err := item.addVideoOptions([]byte(`{"task_types":["text"],"max_images":0,"duration_max":15}`), []string{"standard"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, exists := item.VideoOptions["variants"]; exists {
+		t.Fatal("single route must expose direct video options")
+	}
+	if item.VideoOptions["max_images"] != float64(0) {
+		t.Fatalf("configured zero changed: %#v", item.VideoOptions)
+	}
+	if err := item.addVideoOptions([]byte(`{"task_types":["text"],"max_images":0,"duration_max":15}`), []string{"priority"}); err != nil {
+		t.Fatal(err)
+	}
+	tiers, ok := item.VideoOptions["service_tiers"].([]string)
+	if !ok || len(tiers) != 2 {
+		t.Fatalf("tiers = %#v", item.VideoOptions["service_tiers"])
+	}
+	if err := item.addVideoOptions([]byte(`{"task_types":["multimodal"],"max_images":9,"max_audios":3}`), []string{"standard"}); err != nil {
+		t.Fatal(err)
+	}
+	variants, ok := item.VideoOptions["variants"].([]map[string]any)
+	if !ok || len(variants) != 2 {
+		t.Fatalf("distinct video routes were collapsed: %#v", item.VideoOptions)
+	}
+	if _, exists := item.VideoOptions["max_images"]; exists {
+		t.Fatal("incompatible maximum must not be published as a common limit")
+	}
+}
 func TestListAvailableCapabilitiesUsesOnlyExecutableCatalogRoutes(t *testing.T) {
 	db := setupPublicCatalogQueryDB(t)
 	service := newQueryServiceWithDB(db)

@@ -24,6 +24,15 @@ type PermanentDispatchError struct{ Code string }
 
 func (e *PermanentDispatchError) Error() string { return e.Code }
 
+// RetryableDispatchError carries the provider exchange code through the
+// worker. The request log already contains the detailed, sanitized evidence;
+// the outbox only needs a stable code for operators and retry decisions.
+type RetryableDispatchError struct{ Code string }
+
+func (e *RetryableDispatchError) Error() string { return e.Code }
+
+const maxAsyncQueryAttempts = uint64(3)
+
 // ProcessOne leases exactly one outbox action, executes network work outside
 // the database transaction, then records success or a bounded retry. The
 // handler must be idempotent and use the item's action sequence as its fence.
@@ -72,7 +81,25 @@ func (s *Service) ProcessOne(ctx context.Context, owner string, lease time.Durat
 			if errors.As(workErr, &permanent) && permanent.Code != "" {
 				return s.finishPermanentAsyncDispatchTx(markCtx, tx, item, permanent.Code)
 			}
-			return s.Store.RetryAsyncOutbox(markCtx, tx, item, "worker_error", time.Now().UTC().Add(outboxRetryDelay(retryDelay, item.Attempts)))
+			if item.Action == "query" && item.Attempts >= maxAsyncQueryAttempts {
+				// A query with a bound provider task ID is safe to stop locally
+				// after repeated communication failures. It is deliberately not
+				// resubmitted: the provider may still be generating the task.
+				finishErr := s.finishUnreachableAsyncQueryTx(markCtx, tx, item)
+				if errors.Is(finishErr, repository.ErrConflict) {
+					// A terminal callback or a newer query may have won the race
+					// after this attempt was leased. Retire only this stale outbox
+					// action; never keep it dispatching until lease expiry.
+					return s.retireStaleAsyncQueryTx(markCtx, tx, item)
+				}
+				return finishErr
+			}
+			errorCode := "worker_error"
+			var retryable *RetryableDispatchError
+			if errors.As(workErr, &retryable) && retryable.Code != "" {
+				errorCode = retryable.Code
+			}
+			return s.Store.RetryAsyncOutbox(markCtx, tx, item, errorCode, time.Now().UTC().Add(outboxRetryDelay(retryDelay, item.Attempts)))
 		})
 		if markErr != nil {
 			return true, markErr
@@ -89,6 +116,49 @@ func (s *Service) ProcessOne(ctx context.Context, owner string, lease time.Durat
 		return s.Store.CompleteAsyncOutbox(markCtx, tx, item, true, "")
 	})
 	return true, err
+}
+
+func (s *Service) retireStaleAsyncQueryTx(ctx context.Context, tx *sql.Tx, item repository.OutboxItem) error {
+	if item.Action != "query" || item.AsyncExecutionID == 0 {
+		return repository.ErrInvalidInput
+	}
+	var state execution.AsyncState
+	var version, sequence uint64
+	if err := tx.QueryRowContext(ctx, `SELECT state,state_version,action_seq FROM gw_async_executions WHERE id=? FOR UPDATE`, item.AsyncExecutionID).Scan(&state, &version, &sequence); err != nil {
+		return err
+	}
+	if state == execution.AsyncAccepted || state == execution.AsyncRunning {
+		if version == item.StateVersion && sequence == item.ActionSeq {
+			return repository.ErrConflict
+		}
+	}
+	return s.Store.DeadLetterAsyncOutbox(ctx, tx, item, "stale_provider_poll")
+}
+
+func (s *Service) finishUnreachableAsyncQueryTx(ctx context.Context, tx *sql.Tx, item repository.OutboxItem) error {
+	if item.Action != "query" || item.AsyncExecutionID == 0 {
+		return repository.ErrInvalidInput
+	}
+	return s.finishAsyncTx(ctx, tx, item.AsyncExecutionID, execution.AsyncTerminatedUnknown, "provider_poll_unavailable", billing.Facts{}, func(ctx context.Context, tx *sql.Tx) error {
+		var state execution.AsyncState
+		var version, sequence uint64
+		if err := tx.QueryRowContext(ctx, `SELECT state,state_version,action_seq FROM gw_async_executions WHERE id=?`, item.AsyncExecutionID).Scan(&state, &version, &sequence); err != nil {
+			return err
+		}
+		if version != item.StateVersion || sequence != item.ActionSeq {
+			return repository.ErrConflict
+		}
+		// A callback may enqueue one final query after the execution has
+		// already been marked unknown. A non-terminal answer must never reopen
+		// that execution; simply retire this stale query intent.
+		if state == execution.AsyncTerminatedUnknown {
+			return s.Store.DeadLetterAsyncOutbox(ctx, tx, item, "provider_poll_unavailable")
+		}
+		if state != execution.AsyncAccepted && state != execution.AsyncRunning {
+			return repository.ErrConflict
+		}
+		return s.Store.DeadLetterAsyncOutbox(ctx, tx, item, "provider_poll_unavailable")
+	})
 }
 
 func (s *Service) finishPermanentAsyncDispatchTx(ctx context.Context, tx *sql.Tx, item repository.OutboxItem, errorCode string) error {
@@ -142,7 +212,7 @@ func (s *Service) RunOutbox(ctx context.Context, owner string, handler OutboxDis
 		return repository.ErrInvalidInput
 	}
 	for ctx.Err() == nil {
-		worked, err := s.ProcessOne(ctx, owner, 6*time.Minute, time.Second, handler)
+		worked, err := s.ProcessOne(ctx, owner, 15*time.Minute, time.Second, handler)
 		if ctx.Err() != nil {
 			break
 		}

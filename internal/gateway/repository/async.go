@@ -363,8 +363,18 @@ func (s *Store) ScheduleCallbackQuery(ctx context.Context, tx *sql.Tx, item Outb
 	if err := tx.QueryRowContext(ctx, `SELECT state,state_version,action_seq FROM gw_async_executions WHERE id=? FOR UPDATE`, asyncID).Scan(&state, &version, &sequence); err != nil {
 		return err
 	}
-	if state != "accepted" && state != "running" {
+	if state != "accepted" && state != "running" && state != "terminated_unknown" {
 		return ErrConflict
+	}
+	if state == "terminated_unknown" {
+		var identityID uint64
+		err := tx.QueryRowContext(ctx, `SELECT id FROM gw_upstream_task_identities WHERE async_execution_id=? AND status='bound' AND expires_at>CURRENT_TIMESTAMP(3) FOR SHARE`, asyncID).Scan(&identityID)
+		if err == sql.ErrNoRows {
+			return ErrTaskIdentityUnavailable
+		}
+		if err != nil {
+			return err
+		}
 	}
 	// Callback consumers share one lock order with terminal application:
 	// AsyncExecution -> callback Outbox -> Receipt. Keeping the lease proof in
@@ -422,7 +432,7 @@ JOIN gw_api_call_attempts ca ON ca.id=x.attempt_id
 JOIN gw_credential_secret_identities si ON si.id=cv.secret_identity_id AND si.status='active'
 JOIN encrypted_blobs b ON b.id=a.encrypted_blob_id AND b.purpose='gateway-callback-binding-token' AND b.schema_version=1 AND b.purged_at IS NULL
 	WHERE a.hmac_key_version=? AND a.value_hmac=? AND a.status='active' AND a.expires_at>CURRENT_TIMESTAMP(3)
-	  AND x.state NOT IN ('succeeded','failed','cancelled','not_created','terminated_unknown')`, keyVersion, valueHMAC).
+	  AND x.state NOT IN ('succeeded','failed','cancelled','not_created')`, keyVersion, valueHMAC).
 		Scan(&out.AsyncExecutionID, &out.CredentialVersionID, &out.EncryptedBlobID)
 	if err == sql.ErrNoRows {
 		return CallbackBindingRecord{}, ErrNotFound

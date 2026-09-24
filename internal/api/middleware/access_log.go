@@ -17,6 +17,21 @@ import (
 )
 
 const contextKeySkipPersistentAccessLog = "skip_persistent_access_log"
+const contextKeyAccessErrorDetail = "access_error_detail"
+
+// SetAccessErrorDetail attaches a safe, operator-facing explanation to the
+// current request. It is persisted with the access record, while the public
+// response may continue to use a stable generic error message.
+func SetAccessErrorDetail(c *gin.Context, detail string) {
+	if c == nil {
+		return
+	}
+	detail = strings.TrimSpace(detail)
+	if detail == "" {
+		return
+	}
+	c.Set(contextKeyAccessErrorDetail, truncateAccessValue(detail, 512))
+}
 
 // SkipPersistentAccessLog marks a matched read-only route as excluded from persistence.
 func SkipPersistentAccessLog() gin.HandlerFunc {
@@ -82,21 +97,22 @@ func buildPersistentRecords(c *gin.Context, startedAt time.Time) (*model.APIAcce
 	status := c.Writer.Status()
 	requestID := GetRequestID(c.Request.Context())
 	access := &model.APIAccessLog{
-		RequestID:  requestID,
-		CallID:     c.Writer.Header().Get("X-Prism-Call-ID"),
-		UserID:     userID,
-		TokenID:    tokenID,
-		ActorType:  actorType,
-		Method:     c.Request.Method,
-		Path:       truncateAccessValue(storedPath, 500),
-		Route:      truncateAccessValue(route, 500),
-		Query:      sanitizeAccessQuery(c.Request.URL.Query()),
-		StatusCode: status,
-		DurationMs: time.Since(startedAt).Milliseconds(),
-		IP:         truncateAccessValue(c.ClientIP(), 64),
-		UserAgent:  truncateAccessValue(c.Request.UserAgent(), 512),
-		ErrorCode:  accessErrorCode(c),
-		CreatedAt:  startedAt,
+		RequestID:    requestID,
+		CallID:       c.Writer.Header().Get("X-Prism-Call-ID"),
+		UserID:       userID,
+		TokenID:      tokenID,
+		ActorType:    actorType,
+		Method:       c.Request.Method,
+		Path:         truncateAccessValue(storedPath, 500),
+		Route:        truncateAccessValue(route, 500),
+		Query:        sanitizeAccessQuery(c.Request.URL.Query()),
+		StatusCode:   status,
+		DurationMs:   time.Since(startedAt).Milliseconds(),
+		IP:           truncateAccessValue(c.ClientIP(), 64),
+		UserAgent:    truncateAccessValue(c.Request.UserAgent(), 512),
+		ErrorCode:    accessErrorCode(c),
+		ErrorMessage: accessErrorMessage(c),
+		CreatedAt:    startedAt,
 	}
 	if !shouldCreateAuditEvent(c.Request.Method, path) {
 		return access, nil
@@ -146,6 +162,34 @@ func accessErrorCode(c *gin.Context) string {
 	}
 	if value := firstAccessErrorValue(body, "code", "error"); value != "" {
 		return truncateAccessValue(value, 128)
+	}
+	return ""
+}
+
+func accessErrorMessage(c *gin.Context) string {
+	if c == nil || c.Writer.Status() < http.StatusBadRequest {
+		return ""
+	}
+	if detail, exists := c.Get(contextKeyAccessErrorDetail); exists {
+		if value, ok := detail.(string); ok && strings.TrimSpace(value) != "" {
+			return truncateAccessValue(strings.TrimSpace(value), 512)
+		}
+	}
+	wrapper, ok := c.Writer.(*responseWriter)
+	if !ok || wrapper.body == nil || wrapper.body.Len() == 0 {
+		return ""
+	}
+	var body map[string]any
+	if err := json.Unmarshal(wrapper.body.Bytes(), &body); err != nil {
+		return ""
+	}
+	if nested, ok := body["error"].(map[string]any); ok {
+		if value := firstAccessErrorValue(nested, "message"); value != "" {
+			return truncateAccessValue(value, 512)
+		}
+	}
+	if value := firstAccessErrorValue(body, "message"); value != "" {
+		return truncateAccessValue(value, 512)
 	}
 	return ""
 }

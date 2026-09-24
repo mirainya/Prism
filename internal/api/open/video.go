@@ -610,6 +610,8 @@ func unifiedVideoQueueStatus(callStatus, asyncState string) (string, bool) {
 		return "queued", true
 	case "submission_unknown", "accepted", "running", "manual_review", "cancel_requested", "cancel_unknown":
 		return "running", false
+	case "terminated_unknown":
+		return "submission_unknown", false
 	}
 	if callStatus == "received" {
 		return "queued", true

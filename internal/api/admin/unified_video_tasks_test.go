@@ -1,6 +1,8 @@
 package admin
 
 import (
+	"context"
+	"database/sql"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -10,7 +12,27 @@ import (
 
 	"github.com/DATA-DOG/go-sqlmock"
 	"github.com/gin-gonic/gin"
+	"github.com/mirainya/Prism/internal/gateway/repository"
 )
+
+func unifiedVideoResolutionRouter(actor uint) *gin.Engine {
+	router := gin.New()
+	router.Use(func(c *gin.Context) {
+		if actor != 0 {
+			c.Set("user_id", actor)
+		}
+	})
+	group := router.Group("/api/admin")
+	RegisterRoutes(group)
+	return router
+}
+
+func stubUnifiedVideoResolution(t *testing.T, resolve func(context.Context, *repository.Store, uint64) error) {
+	t.Helper()
+	original := finishUnifiedVideoTaskManualReview
+	finishUnifiedVideoTaskManualReview = resolve
+	t.Cleanup(func() { finishUnifiedVideoTaskManualReview = original })
+}
 
 func TestListUnifiedVideoTasksUsesProjectionOnly(t *testing.T) {
 	mock := unifiedChannelMock(t)
@@ -102,6 +124,91 @@ func TestListUnifiedVideoTasksRejectsInvalidStatus(t *testing.T) {
 	response := httptest.NewRecorder()
 	router.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/tasks?status=not-a-state", nil))
 	if response.Code != http.StatusBadRequest {
+		t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
+	}
+}
+
+func TestResolveUnifiedVideoTaskTerminatesUnknownSubmission(t *testing.T) {
+	for _, state := range []string{"manual_review", "submission_unknown"} {
+		t.Run(state, func(t *testing.T) {
+			mock := unifiedChannelMock(t)
+			mock.ExpectQuery(`SELECT x.id,x.state`).WithArgs("video-public").
+				WillReturnRows(sqlmock.NewRows([]string{"id", "state"}).AddRow(96, state))
+			called := false
+			stubUnifiedVideoResolution(t, func(_ context.Context, _ *repository.Store, asyncID uint64) error {
+				called = true
+				if asyncID != 96 {
+					t.Fatalf("asyncID=%d", asyncID)
+				}
+				return nil
+			})
+			response := httptest.NewRecorder()
+			request := httptest.NewRequest(http.MethodPost, "/api/admin/video/tasks/video-public/resolve", strings.NewReader(`{"resolution":"terminated_unknown"}`))
+			unifiedVideoResolutionRouter(7).ServeHTTP(response, request)
+			if response.Code != http.StatusOK || !called || !strings.Contains(response.Body.String(), `"status":"terminated_unknown"`) {
+				t.Fatalf("status=%d called=%v body=%s", response.Code, called, response.Body.String())
+			}
+		})
+	}
+}
+
+func TestResolveUnifiedVideoTaskRejectsUnsupportedResolution(t *testing.T) {
+	response := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodPost, "/api/admin/video/tasks/video-public/resolve", strings.NewReader(`{"resolution":"cancelled"}`))
+	unifiedVideoResolutionRouter(7).ServeHTTP(response, request)
+	if response.Code != http.StatusBadRequest {
+		t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
+	}
+}
+
+func TestResolveUnifiedVideoTaskRejectsNonReviewState(t *testing.T) {
+	mock := unifiedChannelMock(t)
+	mock.ExpectQuery(`SELECT x.id,x.state`).WithArgs("video-public").
+		WillReturnRows(sqlmock.NewRows([]string{"id", "state"}).AddRow(96, "running"))
+	called := false
+	stubUnifiedVideoResolution(t, func(context.Context, *repository.Store, uint64) error {
+		called = true
+		return nil
+	})
+	response := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodPost, "/api/admin/video/tasks/video-public/resolve", strings.NewReader(`{"resolution":"terminated_unknown"}`))
+	unifiedVideoResolutionRouter(7).ServeHTTP(response, request)
+	if response.Code != http.StatusConflict || called {
+		t.Fatalf("status=%d called=%v body=%s", response.Code, called, response.Body.String())
+	}
+}
+
+func TestResolveUnifiedVideoTaskReportsMissingTask(t *testing.T) {
+	mock := unifiedChannelMock(t)
+	mock.ExpectQuery(`SELECT x.id,x.state`).WithArgs("missing").WillReturnError(sql.ErrNoRows)
+	response := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodPost, "/api/admin/video/tasks/missing/resolve", strings.NewReader(`{"resolution":"terminated_unknown"}`))
+	unifiedVideoResolutionRouter(7).ServeHTTP(response, request)
+	if response.Code != http.StatusNotFound {
+		t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
+	}
+}
+
+func TestResolveUnifiedVideoTaskMapsRuntimeConflict(t *testing.T) {
+	mock := unifiedChannelMock(t)
+	mock.ExpectQuery(`SELECT x.id,x.state`).WithArgs("video-public").
+		WillReturnRows(sqlmock.NewRows([]string{"id", "state"}).AddRow(96, "manual_review"))
+	stubUnifiedVideoResolution(t, func(context.Context, *repository.Store, uint64) error {
+		return repository.ErrConflict
+	})
+	response := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodPost, "/api/admin/video/tasks/video-public/resolve", strings.NewReader(`{"resolution":"terminated_unknown"}`))
+	unifiedVideoResolutionRouter(7).ServeHTTP(response, request)
+	if response.Code != http.StatusConflict {
+		t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
+	}
+}
+
+func TestResolveUnifiedVideoTaskRequiresAdmin(t *testing.T) {
+	response := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodPost, "/api/admin/video/tasks/video-public/resolve", strings.NewReader(`{"resolution":"terminated_unknown"}`))
+	unifiedVideoResolutionRouter(0).ServeHTTP(response, request)
+	if response.Code != http.StatusForbidden {
 		t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
 	}
 }

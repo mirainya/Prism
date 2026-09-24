@@ -118,7 +118,7 @@ func (in CatalogProductInput) Validate() error {
 		in.Adapter.Protocol != in.Protocol || !validHexDigest(in.Adapter.ImplementationDigest, 32) || !semanticVersionPattern.MatchString(in.Adapter.MinimumSemanticVersion) ||
 		!catalogIdentityPattern.MatchString(in.TransportCode) || !catalogIdentityPattern.MatchString(in.Protocol) || in.Protocol == "catalog_discovery" ||
 		!validCatalogRequestMethod(in.AdapterCode, in.RequestMethod) || !validCatalogRequestTarget(in.RequestPath) ||
-		in.AuthScheme != "bearer" || in.TransportTimeoutMS < 100 || in.TransportTimeoutMS > 300000 || in.TaskTimeoutMS < 100 || in.TaskTimeoutMS > 300000 ||
+		in.AuthScheme != "bearer" || in.TransportTimeoutMS < 100 || in.TransportTimeoutMS > 900000 || in.TaskTimeoutMS < 100 || in.TaskTimeoutMS > 900000 ||
 		(in.TaskScope != "none" && in.TaskScope != "request" && in.TaskScope != "task") ||
 		(in.CancelMode != "none" && in.CancelMode != "upstream" && in.CancelMode != "local_only") ||
 		(in.SourceURLPolicy != "fixed" && in.SourceURLPolicy != "refreshable") || !validScope(in.UpstreamScopeKind) ||
@@ -517,9 +517,16 @@ func ensureCatalogAdapter(ctx context.Context, tx *sql.Tx, in CatalogAdapterInpu
 	if err != nil {
 		return 0, err
 	}
-	if digest != in.ImplementationDigest || minimum != in.MinimumSemanticVersion {
-		return 0, fmt.Errorf("%w: %s@%d database identity (%s, %s) differs from runtime identity (%s, %s)", ErrConflict,
-			in.Code, in.Version, digest, minimum, in.ImplementationDigest, in.MinimumSemanticVersion)
+	// Direct catalog editing intentionally has no deployment-generation step.
+	// A rebuild changes the implementation digest even when the adapter contract
+	// is unchanged, so the persisted identity remains valid for the same
+	// code/version. Incompatible adapter changes must use a new contract version.
+	if !validHexDigest(digest, 32) {
+		return 0, fmt.Errorf("%w: %s@%d database implementation digest is invalid", ErrConflict, in.Code, in.Version)
+	}
+	if minimum != in.MinimumSemanticVersion {
+		return 0, fmt.Errorf("%w: %s@%d database minimum semantic version %s differs from runtime minimum %s", ErrConflict,
+			in.Code, in.Version, minimum, in.MinimumSemanticVersion)
 	}
 	return id, nil
 }

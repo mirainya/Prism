@@ -1,18 +1,23 @@
 package admin
 
 import (
+	"context"
 	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/http"
 	"strconv"
 	"strings"
 	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/mirainya/Prism/internal/api/resp"
+	"github.com/mirainya/Prism/internal/gateway/billing"
+	"github.com/mirainya/Prism/internal/gateway/execution"
 	"github.com/mirainya/Prism/internal/gateway/payloadview"
 	"github.com/mirainya/Prism/internal/gateway/repository"
+	gatewayruntime "github.com/mirainya/Prism/internal/gateway/runtime"
 	"github.com/mirainya/Prism/internal/model"
 	pkgErrors "github.com/mirainya/Prism/pkg/errors"
 )
@@ -38,6 +43,18 @@ type unifiedVideoTaskRow struct {
 	CreatedAt                                             time.Time
 	SubmittedAt, CompletedAt                              *time.Time
 	RequestPayloadID, ResultPayloadID, AsyncExecutionID   uint64
+}
+
+type unifiedVideoTaskResolutionRequest struct {
+	Resolution string `json:"resolution"`
+}
+
+var finishUnifiedVideoTaskManualReview = func(ctx context.Context, store *repository.Store, asyncID uint64) error {
+	service, err := gatewayruntime.New(store)
+	if err != nil {
+		return err
+	}
+	return service.FinishAsync(ctx, asyncID, execution.AsyncTerminatedUnknown, "operator_closed_unverifiable_submission", billing.Facts{})
 }
 
 func ListUnifiedVideoTasks(c *gin.Context) {
@@ -164,6 +181,74 @@ func GetUnifiedVideoTask(c *gin.Context) {
 	}
 	item["call_payloads"] = payloads
 	resp.Success(c, item)
+}
+
+// ResolveUnifiedVideoTask ends local processing for an upstream submission
+// whose outcome cannot be verified. It deliberately records an unknown terminal
+// state instead of claiming that the provider cancelled or never created work.
+func ResolveUnifiedVideoTask(c *gin.Context) {
+	if currentAdminID(c) == 0 {
+		resp.ErrorMsg(c, http.StatusForbidden, http.StatusForbidden, "需要管理员身份")
+		return
+	}
+	var in unifiedVideoTaskResolutionRequest
+	if !unifiedChannelBody(c, &in) {
+		return
+	}
+	in.Resolution = strings.ToLower(strings.TrimSpace(in.Resolution))
+	if in.Resolution != string(execution.AsyncTerminatedUnknown) {
+		resp.ErrorMsg(c, http.StatusBadRequest, http.StatusBadRequest, "resolution 仅支持 terminated_unknown")
+		return
+	}
+	if !model.HasDB() {
+		resp.ErrorMsg(c, http.StatusServiceUnavailable, http.StatusServiceUnavailable, "数据库尚未就绪")
+		return
+	}
+	db, err := model.DB().DB()
+	if err != nil {
+		writeUnifiedVideoResolutionError(c, err)
+		return
+	}
+	store, err := repository.New(db)
+	if err != nil {
+		writeUnifiedVideoResolutionError(c, err)
+		return
+	}
+	var asyncID uint64
+	var state execution.AsyncState
+	err = db.QueryRowContext(c.Request.Context(), `SELECT x.id,x.state
+FROM gw_api_resources r
+JOIN gw_api_calls call_record ON call_record.id=r.call_id
+JOIN gw_api_call_attempts attempt ON attempt.call_id=call_record.id
+JOIN gw_async_executions x ON x.attempt_id=attempt.id
+WHERE r.public_id=? AND r.resource_kind='video_task'
+ORDER BY attempt.attempt_no DESC LIMIT 1`, c.Param("id")).Scan(&asyncID, &state)
+	if err != nil {
+		writeUnifiedVideoResolutionError(c, err)
+		return
+	}
+	if state != execution.AsyncManualReview && state != execution.AsyncSubmissionUnknown {
+		writeUnifiedVideoResolutionError(c, repository.ErrConflict)
+		return
+	}
+	if err := finishUnifiedVideoTaskManualReview(c.Request.Context(), store, asyncID); err != nil {
+		writeUnifiedVideoResolutionError(c, err)
+		return
+	}
+	resp.Success(c, gin.H{"id": c.Param("id"), "status": execution.AsyncTerminatedUnknown, "resolution": execution.AsyncTerminatedUnknown})
+}
+
+func writeUnifiedVideoResolutionError(c *gin.Context, err error) {
+	switch {
+	case errors.Is(err, sql.ErrNoRows), errors.Is(err, repository.ErrNotFound):
+		resp.ErrorMsg(c, http.StatusNotFound, http.StatusNotFound, "视频任务不存在")
+	case errors.Is(err, repository.ErrInvalidInput):
+		resp.ErrorMsg(c, http.StatusBadRequest, http.StatusBadRequest, "处理参数无效")
+	case errors.Is(err, repository.ErrConflict):
+		resp.ErrorMsg(c, http.StatusConflict, http.StatusConflict, "任务状态已变化，无法执行该处理")
+	default:
+		resp.ErrorMsg(c, http.StatusInternalServerError, http.StatusInternalServerError, "处理视频任务失败")
+	}
 }
 
 func GetUnifiedVideoStats(c *gin.Context) {
@@ -311,6 +396,8 @@ func unifiedVideoTaskJSON(row unifiedVideoTaskRow, detail bool) gin.H {
 		"duration": row.Summary.Duration, "generate_audio": row.Summary.GenerateAudio, "adapter_type": row.AdapterCode,
 		"provider_task_id": "", "estimated_cost": row.QuotedAmount, "final_cost": row.FinalAmount, "billing_status": row.BillingStatus,
 		"error_message": "", "created_at": row.CreatedAt.UTC().Format(time.RFC3339Nano),
+		"execution_state": row.TaskStatus,
+		"can_resolve":     row.TaskStatus == string(execution.AsyncManualReview) || row.TaskStatus == string(execution.AsyncSubmissionUnknown) || row.TaskStatus == string(execution.AsyncTerminatedUnknown),
 	}
 	if row.SubmittedAt != nil {
 		item["submitted_at"] = row.SubmittedAt.UTC().Format(time.RFC3339Nano)

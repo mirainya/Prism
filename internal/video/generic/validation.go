@@ -65,6 +65,18 @@ func validateRequestRule(request *video.GenerateRequest, rule validationRule) er
 	if rule.DurationMin > 0 && request.Duration < rule.DurationMin || rule.DurationMax > 0 && request.Duration > rule.DurationMax {
 		return fmt.Errorf("duration must be between %d and %d seconds", rule.DurationMin, rule.DurationMax)
 	}
+	if len(rule.DurationOptions) > 0 {
+		allowed := false
+		for _, duration := range rule.DurationOptions {
+			if request.Duration == duration {
+				allowed = true
+				break
+			}
+		}
+		if !allowed {
+			return fmt.Errorf("duration %d seconds is not supported", request.Duration)
+		}
+	}
 	allowedResolutions := append([]string(nil), rule.Resolutions...)
 	for _, parameter := range rule.Parameters {
 		selected, exists := request.Params[parameter.Name]
@@ -208,9 +220,9 @@ func validateRequestRule(request *video.GenerateRequest, rule validationRule) er
 			}
 		}
 	}
-	if rule.MaxImages > 0 && counts["image"] > rule.MaxImages ||
-		rule.MaxVideos > 0 && counts["video"] > rule.MaxVideos ||
-		rule.MaxAudios > 0 && counts["audio"] > rule.MaxAudios ||
+	if mediaLimitExceeded(counts["image"], rule.MaxImages, rule.maxImagesDeclared) ||
+		mediaLimitExceeded(counts["video"], rule.MaxVideos, rule.maxVideosDeclared) ||
+		mediaLimitExceeded(counts["audio"], rule.MaxAudios, rule.maxAudiosDeclared) ||
 		rule.MaxMedia > 0 && mediaCount > rule.MaxMedia {
 		return errors.New("reference media limit exceeded")
 	}
@@ -224,6 +236,10 @@ func validateRequestRule(request *video.GenerateRequest, rule validationRule) er
 		return fmt.Errorf("duration with video reference cannot exceed %d seconds", rule.DurationMaxWithVideoReference)
 	}
 	return nil
+}
+
+func mediaLimitExceeded(count, limit int, declared bool) bool {
+	return (limit > 0 || declared) && count > limit
 }
 
 func forbiddenParameterSet(names []string) map[string]struct{} {

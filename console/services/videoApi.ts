@@ -26,6 +26,8 @@ export interface VideoTask {
   model: string;
   vendor_model: string;
   status: string;
+  execution_state?: string;
+  can_resolve?: boolean;
   progress: number;
   task_mode: string;
   service_tier: string;
@@ -124,6 +126,12 @@ export const fetchVideoTasks = async (params: VideoTaskListParams = {}): Promise
 
 export const getVideoTask = (id: string) =>
   request<VideoTask>(`/admin/video/tasks/${id}`);
+
+export const resolveVideoTask = (id: string) =>
+  request<{ id: string; status: string; resolution: string }>(`/admin/video/tasks/${id}/resolve`, {
+    method: 'POST',
+    body: JSON.stringify({ resolution: 'terminated_unknown' }),
+  });
 
 // ===== Stats =====
 

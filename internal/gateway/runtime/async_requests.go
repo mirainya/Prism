@@ -103,7 +103,7 @@ func asyncRequestAllowed(state execution.AsyncState, action string) bool {
 	case "submit":
 		return state == execution.AsyncSubmitting
 	case "query":
-		return state == execution.AsyncAccepted || state == execution.AsyncRunning
+		return state == execution.AsyncAccepted || state == execution.AsyncRunning || state == execution.AsyncTerminatedUnknown
 	case "recover":
 		return state == execution.AsyncSubmissionUnknown || state == execution.AsyncManualReview
 	case "cancel":

@@ -45,6 +45,9 @@ func TestPublicChatModelPublishesOnlyCatalogOperations(t *testing.T) {
 	if item["model_code"] != "gpt-4.1" {
 		t.Fatalf("public model_code exposed internal identity: %#v", item["model_code"])
 	}
+	if _, exists := item["video_options"]; exists {
+		t.Fatal("chat model must not have video options")
+	}
 	if item["availability"] == nil {
 		t.Fatal("availability was not published")
 	}
@@ -54,5 +57,14 @@ func TestPublicChatModelOmitsUnknownAvailability(t *testing.T) {
 	item := publicChatModel(service.AvailableModelCapability{ID: "image-model", Type: "image"})
 	if _, exists := item["availability"]; exists {
 		t.Fatal("unknown availability must be omitted rather than reported as zero")
+	}
+}
+
+func TestPublicChatModelPublishesVideoOptions(t *testing.T) {
+	options := map[string]any{"task_types": []string{"text", "multimodal"}, "max_images": 9, "max_audios": 3}
+	item := publicChatModel(service.AvailableModelCapability{ID: "seedance", Type: "video", VideoOptions: options})
+	projected, ok := item["video_options"].(map[string]any)
+	if !ok || projected["max_images"] != 9 || projected["max_audios"] != 3 {
+		t.Fatalf("video options missing: %#v", item["video_options"])
 	}
 }

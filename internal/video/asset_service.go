@@ -31,6 +31,66 @@ var (
 	ErrFileTooLarge  = errors.New("video asset exceeds the configured size limit")
 )
 
+// AssetErrorDetail returns a bounded diagnostic suitable for an operator log.
+// It deliberately keeps only known validation reasons so storage paths,
+// signed URLs, and provider internals are never copied into access records.
+func AssetErrorDetail(err error) string {
+	if err == nil {
+		return ""
+	}
+	switch {
+	case errors.Is(err, ErrFileTooLarge):
+		return "video asset is too large"
+	case errors.Is(err, ErrAssetNotFound):
+		return "video asset not found"
+	case errors.Is(err, ErrAssetNotReady):
+		return "video asset is not ready"
+	case errors.Is(err, ErrAssetInUse):
+		return "video asset is still in use"
+	case errors.Is(err, ErrInvalidAsset):
+		return invalidAssetDetail(err.Error())
+	default:
+		return ""
+	}
+}
+
+func invalidAssetDetail(raw string) string {
+	detail := strings.TrimSpace(raw)
+	if index := strings.Index(detail, ":"); index >= 0 {
+		detail = strings.TrimSpace(detail[index+1:])
+	}
+	if strings.Contains(detail, "uses an unsupported provider object reference") {
+		return "provider object references are not supported for video assets"
+	}
+	known := []string{
+		"token is required",
+		"kind must be image, video, or audio",
+		"file or url is required",
+		"data and reader are mutually exclusive",
+		"file and url are mutually exclusive",
+		"content type does not match kind",
+		"a matching content_type is required for url assets",
+		"file data is empty",
+		"file size changed while reading",
+		"duration_seconds must be positive",
+		"unsafe url",
+		"unsafe stored asset URL",
+		"content item",
+	}
+	for _, prefix := range known {
+		if strings.HasPrefix(detail, prefix) {
+			if prefix == "content item" {
+				return "content item does not match the stored asset"
+			}
+			if prefix == "unsafe url" || prefix == "unsafe stored asset URL" {
+				return "asset URL is not allowed"
+			}
+			return "invalid video asset: " + prefix
+		}
+	}
+	return "invalid video asset"
+}
+
 type AssetService struct {
 	db       *gorm.DB
 	upload   func(context.Context, io.Reader, string, string) (string, error)

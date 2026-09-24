@@ -202,9 +202,17 @@ describe('model onboarding form', () => {
     }))).toContain('视频模型');
   });
 
+  it('accepts actual AICost public model names', () => {
+    for (const apiName of ['seedance2.5-9图', 'seedance2.5-10图', 'seedance2.0-480p-100%']) {
+      expect(validateNewModelOnboarding(baseValues({ apiName }))).toBe('');
+    }
+  });
+
   it('rejects a missing billing unit, invalid public identity, and prices', () => {
     expect(validateNewModelOnboarding(baseValues({ billingUnit: '' }))).toContain('计费单位');
     expect(validateNewModelOnboarding(baseValues({ apiName: '模型' }))).toContain('公开调用名');
+    expect(validateNewModelOnboarding(baseValues({ apiName: 'seedance2.5 图' }))).toContain('公开调用名');
+    expect(validateNewModelOnboarding(baseValues({ apiName: `a${'图'.repeat(43)}` }))).toContain('公开调用名');
     expect(validateNewModelOnboarding(baseValues({ sellPrice: '0' }))).toContain('售价');
     expect(validateNewModelOnboarding(baseValues({ costPrice: '-1' }))).toContain('成本');
   });

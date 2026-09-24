@@ -69,3 +69,17 @@ func TestWeightedRendezvousGoldenVector(t *testing.T) {
 		t.Fatalf("score = %s, want %s", score.Text(16), expected)
 	}
 }
+
+func TestUnifiedCandidateExcludesOfferingWithoutExcludingSharedCredential(t *testing.T) {
+	options := RouteOptions{ExcludeOfferings: []uint{11}}
+	transport := model.UpstreamTransportVideoGeneration
+	if !excludedUnifiedCandidate(unifiedCandidate{OfferingID: 11, CredentialID: 7}, transport, options) {
+		t.Fatal("incompatible offering was not skipped")
+	}
+	if excludedUnifiedCandidate(unifiedCandidate{OfferingID: 12, CredentialID: 7}, transport, options) {
+		t.Fatal("another offering sharing the same credential must remain eligible")
+	}
+	if excludedUnifiedCandidate(unifiedCandidate{OfferingID: 13, CredentialID: 8}, transport, options) {
+		t.Fatal("unrelated offering must remain eligible")
+	}
+}

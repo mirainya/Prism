@@ -88,6 +88,111 @@ func ValidateRuntimeCatalog(baseURL, method, path, vendorModel string, catalogCo
 	return nil
 }
 
+// ValidatePublishedRuntimeCatalog is the stricter write-boundary check. The
+// legacy migration uses ValidateRuntimeCatalog to preserve existing snapshots.
+func ValidatePublishedRuntimeCatalog(baseURL, method, path, vendorModel string, catalogConfig []byte) error {
+	if err := ValidateRuntimeCatalog(baseURL, method, path, vendorModel, catalogConfig); err != nil {
+		return err
+	}
+	codec, err := NewRuntimeCodec(baseURL, catalogConfig)
+	if err != nil {
+		return err
+	}
+	if rule, exists := codec.adapter.config.Validation.Models[strings.TrimSpace(vendorModel)]; exists {
+		return validatePublishedVideoCapabilities(strings.TrimSpace(vendorModel), catalogConfig, rule, codec.adapter.config.Request)
+	}
+	return errors.New("generic product requires a model validation rule")
+}
+
+// This check runs when a product is created or edited, not while loading an
+// existing release. It compares only the selected vendor model, since an
+// adapter declaration can contain rules for other, unrelated models.
+func validatePublishedVideoCapabilities(model string, raw []byte, rule validationRule, request requestConfig) error {
+	var catalog struct {
+		TaskTypes []string `json:"task_types"`
+	}
+	if err := json.Unmarshal(raw, &catalog); err != nil {
+		return err
+	}
+	published := make(map[string]bool, len(catalog.TaskTypes))
+	for _, mode := range catalog.TaskTypes {
+		if mode == "" || published[mode] {
+			return fmt.Errorf("generic product %q has an invalid task_types declaration", model)
+		}
+		published[mode] = true
+	}
+	validated := make(map[string]bool, len(rule.TaskModes))
+	for _, mode := range rule.TaskModes {
+		if mode == "" || validated[mode] {
+			return fmt.Errorf("generic product %q has an invalid validation task_modes declaration", model)
+		}
+		validated[mode] = true
+	}
+	if len(published) == 0 || len(validated) != len(published) {
+		return fmt.Errorf("generic product %q task_types must match validation task_modes", model)
+	}
+	for mode := range published {
+		if !validated[mode] {
+			return fmt.Errorf("generic product %q task_types must match validation task_modes", model)
+		}
+	}
+	media := map[string]int{}
+	for _, mode := range catalog.TaskTypes {
+		switch mode {
+		case "first_frame", "first_last_frame":
+			media["image_url"] = max(media["image_url"], 1)
+		case "video_extension", "video_edit":
+			media["video_url"] = max(media["video_url"], 1)
+		case "multimodal", "references":
+			if rule.MaxImages > 0 {
+				media["image_url"] = max(media["image_url"], rule.MaxImages)
+			}
+			if rule.MaxVideos > 0 {
+				media["video_url"] = max(media["video_url"], rule.MaxVideos)
+			}
+			if rule.MaxAudios > 0 {
+				media["audio_url"] = max(media["audio_url"], rule.MaxAudios)
+			}
+		}
+	}
+	if *request.IncludeContent && len(media) > 0 && request.ContentFields["url"] == "" && request.ContentFields["provider_object"] == "" {
+		return fmt.Errorf("generic product %q includes content without an upstream media URL field", model)
+	}
+	if !*request.IncludeContent {
+		for contentType, limit := range media {
+			if !hasProjectionCapacity(request.ContentProjections, model, contentType, limit) {
+				return fmt.Errorf("generic product %q declares %d %s inputs without sufficient upstream content mapping", model, limit, contentType)
+			}
+		}
+	}
+	return nil
+}
+
+func hasProjectionCapacity(projections []contentProjection, model, contentType string, limit int) bool {
+	scalarSlots := make(map[string]map[int]bool)
+	for _, projection := range projections {
+		if (projection.Source != "url" && projection.Source != "provider_object") ||
+			!matchesSelector(model, projection.Models) || !matchesSelector(contentType, projection.Types) {
+			continue
+		}
+		if projection.Output != "scalar" {
+			return true
+		}
+		roles := strings.Join(projection.Roles, ",")
+		if scalarSlots[roles] == nil {
+			scalarSlots[roles] = make(map[int]bool)
+		}
+		scalarSlots[roles][projection.Index] = true
+	}
+	capacity := 0
+	for _, indexes := range scalarSlots {
+		for index := 0; indexes[index]; index++ {
+			capacity++
+		}
+	}
+	return capacity >= limit
+}
+
 func (c *RuntimeCodec) PrepareSubmit(_ context.Context, request *video.GenerateRequest) (RuntimeRequest, error) {
 	if c == nil || c.adapter == nil {
 		return RuntimeRequest{}, errors.New("generic runtime codec is not initialized")
